@@ -1,0 +1,8 @@
+langgraph>=0.2.0
+langchain>=1.2.13
+langchain-core>=1.2.22
+langchain-community>=0.4.1
+tavily-python>=0.7.23
+langchain-together
+python-dotenv
+rich>=13.0

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openagenticskyzer"
+version = "0.1.0"
+description = "Powerful open-source AI coding assistant — use it in any folder"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "langgraph>=0.2.0",
+    "langchain-core>=1.2.22",
+    "tavily-python>=0.7.23",
+    "python-dotenv",
+    "rich>=13.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/JLSkyzer/openagenticskyzer"
+Repository = "https://github.com/JLSkyzer/openagenticskyzer"
+"Bug Tracker" = "https://github.com/JLSkyzer/openagenticskyzer/issues"
+
+[project.optional-dependencies]
+together  = ["langchain-together"]
+groq      = ["langchain-groq"]
+mistral   = ["langchain-mistralai"]
+gemini    = ["langchain-google-genai"]
+openrouter = ["langchain-openai"]
+langfuse  = ["langfuse>=2.0.0"]
+all = [
+    "langchain-together",
+    "langchain-groq",
+    "langchain-mistralai",
+    "langchain-google-genai",
+    "langchain-openai",
+    "langfuse>=2.0.0",
+]
+
+[project.scripts]
+openagent = "openagentic_ai.agent:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["openagentic_ai*"]

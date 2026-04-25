@@ -11,7 +11,14 @@ from openagentic_ai.graph.state import AgentState
 logger = logging.getLogger("openagentic.workflow")
 
 
-def build_graph(model, tools: list, system_prompt: str, max_history: int = 20):
+def build_graph(
+    model,
+    tools: list,
+    system_prompt: str,
+    max_history: int = 20,
+    max_tokens: int | None = None,
+    permission_manager=None,
+):
     """Build and compile the LangGraph agent graph.
 
     Graph structure:
@@ -22,8 +29,13 @@ def build_graph(model, tools: list, system_prompt: str, max_history: int = 20):
     keeping the context window lean without a separate middleware layer.
     """
     bound_model = model.bind_tools(tools)
-    agent_node = make_agent_node(bound_model, system_prompt, max_history)
-    tool_node = ToolNode(tools)
+    agent_node = make_agent_node(bound_model, system_prompt, max_history, max_tokens)
+
+    if permission_manager is not None:
+        from openagentic_ai.permissions import make_permission_tool_node
+        tool_node = make_permission_tool_node(tools, permission_manager)
+    else:
+        tool_node = ToolNode(tools)
 
     graph = StateGraph(AgentState)
     graph.add_node("agent", agent_node)
@@ -38,5 +50,8 @@ def build_graph(model, tools: list, system_prompt: str, max_history: int = 20):
     graph.add_edge("tools", "agent")
 
     compiled = graph.compile()
-    logger.info("Graph compiled — %d tools, max_history=%d", len(tools), max_history)
+    logger.info(
+        "Graph compiled — %d tools, max_history=%d, max_tokens=%s",
+        len(tools), max_history, max_tokens,
+    )
     return compiled

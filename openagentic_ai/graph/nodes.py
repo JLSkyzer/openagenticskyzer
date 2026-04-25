@@ -11,18 +11,18 @@ from openagentic_ai.graph.state import AgentState
 logger = logging.getLogger("openagentic.nodes")
 
 
-def make_agent_node(model, system_prompt: str, max_history: int = 20):
+def make_agent_node(model, system_prompt: str, max_history: int = 20, max_tokens: int | None = None):
     """Return an agent node closure bound to the given model and system prompt.
 
     Before each LLM call:
-    - Trims history to last max_history messages
+    - Trims history to last max_history messages and max_tokens
     - Cleans LLM metadata bloat from additional_kwargs
     - Prepends the system prompt fresh
     """
     def agent_node(state: AgentState) -> dict:
         messages = state["messages"]
 
-        trimmed = trim_message_history(messages, max_messages=max_history)
+        trimmed = trim_message_history(messages, max_messages=max_history, max_tokens=max_tokens)
         trimmed = clean_messages(trimmed)
 
         full_context = [SystemMessage(content=system_prompt)] + trimmed

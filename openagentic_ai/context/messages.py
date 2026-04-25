@@ -19,28 +19,46 @@ _METADATA_BLOAT_KEYS = {
 }
 
 
-def trim_message_history(messages: list, max_messages: int = 20) -> list:
-    """Return the last max_messages non-system messages.
+def trim_message_history(
+    messages: list,
+    max_messages: int = 20,
+    max_tokens: int | None = None,
+) -> list:
+    """Return recent non-system messages within max_messages and max_tokens limits.
 
-    System messages are excluded (they are injected fresh on each call).
-    Never returns a list starting with a ToolMessage — orphan tool results
-    without their parent AIMessage confuse the model.
+    Token count is estimated as len(content) // 4 (no external dependency).
+    Never returns a list starting with a ToolMessage.
     """
     non_system = [m for m in messages if not isinstance(m, SystemMessage)]
 
     if len(non_system) <= max_messages:
-        return non_system
+        trimmed = non_system
+    else:
+        trimmed = non_system[-max_messages:]
 
-    trimmed = non_system[-max_messages:]
-
-    # Safety: ToolMessage must be preceded by the AIMessage that called it.
-    # If we trimmed that AIMessage, drop the orphan ToolMessage(s).
+    # Safety: drop orphan ToolMessages at the front
     while trimmed and isinstance(trimmed[0], ToolMessage):
         trimmed = trimmed[1:]
 
+    if max_tokens is not None:
+        # Walk from the end, keep messages until we exceed the token budget
+        kept = []
+        token_count = 0
+        for msg in reversed(trimmed):
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            tokens = len(content) // 4
+            if token_count + tokens > max_tokens and kept:
+                break
+            kept.append(msg)
+            token_count += tokens
+        trimmed = list(reversed(kept))
+        # Safety again after token trim
+        while trimmed and isinstance(trimmed[0], ToolMessage):
+            trimmed = trimmed[1:]
+
     logger.debug(
-        "Trimmed history: %d → %d messages (max=%d)",
-        len(non_system), len(trimmed), max_messages,
+        "Trimmed history: %d → %d messages (max_messages=%d, max_tokens=%s)",
+        len(non_system), len(trimmed), max_messages, max_tokens,
     )
     return trimmed
 

@@ -19,13 +19,18 @@ def test_strict_mode_allows_read_tools():
     assert mgr.check("view_file", {}) is True
     assert mgr.check("glob_files", {}) is True
 
+def test_invalid_mode_raises():
+    import pytest
+    with pytest.raises(ValueError, match="Invalid permission mode"):
+        PermissionManager(mode="invalid")
+
 def test_always_allow_skips_prompt():
     mgr = PermissionManager(mode="demander", is_cli=True)
     mgr._always_allow.add("run_command")
     with patch.object(mgr, "_cli_check") as mock_cli:
         result = mgr.check("run_command", {"command": "ls"})
-    assert result is True
-    mock_cli.assert_not_called()
+        assert result is True
+        mock_cli.assert_not_called()
 
 def test_cli_demander_allows_on_y(monkeypatch):
     mgr = PermissionManager(mode="demander", is_cli=True)
@@ -41,6 +46,14 @@ def test_cli_demander_denies_on_n(monkeypatch):
         result = mgr.check("run_command", {"command": "rm file"})
     assert result is False
 
+def test_cli_demander_always_adds_to_always_allow(monkeypatch):
+    mgr = PermissionManager(mode="demander", is_cli=True)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    with patch("builtins.input", return_value="a"):
+        result = mgr.check("run_command", {"command": "ls"})
+    assert result is True
+    assert "run_command" in mgr._always_allow
+
 def test_cli_non_tty_auto_allows(monkeypatch):
     mgr = PermissionManager(mode="demander", is_cli=True)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
@@ -48,7 +61,6 @@ def test_cli_non_tty_auto_allows(monkeypatch):
     assert result is True
 
 def test_make_permission_tool_node_returns_callable():
-    from unittest.mock import MagicMock
     from langchain_core.tools import tool
 
     @tool

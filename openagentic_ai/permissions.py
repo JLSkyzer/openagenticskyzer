@@ -2,7 +2,7 @@
 import sys
 import threading
 import logging
-from typing import Any, Callable
+from typing import Callable
 
 from langchain_core.messages import ToolMessage, AIMessage
 from langgraph.prebuilt import ToolNode
@@ -24,7 +24,7 @@ class PermissionRequest:
 
     def __init__(self, tool_name: str, args: dict):
         self.tool_name = tool_name
-        self.args = args
+        self.args = args.copy()
         self.result: bool = False
         self.always: bool = False
         self._event = threading.Event()
@@ -53,9 +53,12 @@ class PermissionManager:
         is_cli: True when running in CLI mode (uses input())
         on_request: callback called when a request is pending (GUI mode)
         """
+        if mode not in ("demander", "auto", "strict"):
+            raise ValueError(f"Invalid permission mode: {mode!r}. Choose from: demander, auto, strict")
         self.mode = mode
         self.is_cli = is_cli
         self._on_request = on_request
+        self._lock = threading.Lock()
         self._always_allow: set[str] = set()
         self.pending: PermissionRequest | None = None
 
@@ -68,8 +71,9 @@ class PermissionManager:
         # mode == "demander"
         if tool_name in _READ_ONLY_TOOLS:
             return True
-        if tool_name in self._always_allow:
-            return True
+        with self._lock:
+            if tool_name in self._always_allow:
+                return True
 
         if self.is_cli:
             return self._cli_check(tool_name, args)
@@ -80,7 +84,7 @@ class PermissionManager:
             logger.info("Non-TTY detected — auto-allowing %s", tool_name)
             return True
         try:
-            cmd_preview = args.get("command", args.get("path", str(args)))[:80]
+            cmd_preview = str(args.get("command", args.get("path", args)))[:80]
             answer = input(
                 f"\n⚠️  Permission requise : {tool_name}({cmd_preview})\n"
                 "  [y] Autoriser  [a] Toujours  [n] Refuser : "
@@ -89,23 +93,28 @@ class PermissionManager:
             return False
 
         if answer == "a":
-            self._always_allow.add(tool_name)
+            with self._lock:
+                self._always_allow.add(tool_name)
             return True
         return answer == "y"
 
     def _app_check(self, tool_name: str, args: dict) -> bool:
         req = PermissionRequest(tool_name, args)
-        self.pending = req
+        with self._lock:
+            self.pending = req
         if self._on_request:
             self._on_request(req)
         allowed = req.wait()
-        if req.always:
-            self._always_allow.add(tool_name)
-        self.pending = None
+        with self._lock:
+            if req.always:
+                self._always_allow.add(tool_name)
+            self.pending = None
         return allowed
 
 
-def make_permission_tool_node(tools: list, manager: PermissionManager):
+def make_permission_tool_node(
+    tools: list, manager: PermissionManager
+) -> Callable[[dict], dict]:
     """Return a LangGraph node function that checks permissions before executing tools."""
     tool_map = {t.name: t for t in tools}
     base_node = ToolNode(tools)
@@ -141,6 +150,7 @@ def make_permission_tool_node(tools: list, manager: PermissionManager):
                 output = tool_map[tool_name].invoke(tool_args)
                 results.append(ToolMessage(content=str(output), tool_call_id=call_id))
             except Exception as exc:
+                logger.exception("Tool %s raised an exception", tool_name, exc_info=exc)
                 results.append(
                     ToolMessage(content=f"[Erreur] {tool_name}: {exc}", tool_call_id=call_id)
                 )

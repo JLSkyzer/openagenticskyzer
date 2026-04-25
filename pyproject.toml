@@ -30,6 +30,10 @@ gemini    = ["langchain-google-genai"]
 openrouter = ["langchain-openai"]
 ollama    = ["langchain-ollama"]
 langfuse  = ["langfuse>=2.0.0"]
+app = [
+    "nicegui>=1.4",
+    "pywebview>=4.0",
+]
 all = [
     "langchain-together",
     "langchain-groq",
@@ -38,6 +42,8 @@ all = [
     "langchain-openai",
     "langchain-ollama",
     "langfuse>=2.0.0",
+    "nicegui>=1.4",
+    "pywebview>=4.0",
 ]
 
 [project.scripts]

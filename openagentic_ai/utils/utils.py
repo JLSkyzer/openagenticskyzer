@@ -1,6 +1,7 @@
 import re
 import os
 import logging
+import subprocess
 from typing import Any
 from dotenv import load_dotenv, find_dotenv
 from langchain_core.callbacks import BaseCallbackHandler
@@ -92,6 +93,34 @@ _DEFAULT_MODELS = {
     "openrouter": "kwaipilot/kat-coder-pro-v2",
     "ollama":     "qwen2.5-coder",
 }
+
+_DEFAULT_CTX_LIMITS: dict[str, int] = {
+    "together":   128_000,
+    "groq":       128_000,
+    "mistral":    32_000,
+    "gemini":     1_000_000,
+    "openrouter": 128_000,
+    "ollama":     32_000,
+}
+
+
+def get_available_ollama_models() -> list[str]:
+    """Return list of locally installed Ollama models. Empty list if Ollama not found."""
+    try:
+        result = subprocess.run(
+            ["ollama", "list"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode != 0:
+            return []
+        lines = result.stdout.strip().splitlines()
+        # Skip header line, parse first column (NAME)
+        return [
+            line.split()[0] for line in lines[1:]
+            if line.strip() and len(line.split()) >= 1
+        ]
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
 
 
 def _detect_provider() -> tuple[str, str, str]:

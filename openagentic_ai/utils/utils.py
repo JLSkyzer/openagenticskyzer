@@ -90,6 +90,7 @@ _DEFAULT_MODELS = {
     "mistral":    "codestral-latest",
     "gemini":     "gemini-2.5-pro-preview-03-25",
     "openrouter": "kwaipilot/kat-coder-pro-v2",
+    "ollama":     "qwen2.5-coder",
 }
 
 
@@ -103,6 +104,13 @@ def _detect_provider() -> tuple[str, str, str]:
             logger.info("Provider: %s | Model: %s", provider, model)
             return provider, api_key, model
 
+    # Ollama is local — no API key required, triggered by OLLAMA_MODEL
+    ollama_model = os.environ.get("OLLAMA_MODEL", "").strip()
+    if ollama_model:
+        model = ollama_model
+        logger.info("Provider: ollama | Model: %s", model)
+        return "ollama", "local", model
+
     keys = ", ".join(k for k, _ in _PROVIDERS)
     raise EnvironmentError(
         f"No API key found. Set one of: {keys} in your .env file.\n"
@@ -110,7 +118,8 @@ def _detect_provider() -> tuple[str, str, str]:
         "Groq:       https://console.groq.com/keys\n"
         "Mistral:    https://console.mistral.ai/api-keys\n"
         "Gemini:     https://aistudio.google.com/app/apikey\n"
-        "OpenRouter: https://openrouter.ai/settings/keys"
+        "OpenRouter: https://openrouter.ai/settings/keys\n"
+        "Ollama:     set OLLAMA_MODEL=<model-name> (e.g. qwen2.5-coder) — no API key needed"
     )
 
 
@@ -126,16 +135,17 @@ def get_langfuse_handler():
 
 
 _PROVIDER_EXTRAS = {
-    "together":   "pip install openagentic-ai[together]",
-    "groq":       "pip install openagentic-ai[groq]",
-    "mistral":    "pip install openagentic-ai[mistral]",
-    "gemini":     "pip install openagentic-ai[gemini]",
-    "openrouter": "pip install openagentic-ai[openrouter]",
+    "together":   "pip install openagenticskyzer[together]",
+    "groq":       "pip install openagenticskyzer[groq]",
+    "mistral":    "pip install openagenticskyzer[mistral]",
+    "gemini":     "pip install openagenticskyzer[gemini]",
+    "openrouter": "pip install openagenticskyzer[openrouter]",
+    "ollama":     "pip install openagenticskyzer[ollama]",
 }
 
 
 def _missing_provider(provider: str) -> ModuleNotFoundError:
-    cmd = _PROVIDER_EXTRAS.get(provider, f"pip install openagentic-ai[{provider}]")
+    cmd = _PROVIDER_EXTRAS.get(provider, f"pip install openagenticskyzer[{provider}]")
     return ModuleNotFoundError(
         f"\nProvider '{provider}' is not installed.\n"
         f"Run: {cmd}\n"
@@ -227,6 +237,19 @@ def get_llm():
         if extra_headers:
             openrouter_kwargs["default_headers"] = extra_headers
         llm = ChatOpenAI(**openrouter_kwargs)  # type: ignore[arg-type]
+
+    elif provider == "ollama":
+        try:
+            from langchain_ollama import ChatOllama  # type: ignore[import]
+        except ModuleNotFoundError:
+            raise _missing_provider("ollama")
+        base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        llm = ChatOllama(  # type: ignore[call-arg]
+            model=model,
+            base_url=base_url,
+            streaming=True,
+            callbacks=callbacks,
+        )
 
     else:
         raise EnvironmentError(f"Unknown provider: {provider}")

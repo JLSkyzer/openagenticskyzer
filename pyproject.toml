@@ -28,6 +28,7 @@ groq      = ["langchain-groq"]
 mistral   = ["langchain-mistralai"]
 gemini    = ["langchain-google-genai"]
 openrouter = ["langchain-openai"]
+ollama    = ["langchain-ollama"]
 langfuse  = ["langfuse>=2.0.0"]
 all = [
     "langchain-together",
@@ -35,6 +36,7 @@ all = [
     "langchain-mistralai",
     "langchain-google-genai",
     "langchain-openai",
+    "langchain-ollama",
     "langfuse>=2.0.0",
 ]
 

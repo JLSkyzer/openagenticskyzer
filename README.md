@@ -9,6 +9,7 @@ pip install openagenticskyzer[together]    # Together AI
 pip install openagenticskyzer[mistral]     # Mistral / Codestral
 pip install openagenticskyzer[gemini]      # Google Gemini
 pip install openagenticskyzer[openrouter]  # OpenRouter
+pip install openagenticskyzer[ollama]      # Ollama (local, no API key)
 pip install openagenticskyzer[all]         # every provider at once
 
 # Or plain install (no provider bundled)
@@ -54,6 +55,7 @@ pip install openagenticskyzer[together]   # Together AI
 pip install openagenticskyzer[mistral]    # Mistral / Codestral
 pip install openagenticskyzer[gemini]     # Google Gemini
 pip install openagenticskyzer[openrouter] # OpenRouter
+pip install openagenticskyzer[ollama]     # Ollama (local, no API key)
 pip install openagenticskyzer[all]        # every provider at once
 ```
 
@@ -82,6 +84,9 @@ TOGETHER_API_KEY=your_key_here
 # MISTRAL_API_KEY=your_key_here
 # GEMINI_API_KEY=your_key_here
 # OPENROUTER_API_KEY=your_key_here
+
+# Or use Ollama (local, no API key needed — requires Ollama running)
+# OLLAMA_MODEL=qwen2.5-coder
 ```
 
 Get a free key:
@@ -90,6 +95,7 @@ Get a free key:
 - [Mistral](https://console.mistral.ai/api-keys)
 - [Gemini](https://aistudio.google.com/app/apikey)
 - [OpenRouter](https://openrouter.ai/settings/keys)
+- [Ollama](https://ollama.com/download) — runs locally, no key needed
 
 ### 3. Run
 
@@ -116,6 +122,7 @@ openagent --mode plan "migrate the database to PostgreSQL"
 | Mistral | `codestral-latest` |
 | Gemini | `gemini-2.5-pro-preview-03-25` |
 | OpenRouter | `kwaipilot/kat-coder-pro-v2` |
+| Ollama | `qwen2.5-coder` (set via `OLLAMA_MODEL`) |
 
 Override the model for any provider:
 
@@ -151,6 +158,11 @@ GROQ_API_KEY=
 MISTRAL_API_KEY=
 GEMINI_API_KEY=
 OPENROUTER_API_KEY=
+
+# Ollama (local — no API key needed)
+# Set OLLAMA_MODEL to activate Ollama as provider
+OLLAMA_MODEL=qwen2.5-coder
+OLLAMA_BASE_URL=http://localhost:11434   # optional, default shown
 
 # Optional: override default model per provider
 TOGETHER_MODEL=

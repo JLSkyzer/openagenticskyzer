@@ -20,12 +20,12 @@ def test_strict_mode_allows_read_tools():
     assert mgr.check("glob_files", {}) is True
 
 def test_always_allow_skips_prompt():
-    mgr = PermissionManager(mode="demander")
+    mgr = PermissionManager(mode="demander", is_cli=True)
     mgr._always_allow.add("run_command")
-    mgr._cli_callback = MagicMock()
-    result = mgr.check("run_command", {"command": "ls"})
+    with patch.object(mgr, "_cli_check") as mock_cli:
+        result = mgr.check("run_command", {"command": "ls"})
     assert result is True
-    mgr._cli_callback.assert_not_called()
+    mock_cli.assert_not_called()
 
 def test_cli_demander_allows_on_y(monkeypatch):
     mgr = PermissionManager(mode="demander", is_cli=True)

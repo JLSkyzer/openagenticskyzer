@@ -22,7 +22,7 @@ _ALL_TOOLS = [
 ]
 
 
-def build_agent(mode: str = "auto"):
+def build_agent(mode: str = "auto", max_tokens: int | None = None, permission_manager=None):
     model = get_llm()
     cwd = os.getcwd()
     mode_instruction = mode_router(mode)
@@ -35,7 +35,7 @@ def build_agent(mode: str = "auto"):
         "Use read_file('agent_actions.log') to check what was already done.\n"
         + mode_instruction
     )
-    return build_graph(model, _ALL_TOOLS, system_prompt)
+    return build_graph(model, _ALL_TOOLS, system_prompt, max_tokens=max_tokens, permission_manager=permission_manager)
 
 
 def _setup_logging():
@@ -91,7 +91,17 @@ def main():
     )
     parser.add_argument("--resume", metavar="SESSION_ID", help="Resume a previous session by ID")
     parser.add_argument("--list-sessions", action="store_true", help="List saved sessions and exit")
+    parser.add_argument(
+        "--permission", choices=["demander", "auto", "strict"], default=None,
+        help="Permission mode: demander (prompt), auto (skip all), strict (read-only)",
+    )
+    parser.add_argument("--app", action="store_true", help="Launch the graphical interface")
     args = parser.parse_args()
+
+    if args.app:
+        from openagentic_ai.app.main import launch_app
+        launch_app()
+        return
 
     persistence = PersistenceManager()
 
@@ -100,7 +110,10 @@ def main():
         return
 
     console = get_console()
-    agent = build_agent(mode=args.mode)
+    from openagentic_ai.permissions import PermissionManager
+    perm_mode = args.permission if args.permission else ("demander" if os.isatty(0) else "auto")
+    perm_manager = PermissionManager(mode=perm_mode, is_cli=True)
+    agent = build_agent(mode=args.mode, permission_manager=perm_manager)
 
     try:
         from openagentic_ai.utils.utils import _detect_provider
@@ -162,7 +175,7 @@ def main():
                 valid = ["ask", "auto", "plan"]
                 if cmd_arg in valid:
                     current_mode = cmd_arg
-                    agent = build_agent(mode=current_mode)
+                    agent = build_agent(mode=current_mode, permission_manager=perm_manager)
                     tui.mode = current_mode
                     tui.show_success(f"Mode changed to: {current_mode}")
                 else:

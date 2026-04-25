@@ -28,6 +28,7 @@ def trim_message_history(
 
     Token count is estimated as len(content) // 4 (no external dependency).
     Never returns a list starting with a ToolMessage.
+    At least one message is always retained regardless of max_tokens budget.
     """
     non_system = [m for m in messages if not isinstance(m, SystemMessage)]
 

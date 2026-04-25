@@ -1,6 +1,10 @@
 # tests/test_context_limit.py
 import subprocess
 from unittest.mock import patch
+
+from langchain_core.messages import HumanMessage
+
+from openagentic_ai.context.messages import trim_message_history
 from openagentic_ai.utils.utils import _DEFAULT_CTX_LIMITS, get_available_ollama_models
 
 def test_ctx_limits_has_all_providers():
@@ -27,9 +31,6 @@ def test_get_ollama_models_returns_empty_when_not_installed():
     with patch("subprocess.run", side_effect=FileNotFoundError):
         models = get_available_ollama_models()
     assert models == []
-
-from langchain_core.messages import HumanMessage, AIMessage
-from openagentic_ai.context.messages import trim_message_history
 
 def test_trim_respects_max_tokens():
     # ~250 chars each ≈ 62 tokens each

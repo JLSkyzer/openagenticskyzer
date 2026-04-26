@@ -53,7 +53,7 @@ def load_global_config() -> dict:
     if not path.exists():
         return DEFAULT_GLOBAL_CONFIG.copy()
     try:
-        return {**DEFAULT_GLOBAL_CONFIG, **json.loads(path.read_text())}
+        return {**DEFAULT_GLOBAL_CONFIG, **json.loads(path.read_text(encoding="utf-8"))}
     except (json.JSONDecodeError, OSError):
         return DEFAULT_GLOBAL_CONFIG.copy()
 
@@ -61,7 +61,7 @@ def load_global_config() -> dict:
 def save_global_config(config: dict) -> None:
     path = _global_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(config, indent=2))
+    path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
 def load_folder_config(folder: str) -> dict:
@@ -69,7 +69,7 @@ def load_folder_config(folder: str) -> dict:
     if not path.exists():
         return DEFAULT_FOLDER_CONFIG.copy()
     try:
-        return {**DEFAULT_FOLDER_CONFIG, **json.loads(path.read_text())}
+        return {**DEFAULT_FOLDER_CONFIG, **json.loads(path.read_text(encoding="utf-8"))}
     except (json.JSONDecodeError, OSError):
         return DEFAULT_FOLDER_CONFIG.copy()
 
@@ -77,7 +77,7 @@ def load_folder_config(folder: str) -> dict:
 def save_folder_config(folder: str, config: dict) -> None:
     path = _folder_config_path(folder)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(config, indent=2))
+    path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
 def load_folder_index() -> list[dict]:
@@ -85,7 +85,10 @@ def load_folder_index() -> list[dict]:
     if not path.exists():
         return []
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            return []
+        return data
     except (json.JSONDecodeError, OSError):
         return []
 
@@ -93,11 +96,11 @@ def load_folder_index() -> list[dict]:
 def add_folder_to_index(folder: str) -> None:
     index = load_folder_index()
     for entry in index:
-        if entry["path"] == folder:
+        if entry.get("path") == folder:
             entry["last_used"] = datetime.now().isoformat()
             break
     else:
         index.insert(0, {"path": folder, "last_used": datetime.now().isoformat()})
     path = _folder_index_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(index, indent=2))
+    path.write_text(json.dumps(index, indent=2), encoding="utf-8")

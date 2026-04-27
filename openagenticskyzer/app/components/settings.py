@@ -129,8 +129,9 @@ def _tab_general(cfg: dict):
             with ui.column().classes("px-4 py-3 gap-2"):
                 ui.label("Token d'accès HuggingFace").classes("text-xs text-gray-300 font-medium")
                 ui.label(
-                    "Accélère les téléchargements de modèles et lève les limites de débit du CDN. "
-                    "Créez-en un (lecture seule) sur huggingface.co → Settings → Access Tokens."
+                    "Lève les limites de débit anonymous du CDN HuggingFace. "
+                    "Aucune permission requise — le token sert uniquement à identifier votre compte. "
+                    "Créez-en un sur huggingface.co → Settings → Access Tokens."
                 ).classes("text-xs text-gray-600")
 
                 with ui.row().classes("items-center gap-2 w-full mt-1"):

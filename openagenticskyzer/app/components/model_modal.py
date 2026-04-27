@@ -219,8 +219,9 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
 
             best = gguf_siblings[0]
             filename = best["rfilename"]
-            # La taille est déjà dans la réponse API — pas de HEAD nécessaire
-            _api_size = int(best.get("size", 0))
+            # Pour les fichiers LFS, lfs.size = taille réelle ; size = taille du pointeur (~130B)
+            _lfs = best.get("lfs") or {}
+            _api_size = int(_lfs.get("size") or best.get("size") or 0)
             dest_dir = pathlib.Path(dest_dir_fn()) / hf_id
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest_path = dest_dir / pathlib.Path(filename).name
@@ -296,6 +297,7 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
                                         f"⬇ {total_dl // 1_048_576}/{_size // 1_048_576}MB {pct}%"
                                     )
 
+                    entry.progress = f"⬇ 0/{_size // 1_048_576}MB 0%"
                     with _futures.ThreadPoolExecutor(max_workers=N) as ex:
                         futs = [ex.submit(_download_part, i) for i in range(N)]
                         for fut in _futures.as_completed(futs):
@@ -361,12 +363,15 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
                         pathlib.Path(tmp_hf).rename(dest_path)
                 except Exception:
                     # Fallback flux unique
-                    entry.progress = f"Connexion… {filename}"
+                    entry.progress = "⬇ Démarrage…"
                     tmp = dest_path.with_suffix(".tmp")
                     with _ur.urlopen(
                         _ur.Request(url, headers=_auth_hdr), timeout=600
                     ) as resp:
-                        _size = int(resp.headers.get("Content-Length", 0))
+                        # Ne pas écraser _size si on l'a déjà (HEAD ou API)
+                        resp_size = int(resp.headers.get("Content-Length", 0))
+                        if resp_size:
+                            _size = resp_size
                         dl = 0
                         with open(tmp, "wb") as f:
                             while True:
@@ -375,11 +380,14 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
                                     break
                                 f.write(buf)
                                 dl += len(buf)
+                                # Toujours mettre à jour, avec ou sans Content-Length
                                 if _size:
                                     pct = min(100, dl * 100 // _size)
                                     entry.progress = (
                                         f"⬇ {dl // 1_048_576}/{_size // 1_048_576}MB {pct}%"
                                     )
+                                else:
+                                    entry.progress = f"⬇ {dl // 1_048_576}MB"
                     tmp.rename(dest_path)
 
             entry.progress = f"✅ {dest_path.name} prêt !"

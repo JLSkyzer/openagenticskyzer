@@ -227,75 +227,127 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
                 entry.done = True
                 return
 
-            # ── Pré-résolution : taille totale + support Range ───────────────
+            # ── Pré-résolution : taille totale + support Range + token ──────────
             url = f"https://huggingface.co/{hf_id}/resolve/main/{filename}"
+            _hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+            _auth_hdr: dict = {"Authorization": f"Bearer {_hf_token}"} if _hf_token else {}
             _size = 0
             _ranges = False
             try:
                 entry.progress = "Connexion…"
-                with _ur.urlopen(_ur.Request(url, method="HEAD"), timeout=15) as _r:
+                with _ur.urlopen(
+                    _ur.Request(url, headers=_auth_hdr, method="HEAD"), timeout=15
+                ) as _r:
                     _size = int(_r.headers.get("Content-Length", 0))
                     _ranges = _r.headers.get("Accept-Ranges", "") == "bytes"
             except Exception:
                 pass
 
-            # ── Tentative hf_transfer (Rust, 5-10× plus rapide) ──────────────
-            try:
-                import os as _os
-                import threading as _th
-                import time as _time
-                _os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-                from huggingface_hub import hf_hub_download as _hf_dl
+            BUF = 2_097_152  # 2 MB
 
-                _stop = _th.Event()
+            # ── Stratégie selon la taille ─────────────────────────────────────
+            # Gros fichier (>500 MB) + Range supporté → 16 connexions parallèles
+            # (sature mieux la bande passante sur les CDN avec throttling/connexion
+            # qu'une seule connexion hf_transfer)
+            if _size > 500 * 1_048_576 and _ranges:
+                N = 16
+                chunk_size = (_size + N - 1) // N
+                tmp_parts = [dest_path.with_suffix(f".part{i}") for i in range(N)]
+                downloaded_parts = [0] * N
 
-                def _poll_hft():
-                    while not _stop.is_set():
-                        try:
-                            best = max(
-                                (p for p in dest_dir.iterdir() if p.is_file()),
-                                key=lambda p: p.stat().st_size,
-                                default=None,
-                            )
-                            if best:
-                                sz = best.stat().st_size
-                                if _size:
-                                    pct = min(99, sz * 100 // _size)
-                                    entry.progress = (
-                                        f"⬇ {sz // 1_048_576}/{_size // 1_048_576}MB {pct}%"
-                                    )
-                                else:
-                                    entry.progress = f"⬇ {sz // 1_048_576}MB"
-                        except Exception:
-                            pass
-                        _time.sleep(0.8)
-
-                _pt = _th.Thread(target=_poll_hft, daemon=True)
-                _pt.start()
-                try:
-                    tmp_hf = _hf_dl(
-                        repo_id=hf_id,
-                        filename=filename,
-                        repo_type="model",
-                        local_dir=str(dest_dir),
-                        local_dir_use_symlinks=False,
+                def _download_part(i: int):
+                    start = i * chunk_size
+                    end = min(start + chunk_size - 1, _size - 1)
+                    req = _ur.Request(
+                        url, headers={**_auth_hdr, "Range": f"bytes={start}-{end}"}
                     )
-                finally:
-                    _stop.set()
-                    _pt.join(timeout=2)
+                    with _ur.urlopen(req, timeout=600) as r:
+                        with open(tmp_parts[i], "wb") as f:
+                            while True:
+                                buf = r.read(BUF)
+                                if not buf:
+                                    break
+                                f.write(buf)
+                                downloaded_parts[i] += len(buf)
+                                total_dl = sum(downloaded_parts)
+                                pct = min(100, total_dl * 100 // _size)
+                                entry.progress = (
+                                    f"⬇ {total_dl // 1_048_576}/{_size // 1_048_576}MB {pct}%"
+                                )
 
-                if pathlib.Path(tmp_hf) != dest_path:
-                    pathlib.Path(tmp_hf).rename(dest_path)
-                entry.progress = f"✅ {dest_path.name} prêt !"
-                entry.done = True
-            except Exception:
-                # ── Fallback : téléchargement parallel Range (16 threads) ───────
-                BUF = 2_097_152  # 2 MB
+                with _futures.ThreadPoolExecutor(max_workers=N) as ex:
+                    futs = [ex.submit(_download_part, i) for i in range(N)]
+                    for fut in _futures.as_completed(futs):
+                        fut.result()
 
-                if _size == 0 or not _ranges:
+                entry.progress = "🔧 Assemblage…"
+                with open(dest_path, "wb") as out:
+                    for part in tmp_parts:
+                        with open(part, "rb") as inp:
+                            while True:
+                                buf = inp.read(BUF)
+                                if not buf:
+                                    break
+                                out.write(buf)
+                        part.unlink()
+                tmp_parts = []
+
+            else:
+                # ── hf_transfer (Rust) pour petits fichiers / Range indisponible ─
+                try:
+                    import os as _os
+                    import threading as _th
+                    import time as _time
+                    _os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+                    from huggingface_hub import hf_hub_download as _hf_dl
+
+                    _stop = _th.Event()
+
+                    def _poll_hft():
+                        while not _stop.is_set():
+                            try:
+                                best = max(
+                                    (p for p in dest_dir.iterdir() if p.is_file()),
+                                    key=lambda p: p.stat().st_size,
+                                    default=None,
+                                )
+                                if best:
+                                    sz = best.stat().st_size
+                                    if _size:
+                                        pct = min(99, sz * 100 // _size)
+                                        entry.progress = (
+                                            f"⬇ {sz // 1_048_576}/{_size // 1_048_576}MB {pct}%"
+                                        )
+                                    else:
+                                        entry.progress = f"⬇ {sz // 1_048_576}MB"
+                            except Exception:
+                                pass
+                            _time.sleep(0.8)
+
+                    _pt = _th.Thread(target=_poll_hft, daemon=True)
+                    _pt.start()
+                    try:
+                        tmp_hf = _hf_dl(
+                            repo_id=hf_id,
+                            filename=filename,
+                            repo_type="model",
+                            local_dir=str(dest_dir),
+                            local_dir_use_symlinks=False,
+                            token=_hf_token or None,
+                        )
+                    finally:
+                        _stop.set()
+                        _pt.join(timeout=2)
+
+                    if pathlib.Path(tmp_hf) != dest_path:
+                        pathlib.Path(tmp_hf).rename(dest_path)
+                except Exception:
+                    # Fallback flux unique
                     entry.progress = f"Connexion… {filename}"
                     tmp = dest_path.with_suffix(".tmp")
-                    with _ur.urlopen(url, timeout=600) as resp:
+                    with _ur.urlopen(
+                        _ur.Request(url, headers=_auth_hdr), timeout=600
+                    ) as resp:
                         _size = int(resp.headers.get("Content-Length", 0))
                         dl = 0
                         with open(tmp, "wb") as f:
@@ -311,49 +363,9 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
                                         f"⬇ {dl // 1_048_576}/{_size // 1_048_576}MB {pct}%"
                                     )
                     tmp.rename(dest_path)
-                else:
-                    N = 16
-                    chunk_size = (_size + N - 1) // N
-                    tmp_parts = [dest_path.with_suffix(f".part{i}") for i in range(N)]
-                    downloaded_parts = [0] * N
 
-                    def _download_part(i: int):
-                        start = i * chunk_size
-                        end = min(start + chunk_size - 1, _size - 1)
-                        req = _ur.Request(url, headers={"Range": f"bytes={start}-{end}"})
-                        with _ur.urlopen(req, timeout=600) as r:
-                            with open(tmp_parts[i], "wb") as f:
-                                while True:
-                                    buf = r.read(BUF)
-                                    if not buf:
-                                        break
-                                    f.write(buf)
-                                    downloaded_parts[i] += len(buf)
-                                    total_dl = sum(downloaded_parts)
-                                    pct = min(100, total_dl * 100 // _size)
-                                    entry.progress = (
-                                        f"⬇ {total_dl // 1_048_576}/{_size // 1_048_576}MB {pct}%"
-                                    )
-
-                    with _futures.ThreadPoolExecutor(max_workers=N) as ex:
-                        futs = [ex.submit(_download_part, i) for i in range(N)]
-                        for fut in _futures.as_completed(futs):
-                            fut.result()
-
-                    entry.progress = "🔧 Assemblage…"
-                    with open(dest_path, "wb") as out:
-                        for part in tmp_parts:
-                            with open(part, "rb") as inp:
-                                while True:
-                                    buf = inp.read(BUF)
-                                    if not buf:
-                                        break
-                                    out.write(buf)
-                            part.unlink()
-                    tmp_parts = []
-
-                entry.progress = f"✅ {dest_path.name} prêt !"
-                entry.done = True
+            entry.progress = f"✅ {dest_path.name} prêt !"
+            entry.done = True
 
             if provider == "lmstudio":
                 try:

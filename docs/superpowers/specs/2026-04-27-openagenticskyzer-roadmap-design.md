@@ -1504,19 +1504,430 @@ labels = {
 
 ---
 
+## Phase 7 — Mémoire & Contexte Intelligent
+
+**Diagnostic du problème actuel :**
+
+La fonction `trigger_compact()` dans `context_bar.py` fait littéralement ceci :
+```python
+state.messages = state.messages[-4:]   # brutallement supprime tout sauf les 4 derniers
+```
+Il n'existe aucune mémoire entre sessions. L'IA repart de zéro à chaque ouverture. La "compaction" = amnésie totale.
+
+---
+
+### 7.1 Compaction LLM réelle (remplace le stub actuel)
+
+**Objectif:** Quand le contexte est plein, au lieu de supprimer les vieux messages, demander à l'IA de les résumer en un bloc condensé qui préserve les décisions et le contexte clés.
+
+**Fichier modifié:** `openagenticskyzer/app/components/context_bar.py`
+
+Remplacer entièrement `trigger_compact()` par :
+
+```python
+async def trigger_compact():
+    """Summarise the conversation via LLM, then replaces old messages with the summary."""
+    from openagenticskyzer.app.state import state
+    from openagenticskyzer.agent import build_agent
+    from openagenticskyzer.app.components.chat import chat_messages
+
+    if len(state.messages) < 6:
+        ui.notify("Pas assez de messages à compresser.", type="warning")
+        return
+
+    # Construit un prompt de résumé
+    history_text = "\n\n".join(
+        f"[{m.role.upper()}]: {m.content[:800]}"
+        for m in state.messages[:-2]   # conserve les 2 derniers intacts
+        if m.role in ("user", "ai")
+    )
+    summary_prompt = f"""Résume cette conversation de manière dense et structurée.
+Conserve : décisions prises, fichiers modifiés, problèmes résolus, contexte technique, préférences exprimées.
+Omets : salutations, répétitions, tentatives ratées.
+Format : liste à puces, max 400 mots.
+
+CONVERSATION :
+{history_text}
+
+RÉSUMÉ :"""
+
+    ui.notify("Compression en cours…", type="info")
+    try:
+        agent = build_agent(mode="ask",
+                            provider=state.current_provider,
+                            model_name=state.current_model)
+        from langchain_core.messages import HumanMessage
+        result = await run.io_bound(
+            agent.invoke,
+            {"messages": [{"role": "user", "content": summary_prompt}]},
+            {"recursion_limit": 10},
+        )
+        summary = ""
+        for msg in reversed(result.get("messages", [])):
+            content = getattr(msg, "content", "")
+            if content and not getattr(msg, "tool_calls", None):
+                summary = content if isinstance(content, str) else str(content)
+                break
+
+        if summary:
+            summary_message = ChatMessage(
+                role="ai",
+                content=f"**[Résumé de contexte compressé]**\n\n{summary}",
+            )
+            # Remplace l'historique : [résumé] + [2 derniers messages]
+            state.messages = [summary_message] + state.messages[-2:]
+            state.context_pct = 15.0
+            state.context_tokens = len(summary) // 4
+            chat_messages.refresh()
+            context_bar.refresh()
+            # Sauvegarde le résumé dans la mémoire projet
+            _append_to_project_memory(summary)
+            ui.notify("Contexte compressé avec résumé IA.", type="positive")
+    except Exception as exc:
+        # Fallback : compaction brutale si le LLM échoue
+        state.messages = state.messages[-6:]
+        state.context_pct = max(0.0, state.context_pct - 50.0)
+        ui.notify(f"Compaction rapide (LLM indisponible : {exc})", type="warning")
+        chat_messages.refresh()
+        context_bar.refresh()
+```
+
+---
+
+### 7.2 Mémoire de projet
+
+**Objectif:** Chaque dossier dispose d'un fichier `.openagent/memory.md` qui persiste les faits importants entre sessions. L'IA peut y lire et y écrire. Injecté automatiquement en début de chaque conversation.
+
+**Nouveau fichier:** `openagenticskyzer/context/project_memory.py`
+
+```python
+"""Mémoire persistante par projet — lire/écrire .openagent/memory.md."""
+from pathlib import Path
+from datetime import datetime
+
+
+def _memory_path(folder: str) -> Path:
+    return Path(folder) / ".openagent" / "memory.md"
+
+
+def load_project_memory(folder: str) -> str:
+    """Retourne le contenu de la mémoire projet, ou '' si vide."""
+    path = _memory_path(folder)
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8").strip()
+
+
+def save_project_memory(folder: str, content: str) -> None:
+    path = _memory_path(folder)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content.strip(), encoding="utf-8")
+
+
+def append_to_project_memory(folder: str, new_facts: str) -> None:
+    """Ajoute des faits à la mémoire existante, avec timestamp."""
+    existing = load_project_memory(folder)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    entry = f"\n\n<!-- {ts} -->\n{new_facts.strip()}"
+    save_project_memory(folder, existing + entry)
+
+
+def clear_project_memory(folder: str) -> None:
+    path = _memory_path(folder)
+    if path.exists():
+        path.unlink()
+```
+
+**Injection en début de session** dans `input_bar.py` — dans `_send_message`, avant de construire `history` :
+
+```python
+from openagenticskyzer.context.project_memory import load_project_memory
+
+# Injecte la mémoire projet comme premier message système
+project_memory = load_project_memory(state.active_folder)
+if project_memory:
+    memory_msg = {
+        "role": "system",
+        "content": (
+            "MÉMOIRE DU PROJET (faits persistants des sessions précédentes) :\n\n"
+            + project_memory
+            + "\n\nUtilise ces informations comme contexte de fond. "
+            "Si l'utilisateur te demande de mémoriser quelque chose, "
+            "appelle l'outil save_memory()."
+        )
+    }
+    history = [memory_msg] + history
+```
+
+**Mise à jour du prompt** (`prompts/prompt.py`) — ajouter la section MÉMOIRE :
+
+```
+MEMORY TOOLS:
+- save_memory(facts) — Persiste des faits importants dans la mémoire du projet (décisions, architecture, préférences)
+- read_memory() — Lit toute la mémoire du projet
+- clear_memory_entry(entry) — Supprime un fait spécifique
+
+WHEN TO USE:
+- L'utilisateur dit "souviens-toi que...", "retiens que...", "note que..." → appelle save_memory()
+- L'utilisateur demande "qu'est-ce que tu sais sur ce projet ?" → appelle read_memory()
+- Après avoir résolu un problème complexe → sauvegarde la solution dans la mémoire
+- Après avoir pris une décision d'architecture → sauvegarde-la
+```
+
+**Nouveau fichier:** `openagenticskyzer/tools/memory_tools.py`
+
+```python
+"""Outils de mémoire persistante pour l'agent."""
+from langchain_core.tools import tool
+
+
+@tool
+def save_memory(facts: str) -> str:
+    """Save important facts, decisions, or preferences to the project's persistent memory.
+    Use when the user says 'remember that...', 'note that...', or after solving a complex problem.
+    Args: facts — The information to persist (plain text, bullet points welcome).
+    Returns: Confirmation."""
+    from openagenticskyzer.app.state import state
+    from openagenticskyzer.context.project_memory import append_to_project_memory
+    if not state.active_folder:
+        return "Aucun dossier actif."
+    append_to_project_memory(state.active_folder, facts)
+    return f"✓ Mémorisé dans {state.active_folder}/.openagent/memory.md"
+
+
+@tool
+def read_memory() -> str:
+    """Read the full project memory (persistent facts from previous sessions).
+    Use when the user asks what you know about this project."""
+    from openagenticskyzer.app.state import state
+    from openagenticskyzer.context.project_memory import load_project_memory
+    if not state.active_folder:
+        return "Aucun dossier actif."
+    mem = load_project_memory(state.active_folder)
+    return mem if mem else "La mémoire du projet est vide."
+
+
+@tool
+def forget_memory(keyword: str) -> str:
+    """Remove lines containing a keyword from the project memory.
+    Use when the user says 'forget that...', 'remove from memory...'"""
+    from openagenticskyzer.app.state import state
+    from openagenticskyzer.context.project_memory import load_project_memory, save_project_memory
+    if not state.active_folder:
+        return "Aucun dossier actif."
+    mem = load_project_memory(state.active_folder)
+    lines = [l for l in mem.splitlines() if keyword.lower() not in l.lower()]
+    save_project_memory(state.active_folder, "\n".join(lines))
+    return f"✓ Entrées contenant '{keyword}' supprimées de la mémoire."
+```
+
+**Intégration dans agent.py:**
+
+```python
+from openagenticskyzer.tools.memory_tools import save_memory, read_memory, forget_memory
+
+_ALL_TOOLS = [
+    # ... outils existants ...
+    save_memory, read_memory, forget_memory,
+]
+```
+
+---
+
+### 7.3 Mémoire utilisateur globale
+
+**Objectif:** En plus de la mémoire par projet, une mémoire globale `~/.openagent/memory.md` qui persiste les préférences et faits sur l'utilisateur (style de code préféré, langue, conventions, outils favoris).
+
+**Ajout dans `project_memory.py`:**
+
+```python
+def _global_memory_path() -> Path:
+    return Path.home() / ".openagent" / "memory.md"
+
+
+def load_global_memory() -> str:
+    path = _global_memory_path()
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8").strip()
+
+
+def append_to_global_memory(facts: str) -> None:
+    existing = load_global_memory()
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    entry = f"\n\n<!-- {ts} -->\n{facts.strip()}"
+    path = _global_memory_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text((existing + entry).strip(), encoding="utf-8")
+```
+
+**Outil enrichi `save_memory`** — accepter un paramètre `scope`:
+
+```python
+@tool
+def save_memory(facts: str, scope: str = "project") -> str:
+    """Save facts to memory. scope='project' (default) or scope='global' (all projects).
+    Use scope='global' for user preferences like coding style, language preference, tools."""
+    if scope == "global":
+        from openagenticskyzer.context.project_memory import append_to_global_memory
+        append_to_global_memory(facts)
+        return "✓ Mémorisé dans la mémoire globale (~/.openagent/memory.md)"
+    # ... project scope comme avant
+```
+
+**Injection en début de session** — injecter les deux niveaux de mémoire :
+
+```python
+global_memory = load_global_memory()
+project_memory = load_project_memory(state.active_folder)
+
+memory_sections = []
+if global_memory:
+    memory_sections.append("PRÉFÉRENCES UTILISATEUR (globales) :\n" + global_memory)
+if project_memory:
+    memory_sections.append("MÉMOIRE DU PROJET (ce dossier) :\n" + project_memory)
+
+if memory_sections:
+    history = [{"role": "system", "content": "\n\n---\n\n".join(memory_sections)}] + history
+```
+
+---
+
+### 7.4 Résumé automatique de fin de session
+
+**Objectif:** À la fermeture de l'app ou quand l'utilisateur change de dossier, générer automatiquement un résumé de la session et l'ajouter à la mémoire projet.
+
+**Déclenchement dans `main.py`** — sur changement de dossier et à la fermeture :
+
+```python
+async def _on_folder_change(new_folder: str):
+    """Avant de changer de dossier, résume la session en cours."""
+    if state.active_folder and len(state.messages) >= 4:
+        await _auto_summarize_session(state.active_folder)
+    # ... suite du changement de dossier ...
+
+async def _auto_summarize_session(folder: str):
+    """Génère un résumé de la session et l'ajoute à la mémoire projet."""
+    from openagenticskyzer.agent import build_agent
+    from openagenticskyzer.context.project_memory import append_to_project_memory
+
+    convo = "\n\n".join(
+        f"[{m.role.upper()}]: {m.content[:600]}"
+        for m in state.messages
+        if m.role in ("user", "ai")
+    )
+    if not convo.strip():
+        return
+
+    prompt = f"""En 3-5 points, résume ce qui a été accompli dans cette session de travail.
+Inclus : tâches complétées, décisions prises, fichiers modifiés importants, problèmes rencontrés.
+Sois concis et factuel. Format : liste à puces.
+
+SESSION :
+{convo[:3000]}
+
+RÉSUMÉ :"""
+
+    try:
+        agent = build_agent(mode="ask",
+                            provider=state.current_provider,
+                            model_name=state.current_model)
+        result = await run.io_bound(
+            agent.invoke,
+            {"messages": [{"role": "user", "content": prompt}]},
+            {"recursion_limit": 5},
+        )
+        for msg in reversed(result.get("messages", [])):
+            content = getattr(msg, "content", "")
+            if content and not getattr(msg, "tool_calls", None):
+                summary = content if isinstance(content, str) else str(content)
+                append_to_project_memory(folder, f"## Session terminée\n{summary}")
+                break
+    except Exception:
+        pass   # Silencieux — ne jamais bloquer le changement de dossier
+```
+
+---
+
+### 7.5 UI Mémoire
+
+**Objectif:** Permettre à l'utilisateur de consulter, modifier et vider la mémoire directement depuis l'interface.
+
+**Nouvel onglet dans settings.py** — "🧠 Mémoire" :
+
+```python
+def _tab_memory():
+    from openagenticskyzer.context.project_memory import (
+        load_project_memory, save_project_memory,
+        load_global_memory, append_to_global_memory,
+    )
+
+    _section("Mémoire du projet")
+    project_mem = load_project_memory(state.active_folder or "")
+    if project_mem:
+        mem_area = ui.textarea(value=project_mem).classes("w-full font-mono text-xs").props("rows=8")
+        with ui.row().classes("gap-2 px-4"):
+            ui.button("Sauvegarder", on_click=lambda: save_project_memory(
+                state.active_folder, mem_area.value
+            )).classes("text-xs text-green-400 border border-green-900 bg-transparent")
+            ui.button("Effacer tout", on_click=lambda: _clear_memory("project")).classes(
+                "text-xs text-red-400 border border-red-900 bg-transparent"
+            )
+    else:
+        ui.label("Mémoire projet vide.").classes("text-xs text-gray-600 px-4")
+
+    _section("Mémoire globale (tous les projets)")
+    global_mem = load_global_memory()
+    if global_mem:
+        gmem_area = ui.textarea(value=global_mem).classes("w-full font-mono text-xs").props("rows=6")
+        ui.button("Sauvegarder", on_click=lambda: ...).classes("text-xs ...")
+    else:
+        ui.label("Mémoire globale vide.").classes("text-xs text-gray-600 px-4")
+```
+
+**Commandes naturelles reconnues** dans `input_bar.py` — détecter les intentions mémoire sans passer par le LLM :
+
+| Message utilisateur | Action déclenchée |
+|---|---|
+| "souviens-toi que..." | `save_memory()` automatique via outil |
+| "qu'est-ce que tu sais ?" | `read_memory()` automatique |
+| "oublie que..." | `forget_memory()` automatique |
+| "résume cette session" | `trigger_compact()` avec LLM |
+
+---
+
+### 7.6 Résumé des fichiers — Phase 7
+
+**Nouveaux fichiers :**
+- `openagenticskyzer/context/project_memory.py` — lecture/écriture `.openagent/memory.md` et `~/.openagent/memory.md`
+- `openagenticskyzer/tools/memory_tools.py` — `save_memory`, `read_memory`, `forget_memory`
+
+**Fichiers modifiés :**
+- `openagenticskyzer/app/components/context_bar.py` — remplacement complet du stub `trigger_compact()` par la version LLM
+- `openagenticskyzer/app/components/input_bar.py` — injection mémoire globale + projet dans le contexte
+- `openagenticskyzer/app/components/settings.py` — nouvel onglet "🧠 Mémoire"
+- `openagenticskyzer/app/main.py` — `_auto_summarize_session()` sur changement de dossier
+- `openagenticskyzer/agent.py` — ajout `save_memory`, `read_memory`, `forget_memory` dans `_ALL_TOOLS`
+- `openagenticskyzer/prompts/prompt.py` — section MEMORY TOOLS
+
+---
+
 ## Dépendances entre phases
 
 ```
 Phase 1 (Streaming)      → Aucune dépendance, commence immédiatement
 Phase 2 (Git + Upload)   → Aucune dépendance, parallèle avec Phase 1
 Phase 3 (Artifacts)      → Phase 1 recommandée (streaming + affichage)
-Phase 4 (RAG + Index)    → Aucune dépendance fonctionnelle
+Phase 7 (Mémoire)        → Phase 1 recommandée (LLM compact utilise astream)
+Phase 4 (RAG + Index)    → Phase 7 synergique (mémoire + index = contexte complet)
 Phase 5 (Plugins + MCP)  → Aucune dépendance
 Phase 6 (Multi-agent)    → Phase 5 recommandée (plugins pour les sous-agents)
 ```
 
-**Ordre recommandé:** 1 → 2 → 3 → 4 → 5 → 6
-**Phases parallélisables:** 1+2 simultanément, 4+5 simultanément
+**Ordre recommandé:** 1 → 2 → 3 → 7 → 4 → 5 → 6
+*(Phase 7 placée tôt car elle améliore immédiatement chaque session de travail)*
+
+**Phases parallélisables:** 1+2 simultanément, 4+5 simultanément, 7 indépendante
 
 ---
 
@@ -1546,6 +1957,8 @@ Phase 6 (Multi-agent)    → Phase 5 recommandée (plugins pour les sous-agents)
 | `tools/git_tools.py` | 2.1 | 14 outils git |
 | `tools/index_tools.py` | 4 | semantic_search + knowledge_search |
 | `tools/delegation.py` | 6.1 | delegate_task |
+| `tools/memory_tools.py` | 7 | save_memory, read_memory, forget_memory |
+| `context/project_memory.py` | 7 | Lecture/écriture mémoire projet + globale |
 | `indexer/__init__.py` | 4 | Module indexation |
 | `indexer/embedder.py` | 4 | Modèle sentence-transformers |
 | `indexer/indexer.py` | 4 | ChromaDB + chunking |

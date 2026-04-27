@@ -208,16 +208,19 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
                 if "Q4_K_S" in u: return 2
                 return 10
 
-            ggufs = sorted(
-                [s["rfilename"] for s in siblings if s["rfilename"].lower().endswith(".gguf")],
-                key=_score,
+            gguf_siblings = sorted(
+                [s for s in siblings if s.get("rfilename", "").lower().endswith(".gguf")],
+                key=lambda s: _score(s["rfilename"]),
             )
-            if not ggufs:
+            if not gguf_siblings:
                 entry.progress = "❌ Aucun fichier GGUF trouvé."
                 entry.error = True
                 return
 
-            filename = ggufs[0]
+            best = gguf_siblings[0]
+            filename = best["rfilename"]
+            # La taille est déjà dans la réponse API — pas de HEAD nécessaire
+            _api_size = int(best.get("size", 0))
             dest_dir = pathlib.Path(dest_dir_fn()) / hf_id
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest_path = dest_dir / pathlib.Path(filename).name
@@ -237,17 +240,20 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
                 os.environ["HF_TOKEN"] = _hf_token
                 os.environ["HUGGING_FACE_HUB_TOKEN"] = _hf_token
             _auth_hdr: dict = {"Authorization": f"Bearer {_hf_token}"} if _hf_token else {}
-            _size = 0
-            _ranges = False
-            try:
-                entry.progress = "Connexion…"
-                with _ur.urlopen(
-                    _ur.Request(url, headers=_auth_hdr, method="HEAD"), timeout=15
-                ) as _r:
-                    _size = int(_r.headers.get("Content-Length", 0))
-                    _ranges = _r.headers.get("Accept-Ranges", "") == "bytes"
-            except Exception:
-                pass
+            # Taille déjà connue via l'API — HuggingFace CDN supporte toujours Range
+            _size = _api_size
+            _ranges = _size > 0
+            if not _size:
+                # Fallback HEAD uniquement si l'API n'a pas renvoyé la taille
+                try:
+                    entry.progress = "Connexion…"
+                    with _ur.urlopen(
+                        _ur.Request(url, headers=_auth_hdr, method="HEAD"), timeout=15
+                    ) as _r:
+                        _size = int(_r.headers.get("Content-Length", 0))
+                        _ranges = _r.headers.get("Accept-Ranges", "") == "bytes"
+                except Exception:
+                    pass
 
             BUF = 2_097_152  # 2 MB
 
@@ -518,13 +524,14 @@ def open_lms_catalog_popup():
                 sinfo = _st["sinfo"]
 
                 if search:
-                    q = search.lower()
-                    models = [
-                        m for m in models
-                        if q in m.name.lower() or q in m.desc.lower()
-                        or q in m.cat.lower() or q in m.params.lower()
-                        or q in m.hf_id.lower()
-                    ]
+                    # Découpe en mots-clés (espaces, tirets, underscores)
+                    # → OR : un seul mot suffit à faire matcher le modèle
+                    _kws = [w for w in re.split(r'[\s\-_]+', search.lower()) if len(w) >= 2]
+                    if _kws:
+                        def _match(m, kws=_kws):
+                            hay = f"{m.name} {m.hf_id} {m.cat} {m.params} {m.desc}".lower()
+                            return any(kw in hay for kw in kws)
+                        models = [m for m in models if _match(m)]
                 elif filt == "Tendances":
                     models = [m for m in models if "tendances" in m.tags]
                 elif filt == "Récent":

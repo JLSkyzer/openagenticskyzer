@@ -5550,6 +5550,1241 @@ def test_task_template_returns_string():
 
 ---
 
+## Correctifs et compléments aux phases existantes
+
+### Correctif Phase 7 — Recherche dans les mémoires
+
+`read_memory` lit tout le fichier en bloc. Inutilisable quand des centaines d'entrées s'accumulent. Ajouter `search_memory(query)` dans `tools/memory_tools.py`.
+
+```python
+@tool
+def search_memory(query: str, scope: str = "both") -> str:
+    """Cherche dans les mémoires par mots-clés.
+    scope: 'project' | 'global' | 'both'
+    Retourne les 5 entrées les plus pertinentes."""
+    from openagenticskyzer.context.project_memory import (
+        load_project_memory, load_global_memory
+    )
+    sources = []
+    if scope in ("project", "both"):
+        pm = load_project_memory(state.active_folder) or ""
+        sources.append(("PROJET", pm))
+    if scope in ("global", "both"):
+        gm = load_global_memory() or ""
+        sources.append(("GLOBAL", gm))
+
+    query_words = set(query.lower().split())
+    results = []
+    for label, content in sources:
+        for line in content.splitlines():
+            if not line.strip():
+                continue
+            overlap = len(query_words & set(line.lower().split()))
+            if overlap > 0:
+                results.append((overlap, label, line.strip()))
+
+    if not results:
+        return f"Aucune mémoire trouvée pour : {query}"
+    results.sort(reverse=True)
+    lines = [f"[{label}] {line}" for _, label, line in results[:5]]
+    return "\n".join(lines)
+```
+
+---
+
+### Correctif Phase 8 — Raccourcis clavier complets
+
+Documenter et implémenter la carte complète des raccourcis. À ajouter dans `app/main.py` via `ui.keyboard()`.
+
+```python
+def _register_shortcuts():
+    kb = ui.keyboard(on_key=_handle_key)
+
+def _handle_key(e):
+    # Ctrl+Entrée → envoyer le message
+    if e.key == "Enter" and e.modifiers.ctrl:
+        _trigger_send()
+    # Ctrl+L → clear conversation
+    elif e.key == "l" and e.modifiers.ctrl:
+        _clear_conversation()
+    # Ctrl+/ → focus input
+    elif e.key == "/" and e.modifiers.ctrl:
+        _focus_input()
+    # Ctrl+Shift+C → copier dernière réponse IA
+    elif e.key == "c" and e.modifiers.ctrl and e.modifiers.shift:
+        _copy_last_response()
+    # Ctrl+Shift+N → nouvelle conversation
+    elif e.key == "n" and e.modifiers.ctrl and e.modifiers.shift:
+        _new_conversation()
+    # Escape → fermer tous les modaux
+    elif e.key == "Escape":
+        _close_modals()
+    # Flèche haut dans input vide → rappeler message précédent
+    elif e.key == "ArrowUp" and _input_is_empty():
+        _recall_previous_message()
+```
+
+**Tableau affiché dans l'aide (bouton `?` en bas de sidebar) :**
+
+| Raccourci | Action |
+|---|---|
+| `Ctrl+K` | Ouvrir la palette de commandes |
+| `Ctrl+Entrée` | Envoyer le message |
+| `Ctrl+L` | Effacer la conversation |
+| `Ctrl+/` | Focus sur la zone de saisie |
+| `Ctrl+Shift+C` | Copier la dernière réponse IA |
+| `Ctrl+Shift+N` | Nouvelle conversation |
+| `↑` (input vide) | Rappeler le message précédent |
+| `Escape` | Fermer les modaux / annuler |
+
+---
+
+### Correctif Phase 13 — Authentification API REST
+
+L'API `POST /chat` était exposée sans auth. Ajouter un middleware clé API configurable dans `app/api_server.py`.
+
+```python
+from fastapi import Security, HTTPException
+from fastapi.security.api_key import APIKeyHeader
+from openagenticskyzer.app.storage import load_global_config
+
+_API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def _check_api_key(key: str | None = Security(_API_KEY_HEADER)):
+    cfg = load_global_config()
+    configured_key = cfg.get("api_server_key", "")
+    if configured_key and key != configured_key:
+        raise HTTPException(status_code=403, detail="Invalid or missing API key")
+
+
+# Appliquer à toutes les routes protégées :
+@app.post("/chat", dependencies=[Depends(_check_api_key)])
+async def chat(request: ChatRequest): ...
+
+@app.get("/models", dependencies=[Depends(_check_api_key)])
+async def list_models(): ...
+```
+
+**Génération de clé dans `app/components/settings.py` :**
+
+```python
+import secrets
+
+async def _generate_api_key():
+    key = secrets.token_urlsafe(32)
+    _save_cfg("api_server_key", key)
+    ui.notify(f"Clé API générée. Copiez-la maintenant.", type="positive")
+    ui.run_javascript(f"navigator.clipboard.writeText('{key}')")
+```
+
+Si `api_server_key` est vide dans la config → API publique (mode dev local). Si défini → toute requête sans la clé reçoit `403`.
+
+---
+
+### Correctif Phase 16 — Mode rapide (désactiver CoT/critique)
+
+CoT + critique = +2-3 LLM calls. Parfois l'utilisateur veut une réponse immédiate. Ajouter un toggle global.
+
+**Nouveau champ `app/state.py` :**
+
+```python
+@dataclass
+class AppState:
+    ...
+    fast_mode: bool = False   # si True : skip reasoning_node et critique_node
+```
+
+**Modification `graph/nodes.py` :**
+
+```python
+def reasoning_node(state: AgentState) -> AgentState:
+    from openagenticskyzer.app.state import state as app_state
+    if app_state.fast_mode:
+        state["reasoning_mode"] = "standard"
+        return state           # skip CoT
+    ...  # logique existante
+
+def critique_node(state: AgentState) -> AgentState:
+    from openagenticskyzer.app.state import state as app_state
+    if app_state.fast_mode:
+        return state           # skip critique
+    ...  # logique existante
+```
+
+**Toggle dans la barre de contexte (`app/components/context_bar.py`) :**
+
+```python
+# Dans context_bar(), aux côtés du badge OPENAGENT.md :
+mode_label = "⚡ Rapide" if state.fast_mode else "🧠 Approfondi"
+mode_color = "text-yellow-400" if state.fast_mode else "text-purple-400"
+ui.button(mode_label, on_click=_toggle_fast_mode).classes(
+    f"text-xs {mode_color} border border-gray-800 bg-transparent px-2 py-0.5"
+).tooltip("⚡ Rapide = réponse directe | 🧠 Approfondi = CoT + auto-critique")
+
+def _toggle_fast_mode():
+    state.fast_mode = not state.fast_mode
+    context_bar.refresh()
+```
+
+---
+
+## Phase 17 — Recherche de Conversations
+
+**Objectif :** Retrouver n'importe quel échange passé par mot-clé, date, ou projet. Indispensable dès qu'on accumule des semaines de sessions.
+
+**Nouveau fichier : `context/conversation_search.py`**
+
+```python
+import json
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from datetime import datetime
+
+from openagenticskyzer.app.storage import SESSIONS_DIR  # dossier des fichiers JSONL sessions
+
+
+@dataclass
+class SearchResult:
+    session_id: str
+    session_date: str
+    project: str | None
+    role: str
+    excerpt: str           # ~200 chars autour du match
+    match_count: int
+
+
+def search_conversations(
+    query: str,
+    project_filter: str | None = None,
+    date_from: str | None = None,   # "YYYY-MM-DD"
+    date_to: str | None = None,
+    max_results: int = 20,
+) -> list[SearchResult]:
+    """Cherche dans tous les fichiers de sessions JSONL."""
+    pattern = re.compile(re.escape(query), re.IGNORECASE)
+    results: list[SearchResult] = []
+
+    sessions_path = Path(SESSIONS_DIR)
+    if not sessions_path.exists():
+        return []
+
+    for session_file in sorted(sessions_path.glob("*.jsonl"), reverse=True):
+        try:
+            lines = session_file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+
+        session_meta = {}
+        messages = []
+        for line in lines:
+            try:
+                obj = json.loads(line)
+                if obj.get("type") == "meta":
+                    session_meta = obj
+                elif obj.get("role") in ("user", "assistant"):
+                    messages.append(obj)
+            except json.JSONDecodeError:
+                continue
+
+        session_date = session_meta.get("date", session_file.stem[:10])
+        project = session_meta.get("project")
+
+        # Filtres date et projet
+        if date_from and session_date < date_from:
+            continue
+        if date_to and session_date > date_to:
+            continue
+        if project_filter and project != project_filter:
+            continue
+
+        for msg in messages:
+            content = msg.get("content", "")
+            matches = list(pattern.finditer(content))
+            if not matches:
+                continue
+            # Extrait autour du premier match
+            m = matches[0]
+            start = max(0, m.start() - 80)
+            end = min(len(content), m.end() + 120)
+            excerpt = ("..." if start > 0 else "") + content[start:end] + ("..." if end < len(content) else "")
+            results.append(SearchResult(
+                session_id=session_file.stem,
+                session_date=session_date,
+                project=project,
+                role=msg["role"],
+                excerpt=excerpt,
+                match_count=len(matches),
+            ))
+            if len(results) >= max_results:
+                return results
+
+    return results
+```
+
+**Nouveau fichier : `app/components/search_panel.py`**
+
+```python
+from nicegui import ui
+from openagenticskyzer.context.conversation_search import search_conversations, SearchResult
+from openagenticskyzer.app.state import state
+
+
+@ui.refreshable
+def search_panel():
+    with ui.column().classes("w-full gap-3 p-4"):
+        ui.label("🔍 Recherche dans les conversations").classes("text-sm text-gray-300 font-semibold")
+
+        with ui.row().classes("w-full gap-2"):
+            query_input = ui.input(placeholder="Mot-clé, phrase, nom de fonction…").classes(
+                "flex-1 bg-gray-900 text-gray-200 px-3 py-2 rounded border border-gray-700"
+            )
+            ui.button("Rechercher", on_click=lambda: _do_search(query_input.value)).classes(
+                "text-xs text-purple-400 border border-purple-800 bg-transparent px-3 py-2"
+            )
+
+        # Filtres
+        with ui.row().classes("gap-3 items-center"):
+            date_from = ui.input(placeholder="De (YYYY-MM-DD)").classes(
+                "w-36 text-xs bg-gray-900 text-gray-400 px-2 py-1 rounded border border-gray-800"
+            )
+            date_to = ui.input(placeholder="À (YYYY-MM-DD)").classes(
+                "w-36 text-xs bg-gray-900 text-gray-400 px-2 py-1 rounded border border-gray-800"
+            )
+
+        results_container = ui.column().classes("w-full gap-2 mt-2")
+
+
+def _do_search(query: str):
+    if not query.strip():
+        return
+    results = search_conversations(query.strip(), max_results=20)
+    # Effacer et reremplir le conteneur de résultats
+    # (utiliser un @ui.refreshable dédié en implémentation réelle)
+    if not results:
+        ui.notify("Aucun résultat trouvé.", type="info")
+        return
+    ui.notify(f"{len(results)} résultat(s) trouvé(s).", type="positive")
+    _render_results(results)
+
+
+def _render_results(results: list[SearchResult]):
+    role_icon = {"user": "👤", "assistant": "🤖"}
+    for r in results:
+        with ui.card().classes("w-full border border-gray-800 bg-gray-950 p-3 cursor-pointer").on(
+            "click", lambda sid=r.session_id: _open_session(sid)
+        ):
+            with ui.row().classes("items-center gap-2 mb-1"):
+                ui.label(f"{role_icon.get(r.role, '•')} {r.role.upper()}").classes("text-xs text-gray-500")
+                ui.label(r.session_date).classes("text-xs text-gray-600")
+                if r.project:
+                    ui.badge(r.project, color="purple").classes("text-xs")
+                ui.label(f"{r.match_count} occurrence(s)").classes("text-xs text-gray-600 ml-auto")
+            ui.label(r.excerpt).classes("text-xs text-gray-300")
+
+
+def _open_session(session_id: str):
+    """Charge la session dans la vue principale."""
+    from openagenticskyzer.app.storage import load_session
+    msgs = load_session(session_id)
+    if msgs:
+        state.messages = msgs
+        from openagenticskyzer.app.components.chat import chat_messages
+        chat_messages.refresh()
+        ui.notify(f"Session {session_id[:8]}… chargée.", type="positive")
+```
+
+**Accès :** Bouton 🔍 dans la sidebar, ou `Ctrl+K` → "Rechercher dans les conversations".
+
+---
+
+## Phase 18 — Auto-analyse de Projet et Génération OPENAGENT.md
+
+**Objectif :** Équivalent du `/init` de Claude Code. L'IA analyse le dépôt actif et génère automatiquement un OPENAGENT.md adapté, avec des règles pertinentes déduites du code.
+
+**Nouveau fichier : `tools/project_analyzer.py`**
+
+```python
+from pathlib import Path
+import json
+
+from langchain_core.tools import tool
+from openagenticskyzer.app.state import state
+
+
+@tool
+def analyze_project_and_init(folder: str = "") -> str:
+    """Analyse le projet actif et génère un OPENAGENT.md adapté.
+    Détecte : langage, framework, conventions, fichiers sensibles, structure."""
+    target = Path(folder or state.active_folder or ".")
+    if not target.exists():
+        return "Dossier introuvable."
+
+    report = _scan_project(target)
+    return json.dumps(report, ensure_ascii=False, indent=2)
+
+
+def _scan_project(root: Path) -> dict:
+    report: dict = {
+        "languages": [],
+        "frameworks": [],
+        "test_runner": None,
+        "package_manager": None,
+        "ci_cd": [],
+        "sensitive_files": [],
+        "entry_points": [],
+        "conventions": [],
+        "structure_summary": "",
+    }
+
+    all_files = [p for p in root.rglob("*")
+                 if p.is_file() and ".git" not in p.parts
+                 and "__pycache__" not in p.parts
+                 and "node_modules" not in p.parts]
+
+    extensions = {p.suffix.lower() for p in all_files if p.suffix}
+
+    # Langages
+    lang_map = {".py": "Python", ".ts": "TypeScript", ".js": "JavaScript",
+                ".rs": "Rust", ".go": "Go", ".java": "Java", ".cs": "C#",
+                ".cpp": "C++", ".rb": "Ruby", ".kt": "Kotlin"}
+    report["languages"] = list({lang_map[ext] for ext in extensions if ext in lang_map})
+
+    # Frameworks
+    fw_indicators = {
+        "package.json": ["React", "Vue", "Next.js"],
+        "pyproject.toml": ["FastAPI", "Django", "Flask"],
+        "requirements.txt": ["FastAPI", "Django", "Flask", "nicegui", "langchain"],
+        "Cargo.toml": ["Rust/Cargo"],
+        "go.mod": ["Go modules"],
+    }
+    for fname, candidates in fw_indicators.items():
+        fpath = root / fname
+        if fpath.exists():
+            content = fpath.read_text(encoding="utf-8", errors="ignore").lower()
+            for fw in candidates:
+                if fw.lower() in content:
+                    report["frameworks"].append(fw)
+
+    # Test runner
+    test_runners = {"pytest.ini": "pytest", "jest.config": "Jest",
+                    "vitest.config": "Vitest", "Cargo.toml": "cargo test"}
+    for fname, runner in test_runners.items():
+        if any(fname in p.name for p in all_files):
+            report["test_runner"] = runner
+            break
+
+    # Package manager
+    pm_files = {"package-lock.json": "npm", "yarn.lock": "yarn",
+                "pnpm-lock.yaml": "pnpm", "poetry.lock": "poetry",
+                "Pipfile": "pipenv", "pyproject.toml": "pip/uv"}
+    for fname, pm in pm_files.items():
+        if (root / fname).exists():
+            report["package_manager"] = pm
+            break
+
+    # CI/CD
+    ci_patterns = {".github/workflows": "GitHub Actions",
+                   ".gitlab-ci.yml": "GitLab CI",
+                   "Jenkinsfile": "Jenkins",
+                   ".circleci": "CircleCI"}
+    for path_pattern, ci in ci_patterns.items():
+        if (root / path_pattern).exists():
+            report["ci_cd"].append(ci)
+
+    # Fichiers sensibles
+    sensitive = [".env", ".env.local", "secrets.json", "credentials.json",
+                 "*.pem", "*.key", "config/prod.json"]
+    for pattern in sensitive:
+        matches = list(root.glob(pattern))
+        report["sensitive_files"].extend(str(m.relative_to(root)) for m in matches)
+
+    # Entry points
+    entry_candidates = ["main.py", "app.py", "index.ts", "index.js", "src/main.rs", "cmd/main.go"]
+    for ep in entry_candidates:
+        if (root / ep).exists():
+            report["entry_points"].append(ep)
+
+    # Résumé structure
+    top_dirs = [d.name for d in root.iterdir() if d.is_dir()
+                and not d.name.startswith(".") and d.name not in ("__pycache__", "node_modules")]
+    report["structure_summary"] = f"{len(all_files)} fichiers, dossiers: {', '.join(top_dirs[:8])}"
+
+    return report
+```
+
+**Générateur OPENAGENT.md — dans `context/project_instructions.py` :**
+
+```python
+def generate_openagent_md(analysis: dict) -> str:
+    """Génère le contenu OPENAGENT.md à partir d'une analyse de projet."""
+    langs = ", ".join(analysis.get("languages", ["inconnu"]))
+    frameworks = ", ".join(analysis.get("frameworks", []))
+    test_runner = analysis.get("test_runner", "inconnu")
+    sensitive = analysis.get("sensitive_files", [])
+    pm = analysis.get("package_manager", "inconnu")
+
+    sensitive_section = ""
+    if sensitive:
+        files_list = "\n".join(f"- Ne jamais commit ni modifier `{f}`" for f in sensitive)
+        sensitive_section = f"\n## Fichiers sensibles\n{files_list}\n"
+
+    fw_section = f"\n## Framework détecté\n- Stack principale : {frameworks}" if frameworks else ""
+
+    test_section = (
+        f"\n## Tests\n"
+        f"- Toujours lancer `{_get_test_cmd(test_runner)}` avant de committer\n"
+        f"- Ne pas committer si des tests échouent\n"
+    ) if test_runner != "inconnu" else ""
+
+    return f"""# Instructions Projet — Auto-généré par OpenAgentic Skyzer
+
+## Contexte technique
+- Langages : {langs}
+- Package manager : {pm}{fw_section}
+
+## Règles générales
+- Respecte les conventions de code existantes dans le projet
+- Ne refactore pas du code non lié à la tâche en cours
+- Demande confirmation avant toute modification de fichier de configuration
+{sensitive_section}{test_section}
+## Commits
+- Messages de commit en français, format : `type: description courte`
+- Types : feat, fix, docs, refactor, test, chore
+- Ne commit jamais directement sur main/master sans confirmation explicite
+
+---
+*Généré automatiquement. Modifie ce fichier pour personnaliser les instructions.*
+"""
+
+
+def _get_test_cmd(runner: str) -> str:
+    cmds = {"pytest": "pytest", "Jest": "npm test", "Vitest": "pnpm test",
+            "cargo test": "cargo test"}
+    return cmds.get(runner, "votre commande de test")
+```
+
+**Workflow complet** — bouton "🔍 Analyser & initialiser" dans la sidebar (Phase 2 modification) :
+
+```python
+async def _auto_init_project():
+    if not state.active_folder:
+        ui.notify("Aucun dossier actif.", type="warning")
+        return
+
+    openagent_path = Path(state.active_folder) / "OPENAGENT.md"
+    if openagent_path.exists():
+        # Demander confirmation avant d'écraser
+        with ui.dialog() as confirm_dialog, ui.card():
+            ui.label("OPENAGENT.md existe déjà. Regénérer ?").classes("text-sm text-gray-300")
+            with ui.row():
+                ui.button("Oui, regénérer", on_click=lambda: (confirm_dialog.close(), _do_init()))
+                ui.button("Annuler", on_click=confirm_dialog.close)
+        confirm_dialog.open()
+    else:
+        await _do_init()
+
+
+async def _do_init():
+    ui.notify("Analyse en cours…", type="info")
+    from openagenticskyzer.tools.project_analyzer import _scan_project
+    from openagenticskyzer.context.project_instructions import generate_openagent_md
+    analysis = _scan_project(Path(state.active_folder))
+    content = generate_openagent_md(analysis)
+    (Path(state.active_folder) / "OPENAGENT.md").write_text(content, encoding="utf-8")
+    ui.notify("✅ OPENAGENT.md généré ! Ouvre-le pour le personnaliser.", type="positive")
+    from openagenticskyzer.app.components.context_bar import context_bar
+    context_bar.refresh()
+```
+
+---
+
+## Phase 19 — Résilience Système : Fallback de Modèles
+
+**Objectif :** Si le modèle principal est indisponible (quota atteint, maintenance, timeout), basculer automatiquement sur un modèle de secours sans interruption de la conversation.
+
+**Nouveau fichier : `agent/resilience.py`**
+
+```python
+import time
+from dataclasses import dataclass, field
+from openagenticskyzer.app.storage import load_global_config
+
+@dataclass
+class ProviderHealth:
+    name: str
+    failures: int = 0
+    last_failure: float = 0.0
+    circuit_open: bool = False
+    FAILURE_THRESHOLD: int = 3
+    RECOVERY_SECONDS: float = 60.0
+
+    def record_failure(self):
+        self.failures += 1
+        self.last_failure = time.time()
+        if self.failures >= self.FAILURE_THRESHOLD:
+            self.circuit_open = True
+
+    def record_success(self):
+        self.failures = 0
+        self.circuit_open = False
+
+    def is_available(self) -> bool:
+        if not self.circuit_open:
+            return True
+        # Auto-récupération après RECOVERY_SECONDS
+        if time.time() - self.last_failure > self.RECOVERY_SECONDS:
+            self.circuit_open = False
+            self.failures = 0
+            return True
+        return False
+
+
+# Registre global des providers (singleton de session)
+_provider_health: dict[str, ProviderHealth] = {}
+
+
+def get_provider_health(provider: str) -> ProviderHealth:
+    if provider not in _provider_health:
+        _provider_health[provider] = ProviderHealth(name=provider)
+    return _provider_health[provider]
+
+
+def get_active_provider_and_model() -> tuple[str, str]:
+    """Retourne le premier provider disponible selon la chaîne de fallback."""
+    cfg = load_global_config()
+    primary_provider = cfg.get("provider", "groq")
+    primary_model = cfg.get("model_name", "llama3-70b-8192")
+
+    fallback_chain: list[dict] = cfg.get("fallback_chain", [])
+    # Construire la chaîne complète : primaire + fallbacks
+    chain = [{"provider": primary_provider, "model": primary_model}] + fallback_chain
+
+    for entry in chain:
+        provider = entry["provider"]
+        health = get_provider_health(provider)
+        if health.is_available():
+            return provider, entry["model"]
+
+    # Dernier recours : retourner le primaire même si en erreur
+    return primary_provider, primary_model
+
+
+def with_fallback(func):
+    """Décorateur : si l'appel LLM échoue, marque le provider et réessaie avec le suivant."""
+    import functools
+
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        cfg = load_global_config()
+        provider = cfg.get("provider", "groq")
+        health = get_provider_health(provider)
+        try:
+            result = await func(*args, **kwargs)
+            health.record_success()
+            return result
+        except Exception as e:
+            error_lower = str(e).lower()
+            if any(x in error_lower for x in ("rate limit", "quota", "timeout",
+                                               "connection", "503", "502", "overloaded")):
+                health.record_failure()
+                from openagenticskyzer.app.state import state
+                next_provider, next_model = get_active_provider_and_model()
+                if next_provider != provider:
+                    from nicegui import ui
+                    ui.notify(
+                        f"⚠️ {provider} indisponible → bascule sur {next_provider}/{next_model}",
+                        type="warning", timeout=5000
+                    )
+                    state.active_provider = next_provider
+                    state.active_model = next_model
+                    return await func(*args, **kwargs)
+            raise
+
+    return wrapper
+```
+
+**Config fallback dans `global_config` :**
+
+```json
+{
+  "provider": "groq",
+  "model_name": "llama3-70b-8192",
+  "fallback_chain": [
+    {"provider": "mistral", "model": "mistral-large-latest"},
+    {"provider": "lm_studio", "model": "auto"},
+    {"provider": "ollama", "model": "llama3:8b"}
+  ]
+}
+```
+
+**UI dans settings — onglet "Modèles" :**
+
+```python
+# Affichage de l'état des providers
+for provider, health in _provider_health.items():
+    status = "🟢 OK" if health.is_available() else f"🔴 Circuit ouvert ({health.failures} erreurs)"
+    with ui.row().classes("items-center gap-3"):
+        ui.label(provider).classes("text-sm text-gray-300 w-24")
+        ui.label(status).classes("text-xs text-gray-500")
+        if not health.is_available():
+            ui.button("Réinitialiser", on_click=lambda p=provider: _reset_provider(p)).classes(
+                "text-xs text-yellow-400 border border-yellow-900 bg-transparent px-2 py-0.5"
+            )
+```
+
+**Badge provider actif dans la barre de titre :**
+
+```python
+# Dans context_bar(), à droite du badge OPENAGENT.md :
+active_prov = getattr(state, "active_provider", cfg.get("provider", "?"))
+ui.label(f"🔌 {active_prov}").classes("text-xs text-gray-600").tooltip(
+    "Provider LLM actif. Change automatiquement si indisponible."
+)
+```
+
+---
+
+## Phase 20 — Budget, Limites de Tokens et Portabilité
+
+### 20.1 — Limites de budget avec alertes
+
+**Nouveau fichier : `app/budget.py`**
+
+```python
+import json
+from datetime import datetime, date
+from pathlib import Path
+from openagenticskyzer.app.storage import load_global_config, save_global_config
+
+BUDGET_STATS_PATH = Path.home() / ".openagent" / "budget_stats.json"
+
+
+def get_budget_stats() -> dict:
+    if BUDGET_STATS_PATH.exists():
+        return json.loads(BUDGET_STATS_PATH.read_text(encoding="utf-8"))
+    return {"daily": {}, "monthly": {}}
+
+
+def record_session_cost(cost_usd: float) -> None:
+    stats = get_budget_stats()
+    today = date.today().isoformat()
+    month = today[:7]
+    stats["daily"][today] = stats["daily"].get(today, 0.0) + cost_usd
+    stats["monthly"][month] = stats["monthly"].get(month, 0.0) + cost_usd
+    BUDGET_STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    BUDGET_STATS_PATH.write_text(json.dumps(stats, indent=2), encoding="utf-8")
+
+
+def check_budget_alerts() -> list[dict]:
+    """Retourne les alertes actives (liste de {level, message})."""
+    cfg = load_global_config()
+    limit_daily = cfg.get("budget_limit_daily_usd", 0.0)
+    limit_monthly = cfg.get("budget_limit_monthly_usd", 0.0)
+    stats = get_budget_stats()
+    today = date.today().isoformat()
+    month = today[:7]
+    spent_today = stats["daily"].get(today, 0.0)
+    spent_month = stats["monthly"].get(month, 0.0)
+
+    alerts = []
+    if limit_daily > 0:
+        pct = spent_today / limit_daily * 100
+        if pct >= 100:
+            alerts.append({"level": "error",
+                           "message": f"Limite journalière atteinte ({spent_today:.3f}$ / {limit_daily:.2f}$)"})
+        elif pct >= 80:
+            alerts.append({"level": "warning",
+                           "message": f"80% de la limite journalière ({spent_today:.3f}$/{limit_daily:.2f}$)"})
+    if limit_monthly > 0:
+        pct = spent_month / limit_monthly * 100
+        if pct >= 100:
+            alerts.append({"level": "error",
+                           "message": f"Limite mensuelle atteinte ({spent_month:.2f}$ / {limit_monthly:.2f}$)"})
+        elif pct >= 80:
+            alerts.append({"level": "warning",
+                           "message": f"80% limite mensuelle ({spent_month:.2f}$/{limit_monthly:.2f}$)"})
+    return alerts
+
+
+def is_budget_exceeded() -> bool:
+    """True si une limite dure est atteinte → bloquer les envois."""
+    return any(a["level"] == "error" for a in check_budget_alerts())
+```
+
+**Intégration dans `input_bar.py` :** vérifier le budget avant chaque envoi.
+
+```python
+async def _send_message(text: str, ...):
+    from openagenticskyzer.app.budget import is_budget_exceeded, check_budget_alerts
+    if is_budget_exceeded():
+        ui.notify("❌ Limite de budget atteinte. Augmente la limite dans les paramètres.",
+                  type="negative", timeout=8000)
+        return
+
+    for alert in check_budget_alerts():
+        if alert["level"] == "warning":
+            ui.notify(f"⚠️ {alert['message']}", type="warning", timeout=5000)
+            break  # une seule notif à la fois
+
+    ...  # envoi normal
+```
+
+**Settings — onglet "Budget" :**
+
+```python
+with ui.column().classes("gap-3"):
+    ui.label("Limites de dépense API").classes("text-sm text-gray-400 font-semibold")
+
+    with ui.row().classes("items-center gap-3"):
+        ui.label("Limite journalière (USD)").classes("text-sm text-gray-400 w-48")
+        daily_input = ui.number(value=cfg.get("budget_limit_daily_usd", 0.0), min=0, step=0.5,
+                                format="%.2f")
+        daily_input.on("blur", lambda: _save_cfg("budget_limit_daily_usd", daily_input.value))
+        ui.label("(0 = illimité)").classes("text-xs text-gray-600")
+
+    with ui.row().classes("items-center gap-3"):
+        ui.label("Limite mensuelle (USD)").classes("text-sm text-gray-400 w-48")
+        monthly_input = ui.number(value=cfg.get("budget_limit_monthly_usd", 0.0), min=0, step=5)
+        monthly_input.on("blur", lambda: _save_cfg("budget_limit_monthly_usd", monthly_input.value))
+```
+
+---
+
+### 20.2 — Import/export de configuration
+
+**Nouveau fichier : `app/portability.py`**
+
+```python
+import zipfile
+import json
+import shutil
+from pathlib import Path
+from datetime import datetime
+
+from openagenticskyzer.app.storage import SESSIONS_DIR, GLOBAL_CONFIG_PATH
+from openagenticskyzer.context.learnings import GLOBAL_LEARNINGS_PATH, COMMUNITY_LEARNINGS_PATH
+from openagenticskyzer.context.project_memory import GLOBAL_MEMORY_PATH
+
+
+EXPORT_MANIFEST = "openagenticskyzer_backup"
+
+
+def export_config(output_path: str | None = None) -> Path:
+    """Exporte toutes les données utilisateur dans un .zip."""
+    if not output_path:
+        ts = datetime.now().strftime("%Y%m%d_%H%M")
+        output_path = str(Path.home() / "Downloads" / f"openagenticskyzer_backup_{ts}.zip")
+
+    files_to_include = [
+        (GLOBAL_CONFIG_PATH, "global_config.json"),
+        (GLOBAL_LEARNINGS_PATH, "learnings.jsonl"),
+        (COMMUNITY_LEARNINGS_PATH, "community_learnings.json"),
+        (GLOBAL_MEMORY_PATH, "global_memory.md"),
+    ]
+
+    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for src, arcname in files_to_include:
+            if Path(src).exists():
+                zf.write(src, arcname)
+        # Sessions JSONL (optionnel — peut être volumineux)
+        sessions = Path(SESSIONS_DIR)
+        if sessions.exists():
+            for session_file in list(sessions.glob("*.jsonl"))[-50:]:  # 50 dernières sessions
+                zf.write(session_file, f"sessions/{session_file.name}")
+        # Manifest
+        manifest = {"version": "1.0", "exported_at": datetime.now().isoformat(),
+                    "app": "openagenticskyzer"}
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+
+    return Path(output_path)
+
+
+def import_config(zip_path: str) -> list[str]:
+    """Importe une configuration depuis un .zip. Retourne la liste des fichiers restaurés."""
+    restored = []
+    file_map = {
+        "global_config.json": GLOBAL_CONFIG_PATH,
+        "learnings.jsonl": GLOBAL_LEARNINGS_PATH,
+        "community_learnings.json": COMMUNITY_LEARNINGS_PATH,
+        "global_memory.md": GLOBAL_MEMORY_PATH,
+    }
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        names = zf.namelist()
+        for arcname, dest in file_map.items():
+            if arcname in names:
+                Path(dest).parent.mkdir(parents=True, exist_ok=True)
+                zf.extract(arcname, str(Path(dest).parent))
+                shutil.move(str(Path(dest).parent / arcname), dest)
+                restored.append(arcname)
+        # Sessions
+        session_files = [n for n in names if n.startswith("sessions/")]
+        sessions_dir = Path(SESSIONS_DIR)
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        for sf in session_files:
+            zf.extract(sf, str(sessions_dir.parent))
+            restored.append(sf)
+
+    return restored
+```
+
+**UI dans settings — onglet "Données" :**
+
+```python
+with ui.column().classes("gap-4"):
+    ui.label("Sauvegarde et portabilité").classes("text-sm text-gray-400 font-semibold")
+
+    with ui.row().classes("gap-3"):
+        async def _export():
+            from openagenticskyzer.app.portability import export_config
+            import webbrowser
+            path = export_config()
+            ui.notify(f"✅ Exporté dans {path}", type="positive")
+
+        ui.button("⬇️ Exporter ma configuration", on_click=_export).classes(
+            "text-xs text-green-400 border border-green-900 bg-transparent px-3 py-2"
+        )
+
+    with ui.row().classes("gap-3 items-center"):
+        upload = ui.upload(label="⬆️ Importer un backup .zip",
+                           on_upload=_on_import, max_file_size=50_000_000).classes("w-64")
+
+    async def _on_import(e):
+        from openagenticskyzer.app.portability import import_config
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+            tmp.write(e.content.read())
+            tmp_path = tmp.name
+        restored = import_config(tmp_path)
+        os.unlink(tmp_path)
+        ui.notify(f"✅ {len(restored)} fichier(s) restauré(s)", type="positive")
+```
+
+---
+
+## Phase 21 — Onboarding, Thèmes et Expérience Utilisateur
+
+### 21.1 — Wizard de premier démarrage
+
+**Nouveau fichier : `app/components/onboarding.py`**
+
+Affiché automatiquement à la première ouverture (détecté par l'absence de `global_config.json` ou champ `onboarding_done: false`).
+
+```python
+from nicegui import ui
+from openagenticskyzer.app.storage import load_global_config, save_global_config
+
+
+def should_show_onboarding() -> bool:
+    cfg = load_global_config()
+    return not cfg.get("onboarding_done", False)
+
+
+@ui.refreshable
+def onboarding_wizard():
+    cfg = load_global_config()
+    step = cfg.get("onboarding_step", 1)
+
+    with ui.dialog(value=True).props("persistent") as dialog:
+        with ui.card().classes("w-[520px] bg-gray-900 border border-gray-700 p-6 gap-4"):
+
+            # Barre de progression
+            with ui.row().classes("w-full gap-1 mb-4"):
+                for i in range(1, 5):
+                    color = "bg-purple-600" if i <= step else "bg-gray-700"
+                    ui.element("div").classes(f"flex-1 h-1 rounded {color}")
+
+            if step == 1:
+                _step_welcome()
+            elif step == 2:
+                _step_model_setup()
+            elif step == 3:
+                _step_first_folder()
+            elif step == 4:
+                _step_done(dialog)
+
+
+def _step_welcome():
+    ui.label("👋 Bienvenue dans OpenAgentic Skyzer").classes("text-lg text-white font-bold")
+    ui.label(
+        "Un assistant IA local et open-source. Avant de commencer, configurons les essentiels."
+    ).classes("text-sm text-gray-400")
+    ui.button("Commencer →", on_click=lambda: _next_step(2)).classes(
+        "text-sm text-purple-400 border border-purple-700 bg-transparent px-4 py-2 mt-4"
+    )
+
+
+def _step_model_setup():
+    ui.label("🤖 Choisir votre modèle IA").classes("text-lg text-white font-bold")
+    ui.label("Sélectionnez un provider et un modèle pour commencer.").classes("text-sm text-gray-400")
+    from openagenticskyzer.app.components.model_modal import render_model_selector_inline
+    render_model_selector_inline()
+    with ui.row().classes("mt-4 gap-3"):
+        ui.button("← Retour", on_click=lambda: _next_step(1)).classes("text-xs text-gray-500")
+        ui.button("Tester la connexion →", on_click=_test_and_next).classes(
+            "text-sm text-purple-400 border border-purple-700 bg-transparent px-4 py-2"
+        )
+
+
+async def _test_and_next():
+    from openagenticskyzer.agent import _get_llm
+    try:
+        llm = _get_llm()
+        await llm.ainvoke("Réponds juste OK")
+        ui.notify("✅ Connexion réussie !", type="positive")
+        _next_step(3)
+    except Exception as e:
+        ui.notify(f"❌ Erreur : {e}", type="negative")
+
+
+def _step_first_folder():
+    ui.label("📁 Ouvrir un projet").classes("text-lg text-white font-bold")
+    ui.label(
+        "Ouvrez un dossier de projet. L'IA analysera le code et créera un OPENAGENT.md adapté."
+    ).classes("text-sm text-gray-400")
+    with ui.row().classes("mt-4 gap-3"):
+        ui.button("← Retour", on_click=lambda: _next_step(2)).classes("text-xs text-gray-500")
+        ui.button("Passer cette étape", on_click=lambda: _next_step(4)).classes(
+            "text-xs text-gray-500"
+        )
+        ui.button("Ouvrir un dossier →", on_click=_open_and_next).classes(
+            "text-sm text-purple-400 border border-purple-700 bg-transparent px-4 py-2"
+        )
+
+
+def _open_and_next():
+    from openagenticskyzer.app.components.sidebar import _pick_folder
+    _pick_folder()
+    _next_step(4)
+
+
+def _step_done(dialog):
+    ui.label("✅ Tout est prêt !").classes("text-lg text-white font-bold")
+    ui.label(
+        "OpenAgentic Skyzer est configuré. Appuyez sur Ctrl+K pour voir toutes les commandes."
+    ).classes("text-sm text-gray-400")
+    with ui.column().classes("mt-3 gap-1 text-xs text-gray-500"):
+        ui.label("• Ctrl+K → palette de commandes")
+        ui.label("• Ctrl+Entrée → envoyer un message")
+        ui.label("• 🔍 Analyser le projet → générer OPENAGENT.md automatiquement")
+    ui.button("Commencer !", on_click=lambda: _finish(dialog)).classes(
+        "text-sm text-purple-400 border border-purple-700 bg-transparent px-4 py-2 mt-4"
+    )
+
+
+def _next_step(step: int):
+    cfg = load_global_config()
+    cfg["onboarding_step"] = step
+    save_global_config(cfg)
+    onboarding_wizard.refresh()
+
+
+def _finish(dialog):
+    cfg = load_global_config()
+    cfg["onboarding_done"] = True
+    save_global_config(cfg)
+    dialog.close()
+```
+
+**Intégration dans `app/main.py` :**
+
+```python
+from openagenticskyzer.app.components.onboarding import should_show_onboarding, onboarding_wizard
+
+@ui.page("/")
+async def index():
+    # ... layout principal ...
+    if should_show_onboarding():
+        onboarding_wizard()
+```
+
+---
+
+### 21.2 — Thèmes UI
+
+**Modification : `app/main.py`**
+
+NiceGUI supporte Tailwind nativement. Ajouter un système de thème minimal : dark (défaut) + light + accent couleur.
+
+```python
+_THEMES = {
+    "dark":  {"bg": "#0a0a0a", "surface": "#111111", "border": "#1e1e1e", "accent": "#7c3aed"},
+    "light": {"bg": "#f8f8f8", "surface": "#ffffff", "border": "#e5e5e5", "accent": "#7c3aed"},
+}
+
+def get_theme_css(theme_name: str = "dark", accent: str = "#7c3aed") -> str:
+    theme = _THEMES.get(theme_name, _THEMES["dark"])
+    theme["accent"] = accent
+    return f"""
+    :root {{
+        --bg: {theme["bg"]};
+        --surface: {theme["surface"]};
+        --border: {theme["border"]};
+        --accent: {theme["accent"]};
+    }}
+    body {{ background: var(--bg) !important; }}
+    .nicegui-content {{ background: var(--bg) !important; }}
+    """
+
+# Dans app/main.py, au démarrage :
+def _apply_theme():
+    cfg = load_global_config()
+    css = get_theme_css(cfg.get("theme", "dark"), cfg.get("accent_color", "#7c3aed"))
+    ui.add_head_html(f"<style>{css}</style>")
+```
+
+**Settings — onglet "Apparence" :**
+
+```python
+with ui.column().classes("gap-4"):
+    ui.label("Thème").classes("text-sm text-gray-400 font-semibold")
+    with ui.row().classes("gap-3"):
+        ui.button("🌙 Dark", on_click=lambda: _save_theme("dark")).classes(
+            "text-xs border border-gray-700 bg-transparent px-3 py-2"
+        )
+        ui.button("☀️ Light", on_click=lambda: _save_theme("light")).classes(
+            "text-xs border border-gray-700 bg-transparent px-3 py-2"
+        )
+
+    ui.label("Couleur d'accent").classes("text-sm text-gray-400 font-semibold mt-2")
+    accent_input = ui.color_input(value=cfg.get("accent_color", "#7c3aed"))
+    accent_input.on("change", lambda e: _save_cfg("accent_color", e.value))
+
+    ui.label("(Redémarrage requis pour appliquer le thème)").classes("text-xs text-gray-600")
+```
+
+---
+
+### Tests Phase 17-21
+
+**Fichier : `tests/test_conversation_search.py`**
+
+```python
+import json, pytest
+from pathlib import Path
+from openagenticskyzer.context.conversation_search import search_conversations
+
+
+def _write_session(tmp_path: Path, session_id: str, messages: list[dict],
+                   date: str = "2026-04-01", project: str | None = None):
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(exist_ok=True)
+    lines = [json.dumps({"type": "meta", "date": date, "project": project})]
+    lines += [json.dumps(m) for m in messages]
+    (sessions_dir / f"{session_id}.jsonl").write_text("\n".join(lines), encoding="utf-8")
+
+
+def test_finds_message_by_keyword(tmp_path, monkeypatch):
+    import openagenticskyzer.context.conversation_search as cs
+    monkeypatch.setattr(cs, "SESSIONS_DIR", str(tmp_path / "sessions"))
+    _write_session(tmp_path, "sess1", [
+        {"role": "user", "content": "Comment utiliser pandas pour lire un CSV ?"},
+        {"role": "assistant", "content": "Utilise pd.read_csv(path)"},
+    ])
+    results = cs.search_conversations("pandas")
+    assert len(results) == 2
+    assert any("pandas" in r.excerpt for r in results)
+
+
+def test_filter_by_date(tmp_path, monkeypatch):
+    import openagenticskyzer.context.conversation_search as cs
+    monkeypatch.setattr(cs, "SESSIONS_DIR", str(tmp_path / "sessions"))
+    _write_session(tmp_path, "old", [{"role": "user", "content": "pandas test"}], date="2025-01-01")
+    _write_session(tmp_path, "new", [{"role": "user", "content": "pandas test"}], date="2026-04-01")
+    results = cs.search_conversations("pandas", date_from="2026-01-01")
+    assert all(r.session_date >= "2026-01-01" for r in results)
+    assert len(results) == 1
+
+
+def test_no_results_when_empty(tmp_path, monkeypatch):
+    import openagenticskyzer.context.conversation_search as cs
+    monkeypatch.setattr(cs, "SESSIONS_DIR", str(tmp_path / "sessions"))
+    results = cs.search_conversations("keyword")
+    assert results == []
+```
+
+**Fichier : `tests/test_budget.py`**
+
+```python
+import pytest
+from unittest.mock import patch
+
+
+def test_no_alert_when_no_limit(tmp_path, monkeypatch):
+    import openagenticskyzer.app.budget as budget
+    monkeypatch.setattr(budget, "BUDGET_STATS_PATH", tmp_path / "budget.json")
+    with patch("openagenticskyzer.app.budget.load_global_config",
+               return_value={"budget_limit_daily_usd": 0.0, "budget_limit_monthly_usd": 0.0}):
+        alerts = budget.check_budget_alerts()
+    assert alerts == []
+
+
+def test_warning_at_80_percent(tmp_path, monkeypatch):
+    import openagenticskyzer.app.budget as budget
+    monkeypatch.setattr(budget, "BUDGET_STATS_PATH", tmp_path / "budget.json")
+    budget.record_session_cost(0.85)
+    with patch("openagenticskyzer.app.budget.load_global_config",
+               return_value={"budget_limit_daily_usd": 1.0, "budget_limit_monthly_usd": 0.0}):
+        alerts = budget.check_budget_alerts()
+    assert any(a["level"] == "warning" for a in alerts)
+
+
+def test_error_at_100_percent(tmp_path, monkeypatch):
+    import openagenticskyzer.app.budget as budget
+    monkeypatch.setattr(budget, "BUDGET_STATS_PATH", tmp_path / "budget.json")
+    budget.record_session_cost(1.5)
+    with patch("openagenticskyzer.app.budget.load_global_config",
+               return_value={"budget_limit_daily_usd": 1.0, "budget_limit_monthly_usd": 0.0}):
+        assert budget.is_budget_exceeded() is True
+```
+
+**Fichier : `tests/test_portability.py`**
+
+```python
+import json, pytest
+from pathlib import Path
+from unittest.mock import patch
+from openagenticskyzer.app.portability import export_config, import_config
+
+
+def test_export_creates_zip(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"provider": "groq"}', encoding="utf-8")
+
+    import openagenticskyzer.app.portability as port
+    monkeypatch.setattr(port, "GLOBAL_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(port, "GLOBAL_LEARNINGS_PATH", tmp_path / "learnings.jsonl")
+    monkeypatch.setattr(port, "COMMUNITY_LEARNINGS_PATH", tmp_path / "community.json")
+    monkeypatch.setattr(port, "GLOBAL_MEMORY_PATH", tmp_path / "memory.md")
+    monkeypatch.setattr(port, "SESSIONS_DIR", str(tmp_path / "sessions"))
+
+    output = export_config(str(tmp_path / "backup.zip"))
+    assert output.exists()
+    assert output.suffix == ".zip"
+
+
+def test_export_import_roundtrip(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"provider": "groq", "theme": "dark"}', encoding="utf-8")
+
+    import openagenticskyzer.app.portability as port
+    monkeypatch.setattr(port, "GLOBAL_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(port, "GLOBAL_LEARNINGS_PATH", tmp_path / "learnings.jsonl")
+    monkeypatch.setattr(port, "COMMUNITY_LEARNINGS_PATH", tmp_path / "community.json")
+    monkeypatch.setattr(port, "GLOBAL_MEMORY_PATH", tmp_path / "memory.md")
+    monkeypatch.setattr(port, "SESSIONS_DIR", str(tmp_path / "sessions"))
+
+    zip_path = export_config(str(tmp_path / "backup.zip"))
+    config_path.write_text("{}", encoding="utf-8")  # Effacer
+    import_config(str(zip_path))
+    restored = json.loads(config_path.read_text(encoding="utf-8"))
+    assert restored.get("provider") == "groq"
+```
+
+---
+
 ## Dépendances entre phases
 
 ```
@@ -5558,6 +6793,11 @@ Phase 2  (Git + Upload/Vision)   → Aucune dépendance, parallèle avec Phase 1
 Phase 14 (OPENAGENT.md)          → Aucune dépendance, peut démarrer immédiatement
 Phase 15 (Apprentissage)         → Phase 14 synergique (instructions + learnings = contexte complet)
 Phase 16 (Intelligence)          → Phase 1 requise (streaming pour afficher CoT progress), Phase 7 synergique
+Phase 17 (Recherche conv.)       → Aucune dépendance, peut démarrer immédiatement
+Phase 18 (Auto-analyse projet)   → Phase 14 requise (génère OPENAGENT.md)
+Phase 19 (Résilience)            → Phase 1 recommandée (UI feedback fallback en streaming)
+Phase 20 (Budget + portabilité)  → Phase 12 requise (coût tracking avant limites budget)
+Phase 21 (Onboarding + thèmes)   → Aucune dépendance, idéalement en Sprint A
 Phase 7  (Mémoire)               → Phase 1 recommandée (LLM compact utilise astream)
 Phase 3  (Artifacts + Prompts)   → Phase 1 recommandée (streaming + affichage)
 Phase 8  (UX Avancée)            → Phase 1 requise (streaming avant édition/tabs)
@@ -5571,13 +6811,13 @@ Phase 6  (Multi-agent)           → Phase 5 recommandée (plugins pour les sous
 Phase 13 (API Server)            → Phase 6 recommandée (API expose le multi-agent)
 ```
 
-**Ordre recommandé:** 14 → 15 → 1 → 2 → 16 → 7 → 3 → 8 → 9 → 4 → 5 → 10 → 11 → 12 → 6 → 13
+**Ordre recommandé:** 21 → 14 → 18 → 15 → 1 → 2 → 19 → 16 → 7 → 3 → 8 → 9 → 17 → 4 → 5 → 10 → 11 → 12 → 20 → 6 → 13
 
 **Phases parallélisables:**
-- Sprint A : 14 + 15 + 1 + 2 (fondations + instructions + apprentissage simultanés)
-- Sprint B : 16 + 7 + 11 (intelligence + mémoire + voice)
+- Sprint A : 21 + 14 + 15 + 1 + 2 + 17 + 19 (fondations, onboarding, instructions, résilience)
+- Sprint B : 18 + 16 + 7 + 11 (auto-analyse, intelligence, mémoire, voice)
 - Sprint C : 3 + 8 + 9 (UX enrichie)
-- Sprint D : 4 + 5 + 12 (intelligence locale + plugins + analytics)
+- Sprint D : 4 + 5 + 12 + 20 (intelligence locale + plugins + analytics + budget)
 - Sprint E : 6 + 10 + 13 (multi-agent + personas + API)
 
 ---
@@ -5666,6 +6906,16 @@ all   = [
 | `graph/debate.py` | 16.7 | Workflow débat multi-agent (Proposer → Critic → Synthesizer) |
 | `prompts/reasoning_templates.py` | 16.4 | Templates spécialisés par type de tâche (debug, archi, code, math…) |
 | `tests/test_complexity.py` | 16 | Tests unitaires détecteur de complexité et templates |
+| `context/conversation_search.py` | 17 | Recherche plein-texte dans les sessions JSONL |
+| `app/components/search_panel.py` | 17 | UI de recherche avec filtres date/projet |
+| `tests/test_conversation_search.py` | 17 | Tests recherche de conversations |
+| `tools/project_analyzer.py` | 18 | Scan de projet (langages, frameworks, CI, fichiers sensibles) |
+| `agent/resilience.py` | 19 | Circuit breaker + chaîne de fallback de providers LLM |
+| `app/budget.py` | 20.1 | Limites de dépense journalière/mensuelle avec alertes |
+| `app/portability.py` | 20.2 | Export/import zip de la configuration complète |
+| `tests/test_budget.py` | 20 | Tests système de budget |
+| `tests/test_portability.py` | 20 | Tests export/import configuration |
+| `app/components/onboarding.py` | 21.1 | Wizard first-run (4 étapes) |
 
 ## Résumé des fichiers modifiés
 
@@ -5677,7 +6927,17 @@ all   = [
 | `app/components/input_bar.py` | 1,2.2,3.2,8.1,11,14.2,15.3,16.4 | +astream_events, +upload button, +prompt picker, +mic button, +injection instructions projet, +injection learnings, +injection template raisonnement |
 | `app/components/sidebar.py` | 2.1,4.2,14.7 | +git status widget, +knowledge section, +notif OPENAGENT.md à l'ouverture dossier |
 | `app/components/context_bar.py` | 7.1,12.1,14.4 | +compaction LLM réelle, +affichage coût session, +badge OPENAGENT.md |
-| `app/components/settings.py` | 1.3,5,7.5,10.1,12.2,12.3,14.5,15.7 | +notifs toggle, +onglets Outils/MCP/Mémoire/Analytics/Audit, +toggle API server, +toggle fallback CLAUDE.md, +bouton créer OPENAGENT.md, +onglet Apprentissages, +bouton sync communauté |
+| `app/components/settings.py` | 1.3,5,7.5,10.1,12.2,12.3,14.5,15.7,19,20,21 | +notifs toggle, +onglets Outils/MCP/Mémoire/Analytics/Audit/Budget/Données/Apparence, +toggle API server, +toggle fallback CLAUDE.md, +bouton créer OPENAGENT.md, +onglet Apprentissages, +budget limits, +export/import, +thèmes |
+| `app/components/sidebar.py` | 2.1,4.2,14.7,18 | +git status widget, +knowledge section, +notif OPENAGENT.md, +bouton Analyser projet |
+| `app/components/context_bar.py` | 7.1,12.1,14.4,16 | +compaction LLM, +coût session, +badge OPENAGENT.md, +toggle Fast/Deep mode, +badge provider actif |
+| `app/main.py` | 1,3,5.3,8,9,21.1,21.2 | +highlight.js/mermaid.js/xterm.js CDN, +panels, +command_palette, +onboarding wizard, +theme CSS injection |
+| `tools/memory_tools.py` | 7,15.4,Correctif-7 | +save_memory, +read_memory, +forget_memory, +read_learnings, +save_discovery, +search_memory |
+| `tools/project_tools.py` | 14.3,15.4,16.6 | +read_project_instructions, +write_to_scratchpad, +read_from_scratchpad, +clear_scratchpad |
+| `context/project_instructions.py` | 14,18 | +load_project_instructions, +generate_openagent_md, +_scan_project intégration |
+| `app/api_server.py` | 13.1,Correctif-13 | +POST /chat, +GET /health, +GET /models, +middleware auth API key |
+| `graph/nodes.py` | 12.3,15.2,16.2,16.3 | +log_action, +capture learning tool error, +reasoning_node, +critique_node |
+| `graph/workflow.py` | 16.2,16.3 | +nœud reasoning, +nœud critique, +boucle correction |
+| `app/components/input_bar.py` | 1,2.2,3.2,8.1,11,14.2,15.3,16.4,20.1 | +astream, +upload, +prompt picker, +mic, +injections contexte, +template raisonnement, +check budget |
 | `app/components/model_modal.py` | 10.1 | +sélecteur de persona |
 | `app/storage.py` | 3.2,5.2,7 | +load_prompts, +save_prompts, +load_mcp_config, +webhook_triggers |
 | `agent.py` | 2.1,4,5,6,7,10,13,14.3,15.4,16.6 | +git_tools, +index_tools, +plugin_tools, +mcp_tools, +delegate_task, +memory_tools, +read_project_instructions, +read_learnings, +save_discovery, +write_to_scratchpad, +read_from_scratchpad, +clear_scratchpad, +persona_id param, +folder_cwd param |
@@ -5691,7 +6951,7 @@ all   = [
 
 ---
 
-## Vue d'ensemble — 16 phases
+## Vue d'ensemble — 21 phases
 
 | # | Phase | Features clés | Impact | Difficulté |
 |---|---|---|---|---|
@@ -5711,8 +6971,13 @@ all   = [
 | 14 | **OPENAGENT.md** | Instructions projet persistantes, fallback CLAUDE.md, badge UI, outil agent | 🔴 Critique | Faible |
 | 15 | **Apprentissage Adaptatif** | Capture erreurs/corrections, injection learnings, partage communautaire GitHub | 🔴 Critique | Moyenne |
 | 16 | **Amplification Intelligence** | CoT LangGraph, self-critique, templates par tâche, scratchpad, débat multi-agent | 🔴 Critique | Élevée |
+| 17 | **Recherche Conversations** | Full-text search toutes sessions, filtres date/projet, click-to-load | 🟠 Important | Faible |
+| 18 | **Auto-analyse Projet** | Scan repo → génération OPENAGENT.md automatique (équivalent `/init`) | 🔴 Critique | Moyenne |
+| 19 | **Résilience Système** | Circuit breaker, chaîne fallback providers, badge provider actif | 🟠 Important | Moyenne |
+| 20 | **Budget & Portabilité** | Limites dépense API + alertes, export/import zip configuration | 🟠 Important | Faible |
+| 21 | **Onboarding & UX Polish** | Wizard first-run, thèmes dark/light, raccourcis clavier complets | 🟠 Important | Faible |
 
-**Total :** ~43 nouveaux fichiers Python, ~16 fichiers modifiés, 4 nouveaux groupes de dépendances optionnelles.
+**Total :** ~54 nouveaux fichiers Python, ~18 fichiers modifiés, 4 nouveaux groupes de dépendances optionnelles.
 
 **Sprints recommandés (parallélisation maximale) :**
 - **Sprint A** (semaine 1-2) : Phase 14 + Phase 15 + Phase 1 + Phase 2

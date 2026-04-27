@@ -4852,6 +4852,704 @@ def test_relevant_learnings_no_injection_when_unrelated(tmp_path):
 
 ---
 
+## Phase 16 — Amplification de l'Intelligence : Raisonnement, Logique et Auto-Correction
+
+**Objectif :** Rendre l'IA significativement plus intelligente, précise et fiable sans fine-tuning — uniquement via l'architecture applicative. L'objectif est de rivaliser avec des services payants comme Claude Code sur les tâches complexes : debug, architecture, logique, génération de code correcte du premier coup.
+
+**Principe :** Un LLM de base répond directement. Un LLM *amplifié* raisonne d'abord, s'auto-critique, adapte son mode de pensée au type de tâche, et sait quand il ne sait pas. Toutes ces couches sont implémentables au niveau applicatif.
+
+---
+
+### 16.1 — Détecteur de complexité et routeur de mode de raisonnement
+
+**Nouveau fichier : `graph/complexity.py`**
+
+Analyse chaque message entrant et assigne un mode de raisonnement **avant** que le LLM soit appelé. Aucun appel LLM requis — pure heuristique Python, < 1ms.
+
+```python
+import re
+from dataclasses import dataclass
+
+@dataclass
+class ComplexityAnalysis:
+    mode: str        # "simple" | "standard" | "complex" | "critical"
+    task_type: str   # "debug" | "architecture" | "code" | "math" | "research" | "general"
+    score: int       # 0-100
+
+_CRITICAL_PATTERNS = re.compile(
+    r"(?:architectur|refactor|migrat|sécuris|vulnérabilit|optimis|concurrent|race.?condition"
+    r"|thread.?safe|deadlock|memory.?leak|design.?pattern|scalab|compares? .+(?:approach|option)"
+    r"|should i use|which (?:is better|approach))",
+    re.IGNORECASE
+)
+
+_COMPLEX_PATTERNS = re.compile(
+    r"(?:implémente|implemente|implement|debug|pourquoi (?:ça|ca|cela)|why (?:does|is|isn)"
+    r"|explique|explain|step.?by.?step|how (?:does|do)|comment (?:ça marche|fonctionne)"
+    r"|résous|résoudre|solve|algorithm|récursiv|recursive|async|await|multithread)",
+    re.IGNORECASE
+)
+
+_SIMPLE_PATTERNS = re.compile(
+    r"^(?:merci|thanks|ok|oui|non|yes|no|bonjour|salut|hello|parfait|super|génial|cool"
+    r"|lgtm|done|fini|c'est bon|ça marche)[\s!.]*$",
+    re.IGNORECASE
+)
+
+_TASK_TYPES = {
+    "debug":        re.compile(r"(?:bug|erreur|error|crash|exception|traceback|fail|broken|ne marche pas|doesn'?t work)", re.IGNORECASE),
+    "architecture": re.compile(r"(?:architectur|design|structure|organis|pattern|scalab|refactor|décompos)", re.IGNORECASE),
+    "math":         re.compile(r"(?:calcul|calculat|formula|equation|probabilit|statistic|mathématique|algorith|complexité|O\()", re.IGNORECASE),
+    "research":     re.compile(r"(?:qu'est.?ce que|what is|explique|explain|compare|différence|difference|meilleur|best practice)", re.IGNORECASE),
+    "code":         re.compile(r"(?:écri[st]|write|implémente|implement|crée|create|génère|generat|code|fonction|function|classe|class)", re.IGNORECASE),
+}
+
+
+def analyze_complexity(message: str, history_len: int = 0) -> ComplexityAnalysis:
+    """Détermine le mode de raisonnement optimal pour ce message."""
+    msg = message.strip()
+
+    # Simple : réponse courte, pas de code, pas de question technique
+    if _SIMPLE_PATTERNS.match(msg) or len(msg) < 30:
+        return ComplexityAnalysis("simple", "general", 10)
+
+    # Score de complexité
+    score = min(len(msg) // 50, 20)                    # longueur du message
+    score += history_len // 5                           # contexte accumulé
+    score += 30 if _CRITICAL_PATTERNS.search(msg) else 0
+    score += 15 if _COMPLEX_PATTERNS.search(msg) else 0
+    score += 10 if msg.count("\n") > 3 else 0           # multi-lignes = complexe
+    score += 10 if re.search(r"```|`[^`]+`", msg) else 0  # contient du code
+
+    # Type de tâche
+    task_type = "general"
+    for name, pattern in _TASK_TYPES.items():
+        if pattern.search(msg):
+            task_type = name
+            break
+
+    # Mode
+    if score >= 60:
+        mode = "critical"
+    elif score >= 35:
+        mode = "complex"
+    elif score >= 15:
+        mode = "standard"
+    else:
+        mode = "simple"
+
+    return ComplexityAnalysis(mode, task_type, score)
+```
+
+---
+
+### 16.2 — Nœud Chain-of-Thought dans LangGraph
+
+**Modification : `graph/nodes.py`** — nouveau nœud `reasoning_node`
+
+Pour les modes `complex` et `critical`, un nœud de raisonnement s'exécute **avant** le nœud LLM principal. Il génère un raisonnement structuré stocké dans le state mais **non visible par l'utilisateur** dans la conversation.
+
+```python
+from openagenticskyzer.graph.complexity import analyze_complexity
+from openagenticskyzer.graph.state import AgentState
+
+_COT_PROMPT = """\
+Tu es en mode raisonnement interne. L'utilisateur NE VERRA PAS ce texte.
+Raisonne méthodiquement avant de répondre.
+
+Message à analyser : {message}
+
+Suis EXACTEMENT cette structure :
+
+## 1. Reformulation
+[Reformule le problème dans tes propres mots en 1-2 phrases]
+
+## 2. Contraintes identifiées
+[Liste les contraintes, requirements, et contexte importants]
+
+## 3. Approches possibles
+[Liste 2-3 approches différentes avec leurs avantages/inconvénients]
+
+## 4. Approche retenue
+[Choix avec justification courte]
+
+## 5. Points d'attention
+[Erreurs classiques à éviter, cas limites, hypothèses à vérifier]
+
+Sois concis. Ce raisonnement guidera ta réponse finale.
+"""
+
+_COT_SYSTEM_INJECT = """\
+[RAISONNEMENT INTERNE — utilise-le pour construire ta réponse]
+{reasoning}
+[FIN RAISONNEMENT]
+
+Maintenant, réponds à l'utilisateur de manière claire et directe,
+en utilisant les insights du raisonnement ci-dessus.
+"""
+
+
+def reasoning_node(state: AgentState) -> AgentState:
+    """Génère un raisonnement CoT interne avant la réponse principale."""
+    last_user_msg = next(
+        (m["content"] for m in reversed(state["messages"]) if m["role"] == "user"), ""
+    )
+    analysis = analyze_complexity(last_user_msg, len(state["messages"]))
+
+    # Stocker l'analyse dans le state
+    state["reasoning_mode"] = analysis.mode
+    state["task_type"] = analysis.task_type
+
+    # CoT uniquement pour complex et critical
+    if analysis.mode not in ("complex", "critical"):
+        return state
+
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from openagenticskyzer.agent import _get_llm
+
+    llm = _get_llm()
+    cot_response = llm.invoke([
+        SystemMessage(content="Tu es un assistant expert en raisonnement structuré."),
+        HumanMessage(content=_COT_PROMPT.format(message=last_user_msg))
+    ])
+    reasoning = cot_response.content
+
+    state["reasoning_scratchpad"] = reasoning
+
+    # Injecter le raisonnement comme contexte système pour le prochain nœud
+    state["messages"] = list(state["messages"]) + [{
+        "role": "system",
+        "content": _COT_SYSTEM_INJECT.format(reasoning=reasoning)
+    }]
+
+    return state
+```
+
+**Modification : `graph/workflow.py`** — ajout du nœud dans le graphe
+
+```python
+from openagenticskyzer.graph.nodes import reasoning_node, llm_node, tool_node
+
+def build_graph():
+    builder = StateGraph(AgentState)
+
+    builder.add_node("reasoning", reasoning_node)   # ← nouveau
+    builder.add_node("llm", llm_node)
+    builder.add_node("tools", tool_node)
+
+    builder.set_entry_point("reasoning")            # ← commence par reasoning
+    builder.add_edge("reasoning", "llm")
+    builder.add_conditional_edges("llm", _should_use_tools,
+                                  {"tools": "tools", END: END})
+    builder.add_edge("tools", "llm")
+
+    return builder.compile()
+```
+
+---
+
+### 16.3 — Boucle de self-critique et auto-correction
+
+**Modification : `graph/nodes.py`** — nouveau nœud `critique_node`
+
+Pour le mode `critical`, après la réponse principale, un nœud de critique analyse la réponse et déclenche une correction si nécessaire.
+
+```python
+_CRITIQUE_PROMPT = """\
+Analyse cette réponse que tu viens de produire et détecte les problèmes.
+
+Question originale : {question}
+
+Ta réponse : {response}
+
+Réponds UNIQUEMENT avec ce JSON :
+{{
+  "has_issues": true/false,
+  "issues": ["problème 1", "problème 2"],
+  "confidence": 1-5,
+  "corrections_needed": ["correction 1", "correction 2"]
+}}
+
+Cherche : bugs logiques, cas limites oubliés, hypothèses incorrectes,
+code qui ne compile pas, réponse incomplète, hallucinations potentielles.
+Sois strict mais juste. confidence=5 = tu es certain que c'est correct.
+"""
+
+_MAX_CRITIQUE_ITERATIONS = 2
+
+
+def critique_node(state: AgentState) -> AgentState:
+    """Auto-critique et correction de la réponse pour les tâches critiques."""
+    if state.get("reasoning_mode") != "critical":
+        return state
+    if state.get("critique_iterations", 0) >= _MAX_CRITIQUE_ITERATIONS:
+        return state
+
+    last_ai_msg = next(
+        (m["content"] for m in reversed(state["messages"]) if m["role"] == "assistant"), ""
+    )
+    last_user_msg = next(
+        (m["content"] for m in reversed(state["messages"]) if m["role"] == "user"), ""
+    )
+
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from openagenticskyzer.agent import _get_llm
+    import json
+
+    llm = _get_llm()
+    critique_response = llm.invoke([
+        SystemMessage(content="Tu es un expert en revue de code et logique. Sois précis et strict."),
+        HumanMessage(content=_CRITIQUE_PROMPT.format(
+            question=last_user_msg[:500],
+            response=last_ai_msg[:2000]
+        ))
+    ])
+
+    try:
+        critique = json.loads(critique_response.content)
+    except json.JSONDecodeError:
+        # Si le JSON est mal formé, on skip la critique
+        return state
+
+    state["confidence_score"] = critique.get("confidence", 3)
+    state["critique_result"] = str(critique.get("issues", []))
+
+    # Si problèmes détectés → injecter corrections et relancer le nœud LLM
+    if critique.get("has_issues") and critique.get("corrections_needed"):
+        corrections = "\n".join(f"- {c}" for c in critique["corrections_needed"])
+        state["messages"] = list(state["messages"]) + [{
+            "role": "system",
+            "content": (
+                f"[AUTO-CORRECTION] Ta réponse précédente avait ces problèmes :\n{corrections}\n"
+                "Produis une version corrigée qui résout ces problèmes."
+            )
+        }]
+        state["critique_iterations"] = state.get("critique_iterations", 0) + 1
+        state["needs_correction"] = True
+    else:
+        state["needs_correction"] = False
+
+    return state
+```
+
+**Mise à jour du graphe avec la boucle de correction :**
+
+```python
+def _should_recritique(state: AgentState) -> str:
+    if state.get("needs_correction") and state.get("critique_iterations", 0) < _MAX_CRITIQUE_ITERATIONS:
+        return "llm"   # relancer le LLM avec les corrections
+    return END
+
+
+builder.add_node("critique", critique_node)
+builder.add_conditional_edges("llm", _should_use_tools, {
+    "tools": "tools",
+    "critique": "critique",  # après réponse finale → critique
+    END: END
+})
+builder.add_conditional_edges("critique", _should_recritique, {
+    "llm": "llm",
+    END: END
+})
+```
+
+---
+
+### 16.4 — Templates de raisonnement spécialisés par type de tâche
+
+**Nouveau fichier : `prompts/reasoning_templates.py`**
+
+Chaque type de tâche injecte des instructions de raisonnement supplémentaires adaptées au contexte.
+
+```python
+REASONING_TEMPLATES: dict[str, str] = {
+
+    "debug": """
+## MODE DEBUG
+- Commence TOUJOURS par identifier la cause racine, pas le symptôme
+- Vérifie : variables nulles, indices hors limites, problèmes d'encodage, race conditions
+- Propose un fix minimal qui touche le moins de code possible
+- Inclus un test qui aurait attrapé ce bug
+""",
+
+    "architecture": """
+## MODE ARCHITECTURE
+- Considère les trade-offs : performance vs lisibilité, flexibilité vs complexité
+- Applique YAGNI : n'ajoute pas ce dont on n'a pas besoin maintenant
+- Préfère la composition à l'héritage
+- Pense à la testabilité : est-ce facilement testable unitairement ?
+- Identifie les points de couplage fort et propose des interfaces propres
+""",
+
+    "code": """
+## MODE GÉNÉRATION DE CODE
+- Identifie les cas limites AVANT d'écrire le code
+- Pense aux types de données en entrée : null, vide, très grand, négatif
+- Le code doit être correct avant d'être optimisé
+- Inclus la gestion d'erreurs pour les opérations I/O et réseau
+- Nomme les variables de manière descriptive, évite les abréviations
+""",
+
+    "math": """
+## MODE MATHÉMATIQUE / LOGIQUE
+- Travaille étape par étape, vérifie chaque étape avant de continuer
+- Précise les unités et les domaines de définition
+- Vérifie le résultat avec un cas simple connu
+- Si le problème est complexe, décompose-le en sous-problèmes
+- Indique les hypothèses que tu fais
+""",
+
+    "research": """
+## MODE RECHERCHE / EXPLICATION
+- Distingue ce que tu sais avec certitude de ce que tu penses probable
+- Donne des exemples concrets pour chaque concept abstrait
+- Structure : concept → explication simple → exemple → cas d'usage réel
+- Si tu n'es pas certain d'une information récente, dis-le explicitement
+- Compare les alternatives avec leurs avantages/inconvénients réels
+""",
+
+    "general": """
+## INSTRUCTIONS GÉNÉRALES
+- Réponds de manière directe et concise
+- Si la question est ambiguë, indique l'interprétation que tu choisis
+- Préfère la précision à l'exhaustivité
+""",
+}
+
+
+def get_task_template(task_type: str) -> str:
+    return REASONING_TEMPLATES.get(task_type, REASONING_TEMPLATES["general"])
+```
+
+**Injection dans `_send_message()` :**
+
+```python
+from openagenticskyzer.graph.complexity import analyze_complexity
+from openagenticskyzer.prompts.reasoning_templates import get_task_template
+
+async def _send_message(text: str, ...):
+    analysis = analyze_complexity(text, len(state.messages))
+
+    # Injection template de raisonnement (uniquement si pas simple)
+    if analysis.mode != "simple":
+        template = get_task_template(analysis.task_type)
+        messages = [{"role": "system", "content": template}] + messages
+```
+
+---
+
+### 16.5 — Calibration de confiance et déclenchement de fallback
+
+**Modification : `app/components/input_bar.py`**
+
+Quand `confidence_score` est bas après la réponse (disponible via `state`), afficher un avertissement discret sous la réponse et proposer une vérification.
+
+```python
+# Dans le rendu de chat (chat.py), après affichage de la réponse :
+if state.confidence_score is not None and state.confidence_score <= 2:
+    with ui.row().classes("items-center gap-2 mt-1 px-2"):
+        ui.icon("warning", size="xs").classes("text-yellow-500")
+        ui.label(
+            "Confiance faible sur cette réponse — je recommande de vérifier."
+        ).classes("text-xs text-yellow-500")
+        ui.button("🔍 Vérifier via recherche web",
+                  on_click=lambda: _trigger_verification_search(state.messages[-2]["content"])
+                  ).classes("text-xs text-yellow-600 border border-yellow-900 bg-transparent px-2 py-0.5")
+```
+
+**Calibration automatique dans le nœud critique :**
+
+Le score de confiance est extrait de la critique JSON (champ `"confidence": 1-5`).
+
+- `5` : réponse certaine, aucune indication
+- `3-4` : réponse probable, aucune indication
+- `2` : avertissement jaune + bouton "Vérifier"
+- `1` : avertissement rouge + déclenchement automatique d'une web search de vérification
+
+```python
+# Dans critique_node, après extraction du JSON :
+if critique.get("confidence", 3) == 1:
+    # Déclenche une recherche de vérification automatique
+    state["auto_verify_query"] = last_user_msg[:200]
+```
+
+**Nouveaux champs dans `app/state.py` :**
+
+```python
+@dataclass
+class AppState:
+    ...
+    reasoning_mode: str = "standard"
+    task_type: str = "general"
+    confidence_score: int | None = None
+    reasoning_scratchpad: str = ""
+    critique_result: str = ""
+    auto_verify_query: str | None = None
+```
+
+---
+
+### 16.6 — Working memory : scratchpad de session
+
+**Modification : `app/state.py`**
+
+```python
+@dataclass
+class AppState:
+    ...
+    working_memory: dict[str, str] = field(default_factory=dict)
+```
+
+**Modification : `tools/project_tools.py`**
+
+```python
+from openagenticskyzer.app.state import state
+
+@tool
+def write_to_scratchpad(key: str, value: str) -> str:
+    """Stocke une information dans le scratchpad de session.
+    Utile pour mémoriser des résultats intermédiaires, des plans, des faits découverts.
+    key: identifiant (ex: 'plan', 'bug_analysis', 'current_approach')
+    value: contenu à mémoriser"""
+    state.working_memory[key] = value
+    return f"Mémorisé sous '{key}' ({len(value)} chars)"
+
+
+@tool
+def read_from_scratchpad(key: str = "") -> str:
+    """Lit le scratchpad de session.
+    Si key est vide, retourne toutes les entrées.
+    Si key est spécifié, retourne uniquement cette entrée."""
+    if not state.working_memory:
+        return "Scratchpad vide."
+    if key:
+        return state.working_memory.get(key, f"Clé '{key}' introuvable.")
+    lines = [f"[{k}]\n{v}" for k, v in state.working_memory.items()]
+    return "\n\n---\n\n".join(lines)
+
+
+@tool
+def clear_scratchpad(key: str = "") -> str:
+    """Efface le scratchpad (tout ou une clé spécifique)."""
+    if key:
+        state.working_memory.pop(key, None)
+        return f"Clé '{key}' effacée."
+    state.working_memory.clear()
+    return "Scratchpad effacé."
+```
+
+**Injection dans le prompt :** Le scratchpad est injecté uniquement si non-vide.
+
+```python
+# Dans _send_message(), après les autres injections :
+if state.working_memory:
+    mem_lines = "\n".join(f"[{k}]: {v[:200]}" for k, v in state.working_memory.items())
+    messages = [{"role": "system",
+                 "content": f"## SCRATCHPAD SESSION\n{mem_lines}"}] + messages
+```
+
+**Mise à jour de `prompts/prompt.py` :**
+
+```python
+SCRATCHPAD_SECTION = """
+## WORKING MEMORY (SCRATCHPAD)
+Tu as accès à un scratchpad de session pour stocker des informations intermédiaires.
+Utilise-le pour :
+- Mémoriser ton plan avant de l'exécuter (`write_to_scratchpad('plan', '...')`)
+- Stocker des résultats d'analyse (`write_to_scratchpad('bug_analysis', '...')`)
+- Garder trace de l'avancement d'une tâche longue
+- Partager du contexte entre les étapes d'un workflow complexe
+Le scratchpad est réinitialisé à la fin de chaque session.
+"""
+```
+
+---
+
+### 16.7 — Multi-agent debate pour questions critiques
+
+**Nouveau fichier : `graph/debate.py`**
+
+Trois agents spécialisés débattent d'une question critique et produisent une synthèse.
+
+```python
+"""
+Workflow de débat multi-agent :
+  Proposer → génère approche A avec justification
+  Critic   → argue contre A, propose approche B
+  Synthesizer → lit les deux, produit la meilleure réponse
+"""
+from langchain_core.messages import HumanMessage, SystemMessage
+from openagenticskyzer.agent import _get_llm
+
+_PROPOSER_PROMPT = """\
+Tu es un expert qui propose une solution à ce problème.
+Explique clairement ton approche et justifie chaque choix.
+Problème : {question}
+"""
+
+_CRITIC_PROMPT = """\
+Tu es un expert critique rigoureux. Analyse cette proposition et identifie ses failles.
+Puis propose une alternative meilleure si elle existe.
+Problème original : {question}
+Proposition : {proposal}
+"""
+
+_SYNTHESIZER_PROMPT = """\
+Tu es un arbitre expert. Lis ces deux perspectives et produis la meilleure réponse possible,
+en prenant le meilleur de chaque approche et en évitant leurs faiblesses.
+Problème : {question}
+Approche A : {proposal}
+Critique et approche B : {critique}
+Produis la réponse finale à destination de l'utilisateur.
+"""
+
+
+async def run_debate(question: str) -> str:
+    """Lance un débat multi-agent et retourne la synthèse."""
+    llm = _get_llm()
+
+    # Étape 1 : Proposer
+    proposal_resp = await llm.ainvoke([
+        SystemMessage(content="Tu es un expert en ingénierie logicielle."),
+        HumanMessage(content=_PROPOSER_PROMPT.format(question=question))
+    ])
+    proposal = proposal_resp.content
+
+    # Étape 2 : Critic
+    critique_resp = await llm.ainvoke([
+        SystemMessage(content="Tu es un expert critique rigoureux. Ton rôle est de trouver les failles."),
+        HumanMessage(content=_CRITIC_PROMPT.format(question=question, proposal=proposal))
+    ])
+    critique = critique_resp.content
+
+    # Étape 3 : Synthèse
+    synthesis_resp = await llm.ainvoke([
+        SystemMessage(content="Tu es un arbitre expert. Produis la meilleure réponse possible."),
+        HumanMessage(content=_SYNTHESIZER_PROMPT.format(
+            question=question, proposal=proposal, critique=critique
+        ))
+    ])
+    return synthesis_resp.content
+```
+
+**Déclenchement :** Bouton "🧠 Débat approfondi" dans le chat (visible uniquement pour les messages longs / mode critical), ou commande `/debate` dans la palette Ctrl+K.
+
+```python
+# Dans chat.py, après chaque message IA en mode critical :
+if state.reasoning_mode == "critical":
+    ui.button("🧠 Approfondir par débat", on_click=lambda: _trigger_debate()).classes(
+        "text-xs text-purple-400 border border-purple-900 bg-transparent px-2 py-0.5 mt-1"
+    )
+
+async def _trigger_debate():
+    last_user_msg = next(
+        (m["content"] for m in reversed(state.messages) if m["role"] == "user"), ""
+    )
+    ui.notify("Débat multi-agent en cours... (3 LLM calls)", type="info", timeout=5000)
+    synthesis = await run_debate(last_user_msg)
+    # Ajoute la synthèse comme nouveau message assistant
+    state.messages.append({"role": "assistant", "content": f"**[Synthèse du débat]**\n\n{synthesis}"})
+    chat_messages.refresh()
+```
+
+---
+
+### Ordre d'injection dans le prompt — vue complète Phase 16
+
+```
+[system] INSTRUCTIONS PROJET       (Phase 14 — OPENAGENT.md)
+[system] TEMPLATE RAISONNEMENT      (Phase 16.4 — selon task_type)
+[system] LEÇONS APPRISES            (Phase 15 — learnings locaux)
+[system] CONNAISSANCES COMMUNAUTAIRES (Phase 15 — community)
+[system] MÉMOIRE PROJET             (Phase 7)
+[system] MÉMOIRE GLOBALE            (Phase 7)
+[system] SCRATCHPAD SESSION         (Phase 16.6 — si non-vide)
+[system] RAISONNEMENT CoT           (Phase 16.2 — si mode complex/critical)
+[user/assistant] historique
+[user] message courant
+```
+
+---
+
+### Mise à jour `graph/state.py`
+
+```python
+from typing import TypedDict, Annotated
+from langgraph.graph import add_messages
+
+class AgentState(TypedDict):
+    messages: Annotated[list, add_messages]
+    # Phase 16 — nouveaux champs
+    reasoning_mode: str          # "simple" | "standard" | "complex" | "critical"
+    task_type: str               # "debug" | "architecture" | "code" | "math" | "research" | "general"
+    reasoning_scratchpad: str    # CoT interne, non affiché à l'utilisateur
+    critique_result: str         # résultat de l'auto-critique
+    critique_iterations: int     # compteur pour éviter les boucles infinies
+    needs_correction: bool       # flag pour boucle de correction
+    confidence_score: int        # 1-5, extrait de la critique JSON
+    auto_verify_query: str | None  # déclenche une web search de vérification si confidence=1
+```
+
+---
+
+### Tests Phase 16
+
+**Fichier : `tests/test_complexity.py`**
+
+```python
+import pytest
+from openagenticskyzer.graph.complexity import analyze_complexity
+
+
+def test_simple_greeting():
+    result = analyze_complexity("merci!")
+    assert result.mode == "simple"
+
+
+def test_complex_debug_request():
+    result = analyze_complexity(
+        "Mon code Python plante avec une KeyError sur la ligne 42, "
+        "j'ai vérifié le dict mais je comprends pas pourquoi"
+    )
+    assert result.mode in ("complex", "critical")
+    assert result.task_type == "debug"
+
+
+def test_critical_architecture_request():
+    result = analyze_complexity(
+        "Je dois choisir entre une architecture microservices et un monolithe modulaire "
+        "pour mon application, quels sont les trade-offs ?"
+    )
+    assert result.mode == "critical"
+    assert result.task_type == "architecture"
+
+
+def test_code_task_type():
+    result = analyze_complexity("Écris une fonction Python qui trie une liste de dicts par clé")
+    assert result.task_type == "code"
+
+
+def test_math_task_type():
+    result = analyze_complexity("Calcule la complexité O() de cet algorithme de tri")
+    assert result.task_type == "math"
+
+
+def test_score_increases_with_length():
+    short = analyze_complexity("debug this")
+    long = analyze_complexity("debug this " * 20 + " avec des détails supplémentaires")
+    assert long.score > short.score
+
+
+def test_task_template_returns_string():
+    from openagenticskyzer.prompts.reasoning_templates import get_task_template
+    for task_type in ("debug", "architecture", "code", "math", "research", "general"):
+        template = get_task_template(task_type)
+        assert isinstance(template, str)
+        assert len(template) > 10
+```
+
+---
+
 ## Dépendances entre phases
 
 ```
@@ -4859,6 +5557,7 @@ Phase 1  (Streaming + UX)        → Aucune dépendance, commence immédiatement
 Phase 2  (Git + Upload/Vision)   → Aucune dépendance, parallèle avec Phase 1
 Phase 14 (OPENAGENT.md)          → Aucune dépendance, peut démarrer immédiatement
 Phase 15 (Apprentissage)         → Phase 14 synergique (instructions + learnings = contexte complet)
+Phase 16 (Intelligence)          → Phase 1 requise (streaming pour afficher CoT progress), Phase 7 synergique
 Phase 7  (Mémoire)               → Phase 1 recommandée (LLM compact utilise astream)
 Phase 3  (Artifacts + Prompts)   → Phase 1 recommandée (streaming + affichage)
 Phase 8  (UX Avancée)            → Phase 1 requise (streaming avant édition/tabs)
@@ -4872,13 +5571,13 @@ Phase 6  (Multi-agent)           → Phase 5 recommandée (plugins pour les sous
 Phase 13 (API Server)            → Phase 6 recommandée (API expose le multi-agent)
 ```
 
-**Ordre recommandé:** 14 → 15 → 1 → 2 → 7 → 3 → 8 → 9 → 4 → 5 → 10 → 11 → 12 → 6 → 13
+**Ordre recommandé:** 14 → 15 → 1 → 2 → 16 → 7 → 3 → 8 → 9 → 4 → 5 → 10 → 11 → 12 → 6 → 13
 
 **Phases parallélisables:**
 - Sprint A : 14 + 15 + 1 + 2 (fondations + instructions + apprentissage simultanés)
-- Sprint B : 7 + 11 (mémoire + voice, indépendantes)
+- Sprint B : 16 + 7 + 11 (intelligence + mémoire + voice)
 - Sprint C : 3 + 8 + 9 (UX enrichie)
-- Sprint D : 4 + 5 + 12 (intelligence + plugins + analytics)
+- Sprint D : 4 + 5 + 12 (intelligence locale + plugins + analytics)
 - Sprint E : 6 + 10 + 13 (multi-agent + personas + API)
 
 ---
@@ -4963,30 +5662,36 @@ all   = [
 | `context/learnings.py` | 15 | Capture, stockage, injection et anonymisation des apprentissages |
 | `app/components/learnings_panel.py` | 15.5 | UI gestion et confirmation des apprentissages |
 | `tests/test_learnings.py` | 15 | Tests unitaires système d'apprentissage adaptatif |
+| `graph/complexity.py` | 16.1 | Détecteur de complexité et routeur de mode de raisonnement |
+| `graph/debate.py` | 16.7 | Workflow débat multi-agent (Proposer → Critic → Synthesizer) |
+| `prompts/reasoning_templates.py` | 16.4 | Templates spécialisés par type de tâche (debug, archi, code, math…) |
+| `tests/test_complexity.py` | 16 | Tests unitaires détecteur de complexité et templates |
 
 ## Résumé des fichiers modifiés
 
 | Fichier | Phases | Modifications clés |
 |---|---|---|
-| `app/state.py` | 1,2,4,6,7,8,9,10,11,12,15 | +streaming_content, +is_streaming, +attached_files, +index_status, +sub_agents, +branches, +tabs, +compare_mode, +compare_results, +preview_url, +show_terminal, +show_preview, +session_cost_usd, +current_persona_id, +pending_learnings |
+| `app/state.py` | 1,2,4,6,7,8,9,10,11,12,15,16 | +streaming_content, +is_streaming, +attached_files, +index_status, +sub_agents, +branches, +tabs, +compare_mode, +compare_results, +preview_url, +show_terminal, +show_preview, +session_cost_usd, +current_persona_id, +pending_learnings, +reasoning_mode, +task_type, +confidence_score, +working_memory |
 | `app/main.py` | 1,3,5.3,8,9 | +highlight.js, +mermaid.js, +xterm.js CDN, +artifact_panel, +preview_panel, +terminal_panel, +command_palette dans layout |
-| `app/components/chat.py` | 1,3.3,8.1,8.3,9.2 | +streaming render, +bouton export, +bouton edit/régénérer, +bouton fork, +diff accept/reject |
-| `app/components/input_bar.py` | 1,2.2,3.2,8.1,11,14.2,15.3 | +astream_events, +upload button, +prompt picker, +mic button, +injection instructions projet, +injection learnings |
+| `app/components/chat.py` | 1,3.3,8.1,8.3,9.2,16.5,16.7 | +streaming render, +bouton export, +bouton edit/régénérer, +bouton fork, +diff accept/reject, +badge confiance faible, +bouton Débat approfondi |
+| `app/components/input_bar.py` | 1,2.2,3.2,8.1,11,14.2,15.3,16.4 | +astream_events, +upload button, +prompt picker, +mic button, +injection instructions projet, +injection learnings, +injection template raisonnement |
 | `app/components/sidebar.py` | 2.1,4.2,14.7 | +git status widget, +knowledge section, +notif OPENAGENT.md à l'ouverture dossier |
 | `app/components/context_bar.py` | 7.1,12.1,14.4 | +compaction LLM réelle, +affichage coût session, +badge OPENAGENT.md |
 | `app/components/settings.py` | 1.3,5,7.5,10.1,12.2,12.3,14.5,15.7 | +notifs toggle, +onglets Outils/MCP/Mémoire/Analytics/Audit, +toggle API server, +toggle fallback CLAUDE.md, +bouton créer OPENAGENT.md, +onglet Apprentissages, +bouton sync communauté |
 | `app/components/model_modal.py` | 10.1 | +sélecteur de persona |
 | `app/storage.py` | 3.2,5.2,7 | +load_prompts, +save_prompts, +load_mcp_config, +webhook_triggers |
-| `agent.py` | 2.1,4,5,6,7,10,13,14.3,15.4 | +git_tools, +index_tools, +plugin_tools, +mcp_tools, +delegate_task, +memory_tools, +read_project_instructions, +read_learnings, +save_discovery, +persona_id param, +folder_cwd param |
-| `graph/nodes.py` | 12.3,15.2 | +log_action après chaque tool call, +capture learning sur tool error |
+| `agent.py` | 2.1,4,5,6,7,10,13,14.3,15.4,16.6 | +git_tools, +index_tools, +plugin_tools, +mcp_tools, +delegate_task, +memory_tools, +read_project_instructions, +read_learnings, +save_discovery, +write_to_scratchpad, +read_from_scratchpad, +clear_scratchpad, +persona_id param, +folder_cwd param |
+| `graph/nodes.py` | 12.3,15.2,16.2,16.3 | +log_action après chaque tool call, +capture learning sur tool error, +reasoning_node CoT, +critique_node self-critique |
+| `graph/workflow.py` | 16.2,16.3 | +nœud reasoning en entrée, +nœud critique post-réponse, +boucle correction conditionnelle |
+| `graph/state.py` | 16 | +reasoning_mode, +task_type, +reasoning_scratchpad, +critique_result, +critique_iterations, +needs_correction, +confidence_score, +auto_verify_query |
 | `permissions.py` | 2.1 | +git_commit, +git_push, +git_checkout dans _RESTRICTED_TOOLS |
-| `prompts/prompt.py` | 2.1,4,6,7,14.3 | +section GIT, +semantic_search, +knowledge_search, +MEMORY TOOLS, +PROJECT_INSTRUCTIONS_SECTION |
+| `prompts/prompt.py` | 2.1,4,6,7,14.3,16.6 | +section GIT, +semantic_search, +knowledge_search, +MEMORY TOOLS, +PROJECT_INSTRUCTIONS_SECTION, +SCRATCHPAD_SECTION |
 | `pyproject.toml` | 1,2,4,5,11,13 | +plyer, +pypdf, +chromadb, +sentence-transformers, +mcp, +faster-whisper, +sounddevice, +fastapi, +uvicorn, +websockets |
 | `requirements.txt` | 1,2 | +plyer, +pypdf |
 
 ---
 
-## Vue d'ensemble — 15 phases
+## Vue d'ensemble — 16 phases
 
 | # | Phase | Features clés | Impact | Difficulté |
 |---|---|---|---|---|
@@ -5005,12 +5710,13 @@ all   = [
 | 13 | **API & Webhooks** | REST API `POST /chat`, webhooks HMAC, intégration externe | 🔵 Écosystème | Moyenne |
 | 14 | **OPENAGENT.md** | Instructions projet persistantes, fallback CLAUDE.md, badge UI, outil agent | 🔴 Critique | Faible |
 | 15 | **Apprentissage Adaptatif** | Capture erreurs/corrections, injection learnings, partage communautaire GitHub | 🔴 Critique | Moyenne |
+| 16 | **Amplification Intelligence** | CoT LangGraph, self-critique, templates par tâche, scratchpad, débat multi-agent | 🔴 Critique | Élevée |
 
-**Total :** ~39 nouveaux fichiers Python, ~15 fichiers modifiés, 4 nouveaux groupes de dépendances optionnelles.
+**Total :** ~43 nouveaux fichiers Python, ~16 fichiers modifiés, 4 nouveaux groupes de dépendances optionnelles.
 
 **Sprints recommandés (parallélisation maximale) :**
 - **Sprint A** (semaine 1-2) : Phase 14 + Phase 15 + Phase 1 + Phase 2
-- **Sprint B** (semaine 2-3) : Phase 7 + Phase 11
+- **Sprint B** (semaine 2-3) : Phase 16 + Phase 7 + Phase 11
 - **Sprint C** (semaine 3-4) : Phase 3 + Phase 8 + Phase 9
 - **Sprint D** (semaine 4-6) : Phase 4 + Phase 5 + Phase 12
 - **Sprint E** (semaine 6-8) : Phase 6 + Phase 10 + Phase 13

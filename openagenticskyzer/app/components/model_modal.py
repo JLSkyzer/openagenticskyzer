@@ -2,6 +2,7 @@
 import asyncio
 import os
 import pathlib
+import re
 import subprocess
 import threading
 from nicegui import ui, run
@@ -226,37 +227,76 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
                 entry.done = True
                 return
 
+            # ── Pré-résolution : taille totale + support Range ───────────────
+            url = f"https://huggingface.co/{hf_id}/resolve/main/{filename}"
+            _size = 0
+            _ranges = False
+            try:
+                entry.progress = "Connexion…"
+                with _ur.urlopen(_ur.Request(url, method="HEAD"), timeout=15) as _r:
+                    _size = int(_r.headers.get("Content-Length", 0))
+                    _ranges = _r.headers.get("Accept-Ranges", "") == "bytes"
+            except Exception:
+                pass
+
             # ── Tentative hf_transfer (Rust, 5-10× plus rapide) ──────────────
             try:
                 import os as _os
+                import threading as _th
+                import time as _time
                 _os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
                 from huggingface_hub import hf_hub_download as _hf_dl
-                entry.progress = f"⬇ {filename} (hf_transfer)…"
-                tmp_hf = _hf_dl(
-                    repo_id=hf_id,
-                    filename=filename,
-                    repo_type="model",
-                    local_dir=str(dest_dir),
-                    local_dir_use_symlinks=False,
-                )
+
+                _stop = _th.Event()
+
+                def _poll_hft():
+                    while not _stop.is_set():
+                        try:
+                            best = max(
+                                (p for p in dest_dir.iterdir() if p.is_file()),
+                                key=lambda p: p.stat().st_size,
+                                default=None,
+                            )
+                            if best:
+                                sz = best.stat().st_size
+                                if _size:
+                                    pct = min(99, sz * 100 // _size)
+                                    entry.progress = (
+                                        f"⬇ {sz // 1_048_576}/{_size // 1_048_576}MB {pct}%"
+                                    )
+                                else:
+                                    entry.progress = f"⬇ {sz // 1_048_576}MB"
+                        except Exception:
+                            pass
+                        _time.sleep(0.8)
+
+                _pt = _th.Thread(target=_poll_hft, daemon=True)
+                _pt.start()
+                try:
+                    tmp_hf = _hf_dl(
+                        repo_id=hf_id,
+                        filename=filename,
+                        repo_type="model",
+                        local_dir=str(dest_dir),
+                        local_dir_use_symlinks=False,
+                    )
+                finally:
+                    _stop.set()
+                    _pt.join(timeout=2)
+
                 if pathlib.Path(tmp_hf) != dest_path:
                     pathlib.Path(tmp_hf).rename(dest_path)
                 entry.progress = f"✅ {dest_path.name} prêt !"
                 entry.done = True
             except Exception:
-                # ── Fallback : téléchargement parallel Range (8 threads, 2 MB buf) ─
-                url = f"https://huggingface.co/{hf_id}/resolve/main/{filename}"
-                entry.progress = f"Connexion… {filename}"
-                req_head = _ur.Request(url, method="HEAD")
-                with _ur.urlopen(req_head, timeout=15) as r:
-                    total = int(r.headers.get("Content-Length", 0))
-                    accepts_ranges = r.headers.get("Accept-Ranges", "") == "bytes"
-
+                # ── Fallback : téléchargement parallel Range (16 threads) ───────
                 BUF = 2_097_152  # 2 MB
 
-                if total == 0 or not accepts_ranges:
+                if _size == 0 or not _ranges:
+                    entry.progress = f"Connexion… {filename}"
                     tmp = dest_path.with_suffix(".tmp")
                     with _ur.urlopen(url, timeout=600) as resp:
+                        _size = int(resp.headers.get("Content-Length", 0))
                         dl = 0
                         with open(tmp, "wb") as f:
                             while True:
@@ -265,19 +305,21 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
                                     break
                                 f.write(buf)
                                 dl += len(buf)
-                                if total:
-                                    pct = min(100, dl * 100 // total)
-                                    entry.progress = f"⬇ {dl/1_048_576:.0f} / {total/1_048_576:.0f} MB ({pct}%)"
+                                if _size:
+                                    pct = min(100, dl * 100 // _size)
+                                    entry.progress = (
+                                        f"⬇ {dl // 1_048_576}/{_size // 1_048_576}MB {pct}%"
+                                    )
                     tmp.rename(dest_path)
                 else:
-                    N = 8
-                    chunk_size = (total + N - 1) // N
+                    N = 16
+                    chunk_size = (_size + N - 1) // N
                     tmp_parts = [dest_path.with_suffix(f".part{i}") for i in range(N)]
                     downloaded_parts = [0] * N
 
                     def _download_part(i: int):
                         start = i * chunk_size
-                        end = min(start + chunk_size - 1, total - 1)
+                        end = min(start + chunk_size - 1, _size - 1)
                         req = _ur.Request(url, headers={"Range": f"bytes={start}-{end}"})
                         with _ur.urlopen(req, timeout=600) as r:
                             with open(tmp_parts[i], "wb") as f:
@@ -288,10 +330,9 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
                                     f.write(buf)
                                     downloaded_parts[i] += len(buf)
                                     total_dl = sum(downloaded_parts)
-                                    pct = min(100, total_dl * 100 // total)
+                                    pct = min(100, total_dl * 100 // _size)
                                     entry.progress = (
-                                        f"⬇ {total_dl/1_048_576:.0f} / {total/1_048_576:.0f} MB"
-                                        f" ({pct}%) [8 threads]"
+                                        f"⬇ {total_dl // 1_048_576}/{_size // 1_048_576}MB {pct}%"
                                     )
 
                     with _futures.ThreadPoolExecutor(max_workers=N) as ex:
@@ -299,7 +340,7 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
                         for fut in _futures.as_completed(futs):
                             fut.result()
 
-                    entry.progress = "🔧 Assemblage des parties…"
+                    entry.progress = "🔧 Assemblage…"
                     with open(dest_path, "wb") as out:
                         for part in tmp_parts:
                             with open(part, "rb") as inp:
@@ -532,10 +573,16 @@ def open_lms_catalog_popup():
                             if is_done:
                                 ui.label("✅").classes("text-xs flex-shrink-0")
                             elif is_dling:
+                                _prog = dl_entry.progress
+                                _pm = re.search(r'(\d+)/(\d+)MB\s*(\d+)%', _prog)
+                                if _pm:
+                                    _ptxt = f"⬇ {_pm.group(3)}% · {_pm.group(1)}/{_pm.group(2)}MB"
+                                else:
+                                    _ptxt = _prog[:22]
                                 with ui.row().classes("items-center gap-1 flex-shrink-0"):
                                     ui.spinner(size="xs").classes("text-purple-400")
-                                    ui.label(dl_entry.progress[:18]).classes(
-                                        "text-xs text-gray-600 font-mono"
+                                    ui.label(_ptxt).classes(
+                                        "text-xs text-purple-400 font-mono"
                                     )
                             else:
                                 def _do_dl(hf_id=m.hf_id, nm=m.name):

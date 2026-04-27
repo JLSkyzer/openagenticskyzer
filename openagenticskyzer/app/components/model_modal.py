@@ -256,47 +256,53 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
             # (sature mieux la bande passante sur les CDN avec throttling/connexion
             # qu'une seule connexion hf_transfer)
             if _size > 500 * 1_048_576 and _ranges:
+                # Écriture directe à l'offset : pré-alloue le fichier final,
+                # chaque thread ouvre son propre handle et seek() à sa position.
+                # Aucun assemblage post-téléchargement.
                 N = 16
                 chunk_size = (_size + N - 1) // N
-                tmp_parts = [dest_path.with_suffix(f".part{i}") for i in range(N)]
                 downloaded_parts = [0] * N
+                tmp_dl = dest_path.with_suffix(".downloading")
+                try:
+                    with open(tmp_dl, "wb") as _f:
+                        _f.truncate(_size)  # pré-allocation O(1) sur NTFS/ext4
 
-                def _download_part(i: int):
-                    start = i * chunk_size
-                    end = min(start + chunk_size - 1, _size - 1)
-                    req = _ur.Request(
-                        url, headers={**_auth_hdr, "Range": f"bytes={start}-{end}"}
-                    )
-                    with _ur.urlopen(req, timeout=600) as r:
-                        with open(tmp_parts[i], "wb") as f:
-                            while True:
-                                buf = r.read(BUF)
-                                if not buf:
-                                    break
-                                f.write(buf)
-                                downloaded_parts[i] += len(buf)
-                                total_dl = sum(downloaded_parts)
-                                pct = min(100, total_dl * 100 // _size)
-                                entry.progress = (
-                                    f"⬇ {total_dl // 1_048_576}/{_size // 1_048_576}MB {pct}%"
-                                )
+                    def _download_part(i: int):
+                        start = i * chunk_size
+                        end = min(start + chunk_size - 1, _size - 1)
+                        req = _ur.Request(
+                            url, headers={**_auth_hdr, "Range": f"bytes={start}-{end}"}
+                        )
+                        pos = start
+                        with _ur.urlopen(req, timeout=600) as r:
+                            with open(tmp_dl, "r+b") as f:
+                                f.seek(pos)
+                                while True:
+                                    buf = r.read(BUF)
+                                    if not buf:
+                                        break
+                                    f.write(buf)
+                                    pos += len(buf)
+                                    downloaded_parts[i] += len(buf)
+                                    total_dl = sum(downloaded_parts)
+                                    pct = min(100, total_dl * 100 // _size)
+                                    entry.progress = (
+                                        f"⬇ {total_dl // 1_048_576}/{_size // 1_048_576}MB {pct}%"
+                                    )
 
-                with _futures.ThreadPoolExecutor(max_workers=N) as ex:
-                    futs = [ex.submit(_download_part, i) for i in range(N)]
-                    for fut in _futures.as_completed(futs):
-                        fut.result()
+                    with _futures.ThreadPoolExecutor(max_workers=N) as ex:
+                        futs = [ex.submit(_download_part, i) for i in range(N)]
+                        for fut in _futures.as_completed(futs):
+                            fut.result()
 
-                entry.progress = "🔧 Assemblage…"
-                with open(dest_path, "wb") as out:
-                    for part in tmp_parts:
-                        with open(part, "rb") as inp:
-                            while True:
-                                buf = inp.read(BUF)
-                                if not buf:
-                                    break
-                                out.write(buf)
-                        part.unlink()
-                tmp_parts = []
+                    tmp_dl.rename(dest_path)
+                except Exception:
+                    try:
+                        if tmp_dl.exists():
+                            tmp_dl.unlink()
+                    except Exception:
+                        pass
+                    raise
 
             else:
                 # ── hf_transfer (Rust) pour petits fichiers / Range indisponible ─

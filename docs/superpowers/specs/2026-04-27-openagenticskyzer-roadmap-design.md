@@ -4210,17 +4210,660 @@ def test_returns_none_on_empty_file(tmp_path):
 
 ---
 
+## Phase 15 — Apprentissage Adaptatif : Mémoire des Erreurs et Partage Communautaire
+
+**Objectif :** Plus l'utilisateur travaille avec l'IA, plus elle apprend de ses erreurs, corrections et découvertes. Chaque utilisateur peut optionnellement contribuer ses apprentissages anonymisés à une base de connaissances communautaire partagée avec tous les utilisateurs du monde.
+
+**Principe :**
+- **Apprentissage local** : chaque erreur de l'IA, chaque correction utilisateur, chaque outil qui échoue génère un "learning event" stocké dans un fichier JSONL. Ces learnings sont injectés comme contexte à chaque session.
+- **Partage communautaire** : les learnings confirmés peuvent être anonymisés et soumis à un dépôt GitHub public `openagenticskyzer/community-learnings`. Tout utilisateur peut synchroniser cette base pour bénéficier de l'expérience collective mondiale.
+- **Pas de fine-tuning** : 100% context injection — aucun entraînement du LLM requis, fonctionne avec n'importe quel modèle, aucune infrastructure coûteuse.
+
+---
+
+### 15.1 — Modèle de données et stockage
+
+**Nouveau fichier : `context/learnings.py`**
+
+```python
+import json
+import uuid
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+
+GLOBAL_LEARNINGS_PATH = Path.home() / ".openagent" / "learnings.jsonl"
+COMMUNITY_LEARNINGS_PATH = Path.home() / ".openagent" / "community_learnings.json"
+
+LEARNING_TYPES = {
+    "error":       "Erreur d'outil ou d'exécution récupérée",
+    "correction":  "Correction fournie par l'utilisateur",
+    "discovery":   "Bonne pratique découverte et confirmée",
+    "preference":  "Préférence de style ou comportement",
+}
+
+@dataclass
+class Learning:
+    id: str
+    type: str                   # "error" | "correction" | "discovery" | "preference"
+    context_summary: str        # résumé du contexte (max 200 chars)
+    mistake: str                # ce qui a mal tourné / la mauvaise approche
+    correction: str             # ce qui a fonctionné / la bonne approche
+    tags: list[str]             # ex: ["python", "git", "file-io"]
+    project_hash: str | None    # hash SHA1 anonymisé du chemin projet
+    timestamp: str              # ISO 8601
+    confirmed: bool             # l'utilisateur a validé ce learning
+    contributed: bool           # soumis à la communauté
+    source: str                 # "auto" | "manual"
+
+
+def _learnings_path(project_folder: str | None) -> Path:
+    if project_folder:
+        return Path(project_folder) / ".openagent" / "learnings.jsonl"
+    return GLOBAL_LEARNINGS_PATH
+
+
+def save_learning(learning: Learning, project_folder: str | None = None) -> None:
+    path = _learnings_path(project_folder)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(asdict(learning), ensure_ascii=False) + "\n")
+
+
+def load_learnings(project_folder: str | None = None,
+                   confirmed_only: bool = True) -> list[Learning]:
+    """Charge les learnings locaux (projet + globaux)."""
+    paths = []
+    if project_folder:
+        paths.append(_learnings_path(project_folder))
+    paths.append(GLOBAL_LEARNINGS_PATH)
+
+    result: list[Learning] = []
+    for path in paths:
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                d = json.loads(line)
+                l = Learning(**d)
+                if not confirmed_only or l.confirmed:
+                    result.append(l)
+            except Exception:
+                continue
+    return result
+
+
+def delete_learning(learning_id: str, project_folder: str | None = None) -> None:
+    for path in [_learnings_path(project_folder), GLOBAL_LEARNINGS_PATH]:
+        if not path.exists():
+            continue
+        lines = [l for l in path.read_text(encoding="utf-8").splitlines()
+                 if json.loads(l).get("id") != learning_id]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def new_learning(type_: str, context_summary: str, mistake: str, correction: str,
+                 tags: list[str] | None = None, project_folder: str | None = None,
+                 source: str = "auto") -> Learning:
+    import hashlib
+    ph = hashlib.sha1(project_folder.encode()).hexdigest()[:8] if project_folder else None
+    return Learning(
+        id=str(uuid.uuid4())[:8],
+        type=type_,
+        context_summary=context_summary[:200],
+        mistake=mistake[:500],
+        correction=correction[:500],
+        tags=tags or [],
+        project_hash=ph,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        confirmed=False,
+        contributed=False,
+        source=source,
+    )
+```
+
+---
+
+### 15.2 — Capture automatique des événements d'apprentissage
+
+**Modification : `app/components/input_bar.py`** — 4 déclencheurs de capture :
+
+**Déclencheur 1 — Échec d'outil** (dans `graph/nodes.py`)
+
+```python
+# Dans le nœud tool_node, après l'exécution de chaque outil :
+from openagenticskyzer.context.learnings import new_learning, save_learning
+from openagenticskyzer.app.state import state
+
+def tool_node(state_data):
+    ...
+    for tool_call in tool_calls:
+        try:
+            result = tool.invoke(tool_call["args"])
+        except Exception as e:
+            error_msg = str(e)
+            # Capture automatique — non-confirmé par défaut
+            l = new_learning(
+                type_="error",
+                context_summary=f"Outil {tool_call['name']} dans contexte: {_last_user_msg[:100]}",
+                mistake=f"{tool_call['name']}({tool_call['args']}) → {error_msg[:200]}",
+                correction="À confirmer",  # sera rempli par l'utilisateur via UI
+                tags=[tool_call["name"], "tool-error"],
+                project_folder=state.active_folder,
+                source="auto",
+            )
+            save_learning(l, state.active_folder)
+            state.pending_learnings.append(l.id)
+```
+
+**Déclencheur 2 — Bouton "Régénérer"** (dans `app/components/chat.py`)
+
+```python
+async def _on_regenerate(msg_index: int):
+    # Capture la réponse précédente comme "correction" à confirmer
+    prev_response = state.messages[msg_index]["content"]
+    l = new_learning(
+        type_="correction",
+        context_summary=f"Régénération à l'index {msg_index}",
+        mistake=prev_response[:300],
+        correction="Réponse régénérée — confirmer après",
+        tags=["regeneration"],
+        project_folder=state.active_folder,
+        source="auto",
+    )
+    save_learning(l, state.active_folder)
+    state.pending_learnings.append(l.id)
+    # ... logique de régénération normale
+```
+
+**Déclencheur 3 — Détection de correction dans le message utilisateur**
+
+Patterns détectés dans `_send_message()` avant envoi :
+
+```python
+import re
+
+_CORRECTION_PATTERNS = re.compile(
+    r"(?:non|nope|wrong|faux|incorrect|tu as tort|c'est pas ça|c'est pas correct"
+    r"|mauvaise réponse|pas bon|erreur|c'était pas ça|tu t'es trompé"
+    r"|that'?s? wrong|not right|incorrect)",
+    re.IGNORECASE
+)
+
+async def _send_message(text: str, ...):
+    if _CORRECTION_PATTERNS.search(text) and len(state.messages) >= 2:
+        last_ai_msg = next(
+            (m["content"] for m in reversed(state.messages) if m["role"] == "assistant"), ""
+        )
+        l = new_learning(
+            type_="correction",
+            context_summary=text[:150],
+            mistake=last_ai_msg[:300],
+            correction="Correction en cours...",
+            tags=["user-correction"],
+            project_folder=state.active_folder,
+            source="auto",
+        )
+        save_learning(l, state.active_folder)
+        state.pending_learnings.append(l.id)
+```
+
+**Déclencheur 4 — Édition manuelle d'une réponse IA** (Phase 8.1)
+
+```python
+async def _on_message_edit_confirmed(msg_index: int, original: str, edited: str):
+    if original.strip() != edited.strip():
+        l = new_learning(
+            type_="preference",
+            context_summary=f"Édition manuelle à l'index {msg_index}",
+            mistake=original[:300],
+            correction=edited[:300],
+            tags=["manual-edit", "style"],
+            project_folder=state.active_folder,
+            source="auto",
+        )
+        save_learning(l, state.active_folder)
+        state.pending_learnings.append(l.id)
+```
+
+**Nouveau champ dans `AppState` (`app/state.py`) :**
+
+```python
+@dataclass
+class AppState:
+    ...
+    pending_learnings: list[str] = field(default_factory=list)  # IDs non confirmés
+```
+
+---
+
+### 15.3 — Injection dans le prompt système
+
+**Modification : `context/project_instructions.py`** ou nouvelle fonction dans `context/learnings.py`
+
+```python
+def get_relevant_learnings(current_message: str,
+                            project_folder: str | None,
+                            top_k: int = 5) -> str | None:
+    """Retourne un bloc texte des learnings les plus pertinents pour le message."""
+    learnings = load_learnings(project_folder, confirmed_only=True)
+    if not learnings:
+        return None
+
+    # Scoring simple par overlap de mots-clés (fallback sans ChromaDB)
+    msg_words = set(current_message.lower().split())
+    def score(l: Learning) -> float:
+        text = f"{l.context_summary} {l.mistake} {' '.join(l.tags)}"
+        overlap = len(msg_words & set(text.lower().split()))
+        return overlap / max(len(msg_words), 1)
+
+    ranked = sorted(learnings, key=score, reverse=True)[:top_k]
+    if not any(score(l) > 0 for l in ranked):
+        return None  # Aucune pertinence = pas d'injection inutile
+
+    lines = []
+    for l in ranked:
+        emoji = {"error": "⚠️", "correction": "✏️", "discovery": "💡", "preference": "🎨"}.get(l.type, "•")
+        lines.append(f"{emoji} [{l.type.upper()}] {l.mistake[:120]} → {l.correction[:120]}")
+
+    return "## LEÇONS APPRISES\n" + "\n".join(lines)
+```
+
+**Injection dans `_send_message()` :** après les instructions projet, avant la mémoire :
+
+```python
+# Ordre d'injection (priorité décroissante) :
+# 1. [system] INSTRUCTIONS PROJET (Phase 14)
+# 2. [system] LEÇONS APPRISES (Phase 15)  ← nouveau
+# 3. [system] MÉMOIRE PROJET (Phase 7)
+# 4. [system] MÉMOIRE GLOBALE (Phase 7)
+# 5. historique conversation
+
+learnings_context = get_relevant_learnings(text, state.active_folder)
+if learnings_context:
+    messages = [{"role": "system", "content": learnings_context}] + messages
+```
+
+---
+
+### 15.4 — Outil agent : accès explicite aux learnings
+
+**Modification : `tools/project_tools.py`** (Phase 14)
+
+```python
+from openagenticskyzer.context.learnings import load_learnings
+
+@tool
+def read_learnings(type_filter: str = "") -> str:
+    """Lit les apprentissages passés de l'IA pour ce projet et globalement.
+    type_filter optionnel: 'error', 'correction', 'discovery', 'preference'."""
+    learnings = load_learnings(state.active_folder, confirmed_only=True)
+    if type_filter:
+        learnings = [l for l in learnings if l.type == type_filter]
+    if not learnings:
+        return "Aucun apprentissage enregistré."
+    lines = [f"[{l.type}] {l.mistake[:100]} → {l.correction[:100]}" for l in learnings[-20:]]
+    return "\n".join(lines)
+
+
+@tool
+def save_discovery(context: str, what_works: str, tags: str = "") -> str:
+    """Enregistre une découverte ou bonne pratique pour les sessions futures.
+    tags: mots-clés séparés par virgules (ex: 'python,file-io,performance')"""
+    from openagenticskyzer.context.learnings import new_learning, save_learning
+    l = new_learning(
+        type_="discovery",
+        context_summary=context[:200],
+        mistake="—",
+        correction=what_works[:500],
+        tags=[t.strip() for t in tags.split(",") if t.strip()],
+        project_folder=state.active_folder,
+        source="manual",
+    )
+    l.confirmed = True  # découverte manuelle = auto-confirmée
+    save_learning(l, state.active_folder)
+    return f"Découverte enregistrée (id: {l.id})"
+```
+
+---
+
+### 15.5 — UI de gestion des apprentissages
+
+**Nouveau fichier : `app/components/learnings_panel.py`**
+
+Accessible via un onglet "🧠 Apprentissages" dans les settings.
+
+```python
+from nicegui import ui
+from openagenticskyzer.context.learnings import (
+    load_learnings, delete_learning, save_learning, LEARNING_TYPES
+)
+from openagenticskyzer.app.state import state
+
+
+@ui.refreshable
+def learnings_panel():
+    learnings = load_learnings(state.active_folder, confirmed_only=False)
+    unconfirmed = [l for l in learnings if not l.confirmed]
+    confirmed = [l for l in learnings if l.confirmed]
+
+    with ui.column().classes("w-full gap-3 p-4"):
+        # Bandeau "À confirmer"
+        if unconfirmed:
+            ui.label(f"⏳ {len(unconfirmed)} apprentissage(s) en attente de confirmation").classes(
+                "text-sm text-yellow-400 font-semibold"
+            )
+            for l in unconfirmed[-5:]:  # Max 5 en attente affichés
+                _learning_card(l, pending=True)
+
+        ui.separator()
+        ui.label(f"✅ {len(confirmed)} apprentissage(s) confirmé(s)").classes(
+            "text-sm text-green-400 font-semibold"
+        )
+        for l in reversed(confirmed[-20:]):
+            _learning_card(l, pending=False)
+
+
+def _learning_card(l, pending: bool):
+    type_colors = {
+        "error": "border-red-800",
+        "correction": "border-yellow-800",
+        "discovery": "border-green-800",
+        "preference": "border-blue-800",
+    }
+    border = type_colors.get(l.type, "border-gray-800")
+
+    with ui.card().classes(f"w-full border {border} bg-gray-950 p-3"):
+        with ui.row().classes("items-center gap-2 mb-1"):
+            type_badge = {"error": "🔴", "correction": "✏️", "discovery": "💡", "preference": "🎨"}
+            ui.label(f"{type_badge.get(l.type, '•')} {l.type.upper()}").classes(
+                "text-xs text-gray-400"
+            )
+            ui.label(l.timestamp[:10]).classes("text-xs text-gray-600 ml-auto")
+
+        ui.label(f"Contexte: {l.context_summary}").classes("text-xs text-gray-400")
+        ui.label(f"❌ {l.mistake[:100]}").classes("text-xs text-red-300 mt-1")
+        ui.label(f"✅ {l.correction[:100]}").classes("text-xs text-green-300")
+
+        if l.tags:
+            ui.label("Tags: " + ", ".join(l.tags)).classes("text-xs text-gray-600 mt-1")
+
+        with ui.row().classes("gap-2 mt-2"):
+            if pending:
+                ui.button("Confirmer", on_click=lambda lid=l.id: _confirm(lid)).classes(
+                    "text-xs text-green-400 border border-green-900 bg-transparent px-2 py-0.5"
+                )
+            ui.button("Supprimer", on_click=lambda lid=l.id: _delete(lid)).classes(
+                "text-xs text-red-400 border border-red-900 bg-transparent px-2 py-0.5"
+            )
+            if l.confirmed and not l.contributed:
+                ui.button("Contribuer 🌍", on_click=lambda lobj=l: _contribute(lobj)).classes(
+                    "text-xs text-purple-400 border border-purple-900 bg-transparent px-2 py-0.5"
+                )
+
+
+def _confirm(learning_id: str):
+    # Met confirmed=True dans le fichier JSONL
+    learnings = load_learnings(state.active_folder, confirmed_only=False)
+    for l in learnings:
+        if l.id == learning_id:
+            l.confirmed = True
+            # Réécriture (delete + save)
+            delete_learning(learning_id, state.active_folder)
+            save_learning(l, state.active_folder)
+            break
+    learnings_panel.refresh()
+    ui.notify("Apprentissage confirmé ✅", type="positive")
+
+
+def _delete(learning_id: str):
+    delete_learning(learning_id, state.active_folder)
+    learnings_panel.refresh()
+    ui.notify("Supprimé.", type="warning")
+
+
+def _contribute(l):
+    from openagenticskyzer.context.learnings import anonymize_learning
+    anon = anonymize_learning(l)
+    _open_contribution_github_issue(anon)
+    l.contributed = True
+    delete_learning(l.id, state.active_folder)
+    save_learning(l, state.active_folder)
+    learnings_panel.refresh()
+    ui.notify("Contribution ouverte dans le navigateur 🌍", type="positive")
+```
+
+---
+
+### 15.6 — Anonymisation pour contribution communautaire
+
+**Modification : `context/learnings.py`**
+
+```python
+import re
+import hashlib
+
+_ANONYMIZE_PATTERNS = [
+    (re.compile(r"[A-Z]:\\[\w\\]+"), "<WINDOWS_PATH>"),
+    (re.compile(r"/(?:home|Users)/\w+/[\w/]+"), "<UNIX_PATH>"),
+    (re.compile(r"\b[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}\b"), "<EMAIL>"),
+    (re.compile(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b"), "<IP>"),
+    (re.compile(r"\b[a-fA-F0-9]{32,}\b"), "<HASH>"),
+    (re.compile(r"(?:password|secret|token|api[_-]?key)\s*[=:]\s*\S+", re.IGNORECASE), "<CREDENTIAL>"),
+]
+
+def anonymize_learning(l: "Learning") -> dict:
+    """Retourne un dict anonymisé prêt pour contribution communautaire."""
+    def clean(text: str) -> str:
+        for pattern, replacement in _ANONYMIZE_PATTERNS:
+            text = pattern.sub(replacement, text)
+        return text
+
+    return {
+        "type": l.type,
+        "context_summary": clean(l.context_summary),
+        "mistake": clean(l.mistake),
+        "correction": clean(l.correction),
+        "tags": l.tags,
+        "source": l.source,
+    }
+
+
+def _open_contribution_github_issue(anon: dict) -> None:
+    """Ouvre le navigateur avec une issue GitHub pré-remplie."""
+    import urllib.parse, webbrowser
+    body = (
+        f"**Type:** {anon['type']}\n\n"
+        f"**Contexte:** {anon['context_summary']}\n\n"
+        f"**❌ Erreur/Mauvaise approche:**\n```\n{anon['mistake']}\n```\n\n"
+        f"**✅ Correction/Bonne approche:**\n```\n{anon['correction']}\n```\n\n"
+        f"**Tags:** {', '.join(anon['tags'])}\n\n"
+        f"---\n*Soumis depuis OpenAgentic Skyzer — anonymisé automatiquement*"
+    )
+    url = (
+        "https://github.com/openagenticskyzer/community-learnings/issues/new"
+        f"?title={urllib.parse.quote(f'[{anon[\"type\"].upper()}] {anon[\"context_summary\"][:60]}')}"
+        f"&body={urllib.parse.quote(body)}"
+        f"&labels={urllib.parse.quote(','.join(anon['tags']))}"
+    )
+    webbrowser.open(url)
+```
+
+---
+
+### 15.7 — Synchronisation de la base communautaire
+
+**Modification : `app/components/settings.py`** — onglet "Apprentissages"
+
+```python
+import httpx
+from openagenticskyzer.context.learnings import COMMUNITY_LEARNINGS_PATH
+
+COMMUNITY_URL = (
+    "https://raw.githubusercontent.com/openagenticskyzer/"
+    "community-learnings/main/community_learnings.json"
+)
+
+async def _sync_community_learnings():
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(COMMUNITY_URL)
+            resp.raise_for_status()
+            data = resp.json()
+            COMMUNITY_LEARNINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            COMMUNITY_LEARNINGS_PATH.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            count = len(data.get("learnings", []))
+            ui.notify(f"✅ {count} apprentissages communautaires synchronisés", type="positive")
+    except Exception as e:
+        ui.notify(f"Erreur sync: {e}", type="negative")
+```
+
+**Format du fichier communautaire `community_learnings.json` :**
+
+```json
+{
+  "version": "1.0",
+  "last_updated": "2026-04-27",
+  "total_contributors": 42,
+  "learnings": [
+    {
+      "type": "error",
+      "context_summary": "Appel outil shell_exec avec commande interactive",
+      "mistake": "shell_exec('vim file.py') → process hangs indéfiniment",
+      "correction": "Ne jamais appeler d'éditeurs interactifs via shell_exec. Utiliser l'outil write_file à la place.",
+      "tags": ["shell", "interactive", "vim", "hang"],
+      "votes": 12,
+      "version_added": "1.0"
+    },
+    {
+      "type": "discovery",
+      "context_summary": "Lecture de fichiers CSV volumineux",
+      "mistake": "—",
+      "correction": "Pour les CSV > 10MB, utiliser pandas.read_csv(chunksize=1000) plutôt que de charger tout en mémoire.",
+      "tags": ["python", "pandas", "csv", "memory"],
+      "votes": 8,
+      "version_added": "1.0"
+    }
+  ]
+}
+```
+
+**Injection des learnings communautaires dans `_send_message()` :**
+
+```python
+def get_community_learnings(current_message: str, top_k: int = 3) -> str | None:
+    if not COMMUNITY_LEARNINGS_PATH.exists():
+        return None
+    data = json.loads(COMMUNITY_LEARNINGS_PATH.read_text(encoding="utf-8"))
+    learnings = data.get("learnings", [])
+    if not learnings:
+        return None
+
+    msg_words = set(current_message.lower().split())
+    def score(l: dict) -> float:
+        text = f"{l['context_summary']} {l['mistake']} {' '.join(l['tags'])}"
+        return len(msg_words & set(text.lower().split())) / max(len(msg_words), 1)
+
+    ranked = sorted(learnings, key=score, reverse=True)[:top_k]
+    if not any(score(l) > 0 for l in ranked):
+        return None
+
+    lines = [f"• [{l['type'].upper()}] {l['mistake'][:100]} → {l['correction'][:100]}"
+             for l in ranked]
+    return "## CONNAISSANCES COMMUNAUTAIRES\n" + "\n".join(lines)
+```
+
+---
+
+### Tests Phase 15
+
+**Fichier : `tests/test_learnings.py`**
+
+```python
+import pytest
+from pathlib import Path
+from openagenticskyzer.context.learnings import (
+    new_learning, save_learning, load_learnings, delete_learning,
+    anonymize_learning, get_relevant_learnings
+)
+
+
+def test_save_and_load_learning(tmp_path):
+    l = new_learning("error", "test context", "bad thing", "good thing", ["python"])
+    l.confirmed = True
+    save_learning(l, str(tmp_path))
+    loaded = load_learnings(str(tmp_path))
+    assert len(loaded) == 1
+    assert loaded[0].mistake == "bad thing"
+    assert loaded[0].correction == "good thing"
+
+
+def test_unconfirmed_not_loaded_by_default(tmp_path):
+    l = new_learning("error", "ctx", "bad", "good")
+    l.confirmed = False
+    save_learning(l, str(tmp_path))
+    assert load_learnings(str(tmp_path), confirmed_only=True) == []
+
+
+def test_delete_learning(tmp_path):
+    l = new_learning("error", "ctx", "bad", "good")
+    l.confirmed = True
+    save_learning(l, str(tmp_path))
+    delete_learning(l.id, str(tmp_path))
+    assert load_learnings(str(tmp_path)) == []
+
+
+def test_anonymize_removes_paths():
+    l = new_learning("error", "/home/user/project/src/main.py crashed",
+                     "C:\\Users\\john\\file.py", "use relative path")
+    anon = anonymize_learning(l)
+    assert "/home/user" not in anon["context_summary"]
+    assert "john" not in anon["mistake"]
+    assert "<UNIX_PATH>" in anon["context_summary"]
+    assert "<WINDOWS_PATH>" in anon["mistake"]
+
+
+def test_anonymize_removes_credentials():
+    l = new_learning("error", "api_key=sk-secret123 failed", "token = abc123", "use env vars")
+    anon = anonymize_learning(l)
+    assert "sk-secret123" not in anon["context_summary"]
+    assert "abc123" not in anon["mistake"]
+
+
+def test_relevant_learnings_returns_related(tmp_path):
+    l = new_learning("error", "pandas CSV read crash", "read_csv() OOM", "use chunksize=1000",
+                     ["pandas", "csv"])
+    l.confirmed = True
+    save_learning(l, str(tmp_path))
+    result = get_relevant_learnings("comment lire un fichier CSV avec pandas", str(tmp_path))
+    assert result is not None
+    assert "chunksize" in result
+
+
+def test_relevant_learnings_no_injection_when_unrelated(tmp_path):
+    l = new_learning("error", "pandas CSV read", "OOM", "use chunksize", ["pandas"])
+    l.confirmed = True
+    save_learning(l, str(tmp_path))
+    result = get_relevant_learnings("comment faire une pizza", str(tmp_path))
+    assert result is None
+```
+
+---
+
 ## Dépendances entre phases
 
 ```
 Phase 1  (Streaming + UX)        → Aucune dépendance, commence immédiatement
 Phase 2  (Git + Upload/Vision)   → Aucune dépendance, parallèle avec Phase 1
 Phase 14 (OPENAGENT.md)          → Aucune dépendance, peut démarrer immédiatement
+Phase 15 (Apprentissage)         → Phase 14 synergique (instructions + learnings = contexte complet)
 Phase 7  (Mémoire)               → Phase 1 recommandée (LLM compact utilise astream)
 Phase 3  (Artifacts + Prompts)   → Phase 1 recommandée (streaming + affichage)
 Phase 8  (UX Avancée)            → Phase 1 requise (streaming avant édition/tabs)
 Phase 9  (Dev Tools Pro)         → Phase 2 recommandée (git avant diff interactif)
-Phase 4  (RAG + Index)           → Phase 7 synergique (mémoire + index = contexte complet)
+Phase 4  (RAG + Index)           → Phase 7 + Phase 15 synergiques (mémoire + index + learnings)
 Phase 5  (Plugins + MCP)         → Aucune dépendance
 Phase 10 (Personas + Compare)    → Phase 1 requise (streaming pour comparaison)
 Phase 11 (Voice Input)           → Aucune dépendance fonctionnelle
@@ -4229,10 +4872,10 @@ Phase 6  (Multi-agent)           → Phase 5 recommandée (plugins pour les sous
 Phase 13 (API Server)            → Phase 6 recommandée (API expose le multi-agent)
 ```
 
-**Ordre recommandé:** 14 → 1 → 2 → 7 → 3 → 8 → 9 → 4 → 5 → 10 → 11 → 12 → 6 → 13
+**Ordre recommandé:** 14 → 15 → 1 → 2 → 7 → 3 → 8 → 9 → 4 → 5 → 10 → 11 → 12 → 6 → 13
 
 **Phases parallélisables:**
-- Sprint A : 14 + 1 + 2 (fondations + instructions projet simultanées)
+- Sprint A : 14 + 15 + 1 + 2 (fondations + instructions + apprentissage simultanés)
 - Sprint B : 7 + 11 (mémoire + voice, indépendantes)
 - Sprint C : 3 + 8 + 9 (UX enrichie)
 - Sprint D : 4 + 5 + 12 (intelligence + plugins + analytics)
@@ -4317,22 +4960,25 @@ all   = [
 | `docs/plugins/COMMUNITY_REGISTRY.md` | 5.3 | Registre communautaire plugins |
 | `docs/architecture/ARCHITECTURE.md` | 5.3 | Architecture technique pour contributeurs |
 | `tests/test_project_instructions.py` | 14 | Tests unitaires chargement OPENAGENT.md / CLAUDE.md |
+| `context/learnings.py` | 15 | Capture, stockage, injection et anonymisation des apprentissages |
+| `app/components/learnings_panel.py` | 15.5 | UI gestion et confirmation des apprentissages |
+| `tests/test_learnings.py` | 15 | Tests unitaires système d'apprentissage adaptatif |
 
 ## Résumé des fichiers modifiés
 
 | Fichier | Phases | Modifications clés |
 |---|---|---|
-| `app/state.py` | 1,2,4,6,7,8,9,10,11,12 | +streaming_content, +is_streaming, +attached_files, +index_status, +sub_agents, +branches, +tabs, +compare_mode, +compare_results, +preview_url, +show_terminal, +show_preview, +session_cost_usd, +current_persona_id |
+| `app/state.py` | 1,2,4,6,7,8,9,10,11,12,15 | +streaming_content, +is_streaming, +attached_files, +index_status, +sub_agents, +branches, +tabs, +compare_mode, +compare_results, +preview_url, +show_terminal, +show_preview, +session_cost_usd, +current_persona_id, +pending_learnings |
 | `app/main.py` | 1,3,5.3,8,9 | +highlight.js, +mermaid.js, +xterm.js CDN, +artifact_panel, +preview_panel, +terminal_panel, +command_palette dans layout |
 | `app/components/chat.py` | 1,3.3,8.1,8.3,9.2 | +streaming render, +bouton export, +bouton edit/régénérer, +bouton fork, +diff accept/reject |
-| `app/components/input_bar.py` | 1,2.2,3.2,8.1,11,14.2 | +astream_events, +upload button, +prompt picker, +mic button, +injection instructions projet |
+| `app/components/input_bar.py` | 1,2.2,3.2,8.1,11,14.2,15.3 | +astream_events, +upload button, +prompt picker, +mic button, +injection instructions projet, +injection learnings |
 | `app/components/sidebar.py` | 2.1,4.2,14.7 | +git status widget, +knowledge section, +notif OPENAGENT.md à l'ouverture dossier |
 | `app/components/context_bar.py` | 7.1,12.1,14.4 | +compaction LLM réelle, +affichage coût session, +badge OPENAGENT.md |
-| `app/components/settings.py` | 1.3,5,7.5,10.1,12.2,12.3,14.5 | +notifs toggle, +onglets Outils/MCP/Mémoire/Analytics/Audit, +toggle API server, +toggle fallback CLAUDE.md, +bouton créer OPENAGENT.md |
+| `app/components/settings.py` | 1.3,5,7.5,10.1,12.2,12.3,14.5,15.7 | +notifs toggle, +onglets Outils/MCP/Mémoire/Analytics/Audit, +toggle API server, +toggle fallback CLAUDE.md, +bouton créer OPENAGENT.md, +onglet Apprentissages, +bouton sync communauté |
 | `app/components/model_modal.py` | 10.1 | +sélecteur de persona |
 | `app/storage.py` | 3.2,5.2,7 | +load_prompts, +save_prompts, +load_mcp_config, +webhook_triggers |
-| `agent.py` | 2.1,4,5,6,7,10,13,14.3 | +git_tools, +index_tools, +plugin_tools, +mcp_tools, +delegate_task, +memory_tools, +read_project_instructions, +persona_id param, +folder_cwd param |
-| `graph/nodes.py` | 12.3 | +log_action après chaque tool call |
+| `agent.py` | 2.1,4,5,6,7,10,13,14.3,15.4 | +git_tools, +index_tools, +plugin_tools, +mcp_tools, +delegate_task, +memory_tools, +read_project_instructions, +read_learnings, +save_discovery, +persona_id param, +folder_cwd param |
+| `graph/nodes.py` | 12.3,15.2 | +log_action après chaque tool call, +capture learning sur tool error |
 | `permissions.py` | 2.1 | +git_commit, +git_push, +git_checkout dans _RESTRICTED_TOOLS |
 | `prompts/prompt.py` | 2.1,4,6,7,14.3 | +section GIT, +semantic_search, +knowledge_search, +MEMORY TOOLS, +PROJECT_INSTRUCTIONS_SECTION |
 | `pyproject.toml` | 1,2,4,5,11,13 | +plyer, +pypdf, +chromadb, +sentence-transformers, +mcp, +faster-whisper, +sounddevice, +fastapi, +uvicorn, +websockets |
@@ -4340,7 +4986,7 @@ all   = [
 
 ---
 
-## Vue d'ensemble — 14 phases
+## Vue d'ensemble — 15 phases
 
 | # | Phase | Features clés | Impact | Difficulté |
 |---|---|---|---|---|
@@ -4358,11 +5004,12 @@ all   = [
 | 12 | **Analytics** | Coûts API en temps réel, dashboard usage, audit log | 🟡 Valeur long terme | Faible |
 | 13 | **API & Webhooks** | REST API `POST /chat`, webhooks HMAC, intégration externe | 🔵 Écosystème | Moyenne |
 | 14 | **OPENAGENT.md** | Instructions projet persistantes, fallback CLAUDE.md, badge UI, outil agent | 🔴 Critique | Faible |
+| 15 | **Apprentissage Adaptatif** | Capture erreurs/corrections, injection learnings, partage communautaire GitHub | 🔴 Critique | Moyenne |
 
-**Total :** ~36 nouveaux fichiers Python, ~15 fichiers modifiés, 4 nouveaux groupes de dépendances optionnelles.
+**Total :** ~39 nouveaux fichiers Python, ~15 fichiers modifiés, 4 nouveaux groupes de dépendances optionnelles.
 
 **Sprints recommandés (parallélisation maximale) :**
-- **Sprint A** (semaine 1-2) : Phase 14 + Phase 1 + Phase 2
+- **Sprint A** (semaine 1-2) : Phase 14 + Phase 15 + Phase 1 + Phase 2
 - **Sprint B** (semaine 2-3) : Phase 7 + Phase 11
 - **Sprint C** (semaine 3-4) : Phase 3 + Phase 8 + Phase 9
 - **Sprint D** (semaine 4-6) : Phase 4 + Phase 5 + Phase 12

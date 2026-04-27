@@ -1172,6 +1172,382 @@ def _render_knowledge_section():
 
 **Objectif:** Les utilisateurs peuvent ajouter leurs propres outils LangChain en déposant un fichier `.py` dans `.openagent/tools/` ou `~/.openagent/tools/`.
 
+---
+
+#### Quand créer un plugin ?
+
+Un plugin est utile chaque fois que le comportement dont tu as besoin est **trop spécifique** pour être intégré dans le cœur de l'app, ou **trop personnel** pour être partagé par défaut. Voici les cas concrets :
+
+| Situation | Exemple de plugin |
+|---|---|
+| **Connecter un service externe** | Jira, Notion, Slack, Linear, GitHub API, Trello |
+| **Intégrer une base de données** | PostgreSQL, MongoDB, SQLite, Redis, Supabase |
+| **Ajouter un moteur de recherche** | Brave Search, SerpAPI, Perplexity, Algolia |
+| **Automatiser un workflow métier** | Déployer sur ton infra, envoyer un rapport, notifier une équipe |
+| **Traiter des formats de fichiers propriétaires** | `.dwg` AutoCAD, `.blend` Blender, fichiers DICOM, Excel complexe |
+| **Domaines spécialisés** | Calcul scientifique (NumPy/Scipy), finance (yfinance), jeux (Pygame), 3D |
+| **Wrapper CLI interne** | `kubectl`, `terraform`, `docker-compose`, tes propres scripts |
+| **Enrichir l'accès aux fichiers** | Parser du YAML avec schéma, lire des logs structurés |
+| **Ajouter de l'IA spécialisée** | Appeler un modèle de vision custom, un modèle audio (Whisper local) |
+| **Hooks et automations** | Lancer des tests après chaque modification, git commit auto |
+
+**Règle simple :** si tu te retrouves à copier-coller la même instruction dans chaque conversation ("pour déployer, fais `ssh prod ./deploy.sh`..."), c'est un plugin.
+
+---
+
+#### Ce que peut faire un plugin
+
+Un plugin est un fichier Python qui expose des **outils LangChain**. Un outil LangChain = une fonction que l'IA peut appeler autonomement avec les bons arguments. Le plugin peut faire **n'importe quoi** que Python peut faire :
+
+**Appels HTTP / APIs REST :**
+```python
+import requests
+from langchain_core.tools import tool
+
+@tool
+def search_github_issues(repo: str, query: str) -> str:
+    """Search GitHub issues in a repository."""
+    resp = requests.get(
+        f"https://api.github.com/search/issues",
+        params={"q": f"{query} repo:{repo}", "per_page": 5},
+        headers={"Authorization": f"token {os.environ['GITHUB_TOKEN']}"},
+    )
+    items = resp.json().get("items", [])
+    return "\n".join(f"#{i['number']} {i['title']} — {i['html_url']}" for i in items)
+```
+
+**Requêtes base de données :**
+```python
+@tool
+def query_database(sql: str) -> str:
+    """Execute a read-only SQL query on the project database."""
+    import sqlite3
+    conn = sqlite3.connect(".openagent/project.db")
+    cur = conn.execute(sql)
+    rows = cur.fetchmany(50)
+    cols = [d[0] for d in cur.description]
+    return "\n".join([str(cols)] + [str(r) for r in rows])
+```
+
+**Commandes système enrichies :**
+```python
+@tool
+def deploy_to_staging(service: str) -> str:
+    """Deploy a specific service to the staging environment."""
+    import subprocess
+    result = subprocess.run(
+        ["kubectl", "rollout", "restart", f"deployment/{service}", "-n", "staging"],
+        capture_output=True, text=True, timeout=60
+    )
+    return result.stdout + result.stderr
+```
+
+**Lecture d'état de l'app :**
+```python
+# Les plugins ont accès à l'état de l'app
+from openagenticskyzer.app.state import state
+
+@tool
+def get_current_folder_stats() -> str:
+    """Return stats about the currently open folder."""
+    import os
+    folder = state.active_folder
+    if not folder:
+        return "No folder open."
+    files = sum(1 for _ in os.walk(folder))
+    return f"Folder: {folder}\nSubdirs: {files}\nModel: {state.current_model}"
+```
+
+**Accès à la mémoire et au stockage :**
+```python
+from openagenticskyzer.app.storage import load_global_config, save_global_config
+from openagenticskyzer.context.project_memory import append_to_project_memory
+
+@tool
+def log_deployment(version: str, env: str) -> str:
+    """Log a deployment event to project memory."""
+    from datetime import datetime
+    append_to_project_memory(
+        state.active_folder,
+        f"Déployé v{version} en {env} le {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    )
+    return f"✓ Déploiement v{version} mémorisé."
+```
+
+---
+
+#### Contrat API complet du plugin
+
+Un fichier plugin peut exposer ces fonctions. Seule `get_tools()` est obligatoire :
+
+```python
+# ─────────────────────────────────────────────
+# OBLIGATOIRE
+# ─────────────────────────────────────────────
+
+def get_tools() -> list[BaseTool]:
+    """Retourne la liste des outils LangChain à injecter dans l'agent."""
+    return [mon_outil_1, mon_outil_2]
+
+
+# ─────────────────────────────────────────────
+# OPTIONNEL — métadonnées affichées dans l'UI
+# ─────────────────────────────────────────────
+
+def get_info() -> dict:
+    """Métadonnées du plugin affichées dans Settings > Outils."""
+    return {
+        "name": "Mon Plugin",           # Nom affiché dans l'UI
+        "version": "1.0.0",             # Version sémantique
+        "description": "Connecte X à l'agent.",
+        "author": "ton-nom",
+        "requires": ["requests>=2.28"], # Dépendances Python nécessaires
+        "config_keys": ["API_KEY_X"],   # Clés d'env attendues
+    }
+
+
+# ─────────────────────────────────────────────
+# OPTIONNEL — hooks de cycle de vie
+# ─────────────────────────────────────────────
+
+def on_load(folder: str | None) -> None:
+    """Appelé une fois quand le plugin est chargé (au démarrage ou changement de dossier).
+    Bon endroit pour vérifier les clés d'API, initialiser des connexions."""
+    api_key = os.environ.get("API_KEY_X")
+    if not api_key:
+        raise EnvironmentError("API_KEY_X manquant — plugin désactivé.")
+
+
+def on_folder_open(folder: str) -> None:
+    """Appelé quand l'utilisateur ouvre un dossier. Reçoit le chemin absolu."""
+    pass   # ex: charger un fichier de config spécifique au projet
+
+
+def on_session_end(folder: str) -> None:
+    """Appelé quand l'utilisateur change de dossier ou ferme l'app."""
+    pass   # ex: sauvegarder un cache, fermer des connexions
+```
+
+**Le loader appellera ces hooks** dans `loader.py` :
+
+```python
+# Appel des hooks après chargement
+if hasattr(module, "on_load"):
+    module.on_load(folder)
+```
+
+---
+
+#### Exemples de plugins complets
+
+**Plugin 1 — Météo en temps réel** (`~/.openagent/tools/weather.py`) :
+
+```python
+"""Plugin météo — données en temps réel via Open-Meteo (gratuit, sans clé API)."""
+import urllib.request
+import json
+from langchain_core.tools import tool
+
+
+def get_info():
+    return {
+        "name": "Météo Open-Meteo",
+        "version": "1.0.0",
+        "description": "Météo actuelle et prévisions via Open-Meteo (sans clé API).",
+        "author": "communauté",
+        "requires": [],
+    }
+
+
+def get_tools():
+    return [get_weather]
+
+
+@tool
+def get_weather(city: str) -> str:
+    """Get current weather and 3-day forecast for a city.
+    Args: city — city name (e.g. 'Paris', 'Tokyo')."""
+    # 1. Géocode la ville
+    geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1&language=fr"
+    with urllib.request.urlopen(geo_url, timeout=10) as r:
+        geo = json.loads(r.read())
+    if not geo.get("results"):
+        return f"Ville '{city}' introuvable."
+    loc = geo["results"][0]
+    lat, lon, name = loc["latitude"], loc["longitude"], loc["name"]
+
+    # 2. Météo actuelle + prévisions 3 jours
+    meteo_url = (
+        f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+        f"&current=temperature_2m,precipitation,windspeed_10m,weathercode"
+        f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum"
+        f"&timezone=auto&forecast_days=3"
+    )
+    with urllib.request.urlopen(meteo_url, timeout=10) as r:
+        data = json.loads(r.read())
+    cur = data["current"]
+    daily = data["daily"]
+    lines = [
+        f"🌍 {name} — Météo actuelle",
+        f"🌡️ {cur['temperature_2m']}°C  💨 {cur['windspeed_10m']} km/h  🌧️ {cur['precipitation']} mm",
+        "",
+        "📅 Prévisions 3 jours :"
+    ]
+    for i in range(3):
+        lines.append(
+            f"  {daily['time'][i]} : {daily['temperature_2m_min'][i]}°→{daily['temperature_2m_max'][i]}°C,"
+            f" pluie: {daily['precipitation_sum'][i]}mm"
+        )
+    return "\n".join(lines)
+```
+
+---
+
+**Plugin 2 — Connecteur Notion** (`.openagent/tools/notion.py`) :
+
+```python
+"""Plugin Notion — lire/créer des pages depuis l'agent.
+Nécessite : NOTION_API_KEY dans .env"""
+import os, json
+import urllib.request
+from langchain_core.tools import tool
+
+
+def get_info():
+    return {
+        "name": "Notion",
+        "version": "1.0.0",
+        "description": "Cherche et crée des pages Notion depuis l'agent.",
+        "config_keys": ["NOTION_API_KEY"],
+        "requires": [],
+    }
+
+def on_load(folder):
+    if not os.environ.get("NOTION_API_KEY"):
+        raise EnvironmentError("NOTION_API_KEY manquant dans .env")
+
+def get_tools():
+    return [search_notion, create_notion_page]
+
+
+def _notion_headers():
+    return {
+        "Authorization": f"Bearer {os.environ['NOTION_API_KEY']}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+
+
+@tool
+def search_notion(query: str) -> str:
+    """Search pages in Notion workspace by keyword."""
+    payload = json.dumps({"query": query, "page_size": 5}).encode()
+    req = urllib.request.Request(
+        "https://api.notion.com/v1/search",
+        data=payload, headers=_notion_headers(), method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        data = json.loads(r.read())
+    results = data.get("results", [])
+    if not results:
+        return "Aucun résultat Notion."
+    lines = []
+    for page in results:
+        title_prop = page.get("properties", {}).get("title") or page.get("properties", {}).get("Name", {})
+        title_parts = (title_prop.get("title") or title_prop.get("rich_text") or [])
+        title = "".join(t.get("plain_text", "") for t in title_parts) or "Sans titre"
+        url = page.get("url", "")
+        lines.append(f"• {title} — {url}")
+    return "\n".join(lines)
+
+
+@tool
+def create_notion_page(title: str, content: str, parent_page_id: str = "") -> str:
+    """Create a new page in Notion.
+    Args: title — page title, content — markdown text, parent_page_id — optional parent page ID."""
+    # ... implémentation complète dans la vraie version
+    return "Page Notion créée."
+```
+
+---
+
+**Plugin 3 — Lint & Tests auto** (`.openagent/tools/quality.py`) :
+
+```python
+"""Plugin qualité — lance les tests et le linter sur demande."""
+import subprocess
+from pathlib import Path
+from langchain_core.tools import tool
+from openagenticskyzer.app.state import state
+
+
+def get_info():
+    return {
+        "name": "Qualité Code",
+        "version": "1.0.0",
+        "description": "Lance pytest, ruff, mypy sur le projet courant.",
+    }
+
+def get_tools():
+    return [run_tests, run_linter, run_type_check]
+
+
+@tool
+def run_tests(path: str = "") -> str:
+    """Run pytest on the project or a specific path/file.
+    Args: path — optional specific test file or directory."""
+    cwd = state.active_folder or "."
+    target = path or "tests/"
+    result = subprocess.run(
+        ["python", "-m", "pytest", target, "-v", "--tb=short", "--no-header"],
+        cwd=cwd, capture_output=True, text=True, timeout=120, encoding="utf-8"
+    )
+    output = result.stdout + result.stderr
+    return output[-3000:] if len(output) > 3000 else output
+
+
+@tool
+def run_linter(fix: bool = False) -> str:
+    """Run ruff linter on the project. Set fix=True to auto-fix issues."""
+    cwd = state.active_folder or "."
+    cmd = ["python", "-m", "ruff", "check", "."]
+    if fix:
+        cmd.append("--fix")
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=60, encoding="utf-8")
+    return result.stdout + result.stderr or "✓ Aucun problème détecté."
+
+
+@tool
+def run_type_check() -> str:
+    """Run mypy type checker on the project."""
+    cwd = state.active_folder or "."
+    result = subprocess.run(
+        ["python", "-m", "mypy", ".", "--ignore-missing-imports"],
+        cwd=cwd, capture_output=True, text=True, timeout=90, encoding="utf-8"
+    )
+    return result.stdout + result.stderr
+```
+
+---
+
+#### Structure recommandée pour un plugin publié
+
+Un plugin conçu pour être partagé avec la communauté doit suivre cette structure :
+
+```
+openagent-plugin-notion/        ← dépôt GitHub nommé openagent-plugin-<nom>
+├── notion.py                   ← fichier principal (déposé dans ~/.openagent/tools/)
+├── README.md                   ← description, installation, config requise
+├── LICENSE                     ← MIT recommandé
+├── requirements.txt            ← dépendances Python à installer
+└── examples/
+    └── demo.md                 ← exemples de prompts pour utiliser le plugin
+```
+
+**Convention de nommage des dépôts GitHub :** `openagent-plugin-<nom>` (ex: `openagent-plugin-notion`, `openagent-plugin-jira`, `openagent-plugin-weather`).
+
+---
+
 **Nouveau fichier:** `openagenticskyzer/plugins/loader.py`
 
 ```python
@@ -1355,6 +1731,329 @@ def _tab_mcp():
 mcp = ["mcp>=1.0"]
 all = [..., "mcp>=1.0"]
 ```
+
+---
+
+### 5.3 Documentation communautaire (Modding Guide)
+
+**Objectif:** Créer une documentation complète qui permet à la communauté de comprendre le projet, de contribuer, et de créer des plugins de qualité sans aide extérieure. L'app ne vit que si la communauté peut s'approprier le système de plugins.
+
+---
+
+#### Fichiers à créer
+
+```
+docs/
+├── CONTRIBUTING.md              ← Comment contribuer au projet principal
+├── plugins/
+│   ├── PLUGIN_GUIDE.md          ← Guide complet pour créer un plugin
+│   ├── PLUGIN_API_REFERENCE.md  ← Référence de toutes les APIs accessibles
+│   └── examples/
+│       ├── weather/
+│       │   ├── weather.py       ← Plugin météo complet (voir 5.1)
+│       │   └── README.md
+│       ├── database/
+│       │   ├── sqlite_plugin.py ← Plugin base de données SQLite
+│       │   └── README.md
+│       └── quality/
+│           ├── quality.py       ← Plugin tests + lint (voir 5.1)
+│           └── README.md
+└── architecture/
+    ├── ARCHITECTURE.md          ← Vue d'ensemble technique du projet
+    └── AGENT_FLOW.md            ← Comment fonctionne le graph LangGraph
+```
+
+---
+
+#### Contenu de `docs/plugins/PLUGIN_GUIDE.md`
+
+Ce fichier est le document principal pour les moddeurs. Il doit couvrir :
+
+**Section 1 — Introduction**
+```markdown
+# Créer un plugin pour OpenAgentic Skyzer
+
+Un plugin est un fichier Python qui ajoute de nouveaux outils à l'agent IA.
+L'agent peut ensuite utiliser ces outils de manière autonome dans ses conversations.
+
+## Ce que tu peux faire avec un plugin
+
+- Connecter n'importe quelle API web (REST, GraphQL, WebSocket)
+- Interroger des bases de données (SQL, NoSQL, Redis...)
+- Lancer des commandes système enrichies
+- Intégrer des services SaaS (Notion, Jira, Slack, Linear, GitHub...)
+- Ajouter des domaines métier (finance, santé, science, jeux...)
+- Automatiser des workflows complets
+- Ajouter des modèles IA spécialisés (vision, audio, embedding)
+```
+
+**Section 2 — Démarrage rapide (Hello World)**
+```markdown
+## Ton premier plugin en 5 minutes
+
+1. Crée le dossier plugin global :
+   mkdir -p ~/.openagent/tools/
+
+2. Crée le fichier ~/.openagent/tools/hello.py :
+
+from langchain_core.tools import tool
+
+def get_tools():
+    return [hello_world]
+
+@tool
+def hello_world(name: str) -> str:
+    """Say hello to someone. Args: name — the person's name."""
+    return f"Bonjour {name}, je suis un plugin OpenAgentic !"
+
+3. Redémarre OpenAgentic Skyzer.
+4. Dans le chat, dis : "Dis bonjour à Alice."
+   → L'agent appellera automatiquement hello_world(name="Alice").
+```
+
+**Section 3 — Contrat API**
+```markdown
+## Fonctions reconnues par le loader
+
+| Fonction | Obligatoire | Description |
+|---|---|---|
+| get_tools() → list[BaseTool] | ✅ Oui | Retourne tes outils LangChain |
+| get_info() → dict | Non | Métadonnées pour l'UI Settings |
+| on_load(folder) | Non | Appelé au chargement (vérifie les clés API) |
+| on_folder_open(folder) | Non | Appelé à l'ouverture d'un dossier |
+| on_session_end(folder) | Non | Appelé à la fermeture/changement |
+```
+
+**Section 4 — Écrire un bon outil LangChain**
+```markdown
+## Écrire un outil efficace
+
+L'IA choisit QUEL outil appeler en lisant uniquement la docstring.
+Une bonne docstring = l'IA utilise l'outil au bon moment.
+
+# ❌ Mauvais — docstring vague
+@tool
+def do_stuff(x: str) -> str:
+    """Does stuff."""
+    ...
+
+# ✅ Bon — docstring précise avec quand/comment utiliser
+@tool
+def search_jira_tickets(query: str, project: str = "ALL", status: str = "open") -> str:
+    """Search Jira tickets by keyword in a specific project.
+    Use when the user asks about tasks, bugs, or issues in the project tracker.
+    Args:
+        query — search keywords (e.g. 'login bug', 'performance')
+        project — Jira project key (e.g. 'BACKEND', 'ALL' for all projects)
+        status — 'open', 'closed', or 'all'
+    Returns: list of matching tickets with ID, title, assignee, and URL."""
+    ...
+
+Règles pour les docstrings :
+- Commence par un verbe d'action ("Search", "Create", "Get", "Send")
+- Inclus "Use when..." pour guider le choix de l'IA
+- Décris chaque argument et sa valeur possible
+- Précise le format de la valeur retournée
+```
+
+**Section 5 — Accès aux APIs internes**
+```markdown
+## APIs internes disponibles
+
+Ton plugin peut importer et utiliser ces modules :
+
+### État de l'application
+from openagenticskyzer.app.state import state
+
+state.active_folder   # Dossier actuellement ouvert (str | None)
+state.current_model   # Modèle LLM actif (str | None)
+state.current_provider  # Provider actif ("ollama", "groq"...)
+state.messages        # Historique de la conversation
+
+### Persistance
+from openagenticskyzer.app.storage import load_global_config, save_global_config
+
+cfg = load_global_config()    # dict — config globale de l'app
+# Lire/écrire ta propre clé dans la config :
+cfg["mon_plugin_setting"] = "valeur"
+save_global_config(cfg)
+
+### Mémoire projet
+from openagenticskyzer.context.project_memory import (
+    load_project_memory,       # → str
+    append_to_project_memory,  # (folder, facts) → None
+)
+
+### Notifications utilisateur
+from nicegui import ui
+ui.notify("Message", type="positive")  # "positive", "negative", "warning", "info"
+```
+
+**Section 6 — Variables d'environnement et configuration**
+```markdown
+## Gérer les clés API
+
+### Option A — .env dans le dossier projet
+Crée un fichier .env à la racine de ton dossier :
+NOTION_API_KEY=secret_...
+MY_DB_URL=postgresql://...
+
+OpenAgentic charge automatiquement les .env à l'ouverture d'un dossier.
+Accès dans le plugin : os.environ.get("NOTION_API_KEY")
+
+### Option B — .env global (~/.openagent/.env)
+Pour les clés qui s'appliquent à tous tes projets.
+
+### Vérifier dans on_load()
+def on_load(folder):
+    key = os.environ.get("NOTION_API_KEY")
+    if not key:
+        raise EnvironmentError(
+            "NOTION_API_KEY manquant. Ajoute-le dans ton .env : NOTION_API_KEY=secret_..."
+        )
+```
+
+**Section 7 — Publier son plugin**
+```markdown
+## Partager ton plugin avec la communauté
+
+### Convention de nommage
+Ton dépôt GitHub doit s'appeler : openagent-plugin-<nom>
+Exemples : openagent-plugin-notion, openagent-plugin-jira, openagent-plugin-weather
+
+### Structure minimale du dépôt
+openagent-plugin-notion/
+├── notion.py          ← Le plugin (à copier dans ~/.openagent/tools/)
+├── README.md          ← Description + installation
+├── requirements.txt   ← Dépendances pip (ex: requests>=2.28)
+└── examples/
+    └── prompts.md     ← Exemples de prompts pour utiliser le plugin
+
+### README.md recommandé
+# openagent-plugin-notion
+Connecte Notion à OpenAgentic Skyzer. Cherche et crée des pages depuis le chat.
+
+## Installation
+pip install requests  # si nécessaire
+cp notion.py ~/.openagent/tools/
+
+## Configuration
+Ajoute dans ton .env :
+NOTION_API_KEY=secret_...  # obtenu sur https://www.notion.so/my-integrations
+
+## Outils disponibles
+- search_notion(query) — Cherche des pages par mot-clé
+- create_notion_page(title, content) — Crée une nouvelle page
+
+## Exemples
+"Cherche mes notes sur le projet Alpha dans Notion"
+"Crée une page Notion avec le compte-rendu de cette session"
+
+### Listing communautaire
+Une fois publié, ajoute ton plugin à la liste communautaire :
+→ Ouvre une PR sur openagenticskyzer avec une ligne dans docs/plugins/COMMUNITY_REGISTRY.md
+```
+
+---
+
+#### Contenu de `docs/plugins/PLUGIN_API_REFERENCE.md`
+
+Ce fichier est la référence exhaustive de toutes les APIs internes disponibles pour les plugins, avec signature et description de chaque fonction. Structure :
+
+```markdown
+# Plugin API Reference
+
+## openagenticskyzer.app.state
+## openagenticskyzer.app.storage
+## openagenticskyzer.context.project_memory
+## openagenticskyzer.tools.crud_tools (si besoin de réutiliser)
+## openagenticskyzer.tools.internet_search
+## Callbacks NiceGUI disponibles
+## Variables d'environnement connues
+```
+
+---
+
+#### Contenu de `docs/plugins/COMMUNITY_REGISTRY.md`
+
+```markdown
+# Registre des plugins communautaires
+
+Liste des plugins créés par la communauté OpenAgentic Skyzer.
+Pour ajouter le tien : ouvre une PR en ajoutant une ligne dans ce fichier.
+
+| Plugin | Auteur | Description | Lien |
+|---|---|---|---|
+| weather | communauté | Météo temps réel (Open-Meteo, sans clé API) | [→](https://github.com/.../openagent-plugin-weather) |
+| quality | communauté | Tests pytest + lint ruff + mypy | [→](https://github.com/.../openagent-plugin-quality) |
+```
+
+---
+
+#### Contenu de `docs/architecture/ARCHITECTURE.md`
+
+Pour les contributeurs qui veulent comprendre le projet en profondeur :
+
+```markdown
+# Architecture OpenAgentic Skyzer
+
+## Vue d'ensemble
+
+openagenticskyzer/
+├── agent.py          ← Point d'entrée CLI + build_agent()
+├── app/              ← Interface NiceGUI (desktop)
+│   ├── main.py       ← Page NiceGUI, tray, timer
+│   ├── state.py      ← Singleton AppState (partagé entre composants)
+│   ├── storage.py    ← Config JSON + sessions
+│   └── components/   ← Composants UI (chat, sidebar, settings...)
+├── graph/            ← LangGraph workflow
+│   ├── workflow.py   ← build_graph() — START → agent → tools → END
+│   ├── nodes.py      ← Logique des noeuds (forcing search, coercion)
+│   └── state.py      ← AgentState (messages: Annotated[list, add_messages])
+├── tools/            ← Outils LangChain
+├── context/          ← Gestion de contexte (trim, persist, mémoire)
+├── plugins/          ← Chargement dynamique des plugins
+├── prompts/          ← System prompts
+└── permissions.py    ← Système de permissions 3 niveaux
+
+## Flux d'une conversation
+
+1. Utilisateur tape un message → input_bar._send_message()
+2. Pré-fetch web (si question factuelle) → internet_search + fetch_url
+3. build_agent() construit le graph LangGraph avec les outils
+4. agent.astream_events() → tokens streamés en temps réel
+5. Nœud agent → appelle le LLM avec l'historique trimmé
+6. Si tool_calls → nœud tools → PermissionManager → exécution
+7. Boucle agent → tools jusqu'à pas de tool_calls → END
+8. Résultat affiché + sauvegardé dans la mémoire projet
+
+## Comment ajouter un outil natif (core)
+
+1. Créer la fonction @tool dans openagenticskyzer/tools/mon_outil.py
+2. L'importer dans agent.py et l'ajouter à _ALL_TOOLS
+3. Si permission nécessaire : l'ajouter dans permissions._RESTRICTED_TOOLS
+4. Mettre à jour le system prompt dans prompts/prompt.py
+5. Écrire les tests dans tests/test_mon_outil.py
+```
+
+---
+
+#### Implémentation — fichiers à créer pour la Phase 5.3
+
+Ces fichiers sont de la **documentation pure** (pas de code Python). Ils doivent être écrits et committés :
+
+| Fichier | Contenu |
+|---|---|
+| `docs/CONTRIBUTING.md` | Guide de contribution au projet principal (fork, PR, tests, style) |
+| `docs/plugins/PLUGIN_GUIDE.md` | Guide complet moddeur (toutes les 7 sections ci-dessus) |
+| `docs/plugins/PLUGIN_API_REFERENCE.md` | Référence exhaustive des APIs internes |
+| `docs/plugins/COMMUNITY_REGISTRY.md` | Liste des plugins communautaires (vide au départ) |
+| `docs/plugins/examples/weather/weather.py` | Plugin météo complet (exemple officiel) |
+| `docs/plugins/examples/weather/README.md` | Readme du plugin météo |
+| `docs/plugins/examples/quality/quality.py` | Plugin tests+lint (exemple officiel) |
+| `docs/plugins/examples/quality/README.md` | Readme du plugin qualité |
+| `docs/architecture/ARCHITECTURE.md` | Vue d'ensemble technique pour contributeurs |
+| `docs/architecture/AGENT_FLOW.md` | Détail du graph LangGraph (diagramme + explication) |
 
 ---
 

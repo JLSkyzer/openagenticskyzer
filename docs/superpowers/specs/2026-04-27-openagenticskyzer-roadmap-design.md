@@ -3847,11 +3847,375 @@ all = [..., "fastapi>=0.115", "uvicorn>=0.30"]
 
 ---
 
+## Phase 14 — OPENAGENT.md : Instructions Projet Persistantes
+
+**Objectif :** Permettre à l'utilisateur de définir des instructions permanentes par projet dans un fichier `OPENAGENT.md` (ou `CLAUDE.md` en fallback). L'IA lit ce fichier avant chaque action pour éviter les erreurs répétitives et s'adapter au contexte spécifique du dépôt.
+
+**Principe :** Équivalent exact du `CLAUDE.md` de Claude Code, mais natif à OpenAgentic Skyzer. Chaque dossier peut avoir son propre fichier d'instructions. Si `OPENAGENT.md` n'est pas trouvé, le système cherche automatiquement `CLAUDE.md` comme alternative.
+
+---
+
+### 14.1 — Chargement des instructions projet
+
+**Nouveau fichier : `context/project_instructions.py`**
+
+```python
+from pathlib import Path
+
+_FILENAMES = ["OPENAGENT.md", "CLAUDE.md"]
+
+def load_project_instructions(folder: str | None) -> tuple[str | None, str | None]:
+    """Retourne (contenu, nom_fichier) ou (None, None) si absent."""
+    if not folder:
+        return None, None
+    base = Path(folder)
+    for name in _FILENAMES:
+        path = base / name
+        if path.is_file():
+            try:
+                content = path.read_text(encoding="utf-8").strip()
+                return (content, name) if content else (None, None)
+            except OSError:
+                return None, None
+    return None, None
+```
+
+**Règles de priorité :**
+1. `OPENAGENT.md` est toujours cherché en premier
+2. `CLAUDE.md` n'est utilisé que si `OPENAGENT.md` est absent
+3. Les deux fichiers coexistent sans conflit — seul le premier trouvé est chargé
+
+---
+
+### 14.2 — Injection dans l'historique de conversation
+
+**Modification : `app/components/input_bar.py` — fonction `_send_message()`**
+
+Les instructions projet sont injectées comme message système **avant** toute autre injection (mémoire, contexte). Elles sont rechargées à chaque envoi pour refléter des modifications du fichier en cours de session.
+
+```python
+from openagenticskyzer.context.project_instructions import load_project_instructions
+
+async def _send_message(text: str, ...):
+    cfg = load_global_config()
+    messages = list(state.messages)
+
+    # 1. Instructions projet (priorité maximale)
+    instructions, instr_file = load_project_instructions(state.active_folder)
+    if instructions:
+        messages = [
+            {
+                "role": "system",
+                "content": f"[INSTRUCTIONS PROJET — {instr_file}]\n\n{instructions}"
+            }
+        ] + messages
+
+    # 2. Injection mémoire projet (Phase 7)
+    proj_mem = load_project_memory(state.active_folder)
+    if proj_mem:
+        messages = [{"role": "system", "content": f"[MÉMOIRE PROJET]\n{proj_mem}"}] + messages
+
+    # ... reste de la logique d'envoi
+```
+
+**Ordre d'injection final (du plus prioritaire au moins prioritaire) :**
+```
+[system] INSTRUCTIONS PROJET (OPENAGENT.md / CLAUDE.md)
+[system] MÉMOIRE PROJET (Phase 7)
+[system] MÉMOIRE GLOBALE (Phase 7)
+[user/assistant] historique conversation
+[user] message courant
+```
+
+---
+
+### 14.3 — Outil agent : lire les instructions à la demande
+
+**Modification : `tools/memory_tools.py`** (ou nouveau fichier `tools/project_tools.py`)
+
+L'agent peut relire explicitement les instructions projet pendant une conversation pour vérifier ses contraintes.
+
+```python
+from langchain_core.tools import tool
+from openagenticskyzer.context.project_instructions import load_project_instructions
+from openagenticskyzer.app.state import state
+
+@tool
+def read_project_instructions() -> str:
+    """Lit le fichier OPENAGENT.md (ou CLAUDE.md en fallback) du dossier actif.
+    Retourne les instructions ou indique l'absence de fichier."""
+    content, filename = load_project_instructions(state.active_folder)
+    if content:
+        return f"[{filename}]\n\n{content}"
+    return "Aucun fichier OPENAGENT.md ou CLAUDE.md trouvé dans le dossier actif."
+```
+
+**Enregistrement dans `agent.py` :**
+
+```python
+from openagenticskyzer.tools.project_tools import read_project_instructions
+
+# Dans build_agent(), ajouter à la liste des tools :
+tools = [
+    ...existing tools...,
+    read_project_instructions,
+]
+```
+
+**Mise à jour de `prompts/prompt.py` :**
+
+```python
+PROJECT_INSTRUCTIONS_SECTION = """
+## INSTRUCTIONS PROJET
+
+Un fichier `OPENAGENT.md` (ou `CLAUDE.md` en fallback) peut définir des contraintes
+spécifiques au dossier actif. Ces instructions sont **injectées automatiquement** en
+début de chaque message système.
+
+- Respecte TOUJOURS ces instructions en priorité absolue
+- Si tu doutes d'une contrainte, utilise `read_project_instructions` pour relire le fichier
+- Ces instructions peuvent interdire certaines actions, imposer un style de code, ou
+  définir des conventions spécifiques au projet
+"""
+```
+
+---
+
+### 14.4 — Indicateur UI dans la barre de contexte
+
+**Modification : `app/components/context_bar.py`**
+
+Quand un fichier d'instructions est actif, afficher un badge discret dans la barre de contexte entre le compteur tokens et les autres infos.
+
+```python
+from openagenticskyzer.context.project_instructions import load_project_instructions
+
+@ui.refreshable
+def context_bar():
+    cfg = load_global_config()
+    if not cfg.get("show_context_bar", True):
+        return
+
+    pct = min(100.0, state.context_pct)
+    tokens = state.context_tokens
+    color = "bg-purple-600" if pct < 70 else ("bg-yellow-500" if pct < 90 else "bg-red-500")
+
+    # Vérification fichier instructions actif
+    _, instr_file = load_project_instructions(state.active_folder)
+
+    with ui.row().classes("w-full items-center gap-2 px-6 py-1").style(
+        "background:#0f0f0f;border-top:1px solid #1e1e1e;min-height:28px;flex-shrink:0"
+    ):
+        ui.label("🧠 Contexte").classes("text-xs text-gray-600")
+        with ui.element("div").classes("flex-1 h-1 rounded bg-gray-800").style("max-width:120px"):
+            ui.element("div").classes(f"h-1 rounded {color}").style(f"width:{pct:.0f}%")
+        ui.label(f"{pct:.0f}% · ~{tokens:,} tokens").classes("text-xs text-gray-600")
+
+        # Badge OPENAGENT.md / CLAUDE.md
+        if instr_file:
+            ui.badge(f"📋 {instr_file}", color="purple").classes(
+                "text-xs px-2 py-0.5 rounded border border-purple-800 bg-purple-950 text-purple-300"
+            ).tooltip(f"Instructions projet actives depuis {instr_file}")
+
+        if pct >= cfg.get("compact_threshold", 70):
+            ui.button("⚡ Auto-compact", on_click=trigger_compact).classes(
+                "text-xs text-purple-400 border border-purple-900 bg-transparent px-2 py-0.5 ml-auto"
+            )
+```
+
+Le badge `📋 OPENAGENT.md` (ou `📋 CLAUDE.md`) apparaît uniquement si le fichier est présent. Il disparaît automatiquement si le dossier actif change et ne contient pas de fichier d'instructions.
+
+---
+
+### 14.5 — Paramètre settings : activer/désactiver le fallback CLAUDE.md
+
+**Modification : `app/components/settings.py`** — onglet "Général"
+
+```python
+with ui.column().classes("gap-3"):
+    ui.label("Instructions Projet").classes("text-sm text-gray-400 font-semibold mt-2")
+
+    # Toggle fallback CLAUDE.md
+    with ui.row().classes("items-center gap-3"):
+        claude_fallback = cfg.get("claude_md_fallback", True)
+        sw = ui.switch("Utiliser CLAUDE.md comme fallback si OPENAGENT.md absent",
+                       value=claude_fallback)
+        sw.on("update:model-value",
+              lambda e: _save_cfg("claude_md_fallback", e.args))
+        ui.tooltip("Si désactivé, seul OPENAGENT.md est lu. CLAUDE.md est ignoré.").classes(
+            "text-xs"
+        )
+
+    # Bouton "Créer OPENAGENT.md"
+    ui.button("📝 Créer OPENAGENT.md dans le dossier actif",
+              on_click=_create_openagent_md).classes(
+        "text-xs text-purple-400 border border-purple-800 bg-transparent px-3 py-1"
+    )
+```
+
+**Handler `_create_openagent_md()` :**
+
+```python
+from pathlib import Path
+from openagenticskyzer.app.state import state
+
+async def _create_openagent_md():
+    if not state.active_folder:
+        ui.notify("Aucun dossier actif.", type="warning")
+        return
+    path = Path(state.active_folder) / "OPENAGENT.md"
+    if path.exists():
+        ui.notify("OPENAGENT.md existe déjà.", type="info")
+        return
+    template = """# Instructions Projet — OpenAgentic Skyzer
+
+## Comportement général
+<!-- Décris ici les règles générales que l'IA doit respecter dans ce projet -->
+
+## Conventions de code
+<!-- Ex: utilise toujours des f-strings, jamais de print() en dehors des tests -->
+
+## Fichiers à ne jamais modifier
+<!-- Ex: ne touche jamais à config/prod.json sans confirmation explicite -->
+
+## Actions interdites
+<!-- Ex: ne commit jamais sur la branche main directement -->
+
+## Contexte du projet
+<!-- Brève description du projet pour orienter l'IA -->
+"""
+    path.write_text(template, encoding="utf-8")
+    ui.notify(f"OPENAGENT.md créé dans {state.active_folder}", type="positive")
+```
+
+---
+
+### 14.6 — Mise à jour de `load_project_instructions` pour respecter le setting
+
+```python
+from openagenticskyzer.app.storage import load_global_config
+
+_FILENAMES_FULL = ["OPENAGENT.md", "CLAUDE.md"]
+_FILENAMES_STRICT = ["OPENAGENT.md"]
+
+def load_project_instructions(folder: str | None) -> tuple[str | None, str | None]:
+    """Retourne (contenu, nom_fichier) selon la config claude_md_fallback."""
+    if not folder:
+        return None, None
+    cfg = load_global_config()
+    filenames = _FILENAMES_FULL if cfg.get("claude_md_fallback", True) else _FILENAMES_STRICT
+    base = Path(folder)
+    for name in filenames:
+        path = base / name
+        if path.is_file():
+            try:
+                content = path.read_text(encoding="utf-8").strip()
+                return (content, name) if content else (None, None)
+            except OSError:
+                return None, None
+    return None, None
+```
+
+---
+
+### 14.7 — Rechargement automatique sur changement de dossier
+
+**Modification : `app/components/sidebar.py`** — dans le handler `_open_folder()`
+
+```python
+async def _open_folder(folder_path: str):
+    state.active_folder = folder_path
+    # ... chargement index, mémoire, etc. ...
+
+    # Notification si fichier d'instructions trouvé
+    from openagenticskyzer.context.project_instructions import load_project_instructions
+    content, filename = load_project_instructions(folder_path)
+    if content:
+        ui.notify(
+            f"📋 {filename} chargé — instructions projet actives",
+            type="info",
+            timeout=3000
+        )
+
+    context_bar.refresh()
+```
+
+---
+
+### Tests Phase 14
+
+**Fichier : `tests/test_project_instructions.py`**
+
+```python
+import pytest
+from pathlib import Path
+import tempfile
+
+from openagenticskyzer.context.project_instructions import load_project_instructions
+
+
+def test_loads_openagent_md(tmp_path):
+    (tmp_path / "OPENAGENT.md").write_text("Ne modifie pas main.py", encoding="utf-8")
+    content, filename = load_project_instructions(str(tmp_path))
+    assert content == "Ne modifie pas main.py"
+    assert filename == "OPENAGENT.md"
+
+
+def test_falls_back_to_claude_md(tmp_path, monkeypatch):
+    (tmp_path / "CLAUDE.md").write_text("Toujours écrire des tests", encoding="utf-8")
+    # Simule config avec fallback activé
+    monkeypatch.setattr(
+        "openagenticskyzer.context.project_instructions.load_global_config",
+        lambda: {"claude_md_fallback": True}
+    )
+    content, filename = load_project_instructions(str(tmp_path))
+    assert content == "Toujours écrire des tests"
+    assert filename == "CLAUDE.md"
+
+
+def test_openagent_md_takes_priority(tmp_path, monkeypatch):
+    (tmp_path / "OPENAGENT.md").write_text("Instructions OPENAGENT", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text("Instructions CLAUDE", encoding="utf-8")
+    monkeypatch.setattr(
+        "openagenticskyzer.context.project_instructions.load_global_config",
+        lambda: {"claude_md_fallback": True}
+    )
+    content, filename = load_project_instructions(str(tmp_path))
+    assert filename == "OPENAGENT.md"
+    assert content == "Instructions OPENAGENT"
+
+
+def test_no_fallback_ignores_claude_md(tmp_path, monkeypatch):
+    (tmp_path / "CLAUDE.md").write_text("Instructions CLAUDE", encoding="utf-8")
+    monkeypatch.setattr(
+        "openagenticskyzer.context.project_instructions.load_global_config",
+        lambda: {"claude_md_fallback": False}
+    )
+    content, filename = load_project_instructions(str(tmp_path))
+    assert content is None
+    assert filename is None
+
+
+def test_returns_none_on_missing_folder():
+    content, filename = load_project_instructions(None)
+    assert content is None
+    assert filename is None
+
+
+def test_returns_none_on_empty_file(tmp_path):
+    (tmp_path / "OPENAGENT.md").write_text("   \n  ", encoding="utf-8")
+    content, filename = load_project_instructions(str(tmp_path))
+    assert content is None
+```
+
+---
+
 ## Dépendances entre phases
 
 ```
 Phase 1  (Streaming + UX)        → Aucune dépendance, commence immédiatement
 Phase 2  (Git + Upload/Vision)   → Aucune dépendance, parallèle avec Phase 1
+Phase 14 (OPENAGENT.md)          → Aucune dépendance, peut démarrer immédiatement
 Phase 7  (Mémoire)               → Phase 1 recommandée (LLM compact utilise astream)
 Phase 3  (Artifacts + Prompts)   → Phase 1 recommandée (streaming + affichage)
 Phase 8  (UX Avancée)            → Phase 1 requise (streaming avant édition/tabs)
@@ -3865,10 +4229,10 @@ Phase 6  (Multi-agent)           → Phase 5 recommandée (plugins pour les sous
 Phase 13 (API Server)            → Phase 6 recommandée (API expose le multi-agent)
 ```
 
-**Ordre recommandé:** 1 → 2 → 7 → 3 → 8 → 9 → 4 → 5 → 10 → 11 → 12 → 6 → 13
+**Ordre recommandé:** 14 → 1 → 2 → 7 → 3 → 8 → 9 → 4 → 5 → 10 → 11 → 12 → 6 → 13
 
 **Phases parallélisables:**
-- Sprint A : 1 + 2 (fondations simultanées)
+- Sprint A : 14 + 1 + 2 (fondations + instructions projet simultanées)
 - Sprint B : 7 + 11 (mémoire + voice, indépendantes)
 - Sprint C : 3 + 8 + 9 (UX enrichie)
 - Sprint D : 4 + 5 + 12 (intelligence + plugins + analytics)
@@ -3936,6 +4300,7 @@ all   = [
 | `tools/delegation.py` | 6.1 | delegate_task pour sous-agents |
 | `tools/memory_tools.py` | 7 | save_memory, read_memory, forget_memory |
 | `context/project_memory.py` | 7 | Mémoire projet + globale persistante |
+| `context/project_instructions.py` | 14 | Chargement OPENAGENT.md / CLAUDE.md fallback |
 | `context/audit_log.py` | 12.3 | Audit log JSONL de toutes les actions |
 | `indexer/__init__.py` | 4 | Module indexation sémantique |
 | `indexer/embedder.py` | 4 | Embeddings sentence-transformers local |
@@ -3951,6 +4316,7 @@ all   = [
 | `docs/plugins/PLUGIN_API_REFERENCE.md` | 5.3 | Référence APIs internes |
 | `docs/plugins/COMMUNITY_REGISTRY.md` | 5.3 | Registre communautaire plugins |
 | `docs/architecture/ARCHITECTURE.md` | 5.3 | Architecture technique pour contributeurs |
+| `tests/test_project_instructions.py` | 14 | Tests unitaires chargement OPENAGENT.md / CLAUDE.md |
 
 ## Résumé des fichiers modifiés
 
@@ -3959,22 +4325,22 @@ all   = [
 | `app/state.py` | 1,2,4,6,7,8,9,10,11,12 | +streaming_content, +is_streaming, +attached_files, +index_status, +sub_agents, +branches, +tabs, +compare_mode, +compare_results, +preview_url, +show_terminal, +show_preview, +session_cost_usd, +current_persona_id |
 | `app/main.py` | 1,3,5.3,8,9 | +highlight.js, +mermaid.js, +xterm.js CDN, +artifact_panel, +preview_panel, +terminal_panel, +command_palette dans layout |
 | `app/components/chat.py` | 1,3.3,8.1,8.3,9.2 | +streaming render, +bouton export, +bouton edit/régénérer, +bouton fork, +diff accept/reject |
-| `app/components/input_bar.py` | 1,2.2,3.2,8.1,11 | +astream_events, +upload button, +prompt picker, +mic button |
-| `app/components/sidebar.py` | 2.1,4.2 | +git status widget, +knowledge section |
-| `app/components/context_bar.py` | 7.1,12.1 | +compaction LLM réelle, +affichage coût session |
-| `app/components/settings.py` | 1.3,5,7.5,10.1,12.2,12.3 | +notifs toggle, +onglets Outils/MCP/Mémoire/Analytics/Audit, +toggle API server |
+| `app/components/input_bar.py` | 1,2.2,3.2,8.1,11,14.2 | +astream_events, +upload button, +prompt picker, +mic button, +injection instructions projet |
+| `app/components/sidebar.py` | 2.1,4.2,14.7 | +git status widget, +knowledge section, +notif OPENAGENT.md à l'ouverture dossier |
+| `app/components/context_bar.py` | 7.1,12.1,14.4 | +compaction LLM réelle, +affichage coût session, +badge OPENAGENT.md |
+| `app/components/settings.py` | 1.3,5,7.5,10.1,12.2,12.3,14.5 | +notifs toggle, +onglets Outils/MCP/Mémoire/Analytics/Audit, +toggle API server, +toggle fallback CLAUDE.md, +bouton créer OPENAGENT.md |
 | `app/components/model_modal.py` | 10.1 | +sélecteur de persona |
 | `app/storage.py` | 3.2,5.2,7 | +load_prompts, +save_prompts, +load_mcp_config, +webhook_triggers |
-| `agent.py` | 2.1,4,5,6,7,10,13 | +git_tools, +index_tools, +plugin_tools, +mcp_tools, +delegate_task, +memory_tools, +persona_id param, +folder_cwd param |
+| `agent.py` | 2.1,4,5,6,7,10,13,14.3 | +git_tools, +index_tools, +plugin_tools, +mcp_tools, +delegate_task, +memory_tools, +read_project_instructions, +persona_id param, +folder_cwd param |
 | `graph/nodes.py` | 12.3 | +log_action après chaque tool call |
 | `permissions.py` | 2.1 | +git_commit, +git_push, +git_checkout dans _RESTRICTED_TOOLS |
-| `prompts/prompt.py` | 2.1,4,6,7 | +section GIT, +semantic_search, +knowledge_search, +MEMORY TOOLS |
+| `prompts/prompt.py` | 2.1,4,6,7,14.3 | +section GIT, +semantic_search, +knowledge_search, +MEMORY TOOLS, +PROJECT_INSTRUCTIONS_SECTION |
 | `pyproject.toml` | 1,2,4,5,11,13 | +plyer, +pypdf, +chromadb, +sentence-transformers, +mcp, +faster-whisper, +sounddevice, +fastapi, +uvicorn, +websockets |
 | `requirements.txt` | 1,2 | +plyer, +pypdf |
 
 ---
 
-## Vue d'ensemble — 13 phases
+## Vue d'ensemble — 14 phases
 
 | # | Phase | Features clés | Impact | Difficulté |
 |---|---|---|---|---|
@@ -3991,11 +4357,12 @@ all   = [
 | 11 | **Voice Input** | Whisper.cpp local, dictée hors ligne, bouton micro | 🟡 Différenciateur | Moyenne |
 | 12 | **Analytics** | Coûts API en temps réel, dashboard usage, audit log | 🟡 Valeur long terme | Faible |
 | 13 | **API & Webhooks** | REST API `POST /chat`, webhooks HMAC, intégration externe | 🔵 Écosystème | Moyenne |
+| 14 | **OPENAGENT.md** | Instructions projet persistantes, fallback CLAUDE.md, badge UI, outil agent | 🔴 Critique | Faible |
 
-**Total :** ~35 nouveaux fichiers Python, ~15 fichiers modifiés, 4 nouveaux groupes de dépendances optionnelles.
+**Total :** ~36 nouveaux fichiers Python, ~15 fichiers modifiés, 4 nouveaux groupes de dépendances optionnelles.
 
 **Sprints recommandés (parallélisation maximale) :**
-- **Sprint A** (semaine 1-2) : Phase 1 + Phase 2
+- **Sprint A** (semaine 1-2) : Phase 14 + Phase 1 + Phase 2
 - **Sprint B** (semaine 2-3) : Phase 7 + Phase 11
 - **Sprint C** (semaine 3-4) : Phase 3 + Phase 8 + Phase 9
 - **Sprint D** (semaine 4-6) : Phase 4 + Phase 5 + Phase 12

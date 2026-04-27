@@ -123,6 +123,58 @@ def _tab_general(cfg: dict):
                     "bg-gray-900 border border-gray-700 text-xs text-gray-300 hover:border-purple-500 mt-1"
                 )
 
+        # ── HuggingFace ────────────────────────────────────────────────────────
+        _section("HuggingFace")
+        with _group():
+            with ui.column().classes("px-4 py-3 gap-2"):
+                ui.label("Token d'accès HuggingFace").classes("text-xs text-gray-300 font-medium")
+                ui.label(
+                    "Accélère les téléchargements de modèles et lève les limites de débit du CDN. "
+                    "Créez-en un (lecture seule) sur huggingface.co → Settings → Access Tokens."
+                ).classes("text-xs text-gray-600")
+
+                with ui.row().classes("items-center gap-2 w-full mt-1"):
+                    token_inp = ui.input(
+                        placeholder="hf_…",
+                        value=cfg.get("hf_token", ""),
+                    ).props("outlined dense clearable").classes(
+                        "flex-1 text-xs font-mono"
+                    ).style("background:#1a1a1a")
+                    token_inp.bind_value_to(cfg, "hf_token")
+
+                    # Bouton afficher/masquer
+                    _show = {"v": False}
+                    def _toggle_show():
+                        _show["v"] = not _show["v"]
+                        token_inp.props("type=text" if _show["v"] else "type=password")
+                    ui.button("👁", on_click=_toggle_show).classes(
+                        "w-8 h-8 bg-gray-900 border border-gray-700 text-xs text-gray-400 rounded"
+                    ).props("flat dense")
+
+                token_inp.props("type=password")
+
+                def _test_token():
+                    tok = (cfg.get("hf_token") or "").strip()
+                    if not tok:
+                        ui.notify("Token vide.", type="warning")
+                        return
+                    import urllib.request as _ur
+                    try:
+                        req = _ur.Request(
+                            "https://huggingface.co/api/whoami-v2",
+                            headers={"Authorization": f"Bearer {tok}"},
+                        )
+                        import json as _json
+                        with _ur.urlopen(req, timeout=8) as r:
+                            info = _json.loads(r.read())
+                        ui.notify(f"✅ Connecté en tant que {info.get('name', '?')}", type="positive")
+                    except Exception as exc:
+                        ui.notify(f"❌ Token invalide : {exc}", type="negative")
+
+                ui.button("Tester le token", on_click=_test_token).classes(
+                    "bg-gray-900 border border-gray-700 text-xs text-gray-300 hover:border-purple-500 mt-1 self-start"
+                )
+
 
 # ── Onglet Contexte ───────────────────────────────────────────────────────────
 

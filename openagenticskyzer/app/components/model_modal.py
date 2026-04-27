@@ -230,6 +230,12 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
             # ── Pré-résolution : taille totale + support Range + token ──────────
             url = f"https://huggingface.co/{hf_id}/resolve/main/{filename}"
             _hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+            if not _hf_token:
+                from openagenticskyzer.app.storage import load_global_config as _lcfg
+                _hf_token = (_lcfg().get("hf_token") or "").strip() or None
+            if _hf_token:
+                os.environ["HF_TOKEN"] = _hf_token
+                os.environ["HUGGING_FACE_HUB_TOKEN"] = _hf_token
             _auth_hdr: dict = {"Authorization": f"Bearer {_hf_token}"} if _hf_token else {}
             _size = 0
             _ranges = False

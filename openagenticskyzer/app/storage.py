@@ -61,6 +61,7 @@ DEFAULT_GLOBAL_CONFIG: dict = {
     "files_ask": False,
     "search_ask": False,
     "data_dir": "",  # vide = ~/.openagent/
+    "hf_token": "",
 }
 
 DEFAULT_FOLDER_CONFIG: dict = {

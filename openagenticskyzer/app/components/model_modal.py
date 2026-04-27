@@ -788,7 +788,25 @@ def open_model_modal():
             "background:#111;border:1px solid #2a2a2a;color:#e0e0e0;"
             "max-height:85vh;overflow-y:auto"
         ):
-            ui.label("Sélectionner un modèle").classes("text-sm font-bold text-gray-200 mb-3")
+            ui.label("Sélectionner un modèle").classes("text-sm font-bold text-gray-200 mb-2")
+
+            # ── Modèle actuel ──────────────────────────────────────────────────
+            if state.current_model:
+                with ui.row().classes(
+                    "items-center gap-2 px-3 py-2 rounded-lg w-full mb-3"
+                ).style("background:#1a0f2e;border:1px solid #4c1d95"):
+                    ui.label("✓").classes("text-purple-400 text-xs font-bold flex-shrink-0")
+                    with ui.column().classes("flex-1 gap-0 min-w-0"):
+                        ui.label("Modèle actif").classes("text-xs text-purple-500 leading-none mb-0.5")
+                        ui.label(state.current_model).classes(
+                            "text-xs text-purple-200 font-mono font-semibold truncate"
+                        )
+            else:
+                with ui.row().classes(
+                    "items-center gap-2 px-3 py-2 rounded-lg w-full mb-3"
+                ).style("background:#1a1a1a;border:1px solid #2a2a2a"):
+                    ui.label("⚠").classes("text-yellow-500 text-xs flex-shrink-0")
+                    ui.label("Aucun modèle sélectionné").classes("text-xs text-gray-500")
 
             # ── Cloud providers ──
             cloud_models = _detect_configured_models()

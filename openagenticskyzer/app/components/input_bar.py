@@ -1,0 +1,447 @@
+"""Input bar — textarea, model picker button, send button."""
+import asyncio
+import re as _re
+from nicegui import ui, run
+
+# Détection d'une demande de recherche web dans le message utilisateur
+_SEARCH_DETECT_RE = _re.compile(
+    r"\b(recherche|search|cherche|trouve|find|look up|"
+    r"dernier|derni.re|r.cent|actuel|news|actualit.|latest|nouveau|nouvelle|"
+    r"who is|qu.est.ce|c.est quoi|youtube|twitter|reddit|"
+    r"site:|inurl:|filetype:|"
+    # Résultats sportifs / événements factuels
+    r"remport|vainqueur|champion|finale|score|r.sultat|classement|palmares|"
+    r"a gagn.|qui a|who won|winner|"
+    # Années récentes → question factuelle récente
+    r"202[4-9]|"
+    # Sorties culturelles
+    r"derni.re vid.o|dernier film|dernier album|sorti en|sort[i]|publi.|lanc.|"
+    # Prix / récompenses
+    r"oscar|grammy|c.sar|bafta|nobel|eurovision|"
+    # Dev / tech — version, doc, release
+    r"changelog|release.?notes?|"
+    r"version (?:de|actuelle|stable|courante|latest)|quelle version|"
+    r"doc(?:umentation)? (?:de|pour|officielle)|"
+    r"tuto(?:riel)? (?:de|pour)|"
+    # IA / modèles LLM
+    r"llama|mistral|gemini|gpt.?[0-9o]|stable.?diffusion|hugging.?face|"
+    r"quel(?:le)? (?:ia|llm|mod.le) |meilleur (?:llm|mod.le ia)|"
+    # Jeux vidéo
+    r"patch.?notes?|dlc|\bearly.?access\b|season.?pass|"
+    r"prix (?:de|du) (?:jeu|pass)|sortie (?:du|de) jeu|"
+    # Loi / admin / fiscal
+    r"legifrance|service.?public|"
+    r"loi (?:n°|\d{4}|sur)|r.glement (?:eu|ue|\d)|"
+    r"amende (?:de|pour|\d)|imp.t|d.claration fiscale|"
+    # Finance / crypto
+    r"cours (?:du|de la|de l')|bitcoin|ethereum|cryptomonnaie|"
+    r"taux (?:d.|de)|(?:action|cotation) (?:de|du)|bourse|"
+    # Santé
+    r"sympt.mes? (?:de|du)|m.dicament (?:pour|contre)|posologie|effet(?:s)? secondaire|"
+    # Culture
+    r"biographie de|qui a .crit|auteur de|exposition (?:de|du|au)|"
+    # Général
+    r"combien|quel est le|quelle est la|qui est le|qui est la)\b",
+    _re.IGNORECASE,
+)
+_QUERY_CLEANUP_RE = _re.compile(
+    r"\b(tu peux|pouvez.vous|peux.tu|me dire|me faire une?|"
+    r"faire une? recherche(?: internet| web| en ligne)?|et me dire|"
+    r"et avec|quels? autres?|can you|could you|please|tell me|"
+    r"search (?:for|the)|find me|look up|je voudrais savoir|j.aimerais savoir)\b",
+    _re.IGNORECASE,
+)
+_NEWS_DETECT_RE = _re.compile(
+    r"\b(dernier|derni.re|r.cent|actuel|news|actualit.|latest|nouveau|nouvelle)\b",
+    _re.IGNORECASE,
+)
+_COMPLEX_DETECT_RE = _re.compile(
+    r"\b(explique|compare|analyse|d.taille|pr.cis|complet|exhaustif|"
+    r"liste|tous les|toutes les|pourquoi|comment|diff.rence|"
+    r"avantage|inconv.nient|pros?|cons?|overview|summary|"
+    r"contexte|historique|impact|cons.quence|signification)\b",
+    _re.IGNORECASE,
+)
+
+def _is_complex_question(text: str) -> bool:
+    """Question complexe = plusieurs sous-questions ou demande d'analyse approfondie."""
+    return (
+        text.count("?") >= 2
+        or len(text.strip()) > 150
+        or bool(_COMPLEX_DETECT_RE.search(text))
+    )
+
+
+def _extract_query_and_topic(msg: str) -> tuple[str, str]:
+    """Extrait une query de recherche propre + topic depuis le message brut."""
+    cleaned = _QUERY_CLEANUP_RE.sub(" ", msg)
+    cleaned = _re.sub(r"\s{2,}", " ", cleaned).strip(" ?.,!")
+    topic = "news" if _NEWS_DETECT_RE.search(msg) else "general"
+    return (cleaned[:200] if len(cleaned) > 10 else msg[:200]), topic
+
+from openagenticskyzer.app.state import state, ChatMessage
+from openagenticskyzer.app.components.model_modal import open_model_modal
+
+
+async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
+    """Append user message, run agent, append AI response."""
+    if not text.strip() or state.agent_running:
+        return
+    if not state.active_folder:
+        ui.notify("Ouvre un dossier d'abord.", type="warning")
+        return
+    if not state.current_model:
+        ui.notify("Sélectionne un modèle d'abord (bouton ● en bas à droite).", type="warning")
+        return
+
+    import os
+    os.chdir(state.active_folder)
+
+    from openagenticskyzer.app.components.chat import chat_messages, permission_banner
+    from openagenticskyzer.app.components.context_bar import context_bar, trigger_compact
+
+    state.messages.append(ChatMessage(role="user", content=text))
+    state.live_log = []
+    state.live_tokens = 0
+    state.stop_requested = False
+    input_el.set_value("")
+    state.agent_running = True
+    if send_lbl:
+        send_lbl.set_text("■")
+    if send_btn:
+        send_btn.classes(remove="bg-purple-600 hover:bg-purple-700", add="bg-red-700 hover:bg-red-800")
+    chat_messages.refresh()
+
+    def _on_permission_request(req):
+        state.pending_permission = req
+        permission_banner.refresh()
+
+    try:
+        from openagenticskyzer.agent import build_agent
+        from openagenticskyzer.permissions import PermissionManager
+        from openagenticskyzer.app.storage import load_global_config, load_folder_config
+        from openagenticskyzer.utils.utils import _DEFAULT_CTX_LIMITS
+
+        global_cfg = load_global_config()
+        folder_cfg = load_folder_config(state.active_folder)
+
+        # Mode agent (héritage global → dossier)
+        mode = folder_cfg.get("agent_mode", "inherit")
+        if mode == "inherit":
+            mode = global_cfg.get("agent_mode", "auto")
+
+        # Limite de tokens avec réservation pour la réponse
+        max_ctx = _DEFAULT_CTX_LIMITS.get(state.current_provider or "ollama", 32_000)
+        configured_max = global_cfg.get("max_tokens") or max_ctx
+        reserved = int(global_cfg.get("reserved_tokens", 2048))
+        max_tokens = max(1000, configured_max - reserved)
+
+        perm_manager = PermissionManager(
+            mode=state.permission_mode,
+            is_cli=False,
+            on_request=_on_permission_request,
+        )
+
+        agent = build_agent(
+            mode=mode,
+            max_tokens=max_tokens,
+            permission_manager=perm_manager,
+            provider=state.current_provider,
+            model_name=state.current_model,
+        )
+
+        # Contexte système personnalisé du dossier
+        custom_prompt = folder_cfg.get("custom_prompt", "").strip()
+
+        history = [
+            {"role": m.role if m.role != "ai" else "assistant", "content": m.content}
+            for m in state.messages[:-1]
+            if m.role in ("user", "ai")
+        ]
+
+        # Injecte le custom_prompt comme premier message système si défini
+        if custom_prompt:
+            history = [{"role": "system", "content": custom_prompt}] + history
+
+        # ── Pré-fetch web : recherche + lecture de source(s) ────────────────────
+        user_content_for_agent = text
+        if _SEARCH_DETECT_RE.search(text):
+            try:
+                from openagenticskyzer.tools.internet_search import internet_search as _isearch
+                from openagenticskyzer.tools.web_fetch import fetch_url as _fetch_url
+                sq, s_topic = _extract_query_and_topic(text)
+                is_complex = _is_complex_question(text)
+                max_fetches = 3 if is_complex else 1
+
+                state.live_log.append(ChatMessage(
+                    role="tool",
+                    content="Recherche multi-sources…" if is_complex else "Recherche en cours…",
+                    tool_name="internet_search", tool_tag="search", tool_detail=sq,
+                ))
+                chat_messages.refresh()
+
+                # Questions complexes : 2 recherches parallèles (angles différents)
+                if is_complex:
+                    sq2 = sq[:80].rstrip()
+                    res1, res2 = await asyncio.gather(
+                        run.io_bound(_isearch.invoke, {"query": sq, "topic": s_topic, "max_results": 6}),
+                        run.io_bound(_isearch.invoke, {"query": sq2, "topic": "news", "max_results": 6}),
+                    )
+                    seen_urls: set[str] = set()
+                    all_results = []
+                    for res in (res1, res2):
+                        for r in (res.get("results", []) if isinstance(res, dict) else []):
+                            if r.get("url") not in seen_urls:
+                                seen_urls.add(r.get("url", ""))
+                                all_results.append(r)
+                    search_res = {"results": all_results}
+                else:
+                    search_res = await run.io_bound(
+                        _isearch.invoke, {"query": sq, "topic": s_topic, "max_results": 8}
+                    )
+
+                if isinstance(search_res, dict) and search_res.get("results"):
+                    results = search_res["results"]
+                    lines = [
+                        f"[{r.get('title', '')}]\n{(r.get('content') or '')[:600]}\nURL: {r.get('url', '')}"
+                        for r in results[:8]
+                    ]
+                    state.live_log[-1] = ChatMessage(
+                        role="tool", content=f"{len(results)} résultats trouvés",
+                        tool_name="internet_search", tool_tag="search", tool_detail=sq,
+                    )
+
+                    # ── Fetch des meilleures sources ──────────────────────────
+                    _TRUSTED = (
+                        # Encyclopédie
+                        "wikipedia.org",
+                        # Presse FR généraliste
+                        "lemonde.fr", "lefigaro.fr", "liberation.fr",
+                        "franceinfo.fr", "le-parisien.fr", "20minutes.fr",
+                        "bfmtv.com", "lexpress.fr", "nouvelobs.com",
+                        # Presse EN internationale
+                        "reuters.com", "apnews.com", "bbc.com",
+                        "theguardian.com", "nytimes.com",
+                        # Tech / Dev
+                        "github.com", "stackoverflow.com",
+                        "developer.mozilla.org", "docs.python.org",
+                        "npmjs.com", "pypi.org",
+                        "learn.microsoft.com", "docs.microsoft.com",
+                        "rust-lang.org", "go.dev",
+                        "developer.apple.com",
+                        # Tech news FR
+                        "numerama.com", "clubic.com", "01net.com",
+                        "lesnumeriques.com", "igen.fr",
+                        # Tech news EN
+                        "techcrunch.com", "theverge.com", "wired.com",
+                        "arstechnica.com", "engadget.com",
+                        # IA / ML
+                        "huggingface.co", "openai.com", "anthropic.com",
+                        "arxiv.org", "paperswithcode.com", "deepmind.com",
+                        # Jeux vidéo FR
+                        "jeuxvideo.com", "gamekult.com", "millenium.org",
+                        # Jeux vidéo EN
+                        "ign.com", "eurogamer.net", "pcgamer.com",
+                        "rockpapershotgun.com", "steamdb.info",
+                        "store.steampowered.com",
+                        # Sports
+                        "lequipe.fr", "eurosport.fr", "uefa.com",
+                        "olympics.com", "maxifoot.fr", "footmercato.net",
+                        # Loi / admin FR
+                        "legifrance.gouv.fr", "service-public.fr",
+                        "impots.gouv.fr", "gouvernement.fr",
+                        # Santé
+                        "who.int", "ameli.fr", "sante.gouv.fr", "inserm.fr",
+                        # Science
+                        "nature.com", "sciencedirect.com", "cnrs.fr",
+                        "pubmed.ncbi.nlm.nih.gov",
+                        # Finance
+                        "boursorama.com", "investing.com",
+                        "tradingeconomics.com", "coinmarketcap.com",
+                        # Culture / cinéma / musique
+                        "allocine.fr", "imdb.com", "metacritic.com",
+                        "rottentomatoes.com", "konbini.com",
+                        # Données
+                        "statista.com",
+                        # Domaines .gov/.gouv génériques
+                        "gov.fr", ".gouv.fr",
+                    )
+                    urls = [r.get("url", "") for r in results if r.get("url")]
+                    trusted_urls = [u for u in urls if any(t in u for t in _TRUSTED)]
+                    fallback_urls = [u for u in urls if u not in trusted_urls]
+                    candidates = trusted_urls + fallback_urls[:4]
+
+                    _kws = [w for w in sq.split() if len(w) >= 4]
+                    page_sections: list[str] = []
+
+                    for candidate in candidates[: max_fetches * 2]:
+                        if len(page_sections) >= max_fetches:
+                            break
+                        state.live_log.append(ChatMessage(
+                            role="tool", content="Lecture de la source…",
+                            tool_name="fetch_url", tool_tag="search", tool_detail=candidate,
+                        ))
+                        chat_messages.refresh()
+                        fetched = await run.io_bound(
+                            _fetch_url.invoke, {"url": candidate, "max_chars": 3000 if is_complex else 4000}
+                        )
+                        content = fetched.get("content", "") if isinstance(fetched, dict) else ""
+                        relevant = any(kw.lower() in content.lower() for kw in _kws)
+                        if content and len(content) >= 200 and not fetched.get("error") and relevant:
+                            title = fetched.get("title", candidate)
+                            page_sections.append(
+                                f"SOURCE — {title}\nURL : {candidate}\n\n{content}"
+                            )
+                            state.live_log[-1] = ChatMessage(
+                                role="tool",
+                                content=f"Source lue : {title[:60]}",
+                                tool_name="fetch_url", tool_tag="search", tool_detail=candidate,
+                            )
+                        else:
+                            state.live_log.pop()
+
+                    sources_block = (
+                        "\n\n" + "\n\n---\n\n".join(page_sections)
+                        if page_sections else ""
+                    )
+                    user_content_for_agent = (
+                        "RÉSULTATS DE RECHERCHE WEB (temps réel) :\n\n"
+                        + "\n---\n".join(lines)
+                        + sources_block
+                        + f"\n\nEn te basant sur ces informations, réponds précisément à cette question : {text}"
+                    )
+                else:
+                    state.live_log.pop()
+            except Exception:
+                if state.live_log and state.live_log[-1].tool_tag == "search":
+                    state.live_log.pop()
+
+        from openagenticskyzer.app.gui_callback import GUIAgentCallback
+        result = await run.io_bound(
+            agent.invoke,
+            {"messages": history + [{"role": "user", "content": user_content_for_agent}]},
+            {"recursion_limit": 300, "callbacks": [GUIAgentCallback()]},
+        )
+
+        ai_text = ""
+        for msg in reversed(result.get("messages", [])):
+            content = getattr(msg, "content", "")
+            if content and not getattr(msg, "tool_calls", None):
+                ai_text = content if isinstance(content, str) else str(content)
+                break
+
+        # Retire les echoes de tool output que certains modèles répètent dans leur réponse finale
+        if ai_text:
+            import re as _re
+            for _pattern in [
+                r'File created at [A-Za-z]:[\\\/]',
+                r'File created at \/[a-z]',
+                r'EDIT_OK\n',
+                r'Directory created at [A-Za-z]',
+                r'\nFile [^\n]+ \(\d+ lines?\)',
+            ]:
+                _m = _re.search(_pattern, ai_text)
+                if _m and _m.start() > 0:
+                    ai_text = ai_text[:_m.start()].rstrip()
+            ai_text = ai_text.strip()
+
+        # Intègre les tool calls capturés dans l'historique permanent
+        if state.live_log:
+            state.messages.extend(state.live_log)
+            state.live_log = []
+
+        if ai_text:
+            state.messages.append(ChatMessage(role="ai", content=ai_text))
+
+        # Sauvegarde de l'historique chat sur disque
+        from openagenticskyzer.app.storage import save_chat_history
+        save_chat_history(state.active_folder, state.messages)
+
+        # Mise à jour de la jauge de contexte (tokens réservés déduits)
+        total_chars = sum(len(m.content) for m in state.messages if m.role in ("user", "ai"))
+        effective_max = max(1, max_tokens)
+        state.context_tokens = total_chars // 4
+        state.context_pct = min(100.0, state.context_tokens / effective_max * 100)
+
+        # Auto-compact si activé et seuil atteint
+        if (
+            global_cfg.get("auto_compact", True)
+            and state.context_pct >= global_cfg.get("compact_threshold", 70)
+        ):
+            trigger_compact()
+
+    except Exception as exc:
+        exc_str = str(exc)
+        if "StopRequested" not in type(exc).__name__ and "Arrêté" not in exc_str:
+            if "jinja template" in exc_str.lower() or "cannot put tools" in exc_str.lower():
+                state.messages.append(ChatMessage(role="ai", content=(
+                    "❌ **Template Jinja incompatible avec le tool use**\n\n"
+                    "Le modèle chargé ne supporte pas le function calling avec son template actuel.\n\n"
+                    "**Solutions :**\n"
+                    "• Dans le catalogue LM Studio, cherchez le même modèle sous l'organisation "
+                    "`lmstudio-community` (templates corrigés).\n"
+                    "• Recommandé pour le tool use : `Hermes-3-Llama-3.1-8B` (NousResearch) "
+                    "ou `Mistral-7B-Instruct-v0.3`.\n"
+                    "• Alternativement : changez le Prompt Template dans LM Studio "
+                    "→ My Models → model settings → Prompt Template."
+                )))
+            else:
+                state.messages.append(ChatMessage(role="ai", content=f"❌ Erreur : {exc}"))
+    finally:
+        state.live_log = []
+        state.live_tokens = 0
+        state.stop_requested = False
+        state.agent_running = False
+        state.pending_permission = None
+        if send_lbl:
+            send_lbl.set_text("➤")
+        if send_btn:
+            send_btn.classes(remove="bg-red-700 hover:bg-red-800", add="bg-purple-600 hover:bg-purple-700")
+        chat_messages.refresh()
+        permission_banner.refresh()
+        context_bar.refresh()
+
+
+@ui.refreshable
+def model_button():
+    full_name = state.current_model or 'Aucun modèle'
+    label = f"● {full_name[:20]}{'…' if len(full_name) > 20 else ''} ▾"
+    with ui.button(label, on_click=open_model_modal).classes(
+        "text-xs text-gray-400 border border-gray-700 bg-gray-900 "
+        "hover:border-purple-500 px-2 h-10 rounded-lg flex-shrink-0"
+    ):
+        if full_name != 'Aucun modèle':
+            ui.tooltip(full_name).classes("text-xs bg-gray-900 text-gray-200 border border-gray-700")
+
+
+def render_input_bar():
+    with ui.column().classes("w-full px-3 pb-3 pt-2 gap-1").style(
+        "background:#111;border-top:1px solid #1e1e1e;flex-shrink:0"
+    ):
+        with ui.row().classes("w-full items-end gap-2"):
+            input_el = ui.textarea(placeholder="Un message… (Entrée pour envoyer)").classes(
+                "flex-1 text-xs rounded-lg"
+            ).style(
+                "background:#1a1a1a;border:1px solid #2a2a2a;color:#e0e0e0;"
+                "min-height:40px;max-height:140px;padding:8px 12px"
+            ).props("rows=1 autogrow")
+
+            model_button()
+
+            with ui.button(on_click=lambda: None).classes(
+                "w-10 h-10 bg-purple-600 hover:bg-purple-700 rounded-lg flex-shrink-0"
+            ) as send_btn:
+                send_lbl = ui.label("➤").classes("text-white text-sm leading-none")
+
+        ui.label("Entrée pour envoyer · Shift+Entrée nouvelle ligne").classes("text-xs text-gray-700 px-1")
+
+        def _on_send_click():
+            if state.agent_running:
+                state.stop_requested = True
+            else:
+                asyncio.ensure_future(_send_message(input_el.value, input_el, send_lbl, send_btn))
+
+        input_el.on("keydown.enter.prevent", lambda: asyncio.ensure_future(
+            _send_message(input_el.value, input_el, send_lbl, send_btn)
+        ) if not state.agent_running else None)
+        send_btn.on("click", _on_send_click)

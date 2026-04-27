@@ -2611,36 +2611,1305 @@ def _tab_memory():
 
 ---
 
+## Phase 8 — UX Avancée
+
+### 8.1 Édition de messages et régénération
+
+**Objectif:** Permettre d'éditer un message utilisateur déjà envoyé (et relancer depuis ce point), ou de régénérer la dernière réponse de l'IA avec des paramètres différents.
+
+**Modification `chat.py`** — ajouter un bouton "✏️" au survol de chaque message utilisateur :
+
+```python
+# Dans le rendu d'un message user
+with ui.row().classes("w-full justify-end mb-2 group"):
+    with ui.element("div").classes("flex flex-col items-end gap-1"):
+        # Boutons apparaissent au hover (opacity-0 group-hover:opacity-100)
+        with ui.row().classes("opacity-0 group-hover:opacity-100 gap-1 transition-opacity"):
+            ui.button("✏️", on_click=lambda idx=i: _edit_message(idx)).classes(
+                "w-6 h-6 bg-gray-800 text-gray-400 hover:text-white text-xs rounded"
+            )
+        with ui.card()...:
+            ui.label(m.content)...
+```
+
+**Handler `_edit_message(idx)`** — remplace le textarea par le contenu du message et tronque l'historique à `idx` :
+
+```python
+def _edit_message(idx: int):
+    msg = state.messages[idx]
+    input_el.set_value(msg.content)
+    state.messages = state.messages[:idx]   # supprime ce message et tout ce qui suit
+    from openagenticskyzer.app.components.chat import chat_messages
+    chat_messages.refresh()
+    input_el.run_method("focus")
+```
+
+**Bouton "🔄 Régénérer"** sur le dernier message AI :
+
+```python
+# Affiché uniquement sur le dernier message AI, quand agent non actif
+if i == last_ai_idx and not state.agent_running:
+    ui.button("🔄", on_click=_regenerate).classes(
+        "text-xs text-gray-500 hover:text-purple-400 bg-transparent"
+    ).tooltip("Régénérer cette réponse")
+
+def _regenerate():
+    # Supprime le dernier message AI et relance avec le même message user
+    last_user = next(
+        (m for m in reversed(state.messages) if m.role == "user"), None
+    )
+    if not last_user:
+        return
+    # Retire tous les messages depuis le dernier user (inclus)
+    idx = len(state.messages) - 1
+    while idx >= 0 and state.messages[idx].role != "user":
+        idx -= 1
+    text = state.messages[idx].content
+    state.messages = state.messages[:idx]
+    asyncio.ensure_future(_send_message(text, input_el, send_lbl, send_btn))
+```
+
+---
+
+### 8.2 Command Palette (Ctrl+K)
+
+**Objectif:** Accès instantané à toutes les actions de l'app depuis un raccourci clavier, sans naviguer dans les menus.
+
+**Nouveau composant:** `openagenticskyzer/app/components/command_palette.py`
+
+```python
+"""Command palette — Ctrl+K pour accéder à toutes les actions."""
+from nicegui import ui
+from openagenticskyzer.app.state import state
+
+_COMMANDS = [
+    # (label, description, action_fn)
+    ("📂 Ouvrir un dossier",          "Choisir un nouveau dossier projet",      lambda: ...),
+    ("🔄 Changer de modèle",           "Sélectionner un autre modèle LLM",       lambda: open_model_modal()),
+    ("🗑️ Vider l'historique",          "Effacer tous les messages",               lambda: _clear_history()),
+    ("⚙️ Paramètres",                  "Ouvrir les paramètres",                  lambda: ...),
+    ("🧠 Voir la mémoire projet",      "Afficher .openagent/memory.md",          lambda: _show_memory()),
+    ("📋 Bibliothèque de prompts",     "Parcourir les templates",                lambda: ...),
+    ("⬇ Exporter la conversation",    "Sauvegarder en markdown/HTML/JSON",      lambda: ...),
+    ("🔍 Recherche sémantique",        "Chercher dans le codebase par sens",     lambda: _focus_semantic_search()),
+    ("⚡ Compacter le contexte",       "Résumer et compresser l'historique",     lambda: trigger_compact()),
+    ("🌙 Basculer thème",              "Passer du mode sombre au mode clair",    lambda: _toggle_theme()),
+]
+
+
+def render_command_palette():
+    with ui.dialog() as dlg:
+        dlg.props("persistent")
+        with ui.card().classes("bg-gray-900 border border-gray-700 w-[520px]"):
+            search_input = ui.input(placeholder="Rechercher une action…").classes(
+                "w-full text-sm"
+            ).props("autofocus")
+
+            results_col = ui.column().classes("w-full gap-0.5 mt-2 max-h-72 overflow-y-auto")
+
+            def _filter(query: str):
+                results_col.clear()
+                q = query.lower()
+                matches = [(l, d, fn) for l, d, fn in _COMMANDS if q in l.lower() or q in d.lower()]
+                with results_col:
+                    for label, desc, action in matches[:8]:
+                        with ui.row().classes(
+                            "w-full items-center px-3 py-2 rounded hover:bg-gray-800 "
+                            "cursor-pointer gap-3"
+                        ).on("click", lambda fn=action: (dlg.close(), fn())):
+                            ui.label(label).classes("text-sm text-gray-200 flex-1")
+                            ui.label(desc).classes("text-xs text-gray-500")
+
+            search_input.on("update:model-value", lambda e: _filter(e.args or ""))
+            _filter("")   # affiche tout au départ
+
+    # Raccourci global Ctrl+K
+    ui.keyboard(on_key=lambda e: dlg.open() if e.key == "k" and e.ctrl else None)
+    return dlg
+```
+
+**Intégration dans `main.py`** — appeler `render_command_palette()` une fois dans `main_page()`.
+
+**Hint dans l'UI** — ajouter `Ctrl+K` dans la barre de bas de l'input bar :
+
+```python
+ui.label("Entrée pour envoyer · Shift+Entrée nouvelle ligne · Ctrl+K commandes").classes(
+    "text-xs text-gray-700 px-1"
+)
+```
+
+---
+
+### 8.3 Conversation Branching (Fork)
+
+**Objectif:** Depuis n'importe quel message, créer une "branche" — une nouvelle conversation qui repart de ce point avec un historique différent. Utile pour essayer deux approches sans perdre la première.
+
+**Nouveau champ `state.py`:**
+
+```python
+@dataclass
+class ConversationBranch:
+    branch_id: str
+    label: str
+    messages: list[ChatMessage]
+    created_at: str
+
+@dataclass
+class AppState:
+    # ... champs existants ...
+    branches: list[ConversationBranch] = field(default_factory=list)
+    current_branch_id: str = "main"
+```
+
+**Bouton Fork** sur chaque message dans `chat.py` :
+
+```python
+ui.button("⑂ Fork", on_click=lambda idx=i: _fork_from(idx)).classes(
+    "opacity-0 group-hover:opacity-100 text-xs text-gray-500 hover:text-purple-400 bg-transparent"
+).tooltip("Créer une branche depuis ici")
+
+def _fork_from(idx: int):
+    import uuid
+    from datetime import datetime
+    branch = ConversationBranch(
+        branch_id=str(uuid.uuid4())[:8],
+        label=f"Branche {len(state.branches) + 1}",
+        messages=state.messages[:idx + 1].copy(),
+        created_at=datetime.now().isoformat(),
+    )
+    state.branches.append(branch)
+    # Switche sur la nouvelle branche
+    _switch_branch(branch.branch_id)
+    ui.notify(f"Branche '{branch.label}' créée — tu repars de ce point.", type="positive")
+```
+
+**Sélecteur de branches** dans le header du chat (visible si `len(state.branches) > 0`) :
+
+```python
+if state.branches:
+    with ui.select(
+        options={b.branch_id: b.label for b in [_main_branch()] + state.branches},
+        value=state.current_branch_id,
+        on_change=lambda e: _switch_branch(e.value),
+    ).classes("text-xs bg-gray-900 border-gray-700"):
+        pass
+```
+
+---
+
+### 8.4 Onglets de conversations (Tabs)
+
+**Objectif:** Avoir plusieurs conversations ouvertes en parallèle (projet A et projet B), chacune avec son propre historique et modèle actif.
+
+**Refactoring `state.py`** — chaque onglet est une instance de `TabState` :
+
+```python
+@dataclass
+class TabState:
+    tab_id: str
+    folder: str | None = None
+    messages: list[ChatMessage] = field(default_factory=list)
+    current_model: str | None = None
+    current_provider: str | None = None
+    agent_running: bool = False
+    context_pct: float = 0.0
+
+@dataclass
+class AppState:
+    tabs: list[TabState] = field(default_factory=lambda: [TabState(tab_id="tab_1")])
+    active_tab_id: str = "tab_1"
+    # Les champs existants deviennent des propriétés qui lisent l'onglet actif
+    @property
+    def active_folder(self) -> str | None:
+        return self._active_tab.folder
+    @property
+    def messages(self) -> list[ChatMessage]:
+        return self._active_tab.messages
+    # ... etc.
+```
+
+**Header des tabs** dans `main.py`, sous la top bar :
+
+```python
+with ui.row().classes("w-full border-b border-gray-900 px-2 gap-0").style("background:#0d0d0d"):
+    for tab in state.tabs:
+        label = (tab.folder or "Nouveau").split("\\")[-1].split("/")[-1]
+        active = tab.tab_id == state.active_tab_id
+        with ui.row().classes(
+            f"items-center px-3 py-1.5 gap-1 cursor-pointer border-b-2 "
+            f"{'border-purple-500 text-gray-200' if active else 'border-transparent text-gray-500 hover:text-gray-300'}"
+        ).on("click", lambda tid=tab.tab_id: _switch_tab(tid)):
+            ui.label(label).classes("text-xs")
+            ui.button("×", on_click=lambda tid=tab.tab_id: _close_tab(tid)).classes(
+                "w-4 h-4 text-gray-600 hover:text-gray-300 bg-transparent text-xs"
+            )
+    ui.button("+", on_click=_new_tab).classes(
+        "px-2 py-1.5 text-gray-600 hover:text-gray-300 bg-transparent text-sm"
+    )
+```
+
+---
+
+## Phase 9 — Dev Tools Pro
+
+### 9.1 Terminal Embarqué
+
+**Objectif:** Un vrai terminal interactif intégré dans l'app, accessible depuis un panneau coulissant en bas. L'utilisateur peut exécuter des commandes manuellement en parallèle de l'agent.
+
+**Approche:** NiceGUI supporte l'injection de HTML/JS arbitraire. On intègre **xterm.js** (terminal web standard) connecté à un pseudo-terminal Python (`pty` sur Unix, `winpty` sur Windows).
+
+**Nouveau fichier:** `openagenticskyzer/app/components/terminal_panel.py`
+
+```python
+"""Terminal interactif embarqué via xterm.js + pty."""
+from nicegui import ui
+from openagenticskyzer.app.state import state
+import threading, os, sys
+
+_pty_process = None
+
+
+def _inject_xterm(container_id: str):
+    ui.add_head_html("""
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5/css/xterm.css">
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8/lib/xterm-addon-fit.js"></script>
+    """)
+    ui.run_javascript(f"""
+    const term = new Terminal({{
+        theme: {{background: '#0d0d0d', foreground: '#e0e0e0'}},
+        fontFamily: 'JetBrains Mono, monospace',
+        fontSize: 12,
+        cursorBlink: true,
+    }});
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(document.getElementById('{container_id}'));
+    fitAddon.fit();
+    window._openagentTerm = term;
+
+    // WebSocket pour communiquer avec le pty Python
+    const ws = new WebSocket('ws://127.0.0.1:8766/terminal');
+    ws.onmessage = e => term.write(e.data);
+    term.onData(data => ws.send(data));
+    window.addEventListener('resize', () => fitAddon.fit());
+    """)
+
+
+@ui.refreshable
+def terminal_panel():
+    if not state.show_terminal:
+        return
+    with ui.column().classes("w-full border-t border-gray-800").style("height:240px;background:#0d0d0d"):
+        with ui.row().classes("items-center px-3 py-1 border-b border-gray-800"):
+            ui.label("Terminal").classes("text-xs text-gray-500 flex-1")
+            ui.label(state.active_folder or "").classes("text-xs text-gray-700 font-mono")
+            ui.button("✕", on_click=lambda: setattr(state, "show_terminal", False) or terminal_panel.refresh()).classes(
+                "w-5 h-5 bg-transparent text-gray-600 text-xs"
+            )
+        ui.html('<div id="openagent-terminal" style="height:100%;padding:4px"></div>')
+        _inject_xterm("openagent-terminal")
+```
+
+**Backend WebSocket** (`app/terminal_server.py`) — serveur pty séparé sur port 8766 :
+
+```python
+"""WebSocket server qui gère un pseudo-terminal (pty)."""
+import asyncio, os, pty, subprocess
+import websockets
+
+async def handle(ws):
+    folder = os.environ.get("OPENAGENT_TERMINAL_CWD", os.path.expanduser("~"))
+    master_fd, slave_fd = pty.openpty()
+    proc = subprocess.Popen(
+        ["cmd.exe"] if os.name == "nt" else [os.environ.get("SHELL", "/bin/bash")],
+        stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+        cwd=folder, close_fds=True,
+    )
+    # ... boucle read/write entre WebSocket et pty ...
+
+async def main():
+    async with websockets.serve(handle, "127.0.0.1", 8766):
+        await asyncio.Future()
+```
+
+**Bouton terminal** dans la top bar de `main.py` :
+
+```python
+ui.button("⌨", on_click=lambda: (
+    setattr(state, "show_terminal", not state.show_terminal),
+    terminal_panel.refresh()
+)).classes("text-xs text-gray-500 hover:text-gray-300 bg-transparent").tooltip("Terminal (Ctrl+`)")
+```
+
+**Nouveau champ `state.py`:**
+```python
+show_terminal: bool = False
+```
+
+---
+
+### 9.2 Diff Viewer Interactif (Accepter / Rejeter)
+
+**Objectif:** Quand l'agent modifie un fichier (`edit_file`), afficher le diff avec des boutons "✓ Accepter" et "✗ Rejeter" au lieu de juste montrer le texte. L'acceptation écrit réellement le fichier ; le rejet restaure l'original.
+
+**Nouveau champ `ChatMessage`:**
+
+```python
+@dataclass
+class ChatMessage:
+    # ... champs existants ...
+    tool_diff: str | None = None
+    tool_file_path: str | None = None    # NOUVEAU — chemin absolu du fichier modifié
+    tool_original: str | None = None     # NOUVEAU — contenu original avant modification
+    diff_accepted: bool | None = None    # NOUVEAU — None=en attente, True=accepté, False=rejeté
+```
+
+**Modification `crud_tools.py` — `edit_file`** — retourner l'original dans le message tool :
+
+```python
+# edit_file stocke le contenu original avant modification
+# Le tool node l'attache au ChatMessage correspondant
+```
+
+**Modification `chat.py` — rendu du diff** :
+
+```python
+# Si diff_accepted is None (en attente de décision)
+if m.tool_diff and m.tool_file_path and m.diff_accepted is None:
+    with ui.row().classes("gap-2 mt-2"):
+        ui.button("✓ Accepter", on_click=lambda msg=m: _accept_diff(msg)).classes(
+            "text-xs bg-green-900 text-green-300 hover:bg-green-800 px-3 py-1 rounded"
+        )
+        ui.button("✗ Rejeter", on_click=lambda msg=m: _reject_diff(msg)).classes(
+            "text-xs bg-red-900 text-red-300 hover:bg-red-800 px-3 py-1 rounded"
+        )
+elif m.diff_accepted is True:
+    ui.label("✓ Modification acceptée").classes("text-xs text-green-500 mt-1")
+elif m.diff_accepted is False:
+    ui.label("✗ Modification rejetée — fichier restauré").classes("text-xs text-red-400 mt-1")
+
+def _accept_diff(msg: ChatMessage):
+    msg.diff_accepted = True
+    # Le fichier a déjà été modifié par edit_file — rien à faire
+    chat_messages.refresh()
+
+def _reject_diff(msg: ChatMessage):
+    msg.diff_accepted = False
+    # Restaurer le fichier original
+    if msg.tool_file_path and msg.tool_original is not None:
+        from pathlib import Path
+        Path(msg.tool_file_path).write_text(msg.tool_original, encoding="utf-8")
+    chat_messages.refresh()
+    ui.notify("Fichier restauré.", type="positive")
+```
+
+**Note:** En mode `demander`, l'acceptation/rejet remplace la demande de permission. En mode `auto`, le diff interactif est affiché en post-validation (l'agent a déjà écrit, l'utilisateur peut annuler).
+
+---
+
+### 9.3 Browser Preview Intégré
+
+**Objectif:** Quand l'agent lance un serveur de développement (Next.js, Flask, FastAPI, Vite...), afficher l'app directement dans un panneau sans ouvrir un navigateur externe.
+
+**Détection du port** dans `shell_exec.py` — quand un serveur démarre en background, capturer le port :
+
+```python
+_PORT_RE = re.compile(r"(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d{4,5})|port[:\s]+(\d{4,5})", re.IGNORECASE)
+
+def _detect_server_port(output: str) -> int | None:
+    m = _PORT_RE.search(output)
+    if m:
+        return int(m.group(1) or m.group(2))
+    return None
+```
+
+**Nouveau champ `state.py`:**
+
+```python
+preview_url: str = ""    # ex: "http://127.0.0.1:3000"
+show_preview: bool = False
+```
+
+**Nouveau composant:** `openagenticskyzer/app/components/preview_panel.py`
+
+```python
+"""Panneau de preview — iframe vers le serveur de dev."""
+from nicegui import ui
+from openagenticskyzer.app.state import state
+
+
+@ui.refreshable
+def preview_panel():
+    if not state.show_preview or not state.preview_url:
+        return
+    with ui.column().classes("h-full border-l border-gray-800").style("width:480px;flex-shrink:0"):
+        with ui.row().classes("items-center px-3 py-2 border-b border-gray-800 gap-2"):
+            ui.label("Preview").classes("text-xs text-gray-400 flex-1")
+            ui.input(value=state.preview_url).classes("text-xs font-mono bg-gray-950 border-gray-700 flex-1").on(
+                "change", lambda e: setattr(state, "preview_url", e.args) or preview_panel.refresh()
+            )
+            ui.button("🔄", on_click=preview_panel.refresh).classes("text-xs text-gray-500 bg-transparent")
+            ui.button("↗", on_click=lambda: ui.run_javascript(f"window.open('{state.preview_url}')")).classes(
+                "text-xs text-gray-500 bg-transparent"
+            ).tooltip("Ouvrir dans le navigateur")
+            ui.button("✕", on_click=lambda: setattr(state, "show_preview", False) or preview_panel.refresh()).classes(
+                "text-xs text-gray-600 bg-transparent"
+            )
+        ui.html(f'<iframe src="{state.preview_url}" style="width:100%;height:100%;border:none;background:white"></iframe>')
+```
+
+**Intégration dans shell_exec.py** — après démarrage d'un serveur background :
+
+```python
+port = _detect_server_port(output)
+if port:
+    state.preview_url = f"http://127.0.0.1:{port}"
+    state.show_preview = True
+    preview_panel.refresh()
+```
+
+---
+
+## Phase 10 — Agent Personas & Comparaison
+
+### 10.1 Personas d'agents pré-configurés
+
+**Objectif:** Des agents avec des identités spécifiques, chacun avec son propre system prompt, ses outils activés/désactivés, et son ton. L'utilisateur choisit un persona dans le sélecteur de modèle.
+
+**Nouveau fichier:** `openagenticskyzer/prompts/personas.py`
+
+```python
+"""Personas d'agents pré-configurés."""
+from dataclasses import dataclass, field
+
+
+@dataclass
+class AgentPersona:
+    id: str
+    name: str
+    icon: str
+    description: str
+    system_prompt_suffix: str      # Ajouté après DEEP_AGENT_SYSTEM_PROMPT
+    enabled_tools: list[str] | None = None   # None = tous les outils
+    disabled_tools: list[str] = field(default_factory=list)
+    temperature: float = 0.3
+
+
+PERSONAS: list[AgentPersona] = [
+    AgentPersona(
+        id="default",
+        name="Assistant Général",
+        icon="🤖",
+        description="Agent polyvalent pour toutes les tâches.",
+        system_prompt_suffix="",
+    ),
+    AgentPersona(
+        id="devops",
+        name="DevOps Engineer",
+        icon="🚀",
+        description="Spécialiste infra, CI/CD, Docker, Kubernetes, scripts shell.",
+        system_prompt_suffix="""
+You are a senior DevOps engineer. You specialize in:
+- Infrastructure as Code (Terraform, Ansible, Pulumi)
+- CI/CD pipelines (GitHub Actions, GitLab CI, Jenkins)
+- Containerization (Docker, docker-compose, Kubernetes)
+- Cloud providers (AWS, GCP, Azure)
+- Shell scripting (bash, zsh, PowerShell)
+- Monitoring (Prometheus, Grafana, Datadog)
+Always suggest infrastructure best practices, consider security implications,
+and prefer declarative configuration over imperative scripts.
+""",
+        disabled_tools=["internet_search"],  # DevOps = offline work
+    ),
+    AgentPersona(
+        id="code_reviewer",
+        name="Code Reviewer",
+        icon="👁️",
+        description="Revue de code rigoureuse : bugs, sécurité, performance, lisibilité.",
+        system_prompt_suffix="""
+You are an expert code reviewer. Your job is to:
+1. Find bugs, edge cases, and logic errors
+2. Identify security vulnerabilities (OWASP Top 10, injection, XSS, etc.)
+3. Point out performance bottlenecks
+4. Suggest readability and maintainability improvements
+5. Check for proper error handling and logging
+Be constructive but thorough. Use line references. Prioritize: CRITICAL > IMPORTANT > SUGGESTION.
+Never approve code with security vulnerabilities or data loss risks.
+""",
+        disabled_tools=["run_command", "delete_file", "delete_dir"],
+        temperature=0.1,
+    ),
+    AgentPersona(
+        id="data_scientist",
+        name="Data Scientist",
+        icon="📊",
+        description="Analyse de données, ML, visualisation, pandas, numpy, scikit-learn.",
+        system_prompt_suffix="""
+You are a senior data scientist. You specialize in:
+- Exploratory data analysis (pandas, polars)
+- Machine learning (scikit-learn, XGBoost, LightGBM)
+- Deep learning (PyTorch, TensorFlow/Keras)
+- Data visualization (matplotlib, seaborn, plotly)
+- Statistical analysis and hypothesis testing
+- Feature engineering and model evaluation
+Always explain your statistical reasoning. Prefer reproducible pipelines.
+Suggest visualization when it would clarify the data.
+""",
+    ),
+    AgentPersona(
+        id="architect",
+        name="Software Architect",
+        icon="🏗️",
+        description="Conception de systèmes, patterns, APIs, scalabilité.",
+        system_prompt_suffix="""
+You are a software architect with 15+ years of experience. You focus on:
+- System design and high-level architecture
+- Design patterns (GoF, Enterprise, Distributed Systems)
+- API design (REST, GraphQL, gRPC)
+- Database schema design and optimization
+- Scalability, reliability, and maintainability
+- Trade-off analysis between architectural choices
+Think at the system level. Draw ASCII diagrams when helpful.
+Question requirements before designing. Prefer simple solutions over clever ones.
+""",
+        disabled_tools=["run_command"],
+        temperature=0.5,
+    ),
+    AgentPersona(
+        id="security",
+        name="Security Auditor",
+        icon="🔒",
+        description="Audit de sécurité, pentest, vulnérabilités, OWASP.",
+        system_prompt_suffix="""
+You are a security expert and ethical hacker. You analyze code and systems for:
+- Authentication and authorization flaws
+- Injection vulnerabilities (SQL, command, LDAP, XPath)
+- XSS, CSRF, SSRF vulnerabilities
+- Insecure dependencies and supply chain risks
+- Secrets and credentials exposure
+- Cryptographic weaknesses
+- Business logic flaws
+Always provide a severity rating (CRITICAL/HIGH/MEDIUM/LOW/INFO) and a remediation.
+Never suggest exploiting vulnerabilities on systems you don't own.
+""",
+        temperature=0.1,
+    ),
+]
+
+PERSONAS_BY_ID = {p.id: p for p in PERSONAS}
+```
+
+**Intégration dans `build_agent()`:**
+
+```python
+def build_agent(mode: str = "auto", persona_id: str = "default", ...):
+    from openagenticskyzer.prompts.personas import PERSONAS_BY_ID
+    from openagenticskyzer.prompts.prompt import DEEP_AGENT_SYSTEM_PROMPT
+
+    persona = PERSONAS_BY_ID.get(persona_id, PERSONAS_BY_ID["default"])
+    system_prompt = DEEP_AGENT_SYSTEM_PROMPT + persona.system_prompt_suffix
+
+    # Filtrer les outils selon le persona
+    active_tools = [
+        t for t in all_tools
+        if t.name not in persona.disabled_tools
+        and (persona.enabled_tools is None or t.name in persona.enabled_tools)
+    ]
+```
+
+**Nouveau champ `state.py`:**
+```python
+current_persona_id: str = "default"
+```
+
+**UI dans `model_modal.py`** — section Persona avant le sélecteur de modèle :
+
+```python
+_section("Persona de l'agent")
+with ui.row().classes("flex-wrap gap-2 px-4"):
+    for persona in PERSONAS:
+        selected = persona.id == state.current_persona_id
+        with ui.card().classes(
+            f"cursor-pointer p-2 {'border-purple-500 bg-purple-950' if selected else 'border-gray-700 bg-gray-900'} border rounded-lg"
+        ).on("click", lambda pid=persona.id: _select_persona(pid)):
+            ui.label(f"{persona.icon} {persona.name}").classes("text-xs text-gray-200 font-medium")
+            ui.label(persona.description[:50]).classes("text-xs text-gray-500")
+```
+
+---
+
+### 10.2 Comparaison Multi-Modèles
+
+**Objectif:** Envoyer le même prompt à 2-3 modèles simultanément et afficher les réponses côte à côte pour comparer la qualité, la vitesse, et le style.
+
+**Nouveau champ `state.py`:**
+
+```python
+compare_mode: bool = False
+compare_models: list[tuple[str, str]] = field(default_factory=list)
+# [(provider, model_name), ...]
+compare_results: dict[str, str] = field(default_factory=dict)
+# {f"{provider}:{model}" → response}
+```
+
+**Bouton "⊞ Comparer"** dans l'input bar (visible si compare_mode activé) :
+
+```python
+# Dans _send_message, si compare_mode:
+async def _send_compare(text: str):
+    tasks = []
+    for provider, model in state.compare_models[:3]:
+        agent = build_agent(provider=provider, model_name=model, mode="ask")
+        tasks.append(run.io_bound(
+            agent.invoke,
+            {"messages": [{"role": "user", "content": text}]},
+            {"recursion_limit": 50},
+        ))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for (provider, model), result in zip(state.compare_models, results):
+        key = f"{provider}:{model}"
+        if isinstance(result, Exception):
+            state.compare_results[key] = f"❌ Erreur : {result}"
+        else:
+            for msg in reversed(result.get("messages", [])):
+                content = getattr(msg, "content", "")
+                if content:
+                    state.compare_results[key] = content
+                    break
+```
+
+**Rendu côte à côte dans `chat.py`** — après les messages normaux, si `compare_results` non vide :
+
+```python
+if state.compare_results:
+    with ui.row().classes("w-full gap-2 p-2"):
+        for key, content in state.compare_results.items():
+            provider, model = key.split(":", 1)
+            with ui.card().classes("flex-1 bg-gray-900 border border-gray-700 rounded-xl p-3"):
+                ui.label(f"● {model}").classes("text-xs text-purple-400 font-medium mb-2")
+                ui.markdown(content).classes("text-xs text-gray-200")
+```
+
+---
+
+## Phase 11 — Voice Input
+
+### 11.1 Dictée vocale locale (Whisper.cpp)
+
+**Objectif:** Dicter ses messages via le micro, transcription 100% locale via Whisper.cpp — aucun audio envoyé dans le cloud. Fonctionne hors ligne.
+
+**Approche:** Utiliser `faster-whisper` (implémentation CTranslate2, CPU-friendly) ou `whisper-cpp-python` (binding Python vers whisper.cpp).
+
+**Nouveau fichier:** `openagenticskyzer/app/voice_input.py`
+
+```python
+"""Transcription vocale locale via faster-whisper."""
+import io
+import threading
+import wave
+import numpy as np
+
+_model = None
+_recording = False
+_audio_frames = []
+
+
+def _get_model():
+    global _model
+    if _model is None:
+        from faster_whisper import WhisperModel
+        # "base" = 74MB, rapide, bon compromis qualité/vitesse
+        # "small" = 244MB, meilleure qualité
+        _model = WhisperModel("base", device="cpu", compute_type="int8")
+    return _model
+
+
+def start_recording():
+    global _recording, _audio_frames
+    import sounddevice as sd
+    _recording = True
+    _audio_frames = []
+
+    def _callback(indata, frames, time, status):
+        if _recording:
+            _audio_frames.append(indata.copy())
+
+    # 16kHz mono, format attendu par Whisper
+    stream = sd.InputStream(samplerate=16000, channels=1, dtype="float32",
+                            callback=_callback)
+    stream.start()
+    return stream
+
+
+def stop_and_transcribe(stream) -> str:
+    global _recording
+    _recording = False
+    stream.stop()
+    stream.close()
+
+    if not _audio_frames:
+        return ""
+    audio = np.concatenate(_audio_frames, axis=0).flatten()
+    model = _get_model()
+    segments, _ = model.transcribe(audio, language="fr", beam_size=5)
+    return " ".join(seg.text for seg in segments).strip()
+```
+
+**Bouton micro** dans `input_bar.py` — à côté du bouton 📎 :
+
+```python
+from openagenticskyzer.app.voice_input import start_recording, stop_and_transcribe
+
+_stream = None
+
+def _on_mic_click():
+    global _stream
+    if _stream is None:
+        # Démarre l'enregistrement
+        _stream = start_recording()
+        mic_btn.classes(add="text-red-500 animate-pulse", remove="text-gray-500")
+        mic_btn.props("icon=mic")
+    else:
+        # Arrête et transcrit
+        mic_btn.classes(add="text-gray-500 animate-none", remove="text-red-500 animate-pulse")
+        text = stop_and_transcribe(_stream)
+        _stream = None
+        if text:
+            current = input_el.value or ""
+            input_el.set_value((current + " " + text).strip())
+        mic_btn.props("icon=mic_none")
+
+mic_btn = ui.button("🎙️", on_click=_on_mic_click).classes(
+    "w-8 h-10 bg-gray-900 border border-gray-800 text-gray-500 rounded-lg flex-shrink-0 text-sm"
+).tooltip("Dicter un message (Whisper local)")
+```
+
+**Nouvelles dépendances:**
+
+```toml
+[project.optional-dependencies]
+voice = [
+    "faster-whisper>=1.0",
+    "sounddevice>=0.4",
+    "numpy>=1.24",
+]
+all = [..., "faster-whisper>=1.0", "sounddevice>=0.4", "numpy>=1.24"]
+```
+
+---
+
+## Phase 12 — Analytics & Transparence
+
+### 12.1 Suivi des coûts API
+
+**Objectif:** Pour les providers cloud (Groq, Mistral, Together, OpenRouter, etc.), afficher le coût estimé en tokens × tarif de chaque session et au total.
+
+**Nouveau fichier:** `openagenticskyzer/app/cost_tracker.py`
+
+```python
+"""Estimation du coût des appels LLM par provider/modèle."""
+
+# Prix en USD par million de tokens (input / output)
+# Sources : pages de tarification officielles — à mettre à jour régulièrement
+PRICING: dict[str, dict[str, tuple[float, float]]] = {
+    "groq": {
+        "llama-3.3-70b-versatile":     (0.59, 0.79),
+        "llama-3.1-8b-instant":        (0.05, 0.08),
+        "mixtral-8x7b-32768":          (0.24, 0.24),
+        "gemma2-9b-it":                (0.20, 0.20),
+    },
+    "mistral": {
+        "mistral-large-latest":        (2.00, 6.00),
+        "mistral-small-latest":        (0.20, 0.60),
+        "codestral-latest":            (0.20, 0.60),
+        "open-mistral-7b":             (0.25, 0.25),
+    },
+    "together": {
+        "meta-llama/Llama-3.3-70B":   (0.88, 0.88),
+        "mistralai/Mixtral-8x7B":      (0.60, 0.60),
+    },
+    "gemini": {
+        "gemini-2.0-flash":            (0.075, 0.30),
+        "gemini-1.5-pro":              (1.25, 5.00),
+    },
+    # Ollama et LM Studio → 0 (local, gratuit)
+    "ollama":    {},
+    "lmstudio":  {},
+}
+
+
+def estimate_cost(provider: str, model: str, input_tokens: int, output_tokens: int) -> float:
+    """Retourne le coût estimé en USD."""
+    rates = PRICING.get(provider, {}).get(model)
+    if not rates:
+        return 0.0
+    input_rate, output_rate = rates
+    return (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
+
+
+def format_cost(usd: float) -> str:
+    if usd == 0.0:
+        return "gratuit (local)"
+    if usd < 0.001:
+        return f"< $0.001"
+    return f"${usd:.4f}"
+```
+
+**Nouveau champ `state.py`:**
+
+```python
+session_input_tokens: int = 0
+session_output_tokens: int = 0
+session_cost_usd: float = 0.0
+total_cost_usd: float = 0.0    # persisté dans global config
+```
+
+**Tracking dans `GUIAgentCallback`** (`gui_callback.py`) — sur `on_llm_end` :
+
+```python
+def on_llm_end(self, response, **kwargs):
+    usage = getattr(response, "llm_output", {}).get("token_usage", {})
+    input_t = usage.get("prompt_tokens", 0)
+    output_t = usage.get("completion_tokens", 0)
+    state.session_input_tokens += input_t
+    state.session_output_tokens += output_t
+    from openagenticskyzer.app.cost_tracker import estimate_cost
+    cost = estimate_cost(state.current_provider or "", state.current_model or "", input_t, output_t)
+    state.session_cost_usd += cost
+    state.total_cost_usd += cost
+```
+
+**Affichage dans `context_bar.py`** — à côté de la jauge :
+
+```python
+from openagenticskyzer.app.cost_tracker import format_cost
+
+if state.session_cost_usd > 0 or state.current_provider not in ("ollama", "lmstudio"):
+    ui.label(format_cost(state.session_cost_usd)).classes(
+        "text-xs text-gray-600 ml-2"
+    ).tooltip(f"Coût total toutes sessions : {format_cost(state.total_cost_usd)}")
+```
+
+---
+
+### 12.2 Dashboard d'usage
+
+**Objectif:** Un écran de statistiques accessible depuis les settings — sessions, tokens, coûts, outils les plus utilisés, évolution dans le temps.
+
+**Nouveau fichier:** `openagenticskyzer/app/analytics.py`
+
+```python
+"""Agrégation des métriques d'usage depuis les sessions sauvegardées."""
+import json
+from collections import Counter
+from pathlib import Path
+from openagenticskyzer.app.storage import _sessions_dir
+
+
+def compute_stats() -> dict:
+    sessions_dir = _sessions_dir()
+    tool_counts = Counter()
+    total_tokens = 0
+    total_cost = 0.0
+    session_count = 0
+    providers_used = Counter()
+
+    for path in sessions_dir.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            session_count += 1
+            total_tokens += data.get("total_tokens", 0)
+            total_cost += data.get("cost_usd", 0.0)
+            providers_used[data.get("provider", "unknown")] += 1
+            for msg in data.get("messages", []):
+                if msg.get("role") == "tool" and msg.get("tool_name"):
+                    tool_counts[msg["tool_name"]] += 1
+        except Exception:
+            continue
+
+    return {
+        "session_count": session_count,
+        "total_tokens": total_tokens,
+        "total_cost_usd": total_cost,
+        "top_tools": tool_counts.most_common(10),
+        "providers": dict(providers_used),
+    }
+```
+
+**Nouvel onglet dans `settings.py`** — "📈 Statistiques" :
+
+```python
+def _tab_analytics():
+    from openagenticskyzer.app.analytics import compute_stats
+    from openagenticskyzer.app.cost_tracker import format_cost
+
+    stats = compute_stats()
+    _section("Vue d'ensemble")
+    with ui.grid(columns=3).classes("w-full px-4 gap-3"):
+        _stat_card("Sessions", str(stats["session_count"]))
+        _stat_card("Tokens total", f"{stats['total_tokens']:,}")
+        _stat_card("Coût total", format_cost(stats["total_cost_usd"]))
+
+    _section("Outils les plus utilisés")
+    for tool_name, count in stats["top_tools"]:
+        with ui.row().classes("px-4 items-center gap-2"):
+            ui.label(tool_name).classes("text-xs text-gray-400 font-mono w-32")
+            with ui.element("div").classes("flex-1 h-1.5 bg-gray-800 rounded"):
+                max_count = stats["top_tools"][0][1] if stats["top_tools"] else 1
+                pct = count / max_count * 100
+                ui.element("div").classes("h-1.5 bg-purple-600 rounded").style(f"width:{pct:.0f}%")
+            ui.label(str(count)).classes("text-xs text-gray-600")
+
+    _section("Providers utilisés")
+    for provider, count in stats["providers"].items():
+        ui.label(f"{provider}: {count} sessions").classes("text-xs text-gray-500 px-4")
+
+
+def _stat_card(label: str, value: str):
+    with ui.card().classes("bg-gray-900 border border-gray-800 rounded-xl p-3 text-center"):
+        ui.label(value).classes("text-lg text-gray-200 font-bold")
+        ui.label(label).classes("text-xs text-gray-600")
+```
+
+---
+
+### 12.3 Audit Log consultable
+
+**Objectif:** Un historique de toutes les actions de l'agent (fichiers créés/modifiés, commandes lancées, URLs fetchées) — filtrable, searchable, horodaté.
+
+**Nouveau fichier:** `openagenticskyzer/context/audit_log.py`
+
+```python
+"""Audit log — enregistre chaque action agent avec timestamp et contexte."""
+import json
+from datetime import datetime
+from pathlib import Path
+from openagenticskyzer.app.storage import get_data_home
+
+
+def _audit_path() -> Path:
+    p = get_data_home() / "audit.jsonl"
+    return p
+
+
+def log_action(tool_name: str, args: dict, result_summary: str, folder: str = "") -> None:
+    """Enregistre une action dans l'audit log (format JSONL — 1 JSON par ligne)."""
+    entry = {
+        "ts": datetime.now().isoformat(),
+        "tool": tool_name,
+        "args": {k: str(v)[:200] for k, v in args.items()},
+        "result": result_summary[:500],
+        "folder": folder,
+    }
+    with open(_audit_path(), "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def read_audit_log(limit: int = 200, tool_filter: str = "", folder_filter: str = "") -> list[dict]:
+    path = _audit_path()
+    if not path.exists():
+        return []
+    entries = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-limit * 3:]:
+        try:
+            e = json.loads(line)
+            if tool_filter and tool_filter not in e.get("tool", ""):
+                continue
+            if folder_filter and folder_filter not in e.get("folder", ""):
+                continue
+            entries.append(e)
+        except Exception:
+            continue
+    return entries[-limit:]
+
+
+def clear_audit_log() -> None:
+    path = _audit_path()
+    if path.exists():
+        path.unlink()
+```
+
+**Intégration dans le tool node** (`graph/nodes.py`) — après chaque exécution d'outil :
+
+```python
+from openagenticskyzer.context.audit_log import log_action
+
+# Dans le handler après exécution de chaque outil :
+log_action(
+    tool_name=tool_name,
+    args=tool_args,
+    result_summary=str(tool_result)[:500],
+    folder=state.active_folder or "",
+)
+```
+
+**Nouvel onglet dans `settings.py`** — "🔍 Audit" :
+
+```python
+def _tab_audit():
+    from openagenticskyzer.context.audit_log import read_audit_log, clear_audit_log
+
+    filter_input = ui.input(placeholder="Filtrer par outil…").classes("w-full mb-2 text-xs")
+    entries = read_audit_log(limit=100)
+
+    with ui.scroll_area().classes("w-full h-72"):
+        for e in reversed(entries):
+            with ui.row().classes("w-full px-4 py-1.5 border-b border-gray-900 gap-2 items-start"):
+                ui.label(e["ts"][11:19]).classes("text-xs text-gray-600 font-mono w-16 flex-shrink-0")
+                ui.label(e["tool"]).classes("text-xs text-purple-400 font-mono w-28 flex-shrink-0")
+                ui.label(e["result"][:80]).classes("text-xs text-gray-500 flex-1 truncate")
+
+    ui.button("🗑️ Effacer l'audit", on_click=lambda: clear_audit_log() or ui.notify("Audit effacé.")).classes(
+        "text-xs text-red-400 border border-red-900 bg-transparent mt-2"
+    )
+```
+
+---
+
+## Phase 13 — API Server & Webhooks
+
+### 13.1 Mode API Server
+
+**Objectif:** Exposer l'agent comme une API HTTP REST locale (`POST /chat`) pour permettre à d'autres outils de l'utiliser — scripts, extensions VS Code, apps tierces, automations.
+
+**Nouveau fichier:** `openagenticskyzer/api_server.py`
+
+```python
+"""Serveur API REST local — expose l'agent sur http://127.0.0.1:8767."""
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import uvicorn
+
+app = FastAPI(title="OpenAgentic Skyzer API", version="1.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+class ChatRequest(BaseModel):
+    message: str
+    folder: str = ""
+    mode: str = "auto"
+    model: str | None = None
+    provider: str | None = None
+    history: list[dict] = []
+
+
+class ChatResponse(BaseModel):
+    response: str
+    tool_calls: list[dict] = []
+    tokens_used: int = 0
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest):
+    from openagenticskyzer.agent import build_agent
+    import os
+    if req.folder:
+        os.chdir(req.folder)
+    agent = build_agent(mode=req.mode, provider=req.provider, model_name=req.model)
+    messages = req.history + [{"role": "user", "content": req.message}]
+    try:
+        result = agent.invoke({"messages": messages}, {"recursion_limit": 100})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    ai_text = ""
+    tool_calls_log = []
+    for msg in reversed(result.get("messages", [])):
+        content = getattr(msg, "content", "")
+        if content and not getattr(msg, "tool_calls", None):
+            ai_text = content if isinstance(content, str) else str(content)
+            break
+    for msg in result.get("messages", []):
+        for tc in getattr(msg, "tool_calls", None) or []:
+            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "")
+            args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {})
+            if name:
+                tool_calls_log.append({"tool": name, "args": args})
+
+    return ChatResponse(response=ai_text, tool_calls=tool_calls_log)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "version": "1.0.0"}
+
+
+@app.get("/models")
+async def list_models():
+    from openagenticskyzer.utils.utils import list_ollama_models
+    return {"ollama": list_ollama_models()}
+
+
+def start_api_server(host: str = "127.0.0.1", port: int = 8767):
+    uvicorn.run(app, host=host, port=port, log_level="warning")
+```
+
+**Activation via CLI** — nouveau flag `--api` dans `agent.py` :
+
+```bash
+openagent --api                        # Lance le serveur API sur 127.0.0.1:8767
+openagent --api --api-port 9000        # Port personnalisé
+```
+
+**Toggle dans settings.py** — "Démarrer l'API server au lancement" :
+
+```python
+ui.switch(value=cfg.get("start_api_server", False)).bind_value_to(cfg, "start_api_server")
+ui.label("Expose l'agent sur http://127.0.0.1:8767/chat").classes("text-xs text-gray-600")
+```
+
+**Exemple d'utilisation depuis un script Python :**
+
+```python
+import requests
+resp = requests.post("http://127.0.0.1:8767/chat", json={
+    "message": "Liste les fichiers Python dans ce dossier",
+    "folder": "/mon/projet",
+    "mode": "auto",
+})
+print(resp.json()["response"])
+```
+
+---
+
+### 13.2 Webhooks entrants
+
+**Objectif:** Déclencher l'agent depuis un événement externe — nouveau commit GitHub, alerte monitoring, message Slack, cron job — via une URL webhook exposée localement et/ou via tunnel (ngrok).
+
+**Nouveau fichier:** `openagenticskyzer/webhooks.py`
+
+```python
+"""Webhooks entrants — déclenche l'agent depuis des événements externes."""
+from fastapi import FastAPI, Request, HTTPException
+from openagenticskyzer.app.storage import load_global_config
+import hmac, hashlib
+
+# Ajouté au serveur FastAPI de l'API server
+def register_webhook_routes(app):
+
+    @app.post("/webhook/{trigger_id}")
+    async def webhook(trigger_id: str, request: Request):
+        cfg = load_global_config()
+        triggers = cfg.get("webhook_triggers", {})
+        trigger = triggers.get(trigger_id)
+        if not trigger:
+            raise HTTPException(status_code=404, detail="Trigger not found")
+
+        # Vérification HMAC optionnelle
+        secret = trigger.get("secret")
+        if secret:
+            sig = request.headers.get("X-Hub-Signature-256", "")
+            body = await request.body()
+            expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(sig, expected):
+                raise HTTPException(status_code=401, detail="Invalid signature")
+
+        # Construit le message pour l'agent depuis le template du trigger
+        payload = await request.json()
+        message = trigger["message_template"].format(**_flatten(payload))
+
+        from openagenticskyzer.agent import build_agent
+        agent = build_agent(mode=trigger.get("mode", "auto"),
+                            provider=trigger.get("provider"),
+                            model_name=trigger.get("model"))
+        result = agent.invoke({"messages": [{"role": "user", "content": message}]},
+                              {"recursion_limit": 100})
+        return {"status": "executed", "trigger": trigger_id}
+```
+
+**Config des triggers dans `global_config`** :
+
+```json
+{
+  "webhook_triggers": {
+    "github-push": {
+      "message_template": "Nouveau commit sur {repository.name} par {pusher.name}: {head_commit.message}. Analyse les changements et résume-les.",
+      "mode": "ask",
+      "secret": "mon_secret_hmac"
+    },
+    "daily-summary": {
+      "message_template": "Génère le rapport quotidien du projet et sauvegarde-le dans DAILY_REPORT.md",
+      "mode": "auto"
+    }
+  }
+}
+```
+
+**Nouvelle dépendance:**
+
+```toml
+[project.optional-dependencies]
+api = ["fastapi>=0.115", "uvicorn>=0.30"]
+all = [..., "fastapi>=0.115", "uvicorn>=0.30"]
+```
+
+---
+
 ## Dépendances entre phases
 
 ```
-Phase 1 (Streaming)      → Aucune dépendance, commence immédiatement
-Phase 2 (Git + Upload)   → Aucune dépendance, parallèle avec Phase 1
-Phase 3 (Artifacts)      → Phase 1 recommandée (streaming + affichage)
-Phase 7 (Mémoire)        → Phase 1 recommandée (LLM compact utilise astream)
-Phase 4 (RAG + Index)    → Phase 7 synergique (mémoire + index = contexte complet)
-Phase 5 (Plugins + MCP)  → Aucune dépendance
-Phase 6 (Multi-agent)    → Phase 5 recommandée (plugins pour les sous-agents)
+Phase 1  (Streaming + UX)        → Aucune dépendance, commence immédiatement
+Phase 2  (Git + Upload/Vision)   → Aucune dépendance, parallèle avec Phase 1
+Phase 7  (Mémoire)               → Phase 1 recommandée (LLM compact utilise astream)
+Phase 3  (Artifacts + Prompts)   → Phase 1 recommandée (streaming + affichage)
+Phase 8  (UX Avancée)            → Phase 1 requise (streaming avant édition/tabs)
+Phase 9  (Dev Tools Pro)         → Phase 2 recommandée (git avant diff interactif)
+Phase 4  (RAG + Index)           → Phase 7 synergique (mémoire + index = contexte complet)
+Phase 5  (Plugins + MCP)         → Aucune dépendance
+Phase 10 (Personas + Compare)    → Phase 1 requise (streaming pour comparaison)
+Phase 11 (Voice Input)           → Aucune dépendance fonctionnelle
+Phase 12 (Analytics)             → Phase 2 recommandée (git actions à logger)
+Phase 6  (Multi-agent)           → Phase 5 recommandée (plugins pour les sous-agents)
+Phase 13 (API Server)            → Phase 6 recommandée (API expose le multi-agent)
 ```
 
-**Ordre recommandé:** 1 → 2 → 3 → 7 → 4 → 5 → 6
-*(Phase 7 placée tôt car elle améliore immédiatement chaque session de travail)*
+**Ordre recommandé:** 1 → 2 → 7 → 3 → 8 → 9 → 4 → 5 → 10 → 11 → 12 → 6 → 13
 
-**Phases parallélisables:** 1+2 simultanément, 4+5 simultanément, 7 indépendante
+**Phases parallélisables:**
+- Sprint A : 1 + 2 (fondations simultanées)
+- Sprint B : 7 + 11 (mémoire + voice, indépendantes)
+- Sprint C : 3 + 8 + 9 (UX enrichie)
+- Sprint D : 4 + 5 + 12 (intelligence + plugins + analytics)
+- Sprint E : 6 + 10 + 13 (multi-agent + personas + API)
 
 ---
 
 ## Nouvelles dépendances Python
 
-| Phase | Package | Groupe |
+| Phase | Package | Groupe pyproject |
 |---|---|---|
 | 1.3 | `plyer>=2.1` | `[app]` |
 | 2.2 | `pypdf>=4.0` | `[app]` |
-| 4 | `chromadb>=0.5` | `[index]` (nouveau groupe) |
+| 4 | `chromadb>=0.5` | `[index]` (nouveau) |
 | 4 | `sentence-transformers>=2.7` | `[index]` |
-| 5.2 | `mcp>=1.0` | `[mcp]` (nouveau groupe) |
+| 5.2 | `mcp>=1.0` | `[mcp]` (nouveau) |
+| 11 | `faster-whisper>=1.0` | `[voice]` (nouveau) |
+| 11 | `sounddevice>=0.4` | `[voice]` |
+| 11 | `numpy>=1.24` | `[voice]` |
+| 13 | `fastapi>=0.115` | `[api]` (nouveau) |
+| 13 | `uvicorn>=0.30` | `[api]` |
+| 13 | `websockets>=12.0` | `[api]` (pour terminal xterm) |
 
 **Ajouter à requirements.txt:** `plyer>=2.1`, `pypdf>=4.0`
+
+**Groupes optionnels à créer dans pyproject.toml:**
+```toml
+[project.optional-dependencies]
+index = ["chromadb>=0.5", "sentence-transformers>=2.7"]
+voice = ["faster-whisper>=1.0", "sounddevice>=0.4", "numpy>=1.24"]
+api   = ["fastapi>=0.115", "uvicorn>=0.30", "websockets>=12.0"]
+mcp   = ["mcp>=1.0"]
+all   = [
+    # ... app existant ...
+    "plyer>=2.1", "pypdf>=4.0",
+    "chromadb>=0.5", "sentence-transformers>=2.7",
+    "faster-whisper>=1.0", "sounddevice>=0.4", "numpy>=1.24",
+    "fastapi>=0.115", "uvicorn>=0.30", "websockets>=12.0",
+    "mcp>=1.0",
+]
+```
 
 ---
 
@@ -2649,38 +3918,86 @@ Phase 6 (Multi-agent)    → Phase 5 recommandée (plugins pour les sous-agents)
 | Fichier | Phase | Description |
 |---|---|---|
 | `app/notifier.py` | 1.3 | Notifications OS |
-| `app/file_processor.py` | 2.2 | Traitement uploads |
-| `app/exporter.py` | 3.3 | Export conversation |
+| `app/file_processor.py` | 2.2 | Traitement uploads (PDF/CSV/image) |
+| `app/exporter.py` | 3.3 | Export conversation MD/HTML/JSON |
+| `app/cost_tracker.py` | 12.1 | Tarifs LLM + estimation coût par session |
+| `app/analytics.py` | 12.2 | Agrégation métriques d'usage |
+| `app/voice_input.py` | 11 | Transcription vocale via faster-whisper |
+| `app/terminal_server.py` | 9.1 | WebSocket server pty pour terminal xterm |
+| `app/api_server.py` | 13.1 | API REST FastAPI exposant l'agent |
+| `app/webhooks.py` | 13.2 | Webhooks entrants avec vérification HMAC |
 | `app/components/artifact_panel.py` | 3.1 | Preview HTML/SVG/Mermaid |
 | `app/components/prompt_library.py` | 3.2 | Bibliothèque de prompts |
-| `tools/git_tools.py` | 2.1 | 14 outils git |
+| `app/components/command_palette.py` | 8.2 | Command palette Ctrl+K |
+| `app/components/terminal_panel.py` | 9.1 | Terminal embarqué xterm.js |
+| `app/components/preview_panel.py` | 9.3 | Browser preview serveur dev |
+| `tools/git_tools.py` | 2.1 | 14 outils git complets |
 | `tools/index_tools.py` | 4 | semantic_search + knowledge_search |
-| `tools/delegation.py` | 6.1 | delegate_task |
+| `tools/delegation.py` | 6.1 | delegate_task pour sous-agents |
 | `tools/memory_tools.py` | 7 | save_memory, read_memory, forget_memory |
-| `context/project_memory.py` | 7 | Lecture/écriture mémoire projet + globale |
-| `indexer/__init__.py` | 4 | Module indexation |
-| `indexer/embedder.py` | 4 | Modèle sentence-transformers |
-| `indexer/indexer.py` | 4 | ChromaDB + chunking |
+| `context/project_memory.py` | 7 | Mémoire projet + globale persistante |
+| `context/audit_log.py` | 12.3 | Audit log JSONL de toutes les actions |
+| `indexer/__init__.py` | 4 | Module indexation sémantique |
+| `indexer/embedder.py` | 4 | Embeddings sentence-transformers local |
+| `indexer/indexer.py` | 4 | ChromaDB + chunking codebase |
 | `indexer/knowledge.py` | 4.2 | Base de connaissances RAG |
 | `plugins/__init__.py` | 5.1 | Module plugins |
-| `plugins/loader.py` | 5.1 | Chargement dynamique |
+| `plugins/loader.py` | 5.1 | Chargement dynamique + hooks cycle de vie |
 | `mcp_client/__init__.py` | 5.2 | Module MCP |
-| `mcp_client/adapter.py` | 5.2 | Adaptateur MCP→LangChain |
-| `prompts/orchestrator.py` | 6.2 | Prompt orchestrateur |
+| `mcp_client/adapter.py` | 5.2 | Adaptateur MCP → LangChain BaseTool |
+| `prompts/personas.py` | 10.1 | 6 personas pré-configurés (DevOps, Reviewer…) |
+| `prompts/orchestrator.py` | 6.2 | Prompt orchestrateur multi-agent |
+| `docs/plugins/PLUGIN_GUIDE.md` | 5.3 | Guide complet moddeur |
+| `docs/plugins/PLUGIN_API_REFERENCE.md` | 5.3 | Référence APIs internes |
+| `docs/plugins/COMMUNITY_REGISTRY.md` | 5.3 | Registre communautaire plugins |
+| `docs/architecture/ARCHITECTURE.md` | 5.3 | Architecture technique pour contributeurs |
 
 ## Résumé des fichiers modifiés
 
-| Fichier | Phases | Modifications |
+| Fichier | Phases | Modifications clés |
 |---|---|---|
-| `app/state.py` | 1,2,4,6 | +streaming_content, +is_streaming, +attached_files, +index_status, +sub_agents |
-| `app/main.py` | 1,3 | +highlight.js, +mermaid.js, +artifact_panel dans layout |
-| `app/components/chat.py` | 1,3.3 | +streaming render, +bouton export |
-| `app/components/input_bar.py` | 1,2.2,3.2 | astream_events, upload button, prompt picker |
-| `app/components/sidebar.py` | 2.1,4.2 | +git widget, +knowledge section |
-| `app/components/settings.py` | 1.3,5 | +notifs toggle, +onglet Outils, +onglet MCP |
-| `app/storage.py` | 3.2,5.2 | +load_prompts, +save_prompts, +load_mcp_config, +save_mcp_config |
-| `agent.py` | 2.1,4,5,6 | +git_tools, +index_tools, +plugin_tools, +mcp_tools, +delegate_task |
-| `permissions.py` | 2.1 | +git_commit, git_push etc. dans _RESTRICTED_TOOLS |
-| `prompts/prompt.py` | 2.1,4,6 | +section GIT, +semantic_search, +knowledge_search |
-| `pyproject.toml` | 1,2,4,5 | +plyer, +pypdf, +chromadb, +sentence-transformers, +mcp |
+| `app/state.py` | 1,2,4,6,7,8,9,10,11,12 | +streaming_content, +is_streaming, +attached_files, +index_status, +sub_agents, +branches, +tabs, +compare_mode, +compare_results, +preview_url, +show_terminal, +show_preview, +session_cost_usd, +current_persona_id |
+| `app/main.py` | 1,3,5.3,8,9 | +highlight.js, +mermaid.js, +xterm.js CDN, +artifact_panel, +preview_panel, +terminal_panel, +command_palette dans layout |
+| `app/components/chat.py` | 1,3.3,8.1,8.3,9.2 | +streaming render, +bouton export, +bouton edit/régénérer, +bouton fork, +diff accept/reject |
+| `app/components/input_bar.py` | 1,2.2,3.2,8.1,11 | +astream_events, +upload button, +prompt picker, +mic button |
+| `app/components/sidebar.py` | 2.1,4.2 | +git status widget, +knowledge section |
+| `app/components/context_bar.py` | 7.1,12.1 | +compaction LLM réelle, +affichage coût session |
+| `app/components/settings.py` | 1.3,5,7.5,10.1,12.2,12.3 | +notifs toggle, +onglets Outils/MCP/Mémoire/Analytics/Audit, +toggle API server |
+| `app/components/model_modal.py` | 10.1 | +sélecteur de persona |
+| `app/storage.py` | 3.2,5.2,7 | +load_prompts, +save_prompts, +load_mcp_config, +webhook_triggers |
+| `agent.py` | 2.1,4,5,6,7,10,13 | +git_tools, +index_tools, +plugin_tools, +mcp_tools, +delegate_task, +memory_tools, +persona_id param, +folder_cwd param |
+| `graph/nodes.py` | 12.3 | +log_action après chaque tool call |
+| `permissions.py` | 2.1 | +git_commit, +git_push, +git_checkout dans _RESTRICTED_TOOLS |
+| `prompts/prompt.py` | 2.1,4,6,7 | +section GIT, +semantic_search, +knowledge_search, +MEMORY TOOLS |
+| `pyproject.toml` | 1,2,4,5,11,13 | +plyer, +pypdf, +chromadb, +sentence-transformers, +mcp, +faster-whisper, +sounddevice, +fastapi, +uvicorn, +websockets |
 | `requirements.txt` | 1,2 | +plyer, +pypdf |
+
+---
+
+## Vue d'ensemble — 13 phases
+
+| # | Phase | Features clés | Impact | Difficulté |
+|---|---|---|---|---|
+| 1 | **UX Professionnelle** | Streaming tokens, syntax highlight, notifs OS | 🔴 Critique | Moyenne |
+| 2 | **Outils Dev Essentiels** | Git complet (14 outils), upload PDF/CSV/images, vision | 🔴 Critique | Moyenne |
+| 3 | **Contenu & Productivité** | Artifacts HTML/SVG/Mermaid, prompt library, export conv. | 🟠 Important | Faible |
+| 4 | **Intelligence Locale** | Embeddings ChromaDB, recherche sémantique, RAG local | 🟠 Important | Élevée |
+| 5 | **Extensibilité** | Plugins `.py`, MCP, doc communautaire + 3 plugins exemple | 🟡 Valeur long terme | Moyenne |
+| 6 | **Multi-Agent** | delegate_task, sous-agents parallèles, orchestrateur | 🟡 Valeur long terme | Élevée |
+| 7 | **Mémoire & Contexte** | Compaction LLM réelle, memory.md projet+global, outils mémoire | 🔴 Critique | Moyenne |
+| 8 | **UX Avancée** | Édition messages, régénération, Ctrl+K palette, fork, tabs | 🟠 Important | Moyenne |
+| 9 | **Dev Tools Pro** | Terminal xterm.js, diff accept/reject, browser preview | 🟠 Important | Élevée |
+| 10 | **Personas & Compare** | 6 personas agents, comparaison multi-modèles côte à côte | 🟡 Différenciateur | Faible |
+| 11 | **Voice Input** | Whisper.cpp local, dictée hors ligne, bouton micro | 🟡 Différenciateur | Moyenne |
+| 12 | **Analytics** | Coûts API en temps réel, dashboard usage, audit log | 🟡 Valeur long terme | Faible |
+| 13 | **API & Webhooks** | REST API `POST /chat`, webhooks HMAC, intégration externe | 🔵 Écosystème | Moyenne |
+
+**Total :** ~35 nouveaux fichiers Python, ~15 fichiers modifiés, 4 nouveaux groupes de dépendances optionnelles.
+
+**Sprints recommandés (parallélisation maximale) :**
+- **Sprint A** (semaine 1-2) : Phase 1 + Phase 2
+- **Sprint B** (semaine 2-3) : Phase 7 + Phase 11
+- **Sprint C** (semaine 3-4) : Phase 3 + Phase 8 + Phase 9
+- **Sprint D** (semaine 4-6) : Phase 4 + Phase 5 + Phase 12
+- **Sprint E** (semaine 6-8) : Phase 6 + Phase 10 + Phase 13
+

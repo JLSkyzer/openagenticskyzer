@@ -123,3 +123,80 @@ class TestReasoningNode:
         assert result is not None
         assert result["reasoning_scratchpad"] == ""
         assert result["needs_correction"] is False
+
+
+from openagenticskyzer.graph.nodes import make_critique_node
+
+
+class TestCritiqueNode:
+
+    def test_skips_if_mode_not_critical(self):
+        """La critique ne s'exécute que pour le mode 'critical'."""
+        llm = _make_mock_llm()
+        node = make_critique_node(llm)
+        state = _base_state(
+            messages=[HumanMessage(content="q"), AIMessage(content="r")],
+            reasoning_mode="complex",
+        )
+        result = node(state)
+        llm.invoke.assert_not_called()
+        assert result.get("needs_correction") is False
+
+    def test_skips_if_max_iterations_reached(self):
+        """Après 2 itérations, ne critique plus (évite boucle infinie)."""
+        llm = _make_mock_llm()
+        node = make_critique_node(llm)
+        state = _base_state(
+            messages=[HumanMessage(content="q"), AIMessage(content="r")],
+            reasoning_mode="critical",
+            critique_iterations=2,
+        )
+        result = node(state)
+        llm.invoke.assert_not_called()
+
+    def test_no_issues_sets_needs_correction_false(self):
+        """Critique sans problèmes → needs_correction = False."""
+        llm = MagicMock()
+        llm.invoke.return_value = AIMessage(
+            content='{"has_issues": false, "issues": [], "confidence": 5, "corrections_needed": []}'
+        )
+        node = make_critique_node(llm)
+        state = _base_state(
+            messages=[HumanMessage(content="debug ce code"), AIMessage(content="la réponse")],
+            reasoning_mode="critical",
+            critique_iterations=0,
+        )
+        result = node(state)
+        assert result["needs_correction"] is False
+        assert result["confidence_score"] == 5
+
+    def test_issues_detected_sets_needs_correction_true(self):
+        """Critique avec problèmes → needs_correction = True et message de correction injecté."""
+        llm = MagicMock()
+        llm.invoke.return_value = AIMessage(
+            content='{"has_issues": true, "issues": ["bug logique"], "confidence": 2, "corrections_needed": ["fix le bug"]}'
+        )
+        node = make_critique_node(llm)
+        state = _base_state(
+            messages=[HumanMessage(content="debug ce code"), AIMessage(content="la réponse")],
+            reasoning_mode="critical",
+            critique_iterations=0,
+        )
+        result = node(state)
+        assert result["needs_correction"] is True
+        assert result["critique_iterations"] == 1
+        injected = result.get("messages", [])
+        assert any("AUTO-CORRECTION" in m.content for m in injected)
+
+    def test_invalid_json_does_not_crash(self):
+        """JSON malformé dans la réponse de critique → no-op (pas de crash)."""
+        llm = MagicMock()
+        llm.invoke.return_value = AIMessage(content="je ne suis pas du JSON valide")
+        node = make_critique_node(llm)
+        state = _base_state(
+            messages=[HumanMessage(content="q"), AIMessage(content="r")],
+            reasoning_mode="critical",
+            critique_iterations=0,
+        )
+        result = node(state)
+        assert result.get("needs_correction") is False

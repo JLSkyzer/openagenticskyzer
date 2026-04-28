@@ -11,7 +11,7 @@ from openagenticskyzer.context.messages import clean_messages, trim_message_hist
 from openagenticskyzer.graph.complexity import analyze_complexity
 from openagenticskyzer.graph.state import AgentState
 from openagenticskyzer.prompts.reasoning_templates import (
-    COT_PROMPT, COT_SYSTEM_INJECT, REASONING_TEMPLATES,
+    COT_PROMPT, COT_SYSTEM_INJECT, CRITIQUE_PROMPT, REASONING_TEMPLATES,
 )
 
 logger = logging.getLogger("openagentic.nodes")
@@ -473,6 +473,73 @@ def make_reasoning_node(model):
         return result
 
     return reasoning_node
+
+
+_MAX_CRITIQUE_ITERATIONS = 2
+
+
+def make_critique_node(model):
+    """Factory : retourne un nœud qui auto-critique la réponse et déclenche une correction si besoin."""
+    import json as _json
+
+    def critique_node(state: AgentState) -> dict:
+        if state.get("reasoning_mode") != "critical":
+            return {"needs_correction": False}
+        if state.get("critique_iterations", 0) >= _MAX_CRITIQUE_ITERATIONS:
+            return {"needs_correction": False}
+
+        last_ai_msg = next(
+            (m.content for m in reversed(state["messages"])
+             if isinstance(m, AIMessage)),
+            "",
+        )
+        last_user_msg = next(
+            (m.content for m in reversed(state["messages"])
+             if isinstance(m, HumanMessage)),
+            "",
+        )
+        # Normalise les contenus multimodaux
+        if isinstance(last_ai_msg, list):
+            last_ai_msg = " ".join(
+                c.get("text", "") if isinstance(c, dict) else str(c) for c in last_ai_msg
+            )
+        if isinstance(last_user_msg, list):
+            last_user_msg = " ".join(
+                c.get("text", "") if isinstance(c, dict) else str(c) for c in last_user_msg
+            )
+
+        try:
+            critique_response = model.invoke([
+                SystemMessage(content="Tu es un expert en revue de code et logique. Sois précis et strict."),
+                HumanMessage(content=CRITIQUE_PROMPT.format(
+                    question=last_user_msg[:500],
+                    response=last_ai_msg[:2000],
+                )),
+            ])
+            critique = _json.loads(critique_response.content)
+        except (_json.JSONDecodeError, Exception) as exc:
+            logger.warning("critique_node: failed to parse critique (%s: %s)", type(exc).__name__, exc)
+            return {"needs_correction": False}
+
+        confidence = int(critique.get("confidence", 3))
+        result: dict = {
+            "confidence_score": confidence,
+            "critique_result": str(critique.get("issues", [])),
+            "needs_correction": False,
+        }
+
+        if critique.get("has_issues") and critique.get("corrections_needed"):
+            corrections = "\n".join(f"- {c}" for c in critique["corrections_needed"])
+            result["messages"] = [SystemMessage(content=(
+                f"[AUTO-CORRECTION] Ta réponse précédente avait ces problèmes :\n{corrections}\n"
+                "Produis une version corrigée qui résout exactement ces problèmes."
+            ))]
+            result["needs_correction"] = True
+            result["critique_iterations"] = state.get("critique_iterations", 0) + 1
+
+        return result
+
+    return critique_node
 
 
 def route_after_agent(state: AgentState) -> str:

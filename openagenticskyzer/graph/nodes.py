@@ -492,6 +492,7 @@ _MAX_CRITIQUE_ITERATIONS = 2
 def make_critique_node(model):
     """Factory : retourne un nœud qui auto-critique la réponse et déclenche une correction si besoin."""
     import json as _json
+    import re as _re
 
     def critique_node(state: AgentState) -> dict:
         if state.get("reasoning_mode") != "critical":
@@ -527,7 +528,10 @@ def make_critique_node(model):
                     response=last_ai_msg[:2000],
                 )),
             ])
-            critique = _json.loads(critique_response.content)
+            raw_content = critique_response.content or ""
+            # Retire les fences markdown que certains LLM ajoutent autour du JSON
+            raw_content = _re.sub(r'^```(?:json)?\s*|\s*```$', '', raw_content.strip())
+            critique = _json.loads(raw_content)
         except Exception as exc:
             logger.warning("critique_node: failed to parse critique (%s: %s)", type(exc).__name__, exc)
             return {"needs_correction": False}

@@ -498,16 +498,20 @@ def estimate_gpu_layers(vram_available_gb: float, model_id: str) -> int:
     return -1 if layers >= total_layers else max(0, layers)
 
 
-def lmstudio_load_model(model_id: str, gpu_layers: int | None = None) -> str:
+def lmstudio_load_model(model_id: str, gpu_layers: int | None = None,
+                        ctx_length: int | None = None) -> str:
     """Charge un modèle dans LM Studio via `lms load`. Retourne un statut.
 
     gpu_layers : None/-1 = auto (tout sur GPU si possible), 0 = CPU seul, N = N couches sur GPU.
+    ctx_length : taille de la fenêtre de contexte en tokens (None = défaut LM Studio).
     """
     import time as _t
     try:
         cmd = ["lms", "load", model_id, "--yes"]
         if gpu_layers is not None and gpu_layers >= 0:
             cmd += ["--gpu", str(gpu_layers)]
+        if ctx_length and ctx_length > 0:
+            cmd += ["--context-length", str(ctx_length)]
         result = subprocess.run(
             cmd,
             capture_output=True, text=True, timeout=300,
@@ -719,7 +723,9 @@ def get_llm(provider: str | None = None, model: str | None = None):
         _ensure_lmstudio_server(base_url)
         ensure_lmstudio_runtime()
         if model and not _lmstudio_is_loaded(model):
-            lmstudio_load_model(model)
+            _ctx_env = os.environ.get("LMSTUDIO_CONTEXT_LENGTH", "").strip()
+            _ctx_arg = int(_ctx_env) if _ctx_env and _ctx_env.isdigit() else None
+            lmstudio_load_model(model, ctx_length=_ctx_arg)
         llm = ChatOpenAI(  # type: ignore[arg-type]
             model=model,
             api_key="lm-studio",

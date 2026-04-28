@@ -937,17 +937,42 @@ def open_model_modal():
 
             async def _lmstudio_select(model_id: str):
                 # Modèle déjà servi par l'API LM Studio → sélection instantanée
-                def _in_api() -> bool:
+                # SAUF si le contexte chargé ne correspond pas au contexte demandé
+                def _in_api_with_correct_ctx() -> bool:
                     try:
                         import urllib.request as _ur, json as _json
                         with _ur.urlopen("http://localhost:1234/v1/models", timeout=3) as r:
                             data = _json.loads(r.read()).get("data", [])
-                        return any(model_id.lower() in m.get("id", "").lower() for m in data)
+                        loaded = any(model_id.lower() in m.get("id", "").lower() for m in data)
+                        if not loaded:
+                            return False
+                        # Si un contexte précis est demandé, vérifie que le modèle chargé
+                        # l'utilise déjà (via l'API). Si on ne peut pas vérifier → recharge.
+                        _ctx_raw = os.environ.get("LMSTUDIO_CONTEXT_LENGTH", "").strip()
+                        if _ctx_raw:
+                            try:
+                                desired = int(_ctx_raw)
+                                if desired > 0:
+                                    ctx_map = _get_lmstudio_ctx_map()
+                                    current_k = next(
+                                        (v for k, v in ctx_map.items()
+                                         if model_id.lower() in k.lower()
+                                         or k.lower() in model_id.lower()),
+                                        0,
+                                    )
+                                    current = current_k * 1024
+                                    # Pas d'info → on ne sait pas → force recharge
+                                    # Info disponible et différente → force recharge
+                                    if current == 0 or abs(current - desired) > 512:
+                                        return False
+                            except Exception:
+                                pass
+                        return True
                     except Exception:
                         return False
 
                 lms_load_status.set_text("⏳ Vérification…")
-                if await run.io_bound(_in_api):
+                if await run.io_bound(_in_api_with_correct_ctx):
                     lms_load_status.set_text(f"✅ {model_id} prêt")
                     _select_model("lmstudio", model_id, dlg)
                     return

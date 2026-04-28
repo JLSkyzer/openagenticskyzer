@@ -500,26 +500,60 @@ def estimate_gpu_layers(vram_available_gb: float, model_id: str) -> int:
 
 def lmstudio_load_model(model_id: str, gpu_layers: int | None = None,
                         ctx_length: int | None = None) -> str:
-    """Charge un modèle dans LM Studio via `lms load`. Retourne un statut.
+    """Charge un modèle dans LM Studio. Retourne 'ok' ou un message d'erreur.
 
-    gpu_layers : None/-1 = auto (tout sur GPU si possible), 0 = CPU seul, N = N couches sur GPU.
-    ctx_length : taille de la fenêtre de contexte en tokens (None = défaut LM Studio).
+    Stratégie :
+    1. SDK Python lmstudio (IPC direct, supporte contextLength)
+    2. CLI lms avec unload préalable + --context-length
     """
     import time as _t
+    _cf = 0x08000000 if os.name == "nt" else 0
+
+    # ── 1. SDK Python lmstudio ───────────────────────────────────────────────
     try:
+        import lmstudio as lms  # type: ignore[import]
+        with lms.Client() as _client:
+            # Unload d'abord si chargé (nécessaire pour changer le contexte)
+            try:
+                _client.llm.unload(model_id)
+                _t.sleep(0.5)
+            except Exception:
+                pass
+            # Config de chargement
+            _cfg: dict = {}
+            if ctx_length and ctx_length > 0:
+                _cfg["contextLength"] = ctx_length
+            if gpu_layers is not None and gpu_layers >= 0:
+                _cfg["gpuOffload"] = {"ratio": "off" if gpu_layers == 0 else "auto"}
+            if _cfg:
+                _client.llm.load(model_id, _cfg)
+            else:
+                _client.llm.load(model_id)
+        _t.sleep(1)
+        return "ok"
+    except Exception:
+        pass  # SDK absent ou erreur → fallback CLI
+
+    # ── 2. CLI lms (unload + reload) ─────────────────────────────────────────
+    try:
+        # Unload préalable pour que --context-length soit pris en compte
+        if ctx_length and ctx_length > 0:
+            subprocess.run(
+                ["lms", "unload", model_id],
+                capture_output=True, text=True, timeout=30, creationflags=_cf,
+            )
+            _t.sleep(1)
+
         cmd = ["lms", "load", model_id, "--yes"]
         if gpu_layers is not None and gpu_layers >= 0:
             cmd += ["--gpu", str(gpu_layers)]
         if ctx_length and ctx_length > 0:
             cmd += ["--context-length", str(ctx_length)]
         result = subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=300,
-            creationflags=0x08000000 if os.name == "nt" else 0,
+            cmd, capture_output=True, text=True, timeout=300, creationflags=_cf,
         )
         _t.sleep(1)
         combined = (result.stderr + result.stdout).strip()
-        # lms retourne parfois exit code 0 même en cas d'erreur (message "Error:" dans stdout)
         if result.returncode != 0 or "Error:" in combined:
             return combined or "erreur"
         return "ok"

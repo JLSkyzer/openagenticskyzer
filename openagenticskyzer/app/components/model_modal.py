@@ -989,6 +989,26 @@ def open_model_modal():
                     lms_load_status.set_text(f"❌ {rt}")
                     return
 
+                # Déchargement préalable si nécessaire (pour forcer la prise en compte du contexte)
+                def _unload_if_loaded():
+                    try:
+                        import urllib.request as _ur, json as _json
+                        with _ur.urlopen("http://localhost:1234/v1/models", timeout=3) as r:
+                            data = _json.loads(r.read()).get("data", [])
+                        if any(model_id.lower() in m.get("id", "").lower() for m in data):
+                            subprocess.run(
+                                ["lms", "unload", model_id],
+                                capture_output=True, text=True, timeout=30,
+                                creationflags=0x08000000 if os.name == "nt" else 0,
+                            )
+                    except Exception:
+                        pass
+
+                _ctx_raw_check = os.environ.get("LMSTUDIO_CONTEXT_LENGTH", "").strip()
+                if _ctx_raw_check:
+                    lms_load_status.set_text("⏳ Déchargement du modèle précédent…")
+                    await run.io_bound(_unload_if_loaded)
+
                 # Construction de la commande lms load
                 cmd = ["lms", "load", model_id, "--yes"]
 

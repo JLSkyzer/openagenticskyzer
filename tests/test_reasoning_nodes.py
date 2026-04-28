@@ -259,3 +259,53 @@ class TestRouteAfterCritique:
     def test_routes_to_end_when_no_correction_needed(self):
         state = _base_state(needs_correction=False)
         assert route_after_critique(state) == END
+
+
+from openagenticskyzer.graph.workflow import build_graph
+
+
+def _make_mock_model():
+    """Crée un mock LLM qui retourne toujours une réponse simple."""
+    model = MagicMock()
+    model.bind_tools.return_value = model
+    model.invoke.return_value = AIMessage(content="réponse simple")
+    return model
+
+
+class TestBuildGraphWithReasoning:
+
+    def test_graph_compiles_with_reasoning_nodes(self):
+        """Le graphe doit compiler sans erreur avec les nouveaux nœuds."""
+        model = _make_mock_model()
+        graph = build_graph(
+            model=model,
+            tools=[],
+            system_prompt="Test",
+        )
+        assert graph is not None
+
+    def test_graph_invoke_simple_message(self):
+        """Un message simple traverse le graphe et appelle le LLM exactement 1 fois."""
+        call_count = {"n": 0}
+
+        def mock_invoke(messages, **kwargs):
+            call_count["n"] += 1
+            return AIMessage(content="réponse simple")
+
+        model = MagicMock()
+        model.bind_tools.return_value = model
+        model.invoke = mock_invoke
+
+        graph = build_graph(model=model, tools=[], system_prompt="Test")
+        result = graph.invoke({
+            "messages": [HumanMessage(content="ok merci")],
+            "reasoning_mode": "simple",
+            "task_type": "general",
+            "reasoning_scratchpad": "",
+            "confidence_score": 3,
+            "critique_result": "",
+            "needs_correction": False,
+            "critique_iterations": 0,
+        })
+        # Pour un message simple, le LLM est appelé 1 seule fois
+        assert call_count["n"] == 1

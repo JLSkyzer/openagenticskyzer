@@ -517,11 +517,14 @@ def make_critique_node(model):
                 )),
             ])
             critique = _json.loads(critique_response.content)
-        except (_json.JSONDecodeError, Exception) as exc:
+        except Exception as exc:
             logger.warning("critique_node: failed to parse critique (%s: %s)", type(exc).__name__, exc)
             return {"needs_correction": False}
 
-        confidence = int(critique.get("confidence", 3))
+        try:
+            confidence = int(critique.get("confidence", 3))
+        except (TypeError, ValueError):
+            confidence = 3
         result: dict = {
             "confidence_score": confidence,
             "critique_result": str(critique.get("issues", [])),

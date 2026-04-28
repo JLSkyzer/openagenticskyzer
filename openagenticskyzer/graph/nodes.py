@@ -547,7 +547,10 @@ def make_critique_node(model):
 
 def route_after_agent(state: AgentState) -> str:
     """Route vers tools, critique, ou END selon l'état."""
-    last = state["messages"][-1]
+    messages = state.get("messages") or []
+    if not messages:
+        return END
+    last = messages[-1]
     if getattr(last, "tool_calls", None):
         return "tools"
     if (state.get("reasoning_mode") == "critical"

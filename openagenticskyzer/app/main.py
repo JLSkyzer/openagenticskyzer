@@ -332,16 +332,34 @@ def launch_app() -> None:
     os._exit(0)
 
 
-def _run_nicegui() -> None:
-    # Augmente le timeout WebSocket pour les modèles locaux lents (14B+ peuvent prendre >60s)
+def _patch_sio_timeout() -> None:
+    """Augmente les timeouts Socket.IO/Engine.IO pour les LLM locaux lents."""
     try:
         from nicegui import core
         _eio = getattr(core.sio, "eio", None)
         if _eio is not None:
-            _eio.ping_timeout = 300    # 5 minutes (défaut ≈ 20s)
-            _eio.ping_interval = 60    # ping toutes les 60s (défaut ≈ 25s)
+            for _attr in ("ping_timeout", "heartbeat_timeout"):
+                try:
+                    setattr(_eio, _attr, 300)
+                except Exception:
+                    pass
+            for _attr in ("ping_interval", "heartbeat_interval"):
+                try:
+                    setattr(_eio, _attr, 60)
+                except Exception:
+                    pass
     except Exception:
         pass
+
+
+def _run_nicegui() -> None:
+    # Patch avant ui.run() (cas où core.sio est déjà initialisé)
+    _patch_sio_timeout()
+
+    # Patch post-démarrage via le hook FastAPI startup — garantit que le patch
+    # s'applique APRÈS que uvicorn/socketio aient complètement initialisé leurs objets.
+    from nicegui import app as _nga
+    _nga.on_startup(_patch_sio_timeout)
 
     ui.run(
         native=False,

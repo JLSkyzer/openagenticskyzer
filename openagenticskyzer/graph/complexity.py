@@ -30,6 +30,8 @@ _SIMPLE_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+_CODE_BLOCK_RE = re.compile(r"```|`[^`]+`")
+
 _TASK_TYPES: dict[str, re.Pattern] = {
     "debug": re.compile(
         r"(?:bug|erreur|error|crash|exception|traceback|fail|broken|ne marche pas|doesn'?t work)",
@@ -56,7 +58,12 @@ _TASK_TYPES: dict[str, re.Pattern] = {
 
 def analyze_complexity(message: str, history_len: int = 0) -> ComplexityAnalysis:
     """Détermine le mode de raisonnement optimal pour ce message. < 1ms."""
+    if not isinstance(message, str):
+        raise TypeError(f"message must be str, got {type(message).__name__}")
     msg = message.strip()
+    if not msg:
+        return ComplexityAnalysis("simple", "general", 0)
+    history_len = max(0, history_len)
 
     # Déterminer le task_type d'abord (pour utiliser dans le scoring)
     task_type = "general"
@@ -77,9 +84,8 @@ def analyze_complexity(message: str, history_len: int = 0) -> ComplexityAnalysis
     # Bonus pour task_type "code" et "debug"
     score += 5 if task_type in ("debug", "code") else 0
     score += 10 if msg.count("\n") > 3 else 0
-    score += 10 if re.search(r"```|`[^`]+`", msg) else 0
+    score += 10 if _CODE_BLOCK_RE.search(msg) else 0
 
-    # Thresholds baissés pour plus de sensibilité
     if score >= 30:
         mode = "critical"
     elif score >= 20:

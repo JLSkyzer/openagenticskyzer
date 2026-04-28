@@ -397,9 +397,12 @@ async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
             send_lbl.set_text("➤")
         if send_btn:
             send_btn.classes(remove="bg-red-700 hover:bg-red-800", add="bg-purple-600 hover:bg-purple-700")
-        chat_messages.refresh()
-        permission_banner.refresh()
-        context_bar.refresh()
+        try:
+            chat_messages.refresh()
+            permission_banner.refresh()
+            context_bar.refresh()
+        except Exception:
+            pass
 
 
 @ui.refreshable

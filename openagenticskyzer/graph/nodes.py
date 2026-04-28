@@ -171,14 +171,18 @@ def _force_file_creation_if_refused(response, messages: list):
             raw_query = str(raw_query)
             break
 
-    if not raw_query or not _FILE_CREATION_RE.search(raw_query):
+    if not raw_query or (
+        not _FILE_CREATION_RE.search(raw_query)
+        and not _CODE_EXT_RE.search(raw_query)
+        and not _TXT_EXT_RE.search(raw_query)
+    ):
         return response
 
-    # Anti-boucle : create_file ou internet_search déjà appelé récemment
+    # Anti-boucle : create_file déjà appelé récemment (pas internet_search — le pre-fetch l'utilise légitimement)
     for msg in messages[-8:]:
         for tc in getattr(msg, "tool_calls", None) or []:
             name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "")
-            if name in ("create_file", "internet_search"):
+            if name == "create_file":
                 return response
 
     tool_calls = []

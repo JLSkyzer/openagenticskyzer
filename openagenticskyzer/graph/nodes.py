@@ -4,7 +4,7 @@ import json
 import logging
 import re
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END
 
 from openagenticskyzer.context.messages import clean_messages, trim_message_history
@@ -409,6 +409,60 @@ def make_agent_node(
         return {"messages": [response]}
 
     return agent_node
+
+
+# ── Nœuds Phase 16 — Intelligence Amplification ──────────────────────────────
+
+def make_reasoning_node(model):
+    """Factory : retourne un nœud LangGraph qui génère le CoT interne avant le LLM."""
+    from openagenticskyzer.graph.complexity import analyze_complexity
+    from openagenticskyzer.prompts.reasoning_templates import (
+        COT_PROMPT, COT_SYSTEM_INJECT, REASONING_TEMPLATES,
+    )
+
+    def reasoning_node(state: AgentState) -> dict:
+        last_user_msg = next(
+            (m.content for m in reversed(state["messages"])
+             if isinstance(m, HumanMessage)),
+            "",
+        )
+        analysis = analyze_complexity(last_user_msg, len(state["messages"]))
+
+        result: dict = {
+            "reasoning_mode": analysis.mode,
+            "task_type": analysis.task_type,
+            "reasoning_scratchpad": "",
+            "confidence_score": 3,
+            "critique_result": "",
+            "needs_correction": False,
+            "critique_iterations": 0,
+        }
+
+        if analysis.mode not in ("complex", "critical"):
+            return result
+
+        template_extra = REASONING_TEMPLATES.get(analysis.task_type, "")
+        cot_prompt = COT_PROMPT.format(
+            message=last_user_msg[:1500],
+            template_extra=template_extra,
+        )
+
+        try:
+            cot_response = model.invoke([
+                SystemMessage(content="Tu es un assistant expert en raisonnement structuré."),
+                HumanMessage(content=cot_prompt),
+            ])
+            reasoning = cot_response.content
+        except Exception:
+            return result
+
+        result["reasoning_scratchpad"] = reasoning
+        result["messages"] = [
+            SystemMessage(content=COT_SYSTEM_INJECT.format(reasoning=reasoning))
+        ]
+        return result
+
+    return reasoning_node
 
 
 def route_after_agent(state: AgentState) -> str:

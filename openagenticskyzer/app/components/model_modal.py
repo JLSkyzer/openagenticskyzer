@@ -1225,8 +1225,20 @@ def open_model_modal():
                                 f.write("\n" + "\n".join(lines) + "\n")
                         ui.notify("Configuration LM Studio sauvegardée", type="positive")
 
-                    ui.button("💾 Sauvegarder", on_click=_save_lms_config).classes(
-                        "text-xs bg-gray-800 text-gray-400 border border-gray-700 px-2 py-1 rounded"
+                    async def _save_and_reload():
+                        _save_lms_config()
+                        mdl = state.current_model
+                        if mdl and state.current_provider == "lmstudio":
+                            await _lmstudio_select(mdl)
+                        else:
+                            ui.notify("Aucun modèle LM Studio actif à recharger", type="warning")
+
+                    with ui.row().classes("gap-2"):
+                        ui.button("💾 Sauvegarder", on_click=_save_lms_config).classes(
+                            "text-xs bg-gray-800 text-gray-400 border border-gray-700 px-2 py-1 rounded"
+                        )
+                        ui.button("🔄 Appliquer et recharger", on_click=_save_and_reload).classes(
+                            "text-xs bg-cyan-900 text-cyan-300 border border-cyan-700 px-2 py-1 rounded"
                     )
 
             with ui.expansion("🗄 Gérer les modèles LM Studio").classes("w-full mt-1"):

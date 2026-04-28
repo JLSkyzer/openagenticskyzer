@@ -12,7 +12,7 @@ from openagenticskyzer.utils.utils import (
     get_available_ollama_models, get_available_lmstudio_models,
     get_available_llamacpp_models, get_lmstudio_models_dir,
     ensure_lmstudio_runtime, lmstudio_load_model,
-    get_system_info, _DEFAULT_CTX_LIMITS, _LLAMACPP_MODELS_DIR,
+    get_system_info, estimate_gpu_layers, _DEFAULT_CTX_LIMITS, _LLAMACPP_MODELS_DIR,
 )
 
 # ── Catalogue complet ──────────────────────────────────────────────────────────
@@ -965,12 +965,21 @@ def open_model_modal():
                     return
                 else:
                     lms_load_status.set_text(f"⏳ Chargement de {model_id}…")
-                _gpu_raw = os.environ.get("LMSTUDIO_GPU_LAYERS", "").strip()
                 _gpu_layers: int | None = None
-                try:
-                    _gpu_layers = int(_gpu_raw) if _gpu_raw else None
-                except ValueError:
-                    pass
+                _reserve_raw = os.environ.get("LMSTUDIO_VRAM_RESERVE_GB", "").strip()
+                if _reserve_raw:
+                    try:
+                        _reserve_gb = float(_reserve_raw)
+                        if _reserve_gb > 0:
+                            sinfo = await run.io_bound(get_system_info)
+                            _total_vram = sinfo.get("vram_gb", 8.0)
+                            _available = max(0.0, _total_vram - _reserve_gb)
+                            _gpu_layers = estimate_gpu_layers(_available, model_id)
+                            lms_load_status.set_text(
+                                f"⏳ Chargement ({_available:.1f} GB VRAM alloués)…"
+                            )
+                    except (ValueError, Exception):
+                        pass
                 status = await run.io_bound(lmstudio_load_model, model_id, _gpu_layers)
                 if status != "ok":
                     lms_load_status.set_text(f"❌ lms load : {status}")
@@ -1035,22 +1044,56 @@ def open_model_modal():
                         "Saisissez le chemin exact si l'auto-détection se trompe."
                     ).classes("text-xs text-gray-600")
 
-                    _default_gpu = os.environ.get("LMSTUDIO_GPU_LAYERS", "")
-                    lms_gpu_input = ui.input(
-                        label="Couches GPU (GPU Layers)",
-                        value=_default_gpu,
-                        placeholder="-1 (auto — tout sur GPU)",
+                    # ── VRAM budget ──────────────────────────────────────
+                    _vram_row = ui.row().classes("items-center gap-2 w-full")
+                    with _vram_row:
+                        _vram_lbl = ui.label("VRAM détectée : …").classes("text-xs text-gray-500 flex-1")
+                        ui.button("🔍", on_click=lambda: asyncio.ensure_future(_detect_vram())).classes(
+                            "text-xs bg-gray-800 text-gray-600 border border-gray-700 w-7 h-7 rounded"
+                        ).props("flat dense")
+
+                    _default_reserve = os.environ.get("LMSTUDIO_VRAM_RESERVE_GB", "0")
+                    lms_reserve_input = ui.input(
+                        label="VRAM à laisser libre (GB)",
+                        value=_default_reserve,
+                        placeholder="0",
                     ).classes("w-full text-xs")
+                    _budget_lbl = ui.label("").classes("text-xs text-blue-400")
+
+                    _vram_total: list[float] = [0.0]
+
+                    async def _detect_vram():
+                        sinfo = await run.io_bound(get_system_info)
+                        vram = sinfo.get("vram_gb", 0)
+                        _vram_total[0] = vram
+                        gpu = sinfo.get("gpu_name") or "GPU"
+                        _vram_lbl.set_text(f"{gpu} · {vram} GB VRAM")
+                        _update_budget()
+
+                    def _update_budget():
+                        try:
+                            reserve = float(lms_reserve_input.value or "0")
+                            total = _vram_total[0]
+                            if total > 0:
+                                available = max(0.0, total - reserve)
+                                _budget_lbl.set_text(
+                                    f"→ modèle : ~{available:.1f} GB  |  libre : ~{reserve:.1f} GB"
+                                )
+                        except ValueError:
+                            pass
+
+                    lms_reserve_input.on_value_change(lambda _: _update_budget())
                     ui.label(
-                        "–1 ou vide = max GPU (défaut). "
-                        "0 = CPU uniquement. "
-                        "N = N couches sur GPU — réduire pour laisser de la VRAM libre."
+                        "0 = utilise toute la VRAM. "
+                        "Ex: 2 → laisse 2 GB libres pour le reste du système."
                     ).classes("text-xs text-gray-600")
+
+                    asyncio.ensure_future(_detect_vram())
 
                     def _save_lms_config():
                         new_url = lms_url_input.value.strip().rstrip("/")
                         new_dir = lms_dir_input.value.strip()
-                        new_gpu = lms_gpu_input.value.strip()
+                        new_reserve = lms_reserve_input.value.strip()
                         env_path = (
                             f"{state.active_folder}/.env"
                             if state.active_folder
@@ -1067,14 +1110,14 @@ def open_model_modal():
                         elif new_dir:
                             ui.notify(f"Chemin introuvable : {new_dir}", type="negative")
                             return
-                        if new_gpu:
+                        if new_reserve:
                             try:
-                                int(new_gpu)
+                                float(new_reserve)
                             except ValueError:
-                                ui.notify("GPU Layers doit être un entier (ex: 20, 0, -1)", type="negative")
+                                ui.notify("VRAM réservée doit être un nombre (ex: 2 ou 1.5)", type="negative")
                                 return
-                            os.environ["LMSTUDIO_GPU_LAYERS"] = new_gpu
-                            lines.append(f"LMSTUDIO_GPU_LAYERS={new_gpu}")
+                            os.environ["LMSTUDIO_VRAM_RESERVE_GB"] = new_reserve
+                            lines.append(f"LMSTUDIO_VRAM_RESERVE_GB={new_reserve}")
                         if lines:
                             with open(env_path, "a", encoding="utf-8") as f:
                                 f.write("\n" + "\n".join(lines) + "\n")

@@ -456,6 +456,48 @@ def ensure_lmstudio_runtime() -> str:
         return f"erreur: {e}"
 
 
+_MODEL_LAYER_COUNTS: dict[str, int] = {
+    "1.5b": 28, "1b": 16,
+    "3.8b": 32, "3b": 28,
+    "7b": 32, "8b": 32,
+    "9b": 42, "12b": 40,
+    "14b": 48, "15b": 40,
+    "22b": 56, "24b": 40,
+    "27b": 46, "32b": 64,
+    "70b": 80, "72b": 80,
+}
+
+
+def estimate_gpu_layers(vram_available_gb: float, model_id: str) -> int:
+    """Convertit une VRAM disponible (GB) en nombre de couches GPU.
+
+    Retourne -1 si tout le modèle rentre en VRAM (= auto/max).
+    Retourne 0 si la VRAM disponible est insuffisante (CPU seul).
+    """
+    import re as _re
+    lower = model_id.lower()
+
+    # Nombre de couches total — cherche d'abord par taille exacte, puis défaut 7B
+    total_layers = 32
+    m = _re.search(r'(\d+(?:\.\d+)?)b', lower)
+    params_b = float(m.group(1)) if m else 7.0
+    # Tri descendant pour matcher "14b" avant "1b"
+    for key in sorted(_MODEL_LAYER_COUNTS, key=lambda k: -float(k.replace("b", ""))):
+        if key in lower:
+            total_layers = _MODEL_LAYER_COUNTS[key]
+            break
+
+    # Taille estimée Q4_K_M ≈ 0.55 GB par milliard de paramètres
+    file_gb = params_b * 0.55
+    if file_gb <= 0:
+        return -1
+
+    gb_per_layer = file_gb / total_layers
+    layers = int(vram_available_gb / gb_per_layer)
+
+    return -1 if layers >= total_layers else max(0, layers)
+
+
 def lmstudio_load_model(model_id: str, gpu_layers: int | None = None) -> str:
     """Charge un modèle dans LM Studio via `lms load`. Retourne un statut.
 

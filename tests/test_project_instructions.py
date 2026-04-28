@@ -22,10 +22,15 @@ class TestLoadProjectInstructions:
 
     def test_openagent_md_takes_priority_over_claude_md(self, tmp_path):
         (tmp_path / "OPENAGENT.md").write_text("Instructions OPENAGENT.", encoding="utf-8")
-        (tmp_path / "CLAUDE.md").write_text("Instructions CLAUDE.", encoding="utf-8")
+        (tmp_path / "CLAUDE.md").write_text("Instructions CLAUDE uniquement.", encoding="utf-8")
         result = load_project_instructions(str(tmp_path))
-        assert "OPENAGENT" in result
-        assert "CLAUDE" not in result
+        assert "Instructions OPENAGENT." in result
+        assert "Instructions CLAUDE uniquement." not in result
+
+    def test_returns_empty_string_for_empty_file(self, tmp_path):
+        (tmp_path / "OPENAGENT.md").write_text("", encoding="utf-8")
+        result = load_project_instructions(str(tmp_path))
+        assert result == ""
 
     def test_returns_empty_string_when_cwd_is_none(self):
         result = load_project_instructions(None)
@@ -38,7 +43,9 @@ class TestLoadProjectInstructions:
     def test_wraps_content_with_header(self, tmp_path):
         (tmp_path / "OPENAGENT.md").write_text("Instruction test.", encoding="utf-8")
         result = load_project_instructions(str(tmp_path))
-        assert "INSTRUCTIONS PROJET" in result or "PROJECT INSTRUCTIONS" in result
+        assert "[INSTRUCTIONS PROJET — OPENAGENT.md]" in result
+        assert "[FIN INSTRUCTIONS PROJET]" in result
+        assert "Instruction test." in result
 
     def test_large_file_is_truncated(self, tmp_path):
         """Fichier > 8000 chars est tronqué pour ne pas saturer le contexte."""

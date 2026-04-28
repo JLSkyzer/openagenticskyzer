@@ -546,8 +546,18 @@ def make_critique_node(model):
 
 
 def route_after_agent(state: AgentState) -> str:
-    """Route to tools if the last AI message has tool calls, otherwise end."""
+    """Route vers tools, critique, ou END selon l'état."""
     last = state["messages"][-1]
     if getattr(last, "tool_calls", None):
         return "tools"
+    if (state.get("reasoning_mode") == "critical"
+            and state.get("critique_iterations", 0) < _MAX_CRITIQUE_ITERATIONS):
+        return "critique"
+    return END
+
+
+def route_after_critique(state: AgentState) -> str:
+    """Retourne 'agent' pour correction ou END si la réponse est satisfaisante."""
+    if state.get("needs_correction"):
+        return "agent"
     return END

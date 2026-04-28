@@ -200,3 +200,62 @@ class TestCritiqueNode:
         )
         result = node(state)
         assert result.get("needs_correction") is False
+
+
+from openagenticskyzer.graph.nodes import route_after_agent, route_after_critique
+from langgraph.graph import END
+
+
+class TestRouteAfterAgent:
+
+    def test_routes_to_tools_when_tool_calls_present(self):
+        state = _base_state(
+            messages=[
+                HumanMessage(content="q"),
+                AIMessage(content="", tool_calls=[{"id": "1", "name": "run_command", "args": {}}]),
+            ],
+            reasoning_mode="critical",
+        )
+        assert route_after_agent(state) == "tools"
+
+    def test_routes_to_critique_in_critical_mode_no_tools(self):
+        state = _base_state(
+            messages=[HumanMessage(content="q"), AIMessage(content="réponse")],
+            reasoning_mode="critical",
+            critique_iterations=0,
+        )
+        assert route_after_agent(state) == "critique"
+
+    def test_routes_to_end_in_simple_mode(self):
+        state = _base_state(
+            messages=[HumanMessage(content="q"), AIMessage(content="réponse")],
+            reasoning_mode="simple",
+        )
+        assert route_after_agent(state) == END
+
+    def test_routes_to_end_in_complex_mode(self):
+        """La critique n'est déclenchée que pour 'critical', pas 'complex'."""
+        state = _base_state(
+            messages=[HumanMessage(content="q"), AIMessage(content="réponse")],
+            reasoning_mode="complex",
+        )
+        assert route_after_agent(state) == END
+
+    def test_routes_to_end_when_max_critique_iterations_reached(self):
+        state = _base_state(
+            messages=[HumanMessage(content="q"), AIMessage(content="réponse")],
+            reasoning_mode="critical",
+            critique_iterations=2,
+        )
+        assert route_after_agent(state) == END
+
+
+class TestRouteAfterCritique:
+
+    def test_routes_to_agent_when_correction_needed(self):
+        state = _base_state(needs_correction=True)
+        assert route_after_critique(state) == "agent"
+
+    def test_routes_to_end_when_no_correction_needed(self):
+        state = _base_state(needs_correction=False)
+        assert route_after_critique(state) == END

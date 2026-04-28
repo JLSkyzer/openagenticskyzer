@@ -52,3 +52,103 @@ class TestLoadProjectInstructions:
         (tmp_path / "OPENAGENT.md").write_text("x" * 10000, encoding="utf-8")
         result = load_project_instructions(str(tmp_path))
         assert len(result) < 9500
+
+
+from unittest.mock import MagicMock
+from langchain_core.messages import AIMessage, HumanMessage
+from openagenticskyzer.graph.nodes import make_agent_node
+
+
+class TestProjectInstructionsIntegration:
+
+    def test_instructions_injected_in_system_prompt(self, tmp_path):
+        """Les instructions OPENAGENT.md apparaissent dans l'appel au LLM."""
+        (tmp_path / "OPENAGENT.md").write_text("Toujours utiliser des types Python.", encoding="utf-8")
+
+        captured_messages = []
+
+        def mock_invoke(messages, **kwargs):
+            captured_messages.extend(messages)
+            return AIMessage(content="ok")
+
+        model = MagicMock()
+        model.invoke = mock_invoke
+
+        node = make_agent_node(
+            model=model,
+            system_prompt="Prompt de base.",
+            max_history=20,
+            max_tokens=None,
+            lmstudio_compat=False,
+            cwd=str(tmp_path),
+        )
+
+        state = {
+            "messages": [HumanMessage(content="test")],
+            "reasoning_mode": "simple",
+            "task_type": "general",
+            "reasoning_scratchpad": "",
+            "confidence_score": 3,
+            "critique_result": "",
+            "needs_correction": False,
+            "critique_iterations": 0,
+        }
+        node(state)
+
+        all_content = " ".join(
+            m.content for m in captured_messages
+            if hasattr(m, "content") and isinstance(m.content, str)
+        )
+        assert "Toujours utiliser des types Python" in all_content
+
+    def test_no_instructions_file_does_not_crash(self, tmp_path):
+        """Sans fichier OPENAGENT.md, le nœud fonctionne normalement."""
+        model = MagicMock()
+        model.invoke.return_value = AIMessage(content="ok")
+
+        node = make_agent_node(
+            model=model,
+            system_prompt="Test.",
+            max_history=20,
+            max_tokens=None,
+            lmstudio_compat=False,
+            cwd=str(tmp_path),
+        )
+        state = {
+            "messages": [HumanMessage(content="test")],
+            "reasoning_mode": "simple",
+            "task_type": "general",
+            "reasoning_scratchpad": "",
+            "confidence_score": 3,
+            "critique_result": "",
+            "needs_correction": False,
+            "critique_iterations": 0,
+        }
+        result = node(state)
+        assert result is not None
+
+    def test_cwd_none_does_not_crash(self):
+        """cwd=None ne plante pas."""
+        model = MagicMock()
+        model.invoke.return_value = AIMessage(content="ok")
+
+        node = make_agent_node(
+            model=model,
+            system_prompt="Test.",
+            max_history=20,
+            max_tokens=None,
+            lmstudio_compat=False,
+            cwd=None,
+        )
+        state = {
+            "messages": [HumanMessage(content="test")],
+            "reasoning_mode": "simple",
+            "task_type": "general",
+            "reasoning_scratchpad": "",
+            "confidence_score": 3,
+            "critique_result": "",
+            "needs_correction": False,
+            "critique_iterations": 0,
+        }
+        result = node(state)
+        assert result is not None

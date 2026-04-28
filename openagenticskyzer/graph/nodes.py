@@ -364,6 +364,7 @@ def make_agent_node(
     max_history: int = 20,
     max_tokens: int | None = None,
     lmstudio_compat: bool = False,
+    cwd: str | None = None,
 ):
     """Return an agent node closure bound to the given model and system prompt.
 
@@ -375,6 +376,8 @@ def make_agent_node(
     lmstudio_compat: quand True, fusionne le SystemMessage dans le premier HumanMessage
     au lieu de le laisser en tête — contourne le bug Jinja de certains modèles LM Studio
     qui ne peuvent pas injecter les tool definitions quand le premier message n'est pas human.
+
+    cwd: répertoire de travail courant, utilisé pour charger OPENAGENT.md / CLAUDE.md.
     """
     from langchain_core.messages import HumanMessage
 
@@ -384,6 +387,14 @@ def make_agent_node(
         trimmed = trim_message_history(messages, max_messages=max_history, max_tokens=max_tokens)
         trimmed = clean_messages(trimmed)
 
+        from openagenticskyzer.context.project_instructions import load_project_instructions
+        project_instructions = load_project_instructions(cwd)
+        effective_system_prompt = (
+            project_instructions + "\n\n" + system_prompt
+            if project_instructions
+            else system_prompt
+        )
+
         if lmstudio_compat:
             # Cherche le premier HumanMessage dans trimmed
             first_human = next(
@@ -391,15 +402,15 @@ def make_agent_node(
             )
             if first_human is not None:
                 original = trimmed[first_human].content or ""
-                merged = f"<system>\n{system_prompt}\n</system>\n\n{original}"
+                merged = f"<system>\n{effective_system_prompt}\n</system>\n\n{original}"
                 trimmed = list(trimmed)
                 trimmed[first_human] = HumanMessage(content=merged)
                 full_context = trimmed
             else:
                 # Pas de HumanMessage encore — fallback classique
-                full_context = [SystemMessage(content=system_prompt)] + trimmed
+                full_context = [SystemMessage(content=effective_system_prompt)] + trimmed
         else:
-            full_context = [SystemMessage(content=system_prompt)] + trimmed
+            full_context = [SystemMessage(content=effective_system_prompt)] + trimmed
 
         logger.info(
             "LLM call — history: %d msgs (trimmed from %d)",

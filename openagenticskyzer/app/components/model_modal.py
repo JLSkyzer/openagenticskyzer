@@ -999,6 +999,8 @@ def open_model_modal():
                 lms_load_status.set_text(f"⏳ Chargement{vram_hint}{ctx_hint}…")
 
                 # Chargement avec progression en temps réel (async subprocess)
+                # Fallback vers io_bound si l'event loop ne supporte pas les subprocesses
+                _loaded_ok = False
                 try:
                     cf = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
                     proc = await asyncio.create_subprocess_exec(
@@ -1018,11 +1020,22 @@ def open_model_modal():
                     if proc.returncode != 0:
                         lms_load_status.set_text(f"❌ lms load a échoué (code {proc.returncode})")
                         return
+                    _loaded_ok = True
+                except (NotImplementedError, AttributeError):
+                    # Event loop ne supporte pas create_subprocess_exec → fallback bloquant
+                    lms_load_status.set_text(f"⏳ Chargement{vram_hint}{ctx_hint}… (mode compatible)")
+                    status = await run.io_bound(lmstudio_load_model, model_id, _gpu_layers)
+                    if status != "ok":
+                        lms_load_status.set_text(f"❌ lms load : {status}")
+                        return
+                    _loaded_ok = True
                 except FileNotFoundError:
                     lms_load_status.set_text("❌ lms CLI introuvable")
                     return
                 except Exception as exc:
                     lms_load_status.set_text(f"❌ {exc}")
+                    return
+                if not _loaded_ok:
                     return
 
                 lms_load_status.set_text(f"✅ {model_id} chargé")

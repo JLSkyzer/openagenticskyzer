@@ -21,103 +21,103 @@ _FULL_CATALOG = [
     # ── Petits (< 4B) ────────────────────────────────────────────────────────
     {"name": "Llama-3.2-1B-Instruct", "lms_id": "meta-llama/llama-3.2-1b-instruct",
      "hf_id": "lmstudio-community/Llama-3.2-1B-Instruct-GGUF",
-     "params": "1B", "ram_min": 2, "vram_min": 1, "tool_stars": 1, "cat": "général",
+     "params": "1B", "ctx_k": 128, "ram_min": 2, "vram_min": 1, "tool_stars": 1, "cat": "général",
      "tags": ["récent"], "desc": "Ultra-léger, test & prototypage"},
     {"name": "Qwen2.5-1.5B-Instruct", "lms_id": "qwen/qwen2.5-1.5b-instruct",
      "hf_id": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-     "params": "1.5B", "ram_min": 2, "vram_min": 1, "tool_stars": 2, "cat": "général",
+     "params": "1.5B", "ctx_k": 32, "ram_min": 2, "vram_min": 1, "tool_stars": 2, "cat": "général",
      "tags": [], "desc": "Petit modèle Qwen, rapide"},
     {"name": "Llama-3.2-3B-Instruct", "lms_id": "meta-llama/llama-3.2-3b-instruct",
      "hf_id": "lmstudio-community/Llama-3.2-3B-Instruct-GGUF",
-     "params": "3B", "ram_min": 3, "vram_min": 2, "tool_stars": 2, "cat": "général",
+     "params": "3B", "ctx_k": 128, "ram_min": 3, "vram_min": 2, "tool_stars": 2, "cat": "général",
      "tags": ["tendances", "récent"], "desc": "Petit Llama 3.2, très rapide"},
     {"name": "Phi-3.5-mini-instruct", "lms_id": "microsoft/phi-3.5-mini-instruct",
      "hf_id": "bartowski/Phi-3.5-mini-instruct-GGUF",
-     "params": "3.8B", "ram_min": 4, "vram_min": 3, "tool_stars": 3, "cat": "général",
+     "params": "3.8B", "ctx_k": 128, "ram_min": 4, "vram_min": 3, "tool_stars": 3, "cat": "général",
      "tags": ["tendances"], "desc": "Microsoft compact, excellent rapport qualité/taille"},
     {"name": "Qwen2.5-3B-Instruct", "lms_id": "qwen/qwen2.5-3b-instruct",
      "hf_id": "Qwen/Qwen2.5-3B-Instruct-GGUF",
-     "params": "3B", "ram_min": 3, "vram_min": 2, "tool_stars": 2, "cat": "général",
+     "params": "3B", "ctx_k": 32, "ram_min": 3, "vram_min": 2, "tool_stars": 2, "cat": "général",
      "tags": [], "desc": "Qwen 3B, efficace pour tâches légères"},
     # ── 7-9B ─────────────────────────────────────────────────────────────────
     {"name": "Hermes-3-Llama-3.1-8B", "lms_id": "nous-research/hermes-3-llama-3.1-8b",
      "hf_id": "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",
-     "params": "8B", "ram_min": 8, "vram_min": 6, "tool_stars": 5, "cat": "tool-use",
+     "params": "8B", "ctx_k": 128, "ram_min": 8, "vram_min": 6, "tool_stars": 5, "cat": "tool-use",
      "tags": ["tendances"], "desc": "Spécialisé function calling — meilleur small tool-use"},
     {"name": "Llama-3.1-8B-Instruct", "lms_id": "meta-llama/meta-llama-3.1-8b-instruct",
      "hf_id": "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF",
-     "params": "8B", "ram_min": 8, "vram_min": 6, "tool_stars": 4, "cat": "général",
+     "params": "8B", "ctx_k": 128, "ram_min": 8, "vram_min": 6, "tool_stars": 4, "cat": "général",
      "tags": [], "desc": "Bon modèle général, tool use natif solide"},
     {"name": "Mistral-7B-Instruct-v0.3", "lms_id": "mistralai/mistral-7b-instruct-v0.3",
      "hf_id": "lmstudio-community/Mistral-7B-Instruct-v0.3-GGUF",
-     "params": "7B", "ram_min": 8, "vram_min": 6, "tool_stars": 4, "cat": "tool-use",
+     "params": "7B", "ctx_k": 32, "ram_min": 8, "vram_min": 6, "tool_stars": 4, "cat": "tool-use",
      "tags": [], "desc": "Mistral classique, excellent tool use natif"},
     {"name": "Qwen2.5-Coder-7B-Instruct", "lms_id": "qwen/qwen2.5-coder-7b-instruct",
      "hf_id": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
-     "params": "7B", "ram_min": 8, "vram_min": 6, "tool_stars": 3, "cat": "code",
+     "params": "7B", "ctx_k": 128, "ram_min": 8, "vram_min": 6, "tool_stars": 3, "cat": "code",
      "tags": [], "desc": "Modèle code léger, tool use acceptable"},
     {"name": "DeepSeek-R1-Distill-Llama-8B", "lms_id": "deepseek-ai/deepseek-r1-distill-llama-8b",
      "hf_id": "lmstudio-community/DeepSeek-R1-Distill-Llama-8B-GGUF",
-     "params": "8B", "ram_min": 8, "vram_min": 6, "tool_stars": 4, "cat": "général",
+     "params": "8B", "ctx_k": 128, "ram_min": 8, "vram_min": 6, "tool_stars": 4, "cat": "général",
      "tags": ["tendances", "récent"], "desc": "Raisonnement DeepSeek R1 distillé dans Llama 8B"},
     {"name": "Gemma-2-9B-it", "lms_id": "google/gemma-2-9b-it",
      "hf_id": "bartowski/gemma-2-9b-it-GGUF",
-     "params": "9B", "ram_min": 8, "vram_min": 6, "tool_stars": 3, "cat": "général",
+     "params": "9B", "ctx_k": 8, "ram_min": 8, "vram_min": 6, "tool_stars": 3, "cat": "général",
      "tags": ["tendances"], "desc": "Gemma 2 Google, très performant pour sa taille"},
     {"name": "StarCoder2-7B", "lms_id": "bigcode/starcoder2-7b",
      "hf_id": "bartowski/starcoder2-7b-GGUF",
-     "params": "7B", "ram_min": 8, "vram_min": 6, "tool_stars": 3, "cat": "code",
+     "params": "7B", "ctx_k": 16, "ram_min": 8, "vram_min": 6, "tool_stars": 3, "cat": "code",
      "tags": [], "desc": "BigCode, entraîné sur +600 langages de programmation"},
     # ── 12-14B ───────────────────────────────────────────────────────────────
     {"name": "Phi-4", "lms_id": "microsoft/phi-4",
      "hf_id": "bartowski/phi-4-GGUF",
-     "params": "14B", "ram_min": 12, "vram_min": 10, "tool_stars": 4, "cat": "général",
+     "params": "14B", "ctx_k": 16, "ram_min": 12, "vram_min": 10, "tool_stars": 4, "cat": "général",
      "tags": ["tendances", "récent"], "desc": "Phi-4 Microsoft, très capable pour sa taille"},
     {"name": "Mistral-Nemo-Instruct-2407", "lms_id": "mistralai/mistral-nemo-instruct-2407",
      "hf_id": "lmstudio-community/Mistral-Nemo-Instruct-2407-GGUF",
-     "params": "12B", "ram_min": 10, "vram_min": 8, "tool_stars": 4, "cat": "général",
+     "params": "12B", "ctx_k": 128, "ram_min": 10, "vram_min": 8, "tool_stars": 4, "cat": "général",
      "tags": [], "desc": "128K contexte, très bon tool use"},
     {"name": "Qwen2.5-Coder-14B-Instruct", "lms_id": "qwen/qwen2.5-coder-14b-instruct",
      "hf_id": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
-     "params": "14B", "ram_min": 12, "vram_min": 10, "tool_stars": 4, "cat": "code",
+     "params": "14B", "ctx_k": 128, "ram_min": 12, "vram_min": 10, "tool_stars": 4, "cat": "code",
      "tags": [], "desc": "Excellent équilibre code + tool use"},
     {"name": "DeepSeek-Coder-V2-Lite-Instruct", "lms_id": "deepseek-ai/deepseek-coder-v2-lite-instruct",
      "hf_id": "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
-     "params": "14B", "ram_min": 10, "vram_min": 8, "tool_stars": 4, "cat": "code",
+     "params": "14B", "ctx_k": 128, "ram_min": 10, "vram_min": 8, "tool_stars": 4, "cat": "code",
      "tags": ["tendances"], "desc": "Très rapide pour sa taille, excellent en code"},
     {"name": "DeepSeek-R1-Distill-Qwen-14B", "lms_id": "deepseek-ai/deepseek-r1-distill-qwen-14b",
      "hf_id": "lmstudio-community/DeepSeek-R1-Distill-Qwen-14B-GGUF",
-     "params": "14B", "ram_min": 12, "vram_min": 10, "tool_stars": 4, "cat": "général",
+     "params": "14B", "ctx_k": 128, "ram_min": 12, "vram_min": 10, "tool_stars": 4, "cat": "général",
      "tags": ["tendances", "récent"], "desc": "Raisonnement R1 distillé dans Qwen 14B"},
     {"name": "StarCoder2-15B", "lms_id": "bigcode/starcoder2-15b",
      "hf_id": "bartowski/starcoder2-15b-GGUF",
-     "params": "15B", "ram_min": 12, "vram_min": 10, "tool_stars": 4, "cat": "code",
+     "params": "15B", "ctx_k": 16, "ram_min": 12, "vram_min": 10, "tool_stars": 4, "cat": "code",
      "tags": [], "desc": "BigCode 15B, état de l'art open-source code"},
     # ── 22-32B ───────────────────────────────────────────────────────────────
     {"name": "Codestral-22B-v0.1", "lms_id": "mistralai/codestral-22b-v0.1",
      "hf_id": "bartowski/Codestral-22B-v0.1-GGUF",
-     "params": "22B", "ram_min": 16, "vram_min": 14, "tool_stars": 4, "cat": "code",
+     "params": "22B", "ctx_k": 32, "ram_min": 16, "vram_min": 14, "tool_stars": 4, "cat": "code",
      "tags": ["tendances"], "desc": "Modèle code Mistral, état de l'art en 22B"},
     {"name": "Qwen2.5-Coder-32B-Instruct", "lms_id": "qwen/qwen2.5-coder-32b-instruct",
      "hf_id": "Qwen/Qwen2.5-Coder-32B-Instruct-GGUF",
-     "params": "32B", "ram_min": 24, "vram_min": 20, "tool_stars": 5, "cat": "code",
+     "params": "32B", "ctx_k": 128, "ram_min": 24, "vram_min": 20, "tool_stars": 5, "cat": "code",
      "tags": ["tendances"], "desc": "Meilleur modèle code local, tool use parfait ★"},
     {"name": "DeepSeek-R1-Distill-Qwen-32B", "lms_id": "deepseek-ai/deepseek-r1-distill-qwen-32b",
      "hf_id": "lmstudio-community/DeepSeek-R1-Distill-Qwen-32B-GGUF",
-     "params": "32B", "ram_min": 24, "vram_min": 20, "tool_stars": 5, "cat": "général",
+     "params": "32B", "ctx_k": 128, "ram_min": 24, "vram_min": 20, "tool_stars": 5, "cat": "général",
      "tags": ["tendances", "récent"], "desc": "R1 dans Qwen 32B, proche GPT-4o"},
     {"name": "Gemma-2-27B-it", "lms_id": "google/gemma-2-27b-it",
      "hf_id": "bartowski/gemma-2-27b-it-GGUF",
-     "params": "27B", "ram_min": 20, "vram_min": 16, "tool_stars": 4, "cat": "général",
+     "params": "27B", "ctx_k": 8, "ram_min": 20, "vram_min": 16, "tool_stars": 4, "cat": "général",
      "tags": ["tendances"], "desc": "Gemma 2 27B Google, très performant"},
     # ── 70B+ ─────────────────────────────────────────────────────────────────
     {"name": "Llama-3.3-70B-Instruct", "lms_id": "meta-llama/llama-3.3-70b-instruct",
      "hf_id": "lmstudio-community/Llama-3.3-70B-Instruct-GGUF",
-     "params": "70B", "ram_min": 48, "vram_min": 40, "tool_stars": 5, "cat": "général",
+     "params": "70B", "ctx_k": 128, "ram_min": 48, "vram_min": 40, "tool_stars": 5, "cat": "général",
      "tags": ["tendances"], "desc": "Équivalent GPT-4o en local, tool use parfait"},
     {"name": "Qwen2.5-72B-Instruct", "lms_id": "qwen/qwen2.5-72b-instruct",
      "hf_id": "Qwen/Qwen2.5-72B-Instruct-GGUF",
-     "params": "72B", "ram_min": 48, "vram_min": 40, "tool_stars": 5, "cat": "général",
+     "params": "72B", "ctx_k": 128, "ram_min": 48, "vram_min": 40, "tool_stars": 5, "cat": "général",
      "tags": [], "desc": "Top modèle général local ★ recommandé"},
 ]
 # Déduplique par hf_id
@@ -140,6 +140,43 @@ def _detect_configured_models() -> list[dict]:
             model = os.environ.get(model_env, default_model)
             results.append({"provider": provider, "model": model})
     return results
+
+
+_OLLAMA_CTX_HINTS: dict[str, int] = {
+    "llama3.3": 128, "llama3.2": 128, "llama3.1": 128, "llama3": 8,
+    "mistral-nemo": 128, "mistral": 32,
+    "qwen2.5": 128, "qwen2": 32,
+    "phi3.5": 128, "phi3": 128, "phi4": 16,
+    "gemma2": 8, "gemma": 8,
+    "deepseek-r1": 128, "deepseek-coder": 128,
+    "starcoder2": 16, "codestral": 32,
+    "hermes3": 128, "hermes-3": 128,
+}
+
+
+def _guess_ollama_ctx_k(model_name: str) -> str:
+    lower = model_name.lower()
+    for key, k in _OLLAMA_CTX_HINTS.items():
+        if key in lower:
+            return f"{k}K"
+    return "?"
+
+
+def _get_lmstudio_ctx_map() -> dict[str, int]:
+    """Retourne {model_id: context_window_k} depuis l'API LM Studio."""
+    try:
+        import urllib.request as _ur, json as _js
+        with _ur.urlopen("http://localhost:1234/v1/models", timeout=3) as r:
+            data = _js.loads(r.read()).get("data", [])
+        result = {}
+        for m in data:
+            mid = m.get("id", "")
+            ctx = m.get("context_window") or m.get("context_length") or 0
+            if mid and ctx:
+                result[mid] = ctx // 1024
+        return result
+    except Exception:
+        return {}
 
 
 def _select_model(provider: str, model: str, dlg):
@@ -260,42 +297,34 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
 
             # ── Stratégie selon la taille ─────────────────────────────────────
             # Gros fichier (>500 MB) + Range supporté → 16 connexions parallèles
-            # (sature mieux la bande passante sur les CDN avec throttling/connexion
-            # qu'une seule connexion hf_transfer)
             if _size > 500 * 1_048_576 and _ranges:
-                # Écriture directe à l'offset : pré-alloue le fichier final,
-                # chaque thread ouvre son propre handle et seek() à sa position.
-                # Aucun assemblage post-téléchargement.
                 N = 16
                 chunk_size = (_size + N - 1) // N
                 downloaded_parts = [0] * N
                 tmp_dl = dest_path.with_suffix(".downloading")
+                # Fichiers .partN téléchargés indépendamment → fusion finale.
+                # Évite toute pré-allocation (truncate bloque sur exFAT / avec Defender).
+                part_files = [dest_path.with_suffix(f".part{i}") for i in range(N)]
                 try:
-                    with open(tmp_dl, "wb") as _f:
-                        _f.truncate(_size)  # pré-allocation O(1) sur NTFS/ext4
-
                     def _download_part(i: int):
                         start = i * chunk_size
                         end = min(start + chunk_size - 1, _size - 1)
                         req = _ur.Request(
                             url, headers={**_auth_hdr, "Range": f"bytes={start}-{end}"}
                         )
-                        pos = start
                         with _ur.urlopen(req, timeout=600) as r:
-                            with open(tmp_dl, "r+b") as f:
-                                f.seek(pos)
+                            with open(part_files[i], "wb") as f:
                                 while True:
                                     buf = r.read(BUF)
                                     if not buf:
                                         break
                                     f.write(buf)
-                                    pos += len(buf)
                                     downloaded_parts[i] += len(buf)
                                     total_dl = sum(downloaded_parts)
                                     pct = min(100, total_dl * 100 // _size)
-                                    entry.progress = (
-                                        f"⬇ {total_dl // 1_048_576}/{_size // 1_048_576}MB {pct}%"
-                                    )
+                                    new_p = f"⬇ {total_dl // 1_048_576}/{_size // 1_048_576}MB {pct}%"
+                                    if new_p != entry.progress:
+                                        entry.progress = new_p
 
                     entry.progress = f"⬇ 0/{_size // 1_048_576}MB 0%"
                     with _futures.ThreadPoolExecutor(max_workers=N) as ex:
@@ -303,14 +332,29 @@ def _start_persistent_download(dl_id: str, name: str, hf_id: str,
                         for fut in _futures.as_completed(futs):
                             fut.result()
 
+                    entry.progress = "🔀 Assemblage…"
+                    with open(tmp_dl, "wb") as _out:
+                        for pf in part_files:
+                            with open(pf, "rb") as _inp:
+                                while True:
+                                    buf = _inp.read(BUF)
+                                    if not buf:
+                                        break
+                                    _out.write(buf)
+
                     tmp_dl.rename(dest_path)
-                except Exception:
-                    try:
-                        if tmp_dl.exists():
+                finally:
+                    for pf in part_files:
+                        try:
+                            if pf.exists():
+                                pf.unlink()
+                        except Exception:
+                            pass
+                    if tmp_dl.exists() and not dest_path.exists():
+                        try:
                             tmp_dl.unlink()
-                    except Exception:
-                        pass
-                    raise
+                        except Exception:
+                            pass
 
             else:
                 # ── hf_transfer (Rust) pour petits fichiers / Range indisponible ─
@@ -601,6 +645,10 @@ def open_lms_catalog_popup():
                                 with ui.row().classes("items-baseline gap-2 flex-wrap"):
                                     ui.label(m.name).classes("text-xs text-gray-200 font-semibold")
                                     ui.label(m.params).classes("text-xs text-gray-500")
+                                    ctx_k = m.ctx_k
+                                    if ctx_k:
+                                        ctx_cls = "text-yellow-600" if ctx_k <= 8 else "text-blue-400"
+                                        ui.label(f"{ctx_k}K ctx").classes(f"text-xs {ctx_cls}")
                                     if tag_text or score_badge:
                                         ui.label(tag_text + score_badge).classes(
                                             "text-xs text-purple-400"
@@ -612,17 +660,11 @@ def open_lms_catalog_popup():
                             if is_done:
                                 ui.label("✅").classes("text-xs flex-shrink-0")
                             elif is_dling:
-                                _prog = dl_entry.progress
-                                _pm = re.search(r'(\d+)/(\d+)MB\s*(\d+)%', _prog)
-                                if _pm:
-                                    _ptxt = f"⬇ {_pm.group(3)}% · {_pm.group(1)}/{_pm.group(2)}MB"
-                                else:
-                                    _ptxt = _prog[:22]
                                 with ui.row().classes("items-center gap-1 flex-shrink-0"):
                                     ui.spinner(size="xs").classes("text-purple-400")
-                                    ui.label(_ptxt).classes(
-                                        "text-xs text-purple-400 font-mono"
-                                    )
+                                    ui.label("").bind_text_from(
+                                        dl_entry, "progress"
+                                    ).classes("text-xs text-purple-400 font-mono")
                             else:
                                 def _do_dl(hf_id=m.hf_id, nm=m.name):
                                     _start_persistent_download(
@@ -707,12 +749,21 @@ def open_lms_catalog_popup():
             search_input.on_value_change(_on_search)
             search_input.on("clear", lambda _: _on_search())
 
-            # Timer : met à jour la progression des téléchargements dans la popup
+            # Timer : reconstruction uniquement quand un téléchargement se termine/échoue
+            # (la progression en direct est gérée par bind_text_from, pas par ce timer)
+            _dl_snapshot: list = []
+
+            def _dl_snapshot_now():
+                return [(d.dl_id, d.done, d.error) for d in state.downloads]
+
             def _refresh_dl():
-                if any(not d.done and not d.error for d in state.downloads):
+                cur = _dl_snapshot_now()
+                if cur != _dl_snapshot:
+                    _dl_snapshot.clear()
+                    _dl_snapshot.extend(cur)
                     _render()
 
-            ui.timer(1.5, _refresh_dl)
+            ui.timer(1.0, _refresh_dl)
 
             # Lance le fetch + specs au prochain tick (évite de bloquer le rendu du dialog)
             ui.timer(0.05, lambda: asyncio.ensure_future(_initial_load()), once=True)
@@ -851,12 +902,14 @@ def open_model_modal():
                     return
                 with ollama_container:
                     for mdl in models:
+                        ctx_str = _guess_ollama_ctx_k(mdl)
+                        ctx_color = "text-yellow-600" if ctx_str in ("?", "8K") else "text-gray-600"
                         with ui.row().classes(
                             "items-center gap-2 py-1 px-2 rounded hover:bg-gray-900 cursor-pointer"
                         ).on("click", lambda m=mdl: _select_model("ollama", m, dlg)):
                             ui.element("div").classes("w-2 h-2 rounded-full bg-purple-400")
                             ui.label(mdl).classes("text-xs text-gray-300 flex-1")
-                            ui.label("ollama · 32K ctx").classes("text-xs text-gray-600")
+                            ui.label(f"ollama · {ctx_str} ctx").classes(f"text-xs {ctx_color}")
 
             ui.button("🔍 Détecter les modèles Ollama", on_click=_detect_ollama).classes(
                 "text-xs bg-gray-800 text-gray-400 border border-gray-700 px-2 py-1 rounded"
@@ -883,6 +936,23 @@ def open_model_modal():
             lms_load_status = ui.label("").classes("text-xs text-cyan-400 font-mono mt-1")
 
             async def _lmstudio_select(model_id: str):
+                # Modèle déjà servi par l'API LM Studio → sélection instantanée
+                def _in_api() -> bool:
+                    try:
+                        import urllib.request as _ur, json as _json
+                        with _ur.urlopen("http://localhost:1234/v1/models", timeout=3) as r:
+                            data = _json.loads(r.read()).get("data", [])
+                        return any(model_id.lower() in m.get("id", "").lower() for m in data)
+                    except Exception:
+                        return False
+
+                lms_load_status.set_text("⏳ Vérification…")
+                if await run.io_bound(_in_api):
+                    lms_load_status.set_text(f"✅ {model_id} prêt")
+                    _select_model("lmstudio", model_id, dlg)
+                    return
+
+                # Modèle sur disque non encore chargé → runtime + lms load
                 lms_load_status.set_text("⏳ Vérification du runtime llama.cpp…")
                 rt = await run.io_bound(ensure_lmstudio_runtime)
                 if rt == "runtime_installed":
@@ -904,7 +974,10 @@ def open_model_modal():
 
             async def _detect_lmstudio():
                 lms_status.set_text("Détection en cours…")
-                models = await run.io_bound(get_available_lmstudio_models)
+                models, ctx_map = await asyncio.gather(
+                    run.io_bound(get_available_lmstudio_models),
+                    run.io_bound(_get_lmstudio_ctx_map),
+                )
                 lms_installed.clear()
                 if not models:
                     lms_status.set_text("Aucun modèle détecté — vérifiez que lms est installé.")
@@ -912,12 +985,23 @@ def open_model_modal():
                 lms_status.set_text(f"{len(models)} modèle(s) disponible(s)")
                 with lms_installed:
                     for mdl in models:
+                        # Cherche le contexte dans la map API (correspondance partielle)
+                        ctx_k = next(
+                            (v for k, v in ctx_map.items() if mdl.lower() in k.lower() or k.lower() in mdl.lower()),
+                            None,
+                        )
+                        if ctx_k:
+                            ctx_str = f"{ctx_k}K ctx"
+                            ctx_color = "text-yellow-500" if ctx_k <= 8 else "text-gray-600"
+                        else:
+                            ctx_str = "ctx ?"
+                            ctx_color = "text-gray-600"
                         with ui.row().classes(
                             "items-center gap-2 py-1 px-2 rounded hover:bg-gray-900 cursor-pointer"
                         ).on("click", lambda m=mdl: _lmstudio_select(m)):
                             ui.element("div").classes("w-2 h-2 rounded-full bg-cyan-400")
                             ui.label(mdl).classes("text-xs text-gray-300 flex-1")
-                            ui.label("lmstudio · 32K ctx").classes("text-xs text-gray-600")
+                            ui.label(f"lmstudio · {ctx_str}").classes(f"text-xs {ctx_color}")
 
             with ui.row().classes("items-center gap-2 mt-1 flex-wrap"):
                 ui.button("🔍 Détecter LM Studio", on_click=_detect_lmstudio).classes(
@@ -1074,7 +1158,12 @@ def open_model_modal():
                                 stars = "★" * m["tool_stars"] + "☆" * (5 - m["tool_stars"])
                                 with ui.row().classes("items-center gap-1 py-1 w-full"):
                                     with ui.column().classes("flex-1 gap-0 min-w-0"):
-                                        ui.label(m["name"]).classes("text-xs text-gray-200 font-mono")
+                                        with ui.row().classes("items-baseline gap-2"):
+                                            ui.label(m["name"]).classes("text-xs text-gray-200 font-mono")
+                                            ctx_k = m.get("ctx_k", 0)
+                                            ctx_badge = f"{ctx_k}K ctx" if ctx_k else "?"
+                                            ctx_cls = "text-yellow-600" if ctx_k and ctx_k <= 8 else "text-blue-500"
+                                            ui.label(ctx_badge).classes(f"text-xs {ctx_cls}")
                                         ui.label(f"Tool use {stars} · {m['desc']}").classes(
                                             "text-xs text-gray-600 truncate"
                                         )

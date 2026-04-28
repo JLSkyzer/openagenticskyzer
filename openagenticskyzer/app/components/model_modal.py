@@ -963,9 +963,12 @@ def open_model_modal():
                 elif rt.startswith("erreur"):
                     lms_load_status.set_text(f"❌ {rt}")
                     return
-                else:
-                    lms_load_status.set_text(f"⏳ Chargement de {model_id}…")
+
+                # Construction de la commande lms load
+                cmd = ["lms", "load", model_id, "--yes"]
+
                 _gpu_layers: int | None = None
+                _available_gb: float = 0.0
                 _reserve_raw = os.environ.get("LMSTUDIO_VRAM_RESERVE_GB", "").strip()
                 if _reserve_raw:
                     try:
@@ -973,17 +976,55 @@ def open_model_modal():
                         if _reserve_gb > 0:
                             sinfo = await run.io_bound(get_system_info)
                             _total_vram = sinfo.get("vram_gb", 8.0)
-                            _available = max(0.0, _total_vram - _reserve_gb)
-                            _gpu_layers = estimate_gpu_layers(_available, model_id)
-                            lms_load_status.set_text(
-                                f"⏳ Chargement ({_available:.1f} GB VRAM alloués)…"
-                            )
-                    except (ValueError, Exception):
+                            _available_gb = max(0.0, _total_vram - _reserve_gb)
+                            _gpu_layers = estimate_gpu_layers(_available_gb, model_id)
+                    except Exception:
                         pass
-                status = await run.io_bound(lmstudio_load_model, model_id, _gpu_layers)
-                if status != "ok":
-                    lms_load_status.set_text(f"❌ lms load : {status}")
+
+                if _gpu_layers is not None and _gpu_layers >= 0:
+                    cmd += ["--gpu", str(_gpu_layers)]
+
+                # Contexte réduit → moins de VRAM KV-cache → chargement plus rapide
+                _ctx_raw = os.environ.get("LMSTUDIO_CONTEXT_LENGTH", "").strip()
+                if _ctx_raw:
+                    try:
+                        _ctx_len = int(_ctx_raw)
+                        if _ctx_len > 0:
+                            cmd += ["--context-length", str(_ctx_len)]
+                    except Exception:
+                        pass
+
+                vram_hint = f" · {_available_gb:.1f} GB VRAM" if _gpu_layers is not None else ""
+                ctx_hint = f" · {_ctx_raw} ctx" if _ctx_raw else ""
+                lms_load_status.set_text(f"⏳ Chargement{vram_hint}{ctx_hint}…")
+
+                # Chargement avec progression en temps réel (async subprocess)
+                try:
+                    cf = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                        creationflags=cf,
+                    )
+                    while True:
+                        raw = await proc.stdout.readline()
+                        if not raw:
+                            break
+                        line = raw.decode("utf-8", errors="replace").strip()
+                        if line:
+                            lms_load_status.set_text(f"⏳ {line[:90]}")
+                    await proc.wait()
+                    if proc.returncode != 0:
+                        lms_load_status.set_text(f"❌ lms load a échoué (code {proc.returncode})")
+                        return
+                except FileNotFoundError:
+                    lms_load_status.set_text("❌ lms CLI introuvable")
                     return
+                except Exception as exc:
+                    lms_load_status.set_text(f"❌ {exc}")
+                    return
+
                 lms_load_status.set_text(f"✅ {model_id} chargé")
                 _select_model("lmstudio", model_id, dlg)
 
@@ -1088,12 +1129,25 @@ def open_model_modal():
                         "Ex: 2 → laisse 2 GB libres pour le reste du système."
                     ).classes("text-xs text-gray-600")
 
+                    # ── Contexte de chargement ────────────────────────────
+                    _default_ctx = os.environ.get("LMSTUDIO_CONTEXT_LENGTH", "")
+                    lms_ctx_input = ui.input(
+                        label="Contexte max (tokens)",
+                        value=_default_ctx,
+                        placeholder="0 = max du modèle",
+                    ).classes("w-full text-xs")
+                    ui.label(
+                        "Réduire le contexte (ex: 8192) accélère le chargement "
+                        "et libère de la VRAM (KV-cache). 0 = valeur par défaut du modèle."
+                    ).classes("text-xs text-gray-600")
+
                     asyncio.ensure_future(_detect_vram())
 
                     def _save_lms_config():
                         new_url = lms_url_input.value.strip().rstrip("/")
                         new_dir = lms_dir_input.value.strip()
                         new_reserve = lms_reserve_input.value.strip()
+                        new_ctx = lms_ctx_input.value.strip()
                         env_path = (
                             f"{state.active_folder}/.env"
                             if state.active_folder
@@ -1118,6 +1172,16 @@ def open_model_modal():
                                 return
                             os.environ["LMSTUDIO_VRAM_RESERVE_GB"] = new_reserve
                             lines.append(f"LMSTUDIO_VRAM_RESERVE_GB={new_reserve}")
+                        if new_ctx:
+                            try:
+                                int(new_ctx)
+                            except ValueError:
+                                ui.notify("Contexte doit être un entier (ex: 8192)", type="negative")
+                                return
+                            os.environ["LMSTUDIO_CONTEXT_LENGTH"] = new_ctx
+                            lines.append(f"LMSTUDIO_CONTEXT_LENGTH={new_ctx}")
+                        elif "LMSTUDIO_CONTEXT_LENGTH" in os.environ:
+                            del os.environ["LMSTUDIO_CONTEXT_LENGTH"]
                         if lines:
                             with open(env_path, "a", encoding="utf-8") as f:
                                 f.write("\n" + "\n".join(lines) + "\n")

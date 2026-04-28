@@ -965,7 +965,13 @@ def open_model_modal():
                     return
                 else:
                     lms_load_status.set_text(f"⏳ Chargement de {model_id}…")
-                status = await run.io_bound(lmstudio_load_model, model_id)
+                _gpu_raw = os.environ.get("LMSTUDIO_GPU_LAYERS", "").strip()
+                _gpu_layers: int | None = None
+                try:
+                    _gpu_layers = int(_gpu_raw) if _gpu_raw else None
+                except ValueError:
+                    pass
+                status = await run.io_bound(lmstudio_load_model, model_id, _gpu_layers)
                 if status != "ok":
                     lms_load_status.set_text(f"❌ lms load : {status}")
                     return
@@ -1029,9 +1035,22 @@ def open_model_modal():
                         "Saisissez le chemin exact si l'auto-détection se trompe."
                     ).classes("text-xs text-gray-600")
 
+                    _default_gpu = os.environ.get("LMSTUDIO_GPU_LAYERS", "")
+                    lms_gpu_input = ui.input(
+                        label="Couches GPU (GPU Layers)",
+                        value=_default_gpu,
+                        placeholder="-1 (auto — tout sur GPU)",
+                    ).classes("w-full text-xs")
+                    ui.label(
+                        "–1 ou vide = max GPU (défaut). "
+                        "0 = CPU uniquement. "
+                        "N = N couches sur GPU — réduire pour laisser de la VRAM libre."
+                    ).classes("text-xs text-gray-600")
+
                     def _save_lms_config():
                         new_url = lms_url_input.value.strip().rstrip("/")
                         new_dir = lms_dir_input.value.strip()
+                        new_gpu = lms_gpu_input.value.strip()
                         env_path = (
                             f"{state.active_folder}/.env"
                             if state.active_folder
@@ -1048,6 +1067,14 @@ def open_model_modal():
                         elif new_dir:
                             ui.notify(f"Chemin introuvable : {new_dir}", type="negative")
                             return
+                        if new_gpu:
+                            try:
+                                int(new_gpu)
+                            except ValueError:
+                                ui.notify("GPU Layers doit être un entier (ex: 20, 0, -1)", type="negative")
+                                return
+                            os.environ["LMSTUDIO_GPU_LAYERS"] = new_gpu
+                            lines.append(f"LMSTUDIO_GPU_LAYERS={new_gpu}")
                         if lines:
                             with open(env_path, "a", encoding="utf-8") as f:
                                 f.write("\n" + "\n".join(lines) + "\n")

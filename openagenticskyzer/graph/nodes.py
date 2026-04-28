@@ -8,7 +8,11 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END
 
 from openagenticskyzer.context.messages import clean_messages, trim_message_history
+from openagenticskyzer.graph.complexity import analyze_complexity
 from openagenticskyzer.graph.state import AgentState
+from openagenticskyzer.prompts.reasoning_templates import (
+    COT_PROMPT, COT_SYSTEM_INJECT, REASONING_TEMPLATES,
+)
 
 logger = logging.getLogger("openagentic.nodes")
 
@@ -415,17 +419,19 @@ def make_agent_node(
 
 def make_reasoning_node(model):
     """Factory : retourne un nœud LangGraph qui génère le CoT interne avant le LLM."""
-    from openagenticskyzer.graph.complexity import analyze_complexity
-    from openagenticskyzer.prompts.reasoning_templates import (
-        COT_PROMPT, COT_SYSTEM_INJECT, REASONING_TEMPLATES,
-    )
 
     def reasoning_node(state: AgentState) -> dict:
-        last_user_msg = next(
+        raw = next(
             (m.content for m in reversed(state["messages"])
              if isinstance(m, HumanMessage)),
             "",
         )
+        if isinstance(raw, list):
+            last_user_msg = " ".join(
+                c.get("text", "") if isinstance(c, dict) else str(c) for c in raw
+            )
+        else:
+            last_user_msg = raw or ""
         analysis = analyze_complexity(last_user_msg, len(state["messages"]))
 
         result: dict = {
@@ -452,8 +458,12 @@ def make_reasoning_node(model):
                 SystemMessage(content="Tu es un assistant expert en raisonnement structuré."),
                 HumanMessage(content=cot_prompt),
             ])
-            reasoning = cot_response.content
-        except Exception:
+            reasoning = cot_response.content or ""
+        except Exception as exc:
+            logger.warning(
+                "reasoning_node: LLM CoT call failed (%s: %s) — fallback to empty scratchpad",
+                type(exc).__name__, exc,
+            )
             return result
 
         result["reasoning_scratchpad"] = reasoning

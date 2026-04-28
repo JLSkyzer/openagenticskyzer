@@ -77,6 +77,11 @@ class TestReasoningNode:
             messages=[HumanMessage(content="Architecturer un système scalable avec microservices")]
         )
         result = node(state)
+        # Vérifie d'abord que le mode est bien complex/critical (sinon pas d'injection)
+        assert result["reasoning_mode"] in ("complex", "critical"), (
+            f"Expected complex/critical mode, got {result['reasoning_mode']!r} — "
+            "le message n'a pas été détecté comme complexe"
+        )
         injected = result.get("messages", [])
         assert len(injected) >= 1
         last = injected[-1]
@@ -84,11 +89,14 @@ class TestReasoningNode:
         assert "RAISONNEMENT" in last.content
 
     def test_standard_message_skips_cot(self):
-        """Mode standard : pas de CoT (CoT uniquement pour complex/critical)."""
+        """Mode standard ou simple : pas de CoT, pas d'appel LLM."""
         llm = _make_mock_llm()
         node = make_reasoning_node(llm)
         state = _base_state(messages=[HumanMessage(content="comment fonctionne Python ?")])
         result = node(state)
+        # Si le mode est simple ou standard, le LLM ne doit PAS être appelé
+        if result["reasoning_mode"] in ("simple", "standard"):
+            llm.invoke.assert_not_called()
         assert result["reasoning_mode"] in ("simple", "standard", "complex", "critical")
 
     def test_returns_all_required_state_keys(self):
@@ -100,3 +108,18 @@ class TestReasoningNode:
         for key in ("reasoning_mode", "task_type", "reasoning_scratchpad",
                     "confidence_score", "critique_result", "needs_correction", "critique_iterations"):
             assert key in result, f"Clé manquante dans le résultat : {key}"
+
+    def test_llm_error_returns_fallback_result(self):
+        """Si le LLM échoue pendant le CoT, le nœud retourne un résultat valide sans crash."""
+        llm = MagicMock()
+        llm.invoke.side_effect = RuntimeError("LLM timeout")
+        node = make_reasoning_node(llm)
+        # Message qui force le mode complex/critical
+        state = _base_state(
+            messages=[HumanMessage(content="Architecturer un système scalable avec microservices")]
+        )
+        result = node(state)
+        # Doit retourner sans crash, avec scratchpad vide
+        assert result is not None
+        assert result["reasoning_scratchpad"] == ""
+        assert result["needs_correction"] is False

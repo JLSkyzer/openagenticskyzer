@@ -543,14 +543,56 @@ def render_input_bar():
         def _attachments_display():
             if not state.attached_files:
                 return
-            with ui.row().classes("flex-wrap gap-1 px-1"):
+            with ui.row().classes("flex-wrap gap-2 px-1 pb-1"):
                 for i, f in enumerate(state.attached_files):
-                    icon = "🖼️" if f.content_type == "image" else "📄"
-                    with ui.row().classes("items-center gap-1 bg-gray-800 rounded px-2 py-0.5"):
-                        ui.label(f"{icon} {f.name}").classes("text-xs text-gray-300")
-                        ui.button("✕", on_click=lambda _, idx=i: _remove_attachment(idx)).classes(
-                            "w-4 h-4 text-gray-500 text-xs p-0 min-w-0"
-                        ).props("flat dense")
+                    if f.content_type == "image":
+                        # Preview image — thumbnail cliquable avec ✕
+                        with ui.element("div").style(
+                            "position:relative;display:inline-block;"
+                            "width:72px;height:72px;border-radius:8px;overflow:hidden;"
+                            "border:1px solid #3a3a3a;flex-shrink:0"
+                        ):
+                            ui.html(
+                                f'<img src="{f.content}" style="width:72px;height:72px;'
+                                f'object-fit:cover;display:block" title="{f.name}">'
+                            )
+                            ui.button(
+                                "✕",
+                                on_click=lambda _, idx=i: _remove_attachment(idx)
+                            ).style(
+                                "position:absolute;top:2px;right:2px;"
+                                "width:18px;height:18px;min-width:0;padding:0;"
+                                "background:rgba(0,0,0,.7);color:#fff;"
+                                "border-radius:50%;font-size:10px;line-height:18px"
+                            ).props("flat dense")
+                    else:
+                        # Carte fichier (PDF, CSV, texte, code…)
+                        _EXT_ICONS = {
+                            "pdf": "📕", "csv": "📊",
+                            "py": "🐍", "js": "🟨", "ts": "🟦",
+                            "json": "📋", "md": "📝",
+                        }
+                        ext = f.name.rsplit(".", 1)[-1].lower() if "." in f.name else ""
+                        icon = _EXT_ICONS.get(ext, "📄")
+                        with ui.element("div").style(
+                            "display:flex;flex-direction:column;justify-content:space-between;"
+                            "width:90px;height:72px;border-radius:8px;padding:6px 8px;"
+                            "background:#1e1e2e;border:1px solid #3a3a3a;position:relative;flex-shrink:0"
+                        ):
+                            ui.label(icon).style("font-size:22px;line-height:1")
+                            ui.label(f.name).style(
+                                "font-size:9px;color:#aaa;overflow:hidden;"
+                                "text-overflow:ellipsis;white-space:nowrap;max-width:74px"
+                            )
+                            ui.button(
+                                "✕",
+                                on_click=lambda _, idx=i: _remove_attachment(idx)
+                            ).style(
+                                "position:absolute;top:2px;right:2px;"
+                                "width:16px;height:16px;min-width:0;padding:0;"
+                                "background:rgba(0,0,0,.5);color:#aaa;"
+                                "border-radius:50%;font-size:9px;line-height:16px"
+                            ).props("flat dense")
 
         def _refresh_attachments():
             _attachments_display.refresh()

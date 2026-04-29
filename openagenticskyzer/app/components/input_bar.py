@@ -499,12 +499,13 @@ def render_input_bar():
         "background:#111;border-top:1px solid #1e1e1e;flex-shrink:0"
     ):
         with ui.row().classes("w-full items-end gap-2"):
-            input_el = ui.textarea(placeholder="Un message… (Entrée pour envoyer)").classes(
-                "flex-1 text-xs rounded-lg"
+            input_el = ui.textarea(placeholder="Un message…").classes(
+                "flex-1 text-xs rounded-lg oa-input-ta"
             ).style(
                 "background:#1a1a1a;border:1px solid #2a2a2a;color:#e0e0e0;"
-                "min-height:40px;max-height:140px;padding:8px 12px"
-            ).props("rows=1 autogrow")
+                "min-height:40px;padding:8px 12px;overflow-y:auto;"
+                "overflow-wrap:break-word;word-break:break-word;resize:vertical"
+            ).props("rows=2")
 
             model_button()
 
@@ -536,7 +537,7 @@ def render_input_bar():
             )
 
             with ui.button(on_click=lambda: None).classes(
-                "w-10 h-10 bg-purple-600 hover:bg-purple-700 rounded-lg flex-shrink-0"
+                "w-10 h-10 bg-purple-600 hover:bg-purple-700 rounded-lg flex-shrink-0 oa-send-btn"
             ) as send_btn:
                 send_lbl = ui.label("➤").classes("text-white text-sm leading-none")
 
@@ -614,7 +615,7 @@ def render_input_bar():
                 _attachments_display.refresh()
         ui.timer(0.3, _poll_attachments)
 
-        ui.label("Entrée pour envoyer · Shift+Entrée nouvelle ligne").classes("text-xs text-gray-700 px-1")
+        ui.label("Entrée = envoyer · Shift+Entrée / Ctrl+Entrée = nouvelle ligne").classes("text-xs text-gray-700 px-1")
 
         def _on_send_click():
             if state.agent_running:
@@ -622,7 +623,48 @@ def render_input_bar():
             else:
                 asyncio.ensure_future(_send_message(input_el.value, input_el, send_lbl, send_btn))
 
-        input_el.on("keydown.enter.prevent", lambda: asyncio.ensure_future(
-            _send_message(input_el.value, input_el, send_lbl, send_btn)
-        ) if not state.agent_running else None)
         send_btn.on("click", _on_send_click)
+
+        # JS : Enter seul = envoyer, Shift/Ctrl+Enter = saut de ligne
+        # + word-wrap + resize vertical avec sauvegarde localStorage
+        def _setup_input_js():
+            ui.run_javascript("""
+(function() {
+    var col = document.querySelector('.oa-input-col');
+    if (!col || col._oaSetup) return;
+    col._oaSetup = true;
+
+    var ta = col.querySelector('textarea');
+    if (!ta) return;
+
+    // Word wrap
+    ta.style.overflowWrap = 'break-word';
+    ta.style.wordBreak = 'break-word';
+    ta.style.whiteSpace = 'pre-wrap';
+    ta.style.resize = 'vertical';
+    ta.style.overflowY = 'auto';
+    ta.style.maxHeight = '60vh';
+    ta.style.boxSizing = 'border-box';
+
+    // Restaurer la hauteur sauvegardée
+    var saved = localStorage.getItem('oa-input-height');
+    if (saved) { ta.style.height = saved; }
+
+    // Sauvegarder la hauteur après redimensionnement
+    new ResizeObserver(function() {
+        var h = ta.offsetHeight;
+        if (h > 20) localStorage.setItem('oa-input-height', h + 'px');
+    }).observe(ta);
+
+    // Enter sans modificateur = cliquer le bouton envoi
+    ta.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+            e.preventDefault();
+            e.stopPropagation();
+            var btn = col.querySelector('.oa-send-btn');
+            if (btn) btn.click();
+        }
+    });
+})();
+""")
+        ui.timer(0.25, _setup_input_js, once=True)

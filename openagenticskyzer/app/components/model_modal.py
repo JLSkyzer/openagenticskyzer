@@ -133,12 +133,16 @@ def _detect_configured_models() -> list[dict]:
         ("GROQ_API_KEY", "groq", "GROQ_MODEL", "moonshotai/kimi-k2-instruct"),
         ("MISTRAL_API_KEY", "mistral", "MISTRAL_MODEL", "codestral-latest"),
         ("GEMINI_API_KEY", "gemini", "GEMINI_MODEL", "gemini-2.5-pro-preview-03-25"),
-        ("OPENROUTER_API_KEY", "openrouter", "OPENROUTER_MODEL", "kwaipilot/kat-coder-pro-v2"),
     ]
     for key_env, provider, model_env, default_model in providers:
         if os.environ.get(key_env, "").strip():
             model = os.environ.get(model_env, default_model)
             results.append({"provider": provider, "model": model})
+    # OpenRouter supporte plusieurs modèles séparés par virgule
+    if os.environ.get("OPENROUTER_API_KEY", "").strip():
+        models_str = os.environ.get("OPENROUTER_MODEL", "kwaipilot/kat-coder-pro-v2")
+        for model in [m.strip() for m in models_str.split(",") if m.strip()]:
+            results.append({"provider": "openrouter", "model": model})
     return results
 
 

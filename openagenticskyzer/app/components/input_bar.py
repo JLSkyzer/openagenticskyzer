@@ -55,6 +55,8 @@ _NEWS_DETECT_RE = _re.compile(
     r"\b(dernier|derni.re|r.cent|actuel|news|actualit.|latest|nouveau|nouvelle)\b",
     _re.IGNORECASE,
 )
+_LOCAL_PROVIDERS = {"lmstudio", "ollama", "llamacpp"}
+
 _COMPLEX_DETECT_RE = _re.compile(
     r"\b(explique|compare|analyse|d.taille|pr.cis|complet|exhaustif|"
     r"liste|tous les|toutes les|pourquoi|comment|diff.rence|"
@@ -81,6 +83,78 @@ def _extract_query_and_topic(msg: str) -> tuple[str, str]:
 
 from openagenticskyzer.app.state import state, ChatMessage
 from openagenticskyzer.app.components.model_modal import open_model_modal
+
+_TOOL_TAGS_STREAM = {
+    "run_command": "run",
+    "create_file": "write", "edit_file": "write", "delete_file": "write",
+    "create_dir": "write", "delete_dir": "write",
+    "view_file": "read", "read_file": "read", "list_dir": "read",
+    "glob_files": "read", "grep_file": "read", "grep_codebase": "read",
+    "internet_search": "search",
+}
+
+
+async def _stream_agent(agent, initial_state: dict) -> str:
+    """Stream agent via astream_events v2 — accumule tokens dans state.streaming_content."""
+    state.is_streaming = True
+    state.streaming_content = ""
+    try:
+        async for event in agent.astream_events(
+            initial_state,
+            version="v2",
+            config={"recursion_limit": 300},
+        ):
+            if state.stop_requested:
+                break
+            kind = event.get("event", "")
+
+            if kind == "on_chat_model_stream":
+                chunk = event["data"].get("chunk")
+                if chunk and hasattr(chunk, "content"):
+                    delta = chunk.content
+                    if isinstance(delta, str):
+                        state.streaming_content += delta
+                    elif isinstance(delta, list):
+                        for part in delta:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                state.streaming_content += part.get("text", "")
+                state.live_tokens += 1
+
+            elif kind == "on_tool_start":
+                tool_name = event.get("name", "?")
+                tag = _TOOL_TAGS_STREAM.get(tool_name, "read")
+                data = event["data"].get("input", {})
+                if isinstance(data, dict):
+                    detail = str(data.get("path") or data.get("command") or data.get("query") or data)[:120]
+                else:
+                    detail = str(data)[:120]
+                state.live_log.append(ChatMessage(
+                    role="tool", content="", tool_name=tool_name,
+                    tool_tag=tag, tool_detail=detail,
+                ))
+                state.streaming_content = ""  # Reset — la réponse intermédiaire n'est pas la finale
+
+            elif kind == "on_tool_end":
+                output = event["data"].get("output", "")
+                output_str = str(output) if output else ""
+                if state.live_log and state.live_log[-1].role == "tool" and not state.live_log[-1].content:
+                    last = state.live_log[-1]
+                    tool_diff = None
+                    content_display = output_str[:300]
+                    if "DIFF:\n" in output_str:
+                        parts = output_str.split("DIFF:\n", 1)
+                        content_display = parts[0].strip()[:200]
+                        tool_diff = parts[1][:1500] if len(parts) > 1 else None
+                    state.live_log[-1] = ChatMessage(
+                        role="tool", content=content_display,
+                        tool_name=last.tool_name, tool_tag=last.tool_tag,
+                        tool_detail=last.tool_detail, tool_diff=tool_diff,
+                    )
+    except Exception:
+        pass
+    finally:
+        state.is_streaming = False
+    return state.streaming_content
 
 
 async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
@@ -111,6 +185,11 @@ async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
     if send_btn:
         send_btn.classes(remove="bg-purple-600 hover:bg-purple-700", add="bg-red-700 hover:bg-red-800")
     chat_messages.refresh()
+
+    from openagenticskyzer.app.notifier import task_started, task_finished
+    task_started()
+    state.is_streaming = False
+    state.streaming_content = ""
 
     def _on_permission_request(req):
         state.pending_permission = req
@@ -163,9 +242,9 @@ async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
         if custom_prompt:
             history = [{"role": "system", "content": custom_prompt}] + history
 
-        # ── Pré-fetch web : recherche + lecture de source(s) ────────────────────
+        # ── Pré-fetch web : recherche + lecture de source(s) — local providers uniquement ──
         user_content_for_agent = text
-        if _SEARCH_DETECT_RE.search(text):
+        if state.current_provider in _LOCAL_PROVIDERS and _SEARCH_DETECT_RE.search(text):
             try:
                 from openagenticskyzer.tools.internet_search import internet_search as _isearch
                 from openagenticskyzer.tools.web_fetch import fetch_url as _fetch_url
@@ -316,19 +395,14 @@ async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
                 if state.live_log and state.live_log[-1].tool_tag == "search":
                     state.live_log.pop()
 
-        from openagenticskyzer.app.gui_callback import GUIAgentCallback
-        result = await run.io_bound(
-            agent.invoke,
-            {"messages": history + [{"role": "user", "content": user_content_for_agent}]},
-            {"recursion_limit": 300, "callbacks": [GUIAgentCallback()]},
-        )
+        from openagenticskyzer.app.file_processor import build_message_content
+        final_content = build_message_content(user_content_for_agent, list(state.attached_files))
+        state.attached_files.clear()
 
-        ai_text = ""
-        for msg in reversed(result.get("messages", [])):
-            content = getattr(msg, "content", "")
-            if content and not getattr(msg, "tool_calls", None):
-                ai_text = content if isinstance(content, str) else str(content)
-                break
+        initial_state = {"messages": history + [{"role": "user", "content": final_content}]}
+        ai_text = await _stream_agent(agent, initial_state)
+        state.streaming_content = ""
+        task_finished(ai_text[:100] if ai_text else "Terminé")
 
         # Retire les echoes de tool output que certains modèles répètent dans leur réponse finale
         if ai_text:
@@ -392,6 +466,8 @@ async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
         state.live_tokens = 0
         state.stop_requested = False
         state.agent_running = False
+        state.is_streaming = False
+        state.streaming_content = ""
         state.pending_permission = None
         if send_lbl:
             send_lbl.set_text("➤")
@@ -431,10 +507,60 @@ def render_input_bar():
 
             model_button()
 
+            # Bouton upload fichiers
+            def _handle_upload(e):
+                from openagenticskyzer.app.file_processor import process_upload
+                try:
+                    result = process_upload(e.name, e.content.read())
+                    if result:
+                        state.attached_files.append(result)
+                        _refresh_attachments()
+                        ui.notify(f"📎 {e.name} ajouté", type="positive")
+                    else:
+                        ui.notify(f"Format non supporté : {e.name}", type="warning")
+                except Exception as ex:
+                    ui.notify(f"Erreur upload : {ex}", type="negative")
+
+            upload_el = ui.upload(
+                on_upload=_handle_upload,
+                auto_upload=True,
+                multiple=True,
+            ).props(
+                "accept='.txt,.py,.js,.ts,.json,.yaml,.yml,.toml,.html,.css,.rs,.go,.java,.c,.cpp,.sh,.md,.pdf,.csv,.png,.jpg,.jpeg,.webp,.gif'"
+                " flat hide-upload-btn"
+            ).classes("hidden")
+
+            ui.button("📎", on_click=lambda: upload_el.run_method("pickFiles")).classes(
+                "w-10 h-10 bg-gray-900 border border-gray-700 text-gray-300 rounded-lg flex-shrink-0"
+            )
+
             with ui.button(on_click=lambda: None).classes(
                 "w-10 h-10 bg-purple-600 hover:bg-purple-700 rounded-lg flex-shrink-0"
             ) as send_btn:
                 send_lbl = ui.label("➤").classes("text-white text-sm leading-none")
+
+        @ui.refreshable
+        def _attachments_display():
+            if not state.attached_files:
+                return
+            with ui.row().classes("flex-wrap gap-1 px-1"):
+                for i, f in enumerate(state.attached_files):
+                    icon = "🖼️" if f.content_type == "image" else "📄"
+                    with ui.row().classes("items-center gap-1 bg-gray-800 rounded px-2 py-0.5"):
+                        ui.label(f"{icon} {f.name}").classes("text-xs text-gray-300")
+                        ui.button("✕", on_click=lambda _, idx=i: _remove_attachment(idx)).classes(
+                            "w-4 h-4 text-gray-500 text-xs p-0 min-w-0"
+                        ).props("flat dense")
+
+        def _refresh_attachments():
+            _attachments_display.refresh()
+
+        def _remove_attachment(idx: int):
+            if 0 <= idx < len(state.attached_files):
+                state.attached_files.pop(idx)
+                _attachments_display.refresh()
+
+        _attachments_display()
 
         ui.label("Entrée pour envoyer · Shift+Entrée nouvelle ligne").classes("text-xs text-gray-700 px-1")
 

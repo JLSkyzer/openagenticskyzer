@@ -91,6 +91,19 @@ html, body {
 .typing-dots span:nth-child(2){animation-delay:.2s}
 .typing-dots span:nth-child(3){animation-delay:.4s}
 @keyframes tdot{0%,80%,100%{opacity:.2;transform:scale(.8)}40%{opacity:1;transform:scale(1.15)}}
+.nicegui-markdown pre {
+    background: #1e1e2e !important;
+    border: 1px solid #2a2a3a;
+    border-radius: 8px;
+    padding: 12px 16px;
+    overflow-x: auto;
+}
+.nicegui-markdown code {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
+    font-size: 0.8rem;
+}
+.nicegui-markdown pre code { background: none !important; padding: 0; }
+.hljs { background: transparent !important; }
 """
 
 _URL = "http://127.0.0.1:8765"
@@ -105,6 +118,18 @@ _browser_proc = None  # processus navigateur en cours
 @ui.page("/")
 def main_page(client: Client):
     ui.add_head_html(f"<style>{CSS}</style>")
+    ui.add_head_html("""
+<link rel="stylesheet"
+  href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({startOnLoad: false, theme: 'dark'});
+  function applyHighlight() {
+    document.querySelectorAll('pre code:not(.hljs)').forEach(function(el){ hljs.highlightElement(el); });
+  }
+</script>
+""")
     ui.add_head_html(_SCROLL_JS)
 
     cfg = load_global_config()
@@ -189,7 +214,7 @@ def main_page(client: Client):
         except Exception:
             pass
 
-    _t = ui.timer(0.4, _tick)
+    _t = ui.timer(0.1, _tick)
     client.on_disconnect(lambda: _t.cancel())
 
 

@@ -18,18 +18,43 @@ from openagenticskyzer.app.components.downloads import make_downloads_top_btn
 _SCROLL_JS = """
 <script>
 (function(){
+  window._oaAutoScroll = true;
+  var _scrollTimer;
+
   function setup(){
-    var s=document.querySelector('.q-scrollarea__container');
-    var btn=document.getElementById('oa-scroll-btn');
-    if(!s||!btn){setTimeout(setup,400);return;}
+    var s = document.querySelector('.q-scrollarea__container');
+    var btn = document.getElementById('oa-scroll-btn');
+    if (!s || !btn) { setTimeout(setup, 400); return; }
+
     // Scroll initial en bas
-    s.scrollTop=s.scrollHeight;
-    s.addEventListener('scroll',function(){
-      var atBottom=s.scrollTop+s.clientHeight>=s.scrollHeight-80;
-      btn.style.display=atBottom?'none':'flex';
+    s.scrollTop = s.scrollHeight;
+
+    // Bouton ↓ : revenir en bas + reprendre l'auto-scroll
+    btn.onclick = function(){
+      window._oaAutoScroll = true;
+      s.scrollTop = s.scrollHeight;
+      btn.style.display = 'none';
+    };
+
+    // Suivi du scroll utilisateur
+    s.addEventListener('scroll', function(){
+      var atBottom = s.scrollTop + s.clientHeight >= s.scrollHeight - 80;
+      btn.style.display = atBottom ? 'none' : 'flex';
+      window._oaAutoScroll = atBottom;
     });
+
+    // Auto-scroll quand le contenu change (nouveau message IA)
+    // — seulement si l'utilisateur est déjà en bas
+    var target = s.firstElementChild || s;
+    var observer = new MutationObserver(function(){
+      if (!window._oaAutoScroll) return;
+      clearTimeout(_scrollTimer);
+      _scrollTimer = setTimeout(function(){ s.scrollTop = s.scrollHeight; }, 40);
+    });
+    observer.observe(target, { childList: true, subtree: true });
   }
-  document.addEventListener('DOMContentLoaded',function(){setTimeout(setup,600);});
+
+  document.addEventListener('DOMContentLoaded', function(){ setTimeout(setup, 600); });
 })();
 </script>
 """
@@ -155,7 +180,7 @@ def main_page(client: Client):
         try:
             if state.agent_running:
                 chat_messages.refresh()
-                scroll.scroll_to(percent=100)
+                # scroll géré côté JS via MutationObserver (_oaAutoScroll)
             if state.downloads:
                 from openagenticskyzer.app.components.sidebar import downloads_panel
                 downloads_panel.refresh()

@@ -100,6 +100,12 @@ def main_page(client: Client):
                 history_data = load_chat_history(last)
                 state.messages = [ChatMessage(**entry) for entry in history_data]
                 state.context_tokens, state.context_pct = compute_context_pct(state.messages, state.current_provider)
+                # Charge le .env du dossier (clés API + config spécifiques au projet)
+                try:
+                    from dotenv import load_dotenv as _ld
+                    _ld(os.path.join(last, ".env"), override=True)
+                except Exception:
+                    pass
 
     with ui.element("div").style(
         "width:100%;height:100vh;"
@@ -281,6 +287,14 @@ def _poll_and_open() -> None:
 def _init_data_dir() -> None:
     """Lit data_dir dans la config et initialise persistence + cleanup."""
     from openagenticskyzer.app.storage import load_global_config, cleanup_old_sessions
+
+    # Charge le .env global dès le démarrage (clés API cloud disponibles sans ouvrir la popup)
+    try:
+        from dotenv import load_dotenv as _ld
+        _ld(str(pathlib.Path.home() / ".env"), override=False)
+    except Exception:
+        pass
+
     cfg = load_global_config()
 
     data_dir = cfg.get("data_dir", "").strip()

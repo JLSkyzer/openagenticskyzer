@@ -15,6 +15,23 @@ from openagenticskyzer.app.components.input_bar import render_input_bar
 from openagenticskyzer.app.components.settings import render_settings
 from openagenticskyzer.app.components.downloads import make_downloads_top_btn
 
+# ── Endpoint upload paste/drag-drop ──────────────────────────────────────────
+
+from nicegui import app as _nga
+from fastapi import UploadFile, File
+
+
+@_nga.post("/api/attach-file")
+async def _attach_file_api(file: UploadFile = File(...)):
+    from openagenticskyzer.app.file_processor import process_upload
+    raw = await file.read()
+    result = process_upload(file.filename or "pasted.png", raw)
+    if result:
+        state.attached_files.append(result)
+        return {"ok": True, "name": result.name}
+    return {"ok": False, "error": "Format non supporté"}
+
+
 _SCROLL_JS = """
 <script>
 (function(){
@@ -128,6 +145,56 @@ def main_page(client: Client):
   function applyHighlight() {
     document.querySelectorAll('pre code:not(.hljs)').forEach(function(el){ hljs.highlightElement(el); });
   }
+</script>
+""")
+    ui.add_head_html("""
+<script>
+(function(){
+  function _oaAttachFile(file) {
+    var fd = new FormData();
+    fd.append('file', file, file.name || 'pasted.png');
+    fetch('/api/attach-file', {method:'POST', body:fd})
+      .then(function(r){return r.json();})
+      .catch(function(){});
+  }
+
+  // Coller (Ctrl+V) — images et fichiers
+  document.addEventListener('paste', function(e) {
+    var items = e.clipboardData ? e.clipboardData.items : [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].kind === 'file') {
+        var f = items[i].getAsFile();
+        if (f) { e.preventDefault(); _oaAttachFile(f); }
+      }
+    }
+  });
+
+  // Drag-and-drop sur la zone de saisie (.oa-input-col)
+  function _col() { return document.querySelector('.oa-input-col'); }
+  document.addEventListener('dragover', function(e) {
+    var col = _col();
+    if (col && (col === e.target || col.contains(e.target))) {
+      e.preventDefault();
+      col.style.outline = '2px dashed #7c3aed';
+      col.style.background = '#1a1020';
+    }
+  });
+  document.addEventListener('dragleave', function(e) {
+    var col = _col();
+    if (col && !col.contains(e.relatedTarget)) {
+      col.style.outline = '';
+      col.style.background = '';
+    }
+  });
+  document.addEventListener('drop', function(e) {
+    var col = _col();
+    if (col) { col.style.outline = ''; col.style.background = ''; }
+    if (!col || !(col === e.target || col.contains(e.target))) return;
+    e.preventDefault();
+    var files = e.dataTransfer ? e.dataTransfer.files : [];
+    for (var i = 0; i < files.length; i++) { _oaAttachFile(files[i]); }
+  });
+})();
 </script>
 """)
     ui.add_head_html(_SCROLL_JS)

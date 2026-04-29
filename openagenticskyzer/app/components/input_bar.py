@@ -494,7 +494,7 @@ def model_button():
 
 
 def render_input_bar():
-    with ui.column().classes("w-full px-3 pb-3 pt-2 gap-1").style(
+    with ui.column().classes("w-full px-3 pb-3 pt-2 gap-1 oa-input-col").style(
         "background:#111;border-top:1px solid #1e1e1e;flex-shrink:0"
     ):
         with ui.row().classes("w-full items-end gap-2"):
@@ -561,6 +561,15 @@ def render_input_bar():
                 _attachments_display.refresh()
 
         _attachments_display()
+
+        # Détecte les fichiers ajoutés via paste/drop (endpoint FastAPI bypass _refresh_attachments)
+        _prev_count = [len(state.attached_files)]
+        def _poll_attachments():
+            curr = len(state.attached_files)
+            if curr != _prev_count[0]:
+                _prev_count[0] = curr
+                _attachments_display.refresh()
+        ui.timer(0.3, _poll_attachments)
 
         ui.label("Entrée pour envoyer · Shift+Entrée nouvelle ligne").classes("text-xs text-gray-700 px-1")
 

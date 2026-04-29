@@ -36,10 +36,18 @@ def _render_diff(diff_text: str):
 
 def _render_message(msg: ChatMessage):
     if msg.role == "user":
-        with ui.row().classes("justify-end w-full"):
-            ui.label(msg.content).classes(
-                "max-w-xl px-3 py-2 rounded-lg text-xs text-purple-200 bg-indigo-950"
-            )
+        with ui.column().classes("items-end w-full gap-1"):
+            if getattr(msg, "images", None):
+                with ui.row().classes("justify-end flex-wrap gap-2"):
+                    for uri in msg.images:
+                        ui.html(
+                            f'<img src="{uri}" style="max-width:220px;max-height:160px;'
+                            f'border-radius:8px;object-fit:cover;display:block">'
+                        )
+            if msg.content:
+                ui.label(msg.content).classes(
+                    "max-w-xl px-3 py-2 rounded-lg text-xs text-purple-200 bg-indigo-950"
+                )
         return
 
     if msg.role == "tool":

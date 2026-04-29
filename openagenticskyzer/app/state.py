@@ -11,6 +11,7 @@ class ChatMessage:
     tool_tag: Optional[str] = None
     tool_detail: Optional[str] = None
     tool_diff: Optional[str] = None
+    images: list = field(default_factory=list)  # data URIs, messages utilisateur avec images
 
 
 @dataclass

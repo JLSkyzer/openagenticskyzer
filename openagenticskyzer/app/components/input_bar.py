@@ -150,8 +150,8 @@ async def _stream_agent(agent, initial_state: dict) -> str:
                         tool_name=last.tool_name, tool_tag=last.tool_tag,
                         tool_detail=last.tool_detail, tool_diff=tool_diff,
                     )
-    except Exception:
-        pass
+    except Exception as _e:
+        state.streaming_content = f"❌ Erreur streaming : {_e}"
     finally:
         state.is_streaming = False
     return state.streaming_content
@@ -174,7 +174,8 @@ async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
     from openagenticskyzer.app.components.chat import chat_messages, permission_banner
     from openagenticskyzer.app.components.context_bar import context_bar, trigger_compact
 
-    state.messages.append(ChatMessage(role="user", content=text))
+    _imgs = [f.content for f in state.attached_files if f.content_type == "image"]
+    state.messages.append(ChatMessage(role="user", content=text, images=_imgs))
     state.live_log = []
     state.live_tokens = 0
     state.stop_requested = False

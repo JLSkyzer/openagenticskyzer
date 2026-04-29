@@ -15,6 +15,29 @@ from openagenticskyzer.app.components.input_bar import render_input_bar
 from openagenticskyzer.app.components.settings import render_settings
 from openagenticskyzer.app.components.downloads import make_downloads_top_btn
 
+# ── Vendor local (highlight.js + mermaid) ─────────────────────────────────────
+
+_VENDOR_DIR = pathlib.Path.home() / ".openagenticskyzer" / "vendor"
+_VENDOR_FILES = {
+    "atom-one-dark.min.css": "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css",
+    "highlight.min.js":      "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js",
+    "mermaid.min.js":        "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js",
+}
+
+
+def _ensure_vendor() -> None:
+    """Télécharge highlight.js et mermaid dans ~/.openagenticskyzer/vendor/ si absents."""
+    import urllib.request
+    _VENDOR_DIR.mkdir(parents=True, exist_ok=True)
+    for fname, url in _VENDOR_FILES.items():
+        dest = _VENDOR_DIR / fname
+        if not dest.exists():
+            try:
+                urllib.request.urlretrieve(url, dest)
+            except Exception:
+                pass
+
+
 # ── Endpoint upload paste/drag-drop ──────────────────────────────────────────
 
 from nicegui import app as _nga
@@ -135,16 +158,18 @@ _browser_proc = None  # processus navigateur en cours
 @ui.page("/")
 def main_page(client: Client):
     ui.add_head_html(f"<style>{CSS}</style>")
-    ui.add_head_html("""
-<link rel="stylesheet"
-  href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+    def _v(fname: str, cdn: str) -> str:
+        return f"/vendor/{fname}" if (_VENDOR_DIR / fname).exists() else cdn
+
+    ui.add_head_html(f"""
+<link rel="stylesheet" href="{_v('atom-one-dark.min.css', 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css')}">
+<script src="{_v('highlight.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js')}"></script>
+<script src="{_v('mermaid.min.js', 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js')}"></script>
 <script>
-  mermaid.initialize({startOnLoad: false, theme: 'dark'});
-  function applyHighlight() {
-    document.querySelectorAll('pre code:not(.hljs)').forEach(function(el){ hljs.highlightElement(el); });
-  }
+  mermaid.initialize({{startOnLoad: false, theme: 'dark'}});
+  function applyHighlight() {{
+    document.querySelectorAll('pre code:not(.hljs)').forEach(function(el){{ hljs.highlightElement(el); }});
+  }}
 </script>
 """)
     ui.add_head_html("""
@@ -402,6 +427,9 @@ def _poll_and_open() -> None:
 # ── Point d'entrée ────────────────────────────────────────────────────────────
 
 def _init_data_dir() -> None:
+    _ensure_vendor()
+    _nga.add_static_files("/vendor", str(_VENDOR_DIR))
+
     """Lit data_dir dans la config et initialise persistence + cleanup."""
     from openagenticskyzer.app.storage import load_global_config, cleanup_old_sessions
 

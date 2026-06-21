@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>openagenticskyzer — Maquette App</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d0d0d; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+
+  /* ── Header bar ── */
+  .topbar {
+    height: 38px; background: #161616; border-bottom: 1px solid #2a2a2a;
+    display: flex; align-items: center; padding: 0 12px; gap: 8px;
+    flex-shrink: 0;
+  }
+  .topbar .logo { font-size: 13px; font-weight: 600; color: #8b5cf6; letter-spacing: .5px; }
+  .topbar .sep { flex: 1; }
+  .topbar .folder-badge { font-size: 11px; color: #666; background: #1e1e1e; padding: 2px 8px; border-radius: 4px; border: 1px solid #2a2a2a; }
+
+  /* ── Layout ── */
+  .layout { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    width: 230px; background: #111; border-right: 1px solid #222;
+    display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  .sidebar-head {
+    padding: 10px 10px 6px; border-bottom: 1px solid #1e1e1e;
+  }
+  .btn-open {
+    width: 100%; padding: 7px 10px; background: #8b5cf6; color: #fff;
+    border: none; border-radius: 6px; font-size: 12px; font-weight: 600;
+    cursor: pointer; display: flex; align-items: center; gap: 6px;
+    letter-spacing: .3px;
+  }
+  .btn-open:hover { background: #7c3aed; }
+  .sidebar-label {
+    font-size: 10px; color: #444; text-transform: uppercase; letter-spacing: 1px;
+    padding: 10px 12px 4px;
+  }
+  .folder-list { overflow-y: auto; flex: 1; }
+  .folder-item {
+    padding: 7px 12px; cursor: pointer; border-left: 2px solid transparent;
+    transition: all .12s;
+  }
+  .folder-item:hover { background: #1a1a1a; }
+  .folder-item.active { background: #1a1a2e; border-left-color: #8b5cf6; }
+  .folder-item .fname {
+    font-size: 12px; font-weight: 500; color: #ccc; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .folder-item .fmeta {
+    font-size: 10px; color: #555; margin-top: 2px;
+  }
+  .folder-item.active .fname { color: #a78bfa; }
+
+  /* ── Main ── */
+  .main { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+
+  /* ── Chat history ── */
+  .chat-area { flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; }
+
+  .msg { display: flex; gap: 10px; max-width: 100%; }
+  .msg.user { flex-direction: row-reverse; }
+  .avatar {
+    width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700;
+  }
+  .avatar.ai { background: #8b5cf6; color: #fff; }
+  .avatar.usr { background: #374151; color: #9ca3af; }
+  .bubble {
+    max-width: 70%; padding: 9px 13px; border-radius: 10px;
+    font-size: 13px; line-height: 1.5;
+  }
+  .msg.user .bubble { background: #1e1e3a; color: #c4b5fd; border-radius: 10px 2px 10px 10px; }
+  .msg.ai .bubble { background: #1a1a1a; color: #d1d5db; border-radius: 2px 10px 10px 10px; }
+
+  /* ── Tool action preview ── */
+  .tool-preview {
+    background: #0f1117; border: 1px solid #2a2a2a; border-radius: 8px;
+    font-size: 11px; overflow: hidden; margin: 2px 38px;
+  }
+  .tool-header {
+    padding: 5px 10px; background: #161620; border-bottom: 1px solid #2a2a2a;
+    display: flex; align-items: center; gap: 6px; color: #888;
+  }
+  .tool-tag {
+    font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 3px;
+    text-transform: uppercase; letter-spacing: .5px;
+  }
+  .tool-tag.write { background: #14532d; color: #4ade80; }
+  .tool-tag.run { background: #1e3a5f; color: #60a5fa; }
+  .tool-tag.read { background: #292524; color: #d97706; }
+  .tool-tag.search { background: #2d1b69; color: #a78bfa; }
+  .tool-body { padding: 8px 10px; font-family: 'Consolas', monospace; color: #9ca3af; line-height: 1.4; }
+  .tool-body .filename { color: #60a5fa; }
+  .tool-body .line-add { color: #4ade80; }
+  .tool-body .line-run { color: #a78bfa; }
+
+  /* ── Context bar ── */
+  .context-bar {
+    padding: 4px 24px; background: #0f0f0f; border-top: 1px solid #1e1e1e;
+    display: flex; align-items: center; gap: 10px; font-size: 11px; color: #555;
+  }
+  .ctx-pill {
+    display: flex; align-items: center; gap: 4px; background: #1a1a1a;
+    border: 1px solid #2a2a2a; padding: 2px 8px; border-radius: 12px;
+  }
+  .ctx-bar-fill {
+    height: 4px; border-radius: 2px; background: #8b5cf6;
+    width: 34%; transition: width .3s;
+  }
+  .ctx-bar-bg { flex: 1; height: 4px; background: #222; border-radius: 2px; max-width: 120px; }
+  .ctx-compact-btn {
+    margin-left: auto; font-size: 10px; color: #8b5cf6; cursor: pointer;
+    border: 1px solid #3b2d6e; padding: 2px 7px; border-radius: 4px;
+    background: transparent;
+  }
+  .ctx-compact-btn:hover { background: #1a1230; }
+
+  /* ── Input area ── */
+  .input-area {
+    padding: 10px 16px 12px; background: #111; border-top: 1px solid #1e1e1e;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .input-row { display: flex; align-items: flex-end; gap: 8px; }
+  .input-box {
+    flex: 1; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px;
+    padding: 9px 13px; font-size: 13px; color: #e0e0e0; resize: none;
+    min-height: 40px; max-height: 140px; outline: none; font-family: inherit;
+  }
+  .input-box:focus { border-color: #4c1d95; }
+  .input-box::placeholder { color: #444; }
+
+  .btn-model {
+    background: #1e1e1e; border: 1px solid #2a2a2a; color: #9ca3af;
+    padding: 0 10px; height: 40px; border-radius: 8px; cursor: pointer;
+    font-size: 11px; display: flex; align-items: center; gap: 5px;
+    white-space: nowrap; flex-shrink: 0;
+  }
+  .btn-model:hover { border-color: #8b5cf6; color: #c4b5fd; }
+  .model-dot { width: 6px; height: 6px; border-radius: 50%; background: #4ade80; }
+
+  .btn-send {
+    background: #8b5cf6; border: none; color: #fff;
+    width: 40px; height: 40px; border-radius: 8px; cursor: pointer;
+    font-size: 16px; display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .btn-send:hover { background: #7c3aed; }
+
+  .input-hints { display: flex; gap: 8px; font-size: 10px; color: #3d3d3d; padding: 0 2px; }
+  .input-hints span { cursor: pointer; }
+  .input-hints span:hover { color: #666; }
+
+  /* ── Permission banner ── */
+  .perm-banner {
+    margin: 4px 24px; background: #1a120a; border: 1px solid #78350f;
+    border-radius: 6px; padding: 7px 12px; display: flex; align-items: center;
+    gap: 8px; font-size: 12px; color: #d97706;
+  }
+  .perm-banner .perm-action { font-weight: 600; color: #fbbf24; }
+  .perm-btn { margin-left: auto; display: flex; gap: 5px; }
+  .perm-btn button { font-size: 11px; padding: 3px 10px; border-radius: 4px; cursor: pointer; border: none; }
+  .perm-btn .allow { background: #166534; color: #4ade80; }
+  .perm-btn .deny { background: #3b1a1a; color: #f87171; }
+  .perm-btn .always { background: #1e3a5f; color: #60a5fa; }
+
+  /* ── Mode badge ── */
+  .mode-badge {
+    font-size: 10px; padding: 2px 7px; border-radius: 3px;
+    text-transform: uppercase; letter-spacing: .5px; font-weight: 700;
+  }
+  .mode-badge.auto { background: #1e3a2e; color: #4ade80; }
+  .mode-badge.ask { background: #1e2a3a; color: #60a5fa; }
+  .mode-badge.plan { background: #2d1b69; color: #a78bfa; }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 3px; }
+
+  /* annotation */
+  .annotation {
+    position: absolute; background: #8b5cf6; color: #fff;
+    font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 10px;
+    white-space: nowrap; pointer-events: none;
+  }
+  .note-container { position: relative; display: inline-block; }
+
+  /* labels overlay */
+  .zone-label {
+    background: rgba(139,92,246,0.12); border: 1px dashed #4c1d95;
+    border-radius: 4px; padding: 2px 6px; font-size: 10px; color: #8b5cf6;
+    font-weight: 600; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <span class="logo">◈ openagent</span>
+  <span class="mode-badge auto">auto</span>
+  <span style="font-size:11px;color:#555;">▸ /mon-projet</span>
+  <span class="sep"></span>
+  <span class="folder-badge">📁 /mon-projet</span>
+</div>
+
+<div class="layout">
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-head">
+      <button class="btn-open">📂 Ouvrir un dossier</button>
+    </div>
+    <div class="sidebar-label">Historique des dossiers</div>
+    <div class="folder-list">
+      <div class="folder-item active">
+        <div class="fname">mon-projet</div>
+        <div class="fmeta">D:\dev\mon-projet · il y a 2 min</div>
+      </div>
+      <div class="folder-item">
+        <div class="fname">openagenticskyzer</div>
+        <div class="fmeta">D:\repos\openagenticskyzer · hier</div>
+      </div>
+      <div class="folder-item">
+        <div class="fname">portfolio-site</div>
+        <div class="fmeta">D:\web\portfolio · 3 jan</div>
+      </div>
+      <div class="folder-item">
+        <div class="fname">api-backend</div>
+        <div class="fmeta">D:\work\api-backend · 28 déc</div>
+      </div>
+      <div class="folder-item">
+        <div class="fname">scripts-utils</div>
+        <div class="fmeta">D:\scripts · 15 déc</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main chat -->
+  <div class="main">
+    <div class="chat-area">
+
+      <!-- AI message -->
+      <div class="msg ai">
+        <div class="avatar ai">AI</div>
+        <div class="bubble">
+          Bonjour ! Je suis prêt à travailler sur <strong>/mon-projet</strong>. Que veux-tu faire ?
+        </div>
+      </div>
+
+      <!-- User message -->
+      <div class="msg user">
+        <div class="avatar usr">JL</div>
+        <div class="bubble">
+          Ajoute un système d'authentification JWT à l'API Express
+        </div>
+      </div>
+
+      <!-- AI with tool previews -->
+      <div class="msg ai">
+        <div class="avatar ai">AI</div>
+        <div class="bubble">
+          Je commence par analyser la structure du projet, puis j'ajoute le middleware JWT.
+        </div>
+      </div>
+
+      <!-- Tool preview: READ -->
+      <div class="tool-preview">
+        <div class="tool-header">
+          <span class="tool-tag read">read</span>
+          <span>src/app.js</span>
+        </div>
+        <div class="tool-body">
+          <span class="filename">src/app.js</span> — 87 lignes lues
+        </div>
+      </div>
+
+      <!-- Tool preview: WRITE -->
+      <div class="tool-preview">
+        <div class="tool-header">
+          <span class="tool-tag write">write</span>
+          <span>src/middleware/auth.js</span>
+          <span style="margin-left:auto;color:#4ade80;font-size:10px;">+42 lignes</span>
+        </div>
+        <div class="tool-body">
+          <div class="line-add">+ import jwt from 'jsonwebtoken';</div>
+          <div class="line-add">+ export const requireAuth = (req, res, next) => {</div>
+          <div class="line-add">+   const token = req.headers.authorization?.split(' ')[1];</div>
+          <div style="color:#555">  ...</div>
+        </div>
+      </div>
+
+      <!-- Tool preview: RUN -->
+      <div class="tool-preview">
+        <div class="tool-header">
+          <span class="tool-tag run">run</span>
+          <span>npm install jsonwebtoken</span>
+        </div>
+        <div class="tool-body">
+          <div class="line-run">$ npm install jsonwebtoken</div>
+          <div style="color:#555">added 3 packages in 1.2s</div>
+        </div>
+      </div>
+
+      <!-- Permission request -->
+      <div class="perm-banner">
+        <span>⚠️</span>
+        <span>L'IA veut exécuter : <span class="perm-action">node scripts/migrate.js</span></span>
+        <div class="perm-btn">
+          <button class="always">Toujours</button>
+          <button class="allow">Autoriser</button>
+          <button class="deny">Refuser</button>
+        </div>
+      </div>
+
+      <!-- Final AI message -->
+      <div class="msg ai">
+        <div class="avatar ai">AI</div>
+        <div class="bubble">
+          ✅ Middleware JWT ajouté dans <code style="background:#222;padding:1px 5px;border-radius:3px;font-size:12px">src/middleware/auth.js</code>. Routes protégées : <code style="background:#222;padding:1px 5px;border-radius:3px;font-size:12px">/api/users</code>, <code style="background:#222;padding:1px 5px;border-radius:3px;font-size:12px">/api/posts</code>. Installe la variable <code style="background:#222;padding:1px 5px;border-radius:3px;font-size:12px">JWT_SECRET</code> dans ton <code style="background:#222;padding:1px 5px;border-radius:3px;font-size:12px">.env</code>.
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Context bar -->
+    <div class="context-bar">
+      <span class="ctx-pill">🧠 Contexte</span>
+      <div class="ctx-bar-bg"><div class="ctx-bar-fill"></div></div>
+      <span>34% utilisé · ~8 400 tokens</span>
+      <button class="ctx-compact-btn">⚡ Auto-compact</button>
+    </div>
+
+    <!-- Input area -->
+    <div class="input-area">
+      <div class="input-row">
+        <textarea class="input-box" placeholder="Un message… (Shift+Enter pour nouvelle ligne)" rows="1"></textarea>
+        <button class="btn-model">
+          <span class="model-dot"></span>
+          qwen2.5-coder (ollama)
+          <span style="color:#555">▾</span>
+        </button>
+        <button class="btn-send">➤</button>
+      </div>
+      <div class="input-hints">
+        <span>⌘K commandes</span>
+        <span>·</span>
+        <span>@ mentionner fichier</span>
+        <span>·</span>
+        <span>/ mode</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

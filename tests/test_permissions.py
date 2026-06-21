@@ -1,7 +1,7 @@
 # tests/test_permissions.py
 import sys
 from unittest.mock import MagicMock, patch
-from openagentic_ai.permissions import PermissionManager, make_permission_tool_node
+from openagenticskyzer.permissions import PermissionManager, make_permission_tool_node
 
 def test_auto_mode_always_allows():
     mgr = PermissionManager(mode="auto")

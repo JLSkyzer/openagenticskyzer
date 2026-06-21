@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from openagentic_ai.context.persistence import PersistenceManager
+from openagenticskyzer.context.persistence import PersistenceManager
 
 
 # ---------------------------------------------------------------------------

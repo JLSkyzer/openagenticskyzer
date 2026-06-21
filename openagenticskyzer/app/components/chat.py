@@ -69,7 +69,7 @@ def _render_message(msg: ChatMessage):
         ui.label("AI").classes(
             "w-7 h-7 rounded-full bg-purple-600 text-white text-xs font-bold flex items-center justify-center flex-shrink-0"
         )
-        ui.label(msg.content).classes(
+        ui.markdown(msg.content).classes(
             "flex-1 max-w-3xl px-3 py-2 rounded-lg text-xs text-gray-300 leading-relaxed"
         ).style("background:#1a1a1a;border-radius:2px 10px 10px 10px")
 

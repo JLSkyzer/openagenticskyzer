@@ -362,6 +362,9 @@ def _force_internet_search_if_refused(response, messages: list):
     return response
 
 
+_LOCAL_PROVIDERS = {"lmstudio", "ollama", "llamacpp"}
+
+
 def make_agent_node(
     model,
     system_prompt: str,
@@ -369,6 +372,7 @@ def make_agent_node(
     max_tokens: int | None = None,
     lmstudio_compat: bool = False,
     cwd: str | None = None,
+    provider: str = "",
 ):
     """Return an agent node closure bound to the given model and system prompt.
 
@@ -423,8 +427,9 @@ def make_agent_node(
 
         response = model.invoke(full_context)
         response = _coerce_text_tool_call(response)
-        response = _force_internet_search_if_refused(response, trimmed)
-        response = _force_file_creation_if_refused(response, trimmed)
+        if provider in _LOCAL_PROVIDERS:
+            response = _force_internet_search_if_refused(response, trimmed)
+            response = _force_file_creation_if_refused(response, trimmed)
         return {"messages": [response]}
 
     return agent_node

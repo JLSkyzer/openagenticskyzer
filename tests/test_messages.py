@@ -8,7 +8,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from openagentic_ai.context.messages import clean_messages, trim_message_history
+from openagenticskyzer.context.messages import clean_messages, trim_message_history
 
 
 # ---------------------------------------------------------------------------

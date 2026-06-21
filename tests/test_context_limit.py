@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 from langchain_core.messages import HumanMessage
 
-from openagentic_ai.context.messages import trim_message_history
-from openagentic_ai.utils.utils import _DEFAULT_CTX_LIMITS, get_available_ollama_models
+from openagenticskyzer.context.messages import trim_message_history
+from openagenticskyzer.utils.utils import _DEFAULT_CTX_LIMITS, get_available_ollama_models
 
 def test_ctx_limits_has_all_providers():
     expected = {"together", "groq", "mistral", "gemini", "openrouter", "ollama"}

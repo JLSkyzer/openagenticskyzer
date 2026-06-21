@@ -1,9 +1,9 @@
-"""Tests unitaires pour openagentic_ai.utils.utils."""
+"""Tests unitaires pour openagenticskyzer.utils.utils."""
 
 import os
 import pytest
 
-from openagentic_ai.utils.utils import mode_router, parse_mentions
+from openagenticskyzer.utils.utils import mode_router, parse_mentions
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +149,7 @@ class TestDetectProvider:
                     "GEMINI_API_KEY", "OPENROUTER_API_KEY"]:
             monkeypatch.delenv(key, raising=False)
 
-        from openagentic_ai.utils.utils import _detect_provider
+        from openagenticskyzer.utils.utils import _detect_provider
         with pytest.raises(EnvironmentError, match="No API key found"):
             _detect_provider()
 
@@ -159,7 +159,7 @@ class TestDetectProvider:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
 
-        from openagentic_ai.utils.utils import _detect_provider
+        from openagenticskyzer.utils.utils import _detect_provider
         provider, api_key, model = _detect_provider()
         assert provider == "groq"
         assert api_key == "test-groq-key"
@@ -173,7 +173,7 @@ class TestDetectProvider:
         monkeypatch.setenv("TOGETHER_API_KEY", "together-key")
         monkeypatch.setenv("GROQ_API_KEY", "groq-key")
 
-        from openagentic_ai.utils.utils import _detect_provider
+        from openagenticskyzer.utils.utils import _detect_provider
         provider, _, _ = _detect_provider()
         assert provider == "together"
 
@@ -185,7 +185,7 @@ class TestDetectProvider:
         monkeypatch.setenv("GROQ_API_KEY", "my-key")
         monkeypatch.setenv("GROQ_MODEL", "custom-model-v2")
 
-        from openagentic_ai.utils.utils import _detect_provider
+        from openagenticskyzer.utils.utils import _detect_provider
         _, _, model = _detect_provider()
         assert model == "custom-model-v2"
 
@@ -194,7 +194,7 @@ class TestDetectProvider:
                     "GEMINI_API_KEY", "OPENROUTER_API_KEY"]:
             monkeypatch.delenv(key, raising=False)
 
-        from openagentic_ai.utils.utils import _detect_provider
+        from openagenticskyzer.utils.utils import _detect_provider
         with pytest.raises(EnvironmentError) as exc_info:
             _detect_provider()
         msg = str(exc_info.value)

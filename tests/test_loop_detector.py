@@ -1,7 +1,7 @@
 """Tests unitaires pour LoopDetector."""
 
 import pytest
-from openagentic_ai.utils.loop_detector import LoopDetector, check_loop, reset_loop_detector
+from openagenticskyzer.utils.loop_detector import LoopDetector, check_loop, reset_loop_detector
 
 
 class TestLoopDetectorSameCall:

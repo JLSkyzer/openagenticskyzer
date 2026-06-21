@@ -1,0 +1,5 @@
+Mais : la capacité à bien les utiliser dépend du modèle. Les modèles à privilégier pour le tool-calling avec Ollama
+  sont :
+  - qwen2.5-coder (7B+) — excellent support des outils
+  - llama3.1 / llama3.2 — bon support natif
+  - mistral-nemo — correct

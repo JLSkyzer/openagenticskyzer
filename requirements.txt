@@ -1,8 +1,33 @@
+# ── Core ──────────────────────────────────────────────────────────────────────
 langgraph>=0.2.0
-langchain>=1.2.13
 langchain-core>=1.2.22
-langchain-community>=0.4.1
-tavily-python>=0.7.23
-langchain-together
 python-dotenv
 rich>=13.0
+ddgs>=2.0                    # Recherche gratuite, sans clé API (ex duckduckgo-search)
+# tavily-python>=0.7.23       # Optionnel : si vous avez une TAVILY_API_KEY
+
+# ── Interface graphique (app desktop) ─────────────────────────────────────────
+nicegui>=1.4
+pystray>=0.19
+pillow>=10.0
+huggingface_hub>=0.23        # Téléchargement de modèles GGUF depuis HuggingFace
+hf_transfer>=0.1.6           # Accélérateur Rust pour téléchargements HF (5-10×)
+
+# ── Ollama (IA locale — recommandé) ───────────────────────────────────────────
+langchain-ollama
+
+# ── LM Studio (IA locale via OpenAI-compatible API) ───────────────────────────
+langchain-openai          # Requis pour LM Studio + OpenRouter
+lmstudio                  # SDK Python LM Studio (installe aussi le CLI lms)
+
+# ── llama.cpp (IA locale sans serveur externe) ────────────────────────────────
+# CPU only :   pip install "llama-cpp-python[server]"
+# CUDA (RTX) : $env:CMAKE_ARGS="-DGGML_CUDA=on"; pip install "llama-cpp-python[server]" --force-reinstall --no-cache-dir
+# Ou wheels pré-compilés : https://github.com/abetlen/llama-cpp-python/releases
+# llama-cpp-python[server]
+
+# ── Providers cloud (décommentez ceux dont vous avez la clé API) ──────────────
+# langchain-groq          # Groq : https://console.groq.com/keys
+# langchain-together      # Together AI : https://api.together.xyz/settings/api-keys
+# langchain-mistralai     # Mistral : https://console.mistral.ai/api-keys
+# langchain-google-genai  # Gemini : https://aistudio.google.com/app/apikey

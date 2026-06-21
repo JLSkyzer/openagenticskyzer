@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Settings — Contexte & Mémoire</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d0d0d; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+
+  .topbar {
+    height: 38px; background: #161616; border-bottom: 1px solid #2a2a2a;
+    display: flex; align-items: center; padding: 0 12px; gap: 8px; flex-shrink: 0;
+  }
+  .topbar .logo { font-size: 13px; font-weight: 600; color: #8b5cf6; }
+  .icon-btn { width: 28px; height: 28px; border-radius: 5px; background: #1e1e1e; border: 1px solid #2a2a2a; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 14px; color: #8b5cf6; }
+
+  .layout { display: flex; flex: 1; overflow: hidden; }
+
+  .sidebar { width: 230px; background: #111; border-right: 1px solid #222; display: flex; flex-direction: column; flex-shrink: 0; opacity: 0.3; filter: blur(1px); }
+  .sidebar-head { padding: 10px; border-bottom: 1px solid #1e1e1e; }
+  .btn-open { width: 100%; padding: 7px 10px; background: #8b5cf6; color: #fff; border: none; border-radius: 6px; font-size: 12px; font-weight: 600; }
+  .sidebar-label { font-size: 10px; color: #444; text-transform: uppercase; letter-spacing: 1px; padding: 10px 12px 4px; }
+  .folder-item { padding: 7px 12px; }
+  .folder-item .fname { font-size: 12px; color: #555; }
+  .folder-item .fmeta { font-size: 10px; color: #333; margin-top: 2px; }
+
+  .settings-main { flex: 1; display: flex; overflow: hidden; }
+
+  .settings-nav { width: 180px; background: #111; border-right: 1px solid #1e1e1e; padding: 16px 0; flex-shrink: 0; }
+  .settings-nav-title { font-size: 11px; color: #555; text-transform: uppercase; letter-spacing: 1px; padding: 0 14px 10px; }
+  .nav-item { padding: 7px 14px; font-size: 12px; color: #777; cursor: pointer; display: flex; align-items: center; gap: 8px; border-left: 2px solid transparent; }
+  .nav-item:hover { background: #1a1a1a; color: #ccc; }
+  .nav-item.active { background: #1a1a2e; color: #a78bfa; border-left-color: #8b5cf6; font-weight: 600; }
+  .nav-sep { border: none; border-top: 1px solid #1e1e1e; margin: 8px 14px; }
+
+  .settings-content { flex: 1; overflow-y: auto; padding: 24px 32px; }
+  .settings-section { margin-bottom: 28px; }
+  .section-title { font-size: 15px; font-weight: 700; color: #e0e0e0; margin-bottom: 4px; }
+  .section-subtitle { font-size: 12px; color: #555; margin-bottom: 16px; }
+
+  .settings-group { background: #111; border: 1px solid #1e1e1e; border-radius: 10px; overflow: hidden; }
+  .setting-row { display: flex; align-items: center; padding: 12px 16px; border-bottom: 1px solid #181818; gap: 12px; }
+  .setting-row.col { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .setting-row:last-child { border-bottom: none; }
+  .setting-info { flex: 1; }
+  .setting-label { font-size: 13px; color: #ccc; font-weight: 500; }
+  .setting-desc { font-size: 11px; color: #555; margin-top: 2px; }
+
+  .toggle { width: 36px; height: 20px; background: #333; border-radius: 10px; position: relative; cursor: pointer; flex-shrink: 0; transition: background .2s; }
+  .toggle.on { background: #8b5cf6; }
+  .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .2s; }
+  .toggle.on::after { left: 18px; }
+
+  .tag { font-size: 10px; padding: 2px 6px; border-radius: 3px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; }
+  .tag.global { background: #1e1e2e; color: #8b5cf6; }
+
+  /* ── Dynamic slider block ── */
+  .ctx-slider-block { width: 100%; }
+
+  .model-ctx-row {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+    padding: 8px 12px; background: #0f0f1a; border: 1px solid #2d1b69;
+    border-radius: 8px;
+  }
+  .model-ctx-row .model-name { font-size: 12px; color: #a78bfa; font-weight: 600; }
+  .model-ctx-row .model-max { font-size: 11px; color: #555; margin-left: auto; }
+  .model-ctx-row .model-max span { color: #8b5cf6; font-weight: 600; }
+
+  .slider-full { width: 100%; }
+  .slider-labels { display: flex; justify-content: space-between; font-size: 10px; color: #555; margin-bottom: 4px; }
+  .slider-labels .lbl-current { color: #a78bfa; font-weight: 600; }
+
+  input[type=range].ctx-range {
+    -webkit-appearance: none; width: 100%; height: 5px;
+    border-radius: 3px; outline: none; cursor: pointer;
+    background: linear-gradient(to right, #8b5cf6 25%, #2a2a2a 25%);
+  }
+  input[type=range].ctx-range::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 16px; height: 16px;
+    border-radius: 50%; background: #8b5cf6; cursor: pointer;
+    box-shadow: 0 0 0 3px rgba(139,92,246,.25);
+  }
+
+  .ctx-ticks { display: flex; justify-content: space-between; margin-top: 6px; }
+  .ctx-tick { font-size: 10px; color: #444; text-align: center; }
+  .ctx-tick.highlight { color: #8b5cf6; }
+
+  /* ── Model comparison table ── */
+  .model-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+  .model-table th { text-align: left; color: #555; font-size: 10px; text-transform: uppercase; letter-spacing: .5px; padding: 6px 10px; border-bottom: 1px solid #1e1e1e; }
+  .model-table td { padding: 8px 10px; border-bottom: 1px solid #161616; color: #999; }
+  .model-table tr:last-child td { border-bottom: none; }
+  .model-table .provider { color: #ccc; font-weight: 500; }
+  .model-table .ctx-val { color: #8b5cf6; font-weight: 600; font-family: monospace; }
+  .model-table .ctx-bar-wrap { width: 100px; }
+  .ctx-mini-bar { height: 4px; border-radius: 2px; background: #8b5cf6; }
+  .model-table tr.active-row td { background: #0f0f1a; }
+  .model-table .active-badge { font-size: 9px; background: #2d1b69; color: #a78bfa; padding: 1px 5px; border-radius: 3px; font-weight: 600; margin-left: 6px; }
+
+  /* warning */
+  .warn-box { background: #1a1200; border: 1px solid #78550f; border-radius: 7px; padding: 8px 12px; font-size: 11px; color: #d97706; display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; }
+
+  /* token reserved */
+  .slider-wrap-inline { display: flex; align-items: center; gap: 10px; }
+  .setting-slider-sm {
+    -webkit-appearance: none; width: 100px; height: 4px;
+    background: linear-gradient(to right, #60a5fa 40%, #333 40%);
+    border-radius: 2px; outline: none; cursor: pointer;
+  }
+  .setting-slider-sm::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; background: #60a5fa; cursor: pointer; }
+  .slider-val { font-size: 11px; color: #60a5fa; min-width: 45px; text-align: right; }
+
+  .select-sm { background: #1a1a1a; border: 1px solid #2a2a2a; color: #ccc; padding: 4px 8px; border-radius: 5px; font-size: 11px; outline: none; }
+
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="logo">◈ openagent</span>
+  <span style="font-size:11px;color:#555;">Paramètres</span>
+  <span style="flex:1"></span>
+  <div class="icon-btn">✕</div>
+</div>
+
+<div class="layout">
+  <div class="sidebar">
+    <div class="sidebar-head"><button class="btn-open">📂 Ouvrir un dossier</button></div>
+    <div class="sidebar-label">Historique</div>
+    <div class="folder-item"><div class="fname">mon-projet</div><div class="fmeta">il y a 2 min</div></div>
+    <div class="folder-item"><div class="fname">openagenticskyzer</div><div class="fmeta">hier</div></div>
+  </div>
+
+  <div class="settings-main">
+    <div class="settings-nav">
+      <div class="settings-nav-title">Paramètres</div>
+      <div class="nav-item">🌐 Général</div>
+      <div class="nav-item active">🧠 Contexte & Mémoire</div>
+      <div class="nav-item">🔒 Permissions</div>
+      <div class="nav-item">🎨 Apparence</div>
+      <hr class="nav-sep">
+      <div class="settings-nav-title" style="padding-top:8px">Dossier actif</div>
+      <div class="nav-item">📁 /mon-projet</div>
+      <div class="nav-item">🤖 Modèles</div>
+      <div class="nav-item">📝 Contexte dossier</div>
+      <hr class="nav-sep">
+      <div class="nav-item" style="color:#f87171">⚠️ Danger</div>
+    </div>
+
+    <div class="settings-content">
+
+      <!-- Limite de contexte -->
+      <div class="settings-section">
+        <div class="section-title">Contexte &amp; Mémoire <span class="tag global">global</span></div>
+        <div class="section-subtitle">Fenêtre de contexte, limite personnalisée et compression automatique</div>
+
+        <div class="settings-group">
+
+          <!-- Slider dynamique -->
+          <div class="setting-row col">
+            <div class="setting-info">
+              <div class="setting-label">Limite de contexte</div>
+              <div class="setting-desc">Plafond de tokens envoyés à l'IA — le max s'adapte au modèle actif</div>
+            </div>
+
+            <!-- Modèle actif détecté -->
+            <div class="model-ctx-row" style="width:100%">
+              <span>🤖</span>
+              <span class="model-name">qwen2.5-coder (ollama)</span>
+              <span style="font-size:11px;color:#4ade80;margin-left:6px;">● actif</span>
+              <span class="model-max">Max réel : <span>32 000</span> tokens</span>
+            </div>
+
+            <!-- Slider -->
+            <div class="ctx-slider-block">
+              <div class="slider-labels">
+                <span>2 000</span>
+                <span class="lbl-current">▲ 16 000 tokens sélectionnés</span>
+                <span>32 000 ⚠️ RAM</span>
+              </div>
+              <input type="range" class="ctx-range" min="2000" max="32000" value="16000"
+                oninput="updateSlider(this)">
+              <div class="ctx-ticks">
+                <span class="ctx-tick">2K</span>
+                <span class="ctx-tick">8K</span>
+                <span class="ctx-tick highlight">16K ◀</span>
+                <span class="ctx-tick">24K</span>
+                <span class="ctx-tick">32K</span>
+              </div>
+            </div>
+
+            <!-- Avertissement Ollama -->
+            <div class="warn-box" style="width:100%">
+              ⚠️ <span><strong>Ollama :</strong> le contexte réel dépend de ta VRAM/RAM. Dépasser ta capacité matérielle peut faire planter ou ralentir fortement le modèle. Vérifie avec <code style="background:#222;padding:1px 4px;border-radius:3px">ollama ps</code>.</span>
+            </div>
+          </div>
+
+          <!-- Tokens réservés réponse -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-label">Tokens réservés pour la réponse</div>
+              <div class="setting-desc">Toujours garder cet espace libre pour la génération</div>
+            </div>
+            <div class="slider-wrap-inline">
+              <input type="range" class="setting-slider-sm" min="512" max="8192" value="2048">
+              <div class="slider-val">2 048</div>
+            </div>
+          </div>
+
+          <!-- Auto-compact -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-label">Auto-compact</div>
+              <div class="setting-desc">Compresse l'historique automatiquement avant d'atteindre la limite</div>
+            </div>
+            <div class="toggle on"></div>
+          </div>
+
+          <!-- Seuil auto-compact -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-label">Seuil d'auto-compact</div>
+              <div class="setting-desc">Se déclenche quand l'utilisation dépasse ce % de ta limite définie</div>
+            </div>
+            <div class="slider-wrap-inline">
+              <input type="range" class="setting-slider-sm" min="40" max="95" value="70"
+                style="background:linear-gradient(to right,#60a5fa 58%,#333 58%)">
+              <div class="slider-val">70%</div>
+            </div>
+          </div>
+
+          <!-- Afficher jauge -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-label">Afficher la jauge de contexte</div>
+              <div class="setting-desc">Barre visible en bas du chat avec % utilisé et bouton compact</div>
+            </div>
+            <div class="toggle on"></div>
+          </div>
+
+          <!-- Rétention -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-label">Rétention des sessions</div>
+              <div class="setting-desc">Durée de conservation de l'historique par dossier</div>
+            </div>
+            <select class="select-sm">
+              <option>7 jours</option>
+              <option selected>30 jours</option>
+              <option>90 jours</option>
+              <option>Indéfiniment</option>
+            </select>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Tableau comparatif des modèles -->
+      <div class="settings-section">
+        <div class="section-title" style="font-size:13px">Contexte max par provider</div>
+        <div class="section-subtitle">Référence — le slider s'adapte automatiquement au modèle actif</div>
+
+        <div class="settings-group" style="padding: 4px 0">
+          <table class="model-table">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Modèle</th>
+                <th>Max tokens</th>
+                <th style="width:110px">Proportion</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="provider">Gemini</td>
+                <td style="color:#555">gemini-2.5-pro</td>
+                <td class="ctx-val">1 000 000</td>
+                <td class="ctx-bar-wrap"><div class="ctx-mini-bar" style="width:100%;background:#4ade80"></div></td>
+              </tr>
+              <tr>
+                <td class="provider">Groq</td>
+                <td style="color:#555">kimi-k2-instruct</td>
+                <td class="ctx-val">128 000</td>
+                <td class="ctx-bar-wrap"><div class="ctx-mini-bar" style="width:13%"></div></td>
+              </tr>
+              <tr>
+                <td class="provider">Together</td>
+                <td style="color:#555">Qwen3-Coder</td>
+                <td class="ctx-val">128 000</td>
+                <td class="ctx-bar-wrap"><div class="ctx-mini-bar" style="width:13%"></div></td>
+              </tr>
+              <tr>
+                <td class="provider">Mistral</td>
+                <td style="color:#555">codestral-latest</td>
+                <td class="ctx-val">32 000</td>
+                <td class="ctx-bar-wrap"><div class="ctx-mini-bar" style="width:3.2%"></div></td>
+              </tr>
+              <tr>
+                <td class="provider">OpenRouter</td>
+                <td style="color:#555">variable</td>
+                <td class="ctx-val">variable</td>
+                <td class="ctx-bar-wrap"><div class="ctx-mini-bar" style="width:50%;background:#555"></div></td>
+              </tr>
+              <tr class="active-row">
+                <td class="provider">Ollama <span class="active-badge">ACTIF</span></td>
+                <td style="color:#a78bfa">qwen2.5-coder</td>
+                <td class="ctx-val">32 000 ⚠️</td>
+                <td class="ctx-bar-wrap"><div class="ctx-mini-bar" style="width:3.2%;background:#a78bfa"></div></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+function updateSlider(el) {
+  const val = parseInt(el.value);
+  const max = parseInt(el.max);
+  const pct = (val / max * 100).toFixed(1);
+  el.style.background = `linear-gradient(to right, #8b5cf6 ${pct}%, #2a2a2a ${pct}%)`;
+}
+</script>
+</body>
+</html>

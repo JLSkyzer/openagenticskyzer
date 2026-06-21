@@ -44,6 +44,7 @@ def build_agent(mode: str = "auto", max_tokens: int | None = None, permission_ma
         permission_manager=permission_manager,
         lmstudio_compat=(provider == "lmstudio"),
         cwd=cwd,
+        provider=provider or "",
     )
 
 

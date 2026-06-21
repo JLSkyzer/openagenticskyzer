@@ -6,8 +6,8 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END
 
-from openagentic_ai.graph.nodes import make_agent_node, route_after_agent
-from openagentic_ai.graph.state import AgentState
+from openagenticskyzer.graph.nodes import make_agent_node, route_after_agent
+from openagenticskyzer.graph.state import AgentState
 
 
 # ---------------------------------------------------------------------------

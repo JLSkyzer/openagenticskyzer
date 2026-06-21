@@ -3,7 +3,7 @@ import json
 import tempfile
 from pathlib import Path
 import pytest
-from openagentic_ai.app.storage import (
+from openagenticskyzer.app.storage import (
     load_global_config, save_global_config,
     load_folder_config, save_folder_config,
     add_folder_to_index, load_folder_index,

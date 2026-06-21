@@ -32,7 +32,11 @@ ollama    = ["langchain-ollama"]
 langfuse  = ["langfuse>=2.0.0"]
 app = [
     "nicegui>=1.4",
-    "pywebview>=4.0",
+    "pywebview>=4.0,<6",
+    "pystray>=0.19",
+    "pillow>=10.0",
+    "huggingface_hub>=0.23",
+    "hf_transfer>=0.1.6",
 ]
 all = [
     "langchain-together",
@@ -43,12 +47,16 @@ all = [
     "langchain-ollama",
     "langfuse>=2.0.0",
     "nicegui>=1.4",
-    "pywebview>=4.0",
+    "pywebview>=4.0,<6",
+    "pystray>=0.19",
+    "pillow>=10.0",
+    "huggingface_hub>=0.23",
+    "hf_transfer>=0.1.6",
 ]
 
 [project.scripts]
-openagent = "openagentic_ai.agent:main"
+openagent = "openagenticskyzer.agent:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["openagentic_ai*"]
+include = ["openagenticskyzer*"]

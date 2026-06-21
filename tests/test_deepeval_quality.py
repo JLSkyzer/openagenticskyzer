@@ -18,10 +18,10 @@ from deepeval.metrics import GEval, AnswerRelevancyMetric
 from deepeval.metrics.g_eval import GEvalMetric  # noqa: F401 – import optionnel
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 
-from openagentic_ai.utils.utils import mode_router
-from openagentic_ai.prompts.prompt import DEEP_AGENT_SYSTEM_PROMPT
-from openagentic_ai.context.messages import trim_message_history, clean_messages
-from openagentic_ai.graph.nodes import make_agent_node, route_after_agent
+from openagenticskyzer.utils.utils import mode_router
+from openagenticskyzer.prompts.prompt import DEEP_AGENT_SYSTEM_PROMPT
+from openagenticskyzer.context.messages import trim_message_history, clean_messages
+from openagenticskyzer.graph.nodes import make_agent_node, route_after_agent
 
 
 # ---------------------------------------------------------------------------

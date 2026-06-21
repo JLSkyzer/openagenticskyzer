@@ -31,7 +31,7 @@ openagent "add a dark mode toggle to the navbar"
 
 ## Features
 
-- **Multi-provider** — bring your own API key (Together, Groq, Mistral, Gemini, OpenRouter)
+- **Multi-provider** — cloud (Together, Groq, Mistral, Gemini, OpenRouter) or fully local (Ollama, LM Studio, llama.cpp)
 - **Full file access** — create, read, edit, delete files and directories
 - **Shell execution** — run any command directly in your project folder
 - **Codebase search** — glob patterns, regex grep across all files
@@ -123,6 +123,8 @@ openagent --mode plan "migrate the database to PostgreSQL"
 | Gemini | `gemini-2.5-pro-preview-03-25` |
 | OpenRouter | `kwaipilot/kat-coder-pro-v2` |
 | Ollama | `qwen2.5-coder` (set via `OLLAMA_MODEL`) |
+| LM Studio | any loaded model (via `localhost:1234`) |
+| llama.cpp | any local GGUF — downloaded from in-app catalogue |
 
 Override the model for any provider:
 
@@ -162,7 +164,14 @@ OPENROUTER_API_KEY=
 # Ollama (local — no API key needed)
 # Set OLLAMA_MODEL to activate Ollama as provider
 OLLAMA_MODEL=qwen2.5-coder
-OLLAMA_BASE_URL=http://localhost:11434   # optional, default shown
+OLLAMA_BASE_URL=http://localhost:11434       # optional, default shown
+
+# LM Studio (local — start server first: lms server start)
+LMSTUDIO_BASE_URL=http://localhost:1234/v1  # optional, default shown
+
+# llama.cpp (local — server starts automatically on first use)
+# No env var needed — model selected from in-app catalogue
+# LLAMACPP_PORT is hardcoded to 8080
 
 # Optional: override default model per provider
 TOGETHER_MODEL=
@@ -184,10 +193,70 @@ PEXELS_API_KEY=        # https://www.pexels.com/api/
 
 ---
 
+## Local AI — llama.cpp (no API key, no external server)
+
+`llama.cpp` runs GGUF models directly in Python via a built-in OpenAI-compatible server.  
+Models are downloaded from HuggingFace and stored in `~/.openagenticskyzer/models/`.
+
+### Install — CPU only
+
+Works out of the box, no extra drivers needed:
+
+```cmd
+pip install llama-cpp-python
+```
+
+### Install — GPU (NVIDIA, recommended for RTX cards)
+
+Requires the **CUDA Toolkit** (not just the driver). Check if `nvcc` is already available:
+
+```cmd
+nvcc --version
+```
+
+**If nvcc is found** — compile with CUDA:
+
+```cmd
+:: Windows CMD
+set CMAKE_ARGS=-DGGML_CUDA=on
+pip install llama-cpp-python --force-reinstall --no-cache-dir
+```
+
+```powershell
+# PowerShell
+$env:CMAKE_ARGS="-DGGML_CUDA=on"
+pip install llama-cpp-python --force-reinstall --no-cache-dir
+```
+
+> This compilation takes 5–15 minutes. Do not interrupt it.
+
+**If nvcc is not found** — install the CUDA Toolkit first:  
+→ [developer.nvidia.com/cuda-downloads](https://developer.nvidia.com/cuda-downloads)  
+Choose your Windows version, select **runfile** or **exe (local)**, install, then reopen CMD and retry.
+
+### Verify GPU support
+
+After installing, check that the CUDA backend loaded:
+
+```python
+from llama_cpp import llama_backend_init
+# No error = CPU build
+# Check logs for "BLAS = 1" or "CUDA" when loading a model
+```
+
+### Usage
+
+Once installed, open the desktop app (`--app`), go to the model picker, select **llama.cpp**, download a model from the catalogue, then select it. The server starts automatically on port 8080 when you send your first message.
+
+> **Quantization:** the app downloads Q4\_K\_M by default — best balance of quality and speed.  
+> With 8 GB VRAM (e.g. RTX 4060), 7–8B models run fully on GPU. 14B runs mixed GPU/CPU.
+
+---
+
 ## Requirements
 
 - Python >= 3.10
-- A valid API key for at least one supported provider (see install extras above)
+- A valid API key for at least one supported provider, **or** Ollama / LM Studio / llama.cpp running locally
 
 ---
 

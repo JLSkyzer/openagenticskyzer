@@ -27,6 +27,7 @@ def build_graph(
     permission_manager=None,
     lmstudio_compat: bool = False,
     cwd: str | None = None,
+    provider: str = "",
 ):
     """Build and compile the LangGraph agent graph.
 
@@ -36,7 +37,7 @@ def build_graph(
                                   → [ok] → END
     """
     bound_model = model.bind_tools(tools)
-    agent_node = make_agent_node(bound_model, system_prompt, max_history, max_tokens, lmstudio_compat, cwd=cwd)
+    agent_node = make_agent_node(bound_model, system_prompt, max_history, max_tokens, lmstudio_compat, cwd=cwd, provider=provider)
     reasoning_node = make_reasoning_node(model)
     critique_node = make_critique_node(model)
 

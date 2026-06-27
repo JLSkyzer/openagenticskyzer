@@ -1395,27 +1395,79 @@ def open_model_modal():
                 with ui.column().classes("gap-2 p-1"):
                     prov_select = ui.select(
                         ["together", "groq", "mistral", "gemini", "openrouter"],
-                        label="Provider", value="groq"
+                        label="Provider", value="openrouter"
                     ).classes("w-full text-xs")
+
+                    key_hint = ui.label("").classes("text-xs text-gray-500 italic")
                     api_input = ui.input(label="Clé API").classes("w-full text-xs")
-                    model_input = ui.input(label="Modèle (optionnel)").classes("w-full text-xs")
+                    model_input = ui.input(label="Modèle").classes("w-full text-xs")
+                    model_hint = ui.label("").classes("text-xs text-gray-500 italic")
+
+                    def _update_cloud_hints():
+                        prov = prov_select.value or ""
+                        env_key_name = f"{prov.upper()}_API_KEY"
+                        has_key = bool(os.environ.get(env_key_name, "").strip())
+                        if has_key:
+                            key_hint.set_text(f"✅ Clé {prov} déjà configurée — laisser vide pour conserver")
+                        else:
+                            key_hint.set_text(f"Clé API {prov} requise")
+                        if prov == "openrouter":
+                            existing = os.environ.get("OPENROUTER_MODEL", "").strip()
+                            if existing:
+                                mlist = [m.strip() for m in existing.split(",") if m.strip()]
+                                model_hint.set_text(f"Modèles existants : {', '.join(mlist)}")
+                            else:
+                                model_hint.set_text("Aucun modèle OpenRouter configuré")
+                        else:
+                            model_hint.set_text("")
+
+                    prov_select.on_value_change(lambda _: _update_cloud_hints())
+                    _update_cloud_hints()
 
                     def _save_provider():
                         provider = prov_select.value
-                        env_key = f"{provider.upper()}_API_KEY"
-                        env_model = f"{provider.upper()}_MODEL"
+                        env_key_name = f"{provider.upper()}_API_KEY"
+                        env_model_name = f"{provider.upper()}_MODEL"
                         env_path = (
                             f"{state.active_folder}/.env"
                             if state.active_folder
                             else str(pathlib.Path.home() / ".env")
                         )
-                        with open(env_path, "a", encoding="utf-8") as f:
-                            f.write(f"\n{env_key}={api_input.value}\n")
-                            if model_input.value:
-                                f.write(f"{env_model}={model_input.value}\n")
-                        os.environ[env_key] = api_input.value
-                        if model_input.value:
-                            os.environ[env_model] = model_input.value
+                        new_key = api_input.value.strip()
+                        new_model = model_input.value.strip()
+
+                        # Clé : obligatoire seulement si pas déjà en env
+                        existing_key = os.environ.get(env_key_name, "").strip()
+                        if not new_key and not existing_key:
+                            ui.notify(f"Clé API requise pour {provider}.", type="warning")
+                            return
+
+                        lines: list[str] = []
+                        if new_key:
+                            lines.append(f"{env_key_name}={new_key}")
+                            os.environ[env_key_name] = new_key
+
+                        if new_model:
+                            if provider == "openrouter":
+                                # Append à la liste CSV des modèles OpenRouter
+                                existing_models = os.environ.get("OPENROUTER_MODEL", "").strip()
+                                combined_raw = f"{existing_models},{new_model}" if existing_models else new_model
+                                seen: list[str] = []
+                                for m in combined_raw.split(","):
+                                    m = m.strip()
+                                    if m and m not in seen:
+                                        seen.append(m)
+                                combined = ",".join(seen)
+                                lines.append(f"OPENROUTER_MODEL={combined}")
+                                os.environ["OPENROUTER_MODEL"] = combined
+                            else:
+                                lines.append(f"{env_model_name}={new_model}")
+                                os.environ[env_model_name] = new_model
+
+                        if lines:
+                            with open(env_path, "a", encoding="utf-8") as f:
+                                f.write("\n" + "\n".join(lines) + "\n")
+
                         ui.notify(f"{provider} configuré !", type="positive")
                         dlg.close()
 

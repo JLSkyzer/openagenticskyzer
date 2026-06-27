@@ -59,39 +59,42 @@ _SCROLL_JS = """
 <script>
 (function(){
   window._oaAutoScroll = true;
+  window._oaRefreshing = false;
   var _scrollTimer;
 
+  function updateBtn(atBottom) {
+    var b = document.getElementById('oa-scroll-btn');
+    if (b) b.style.display = atBottom ? 'none' : 'flex';
+  }
+
   function setup(){
-    var s = document.querySelector('.q-scrollarea__container');
-    var btn = document.getElementById('oa-scroll-btn');
-    if (!s || !btn) { setTimeout(setup, 400); return; }
+    var s = document.querySelector('.oa-chat-scroll .q-scrollarea__container');
+    if (!s) { setTimeout(setup, 400); return; }
 
     // Scroll initial en bas
     s.scrollTop = s.scrollHeight;
-
-    // Bouton ↓ : revenir en bas + reprendre l'auto-scroll
-    btn.onclick = function(){
-      window._oaAutoScroll = true;
-      s.scrollTop = s.scrollHeight;
-      btn.style.display = 'none';
-    };
+    updateBtn(true);
 
     // Suivi du scroll utilisateur
+    // (ignore si DOM en cours de rebuild : scrollHeight très petit)
     s.addEventListener('scroll', function(){
+      if (window._oaRefreshing || s.scrollHeight < 200) return;
       var atBottom = s.scrollTop + s.clientHeight >= s.scrollHeight - 80;
-      btn.style.display = atBottom ? 'none' : 'flex';
+      updateBtn(atBottom);
       window._oaAutoScroll = atBottom;
     });
 
-    // Auto-scroll quand le contenu change (nouveau message IA)
-    // — seulement si l'utilisateur est déjà en bas
-    var target = s.firstElementChild || s;
+    // Auto-scroll sur nouveau contenu — observe le conteneur directement
     var observer = new MutationObserver(function(){
-      if (!window._oaAutoScroll) return;
+      if (!window._oaAutoScroll || window._oaRefreshing) return;
       clearTimeout(_scrollTimer);
-      _scrollTimer = setTimeout(function(){ s.scrollTop = s.scrollHeight; }, 40);
+      _scrollTimer = setTimeout(function(){
+        if (window._oaAutoScroll && !window._oaRefreshing) {
+          s.scrollTop = s.scrollHeight;
+        }
+      }, 80);
     });
-    observer.observe(target, { childList: true, subtree: true });
+    observer.observe(s, { childList: true, subtree: true });
   }
 
   document.addEventListener('DOMContentLoaded', function(){ setTimeout(setup, 600); });
@@ -283,6 +286,26 @@ def main_page(client: Client):
                 render_context_bar()
                 render_input_bar()
 
+        def _scroll_chat_to_bottom():
+            try:
+                scroll.scroll_to(percent=100)
+            except Exception:
+                pass
+            ui.run_javascript("""
+            const root = document.querySelector('.oa-chat-scroll');
+            const el = root?.querySelector('.q-scrollarea__container') || root?.querySelector('.q-scrollarea') || document.querySelector('.q-scrollarea__container') || document.querySelector('.q-scrollarea');
+            if (el) {
+                el.scrollTop = el.scrollHeight;
+                setTimeout(() => { el.scrollTop = el.scrollHeight; }, 60);
+            }
+            """)
+
+        ui.button("↓", on_click=_scroll_chat_to_bottom).classes(
+            "fixed w-10 h-10 rounded-full bg-purple-600 hover:bg-purple-700 text-white font-bold"
+        ).style(
+            "z-index:30000;right:120px;bottom:94px;padding:0;box-shadow:0 8px 24px rgba(0,0,0,0.35);display:none"
+        ).props("id=oa-scroll-btn")
+
 
     # Timer en dehors de tout bloc with — pas de parent slot, ne peut pas être supprimé
     # Scroll initial en bas (backup Python si JS pas encore prêt)
@@ -293,11 +316,26 @@ def main_page(client: Client):
             pass
     ui.timer(0.8, _initial_scroll, once=True)
 
+    _SAVE_SCROLL_JS = (
+        "window._oaRefreshing=true;"
+        "var _sc=document.querySelector('.oa-chat-scroll .q-scrollarea__container');"
+        "window._oaSavedScroll=_sc?_sc.scrollTop:0;"
+    )
+    _RESTORE_SCROLL_JS = (
+        "window._oaRefreshing=false;"
+        "var _sc=document.querySelector('.oa-chat-scroll .q-scrollarea__container');"
+        "if(_sc){setTimeout(function(){"
+        "  if(window._oaAutoScroll){_sc.scrollTop=_sc.scrollHeight;}"
+        "  else{_sc.scrollTop=window._oaSavedScroll||0;}"
+        "},60);}"
+    )
+
     def _tick():
         try:
             if state.agent_running:
+                ui.run_javascript(_SAVE_SCROLL_JS)
                 chat_messages.refresh()
-                # scroll géré côté JS via MutationObserver (_oaAutoScroll)
+                ui.run_javascript(_RESTORE_SCROLL_JS)
             if state.downloads:
                 from openagenticskyzer.app.components.sidebar import downloads_panel
                 downloads_panel.refresh()
@@ -306,7 +344,7 @@ def main_page(client: Client):
         except Exception:
             pass
 
-    _t = ui.timer(0.1, _tick)
+    _t = ui.timer(0.5, _tick)
     client.on_disconnect(lambda: _t.cancel())
 
 
@@ -528,5 +566,10 @@ def _run_nicegui() -> None:
         title="openagent",
         reload=False,
         dark=True,
-        favicon="◈",
+        favicon="◈"
     )
+
+
+def main_app() -> None:
+    """Point d'entrée principal pour l'app GUI."""
+    launch_app()

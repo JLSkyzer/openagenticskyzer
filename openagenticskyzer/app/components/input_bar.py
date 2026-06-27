@@ -504,7 +504,8 @@ def render_input_bar():
             ).style(
                 "background:#1a1a1a;border:1px solid #2a2a2a;color:#e0e0e0;"
                 "min-height:40px;padding:8px 12px;overflow-y:auto;"
-                "overflow-wrap:break-word;word-break:break-word;resize:vertical"
+                "overflow-wrap:break-word;word-break:break-word;"
+                "resize:none"
             ).props("rows=2")
 
             model_button()
@@ -613,7 +614,7 @@ def render_input_bar():
             if curr != _prev_count[0]:
                 _prev_count[0] = curr
                 _attachments_display.refresh()
-        ui.timer(0.3, _poll_attachments)
+        ui.timer(0.8, _poll_attachments)
 
         ui.label("Entrée = envoyer · Shift+Entrée / Ctrl+Entrée = nouvelle ligne").classes("text-xs text-gray-700 px-1")
 
@@ -627,15 +628,18 @@ def render_input_bar():
 
         # JS : Enter seul = envoyer, Shift/Ctrl+Enter = saut de ligne
         # + word-wrap + resize vertical avec sauvegarde localStorage
+        # La fonction JS se ré-essaie jusqu'à trouver le DOM (évite le one-shot raté)
         def _setup_input_js():
             ui.run_javascript("""
-(function() {
+(function trySetup() {
     var col = document.querySelector('.oa-input-col');
-    if (!col || col._oaSetup) return;
-    col._oaSetup = true;
+    if (!col) { setTimeout(trySetup, 200); return; }
+    if (col._oaSetup) return;
 
     var ta = col.querySelector('textarea');
-    if (!ta) return;
+    if (!ta) { setTimeout(trySetup, 200); return; }
+
+    col._oaSetup = true;
 
     // Word wrap
     ta.style.overflowWrap = 'break-word';
@@ -667,4 +671,4 @@ def render_input_bar():
     });
 })();
 """)
-        ui.timer(0.25, _setup_input_js, once=True)
+        ui.timer(0.1, _setup_input_js, once=True)

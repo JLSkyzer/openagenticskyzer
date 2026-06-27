@@ -12,26 +12,28 @@ _TOOL_TAG_STYLES = {
 
 
 def _render_diff(diff_text: str):
-    """Affiche un unified diff avec lignes colorées (+vert, -rouge, @@ violet)."""
+    """Affiche un unified diff avec lignes colorées (+vert, -rouge, @@ violet) — scrollable."""
     with ui.element("div").style(
         "font-family:monospace;font-size:11px;line-height:1.5;"
-        "overflow-x:auto;padding:4px 8px;border-top:1px solid #1e1e1e"
+        "overflow-x:auto;overflow-y:auto;padding:4px 8px;border-top:1px solid #1e1e1e;"
+        "max-height:400px;background:#0a0a0a;border-radius:4px;border:1px solid #2a2a2a;"
+        "margin-top:4px"
     ):
         for line in diff_text.splitlines():
             if line.startswith("+++") or line.startswith("---"):
-                ui.label(line).style("color:#6b7280;white-space:pre")
+                ui.label(line).style("color:#6b7280;white-space:pre;display:block")
             elif line.startswith("@@"):
-                ui.label(line).style("color:#7c3aed;white-space:pre")
+                ui.label(line).style("color:#7c3aed;white-space:pre;display:block;font-weight:bold")
             elif line.startswith("+"):
                 ui.label(line).style(
-                    "color:#4ade80;background:#052e16;display:block;white-space:pre"
+                    "color:#4ade80;background:#052e16;display:block;white-space:pre;padding:2px 4px"
                 )
             elif line.startswith("-"):
                 ui.label(line).style(
-                    "color:#f87171;background:#2d0a0a;display:block;white-space:pre"
+                    "color:#f87171;background:#2d0a0a;display:block;white-space:pre;padding:2px 4px"
                 )
             else:
-                ui.label(line).style("color:#6b7280;white-space:pre")
+                ui.label(line).style("color:#9ca3af;white-space:pre;display:block;padding:0px 4px")
 
 
 def _render_message(msg: ChatMessage):
@@ -107,18 +109,22 @@ def _resolve(allow: bool, always: bool = False):
 
 @ui.refreshable
 def chat_messages():
+    """Rendu des messages du chat — se recrée intelligemment."""
     if not state.messages and not state.agent_running:
         with ui.column().classes("flex-1 items-center justify-center"):
             ui.label("◈ openagent").classes("text-2xl font-bold text-purple-500")
             ui.label("Ouvre un dossier pour commencer.").classes("text-xs text-gray-600 mt-1")
         return
 
+    # Messages finalisés
     for msg in state.messages:
         _render_message(msg)
 
+    # Messages en cours (live_log + streaming)
     if state.agent_running:
         for msg in state.live_log:
             _render_message(msg)
+        
         if state.is_streaming and state.streaming_content:
             # Affichage streaming token par token
             with ui.row().classes("w-full gap-2"):
@@ -139,6 +145,7 @@ def chat_messages():
                 ui.html('<div class="typing-dots"><span></span><span></span><span></span></div>')
                 if state.live_tokens > 0:
                     ui.label(f"{state.live_tokens} tokens").classes("text-xs text-gray-600 ml-1")
+    
     ui.run_javascript("if(typeof applyHighlight==='function') setTimeout(applyHighlight, 150)")
 
 
@@ -146,20 +153,11 @@ def render_chat():
     with ui.element("div").style(
         "flex:1 1 0;min-height:0;position:relative;display:flex;flex-direction:column;overflow:hidden"
     ):
-        with ui.scroll_area().classes("w-full").style("flex:1 1 0;background:#0d0d0d") as scroll:
+        with ui.scroll_area().classes("w-full oa-chat-scroll").style(
+            "flex:1 1 0;background:#0d0d0d"
+        ) as scroll:
             with ui.column().classes("w-full gap-3 p-5"):
                 chat_messages()
                 permission_banner()
-
-        # Bouton flottant scroll-to-bottom (visible uniquement quand pas en bas)
-        ui.html(
-            '<button id="oa-scroll-btn" title="Aller en bas"'
-            ' onclick="(function(){var s=document.querySelector(\'.q-scrollarea__container\');'
-            'if(s)s.scrollTop=s.scrollHeight;})()"'
-            ' style="display:none;position:absolute;bottom:10px;right:10px;z-index:20;'
-            'width:28px;height:28px;border-radius:50%;background:#7c3aed;color:#fff;'
-            'border:none;cursor:pointer;font-size:14px;align-items:center;'
-            'justify-content:center;box-shadow:0 2px 8px #0008">↓</button>'
-        )
 
     return scroll

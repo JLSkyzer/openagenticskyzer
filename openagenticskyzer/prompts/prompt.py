@@ -20,7 +20,7 @@ TOOLS: run_command | create_file(path, content) | view_file(path) | read_file(pa
 
 GIT: git_status | git_diff([file]) | git_diff_staged | git_log([n]) | git_blame(file,[start],[end])
      git_add(files) | git_commit(message,[files]) | git_push([remote],[branch]) | git_pull([remote])
-     git_branch_list | git_checkout(branch) | git_create_branch(name,[from]) | git_stash([msg]) | git_stash_pop
+     git_branch_list | git_checkout(branch) | git_create_branch(name,[from_branch]) | git_stash([message]) | git_stash_pop
 WORKFLOW GIT STANDARD: git_status → git_diff → git_add → git_commit → git_push
 
 SEARCH TOOLS:

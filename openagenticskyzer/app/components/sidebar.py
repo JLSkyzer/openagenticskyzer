@@ -1,5 +1,6 @@
 """Left sidebar — folder history and open-folder button."""
 import os
+import subprocess
 from pathlib import Path
 from nicegui import ui, run
 
@@ -37,7 +38,44 @@ def activate_folder(folder_path: str):
     except Exception:
         pass
     sidebar_list.refresh()
+    _git_branch_widget.refresh()
     ui.notify(f"Dossier ouvert : {Path(folder_path).name}", type="positive")
+
+
+@ui.refreshable
+def _git_branch_widget():
+    """Affiche la branche git courante + statut dirty/clean du dossier actif."""
+    if not state.active_folder:
+        return
+    try:
+        creationflags = 0x08000000 if os.name == "nt" else 0
+        branch_result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=state.active_folder,
+            capture_output=True,
+            text=True,
+            timeout=3,
+            creationflags=creationflags,
+        )
+        if branch_result.returncode != 0:
+            return
+        branch = branch_result.stdout.strip()
+        if not branch:
+            return
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=state.active_folder,
+            capture_output=True,
+            text=True,
+            timeout=3,
+            creationflags=creationflags,
+        )
+        is_dirty = bool(status_result.stdout.strip())
+        indicator = " ●" if is_dirty else " ✓"
+        color = "text-yellow-400" if is_dirty else "text-green-400"
+        ui.label(f"⎇ {branch}{indicator}").classes(f"text-xs {color} px-3 py-1 font-mono")
+    except Exception:
+        pass
 
 
 @ui.refreshable
@@ -134,6 +172,8 @@ def render_sidebar():
             ui.button("📂 Ouvrir un dossier", on_click=open_folder_prompt).classes(
                 "w-full bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-lg"
             )
+
+        _git_branch_widget()
 
         ui.label("Historique des dossiers").classes(
             "text-xs text-gray-600 uppercase tracking-widest px-3 pt-2 pb-1"

@@ -1,4 +1,5 @@
 """Left sidebar — folder history and open-folder button."""
+import asyncio
 import os
 import subprocess
 from pathlib import Path
@@ -39,43 +40,92 @@ def activate_folder(folder_path: str):
         pass
     sidebar_list.refresh()
     _git_branch_widget.refresh()
+    _schedule_git_status_refresh(folder_path)
     ui.notify(f"Dossier ouvert : {Path(folder_path).name}", type="positive")
+
+
+# Cache clé = chemin du dossier -> (branche, is_dirty). Alimenté hors event loop
+# par _fetch_git_status_sync (via run.io_bound) puis lu de façon purement
+# synchrone par le refreshable _git_branch_widget.
+_GIT_STATUS_CACHE: dict[str, tuple[str, bool]] = {}
+
+
+def _run_git(args: list[str], cwd: str) -> subprocess.CompletedProcess:
+    """Exécute une commande git dans `cwd`, sans fenêtre console sur Windows.
+
+    Appel bloquant : à n'utiliser que depuis un thread worker (run.io_bound).
+    """
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=3,
+        creationflags=0x08000000 if os.name == "nt" else 0,
+    )
+
+
+def _fetch_git_status_sync(folder: str) -> tuple[str, bool] | None:
+    """Travail bloquant (branche + dirty/clean) — exécuté dans un thread worker."""
+    try:
+        branch_result = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], folder)
+        if branch_result.returncode != 0:
+            return None
+        branch = branch_result.stdout.strip()
+        if not branch:
+            return None
+        status_result = _run_git(["status", "--porcelain"], folder)
+        is_dirty = bool(status_result.stdout.strip())
+        return branch, is_dirty
+    except Exception:
+        return None
+
+
+async def _refresh_git_status(folder: str):
+    """Récupère le statut git hors event loop (run.io_bound), puis rafraîchit le widget."""
+    if not folder:
+        return
+    result = await run.io_bound(_fetch_git_status_sync, folder)
+    if folder != state.active_folder:
+        return  # le dossier actif a changé pendant l'appel — résultat obsolète
+    if result is None:
+        _GIT_STATUS_CACHE.pop(folder, None)
+    else:
+        _GIT_STATUS_CACHE[folder] = result
+    _git_branch_widget.refresh()
+
+
+def _schedule_git_status_refresh(folder: str):
+    """Planifie _refresh_git_status sans bloquer l'event loop NiceGUI.
+
+    Même idiome que ui.timer(..., once=True) + asyncio.ensure_future utilisé
+    dans model_modal.py (_initial_load) : sûr à appeler aussi bien depuis un
+    handler de clic déjà dans la boucle asyncio que depuis la construction
+    synchrone de la page (render_sidebar), où aucune boucle n'est garantie
+    tourner au moment exact de l'appel.
+    """
+    if not folder:
+        return
+    ui.timer(0.01, lambda: asyncio.ensure_future(_refresh_git_status(folder)), once=True)
 
 
 @ui.refreshable
 def _git_branch_widget():
-    """Affiche la branche git courante + statut dirty/clean du dossier actif."""
+    """Affiche la branche git courante + statut dirty/clean du dossier actif.
+
+    Rendu purement synchrone : lit uniquement le cache déjà peuplé par
+    _refresh_git_status (jamais de subprocess bloquant sur l'event loop ici).
+    """
     if not state.active_folder:
         return
-    try:
-        creationflags = 0x08000000 if os.name == "nt" else 0
-        branch_result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=state.active_folder,
-            capture_output=True,
-            text=True,
-            timeout=3,
-            creationflags=creationflags,
-        )
-        if branch_result.returncode != 0:
-            return
-        branch = branch_result.stdout.strip()
-        if not branch:
-            return
-        status_result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=state.active_folder,
-            capture_output=True,
-            text=True,
-            timeout=3,
-            creationflags=creationflags,
-        )
-        is_dirty = bool(status_result.stdout.strip())
-        indicator = " ●" if is_dirty else " ✓"
-        color = "text-yellow-400" if is_dirty else "text-green-400"
-        ui.label(f"⎇ {branch}{indicator}").classes(f"text-xs {color} px-3 py-1 font-mono")
-    except Exception:
-        pass
+    info = _GIT_STATUS_CACHE.get(state.active_folder)
+    if not info:
+        return
+    branch, is_dirty = info
+    indicator = " ●" if is_dirty else " ✓"
+    color = "text-yellow-400" if is_dirty else "text-green-400"
+    ui.label(f"⎇ {branch}{indicator}").classes(f"text-xs {color} px-3 py-1 font-mono")
 
 
 @ui.refreshable
@@ -174,6 +224,7 @@ def render_sidebar():
             )
 
         _git_branch_widget()
+        _schedule_git_status_refresh(state.active_folder)
 
         ui.label("Historique des dossiers").classes(
             "text-xs text-gray-600 uppercase tracking-widest px-3 pt-2 pb-1"

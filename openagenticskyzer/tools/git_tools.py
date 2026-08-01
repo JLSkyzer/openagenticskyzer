@@ -155,8 +155,22 @@ def git_push(remote: str = "origin", branch: str = "") -> str:
 
 @tool
 def git_pull(remote: str = "origin") -> str:
-    """Pull latest changes from remote."""
-    return _run(["git", "pull", remote], _cwd())
+    """Pull latest changes from remote (fetch + fast-forward merge)."""
+    # Deliberately NOT `git pull -- <remote>`: `git pull` internally
+    # re-invokes `git fetch` and does not preserve a leading '--' when
+    # forwarding its arguments, so a single _guarded() call does NOT stop a
+    # crafted remote value like "--upload-pack=<shell command>" from still
+    # being parsed as a real option and executed locally (verified with a
+    # real exploit reproduction: `git pull -- "--upload-pack=touch x"`
+    # still ran `touch x`). `git fetch` and `git merge`, called directly,
+    # each correctly honor their own '--' with no such forwarding — so
+    # guarding them independently closes the hole. This is also the
+    # textbook definition of what `git pull` does internally.
+    cwd = _cwd()
+    fetch_result = _run(["git", "fetch"] + _guarded(remote), cwd)
+    if fetch_result.startswith("Error"):
+        return fetch_result
+    return _run(["git", "merge", "--ff-only", "FETCH_HEAD"], cwd)
 
 
 @tool

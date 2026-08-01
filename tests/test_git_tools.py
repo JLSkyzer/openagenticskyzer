@@ -244,6 +244,54 @@ class TestGitCreateBranch:
         assert (git_repo / "base_only.txt").exists()
 
 
+class TestGitPull:
+    def test_pulls_new_commits_from_remote(self, git_repo, tmp_path_factory):
+        """End-to-end: git_pull (implemented as fetch + merge --ff-only)
+        actually retrieves and fast-forwards a new commit pushed to origin."""
+        remote_root = tmp_path_factory.mktemp("remote")
+        bare = remote_root / "origin.git"
+        subprocess.run(["git", "clone", "-q", "--bare", str(git_repo), str(bare)],
+                        capture_output=True, text=True)
+        _git(git_repo, "remote", "add", "origin", str(bare))
+        branch = _current_branch(git_repo)
+        _git(git_repo, "push", "-q", "-u", "origin", branch)
+
+        # A second clone simulates another contributor pushing new work.
+        other_clone = remote_root / "other_clone"
+        subprocess.run(["git", "clone", "-q", str(bare), str(other_clone)],
+                        capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=other_clone, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=other_clone, capture_output=True)
+        (other_clone / "README.md").write_text("# From remote", encoding="utf-8")
+        subprocess.run(["git", "commit", "-am", "remote update"], cwd=other_clone, capture_output=True)
+        subprocess.run(["git", "push", "-q", "origin", "HEAD"], cwd=other_clone, capture_output=True)
+
+        with _with_folder(str(git_repo)):
+            from openagenticskyzer.tools.git_tools import git_pull
+            result = git_pull.invoke({})
+        assert not result.startswith("Error")
+        assert (git_repo / "README.md").read_text(encoding="utf-8") == "# From remote"
+
+    def test_dash_prefixed_remote_upload_pack_payload_is_not_executed(self, git_repo):
+        """Regression test for a real exploit the reviewer reproduced: `git
+        pull` forwards its arguments to `git fetch` internally WITHOUT
+        preserving a leading '--', so a naive single '--' guard on `git pull`
+        itself does not stop a crafted remote value like
+        '--upload-pack=<shell command>' from still being parsed as a real
+        option and executed locally. git_pull is implemented as `git fetch`
+        (guarded) + `git merge --ff-only FETCH_HEAD` (no user-controlled
+        input) instead, since `git fetch` honors its own '--' directly with
+        no forwarding. This must be rejected as an Error and must NOT run
+        the injected command."""
+        marker = git_repo / "pwned_marker.txt"
+        malicious_remote = f"--upload-pack=touch {marker.name}"
+        with _with_folder(str(git_repo)):
+            from openagenticskyzer.tools.git_tools import git_pull
+            result = git_pull.invoke({"remote": malicious_remote})
+        assert result.startswith("Error")
+        assert not marker.exists()
+
+
 class TestGitStash:
     def test_stash_cleans_working_tree_and_pop_restores_it(self, git_repo):
         (git_repo / "README.md").write_text("# Stashed change", encoding="utf-8")

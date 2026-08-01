@@ -12,6 +12,11 @@ from openagenticskyzer.tools.crud_tools import (
 from openagenticskyzer.tools.internet_search import internet_search
 from openagenticskyzer.tools.web_fetch import fetch_url
 from openagenticskyzer.tools.shell_exec import run_command
+from openagenticskyzer.tools.git_tools import (
+    git_status, git_diff, git_diff_staged, git_log, git_blame,
+    git_branch_list, git_add, git_commit, git_push, git_pull,
+    git_checkout, git_create_branch, git_stash, git_stash_pop,
+)
 from openagenticskyzer.ui.tui import TUI, TUICallback, get_console
 from openagenticskyzer.utils.utils import get_llm, get_langfuse_handler, mode_router
 
@@ -21,6 +26,9 @@ _ALL_TOOLS = [
     grep_file, glob_files, grep_codebase, list_dir, create_dir, delete_dir,
     internet_search,
     fetch_url,
+    git_status, git_diff, git_diff_staged, git_log, git_blame,
+    git_branch_list, git_add, git_commit, git_push, git_pull,
+    git_checkout, git_create_branch, git_stash, git_stash_pop,
 ]
 
 

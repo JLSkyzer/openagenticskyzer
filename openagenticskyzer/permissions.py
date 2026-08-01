@@ -12,6 +12,8 @@ logger = logging.getLogger("openagentic.permissions")
 _RESTRICTED_TOOLS = {
     "run_command", "create_file", "edit_file", "delete_file",
     "delete_dir", "create_dir",
+    "git_add", "git_commit", "git_push", "git_pull",
+    "git_checkout", "git_create_branch", "git_stash_pop",
 }
 _READ_ONLY_TOOLS = {
     "read_file", "view_file", "glob_files", "grep_file",

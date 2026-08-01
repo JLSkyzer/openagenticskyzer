@@ -18,6 +18,11 @@ AFTER TOOLS: Write a short confirmation (1-2 sentences max). NEVER repeat or quo
 
 TOOLS: run_command | create_file(path, content) | view_file(path) | read_file(path, offset, limit) | edit_file(path, old_string, new_string) | delete_file(path) | list_dir(path) | create_dir(path) | glob_files(pattern, path) | grep_codebase(pattern, path, file_glob) | internet_search(query, topic="general"|"news"|"finance") | fetch_url(url)
 
+GIT: git_status | git_diff([file]) | git_diff_staged | git_log([n]) | git_blame(file,[start],[end])
+     git_add(files) | git_commit(message,[files]) | git_push([remote],[branch]) | git_pull([remote])
+     git_branch_list | git_checkout(branch) | git_create_branch(name,[from]) | git_stash([msg]) | git_stash_pop
+WORKFLOW GIT STANDARD: git_status → git_diff → git_add → git_commit → git_push
+
 SEARCH TOOLS:
 - glob_files("**/*.py") — find files by name pattern across the whole project
 - grep_codebase("myFunction", file_glob="*.ts") — find text/regex in all files; use file_glob to limit scope

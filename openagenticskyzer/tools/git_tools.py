@@ -11,16 +11,35 @@ def _cwd() -> str | None:
     return state.active_folder
 
 
-def _guarded(arg: str) -> list[str]:
-    """Argv tokens for a caller-supplied ref/branch value.
+def _guarded(*args: str) -> list[str]:
+    """Argv tokens for one or more caller-supplied positional values (ref,
+    branch, remote, ...).
 
-    Inserts a literal '--' before the value when it starts with '-', so git
-    can never parse it as an option (e.g. branch="--orphan" or "-f"). Valid
-    git ref/branch names can never start with '-' (git-check-ref-format
-    rejects them), so this never changes behavior for legitimate input —
-    it only forces a dash-prefixed string down the safe "unknown pathspec"
-    error path instead of being executed as a flag."""
-    return ["--", arg] if arg.startswith("-") else [arg]
+    Prepends a single literal '--' when any value starts with '-', so none
+    of them can ever be parsed as a git option (e.g. branch="--orphan" or
+    remote="-f"). Valid git ref/branch/remote names can never start with
+    '-' (git-check-ref-format rejects it for refs, and no real remote is
+    ever configured that way), so this never changes behavior for
+    legitimate input — it only forces a dash-prefixed string down the safe
+    "unknown pathspec"/positional-arg path instead of being executed as a
+    flag. Only one '--' is ever inserted (not one per guarded value),
+    because a second literal '--' among already-positional arguments would
+    itself be parsed as a literal argument rather than a separator."""
+    guard = ["--"] if any(a.startswith("-") for a in args) else []
+    return guard + list(args)
+
+
+def _split_files(files: str) -> list[str]:
+    """Split a caller-supplied 'files' argument into individual pathspecs.
+
+    Supports quoting a path that contains spaces (e.g. '"my file.txt"').
+    shlex.split() runs in POSIX mode, where backslash is an escape
+    character — on this Windows-targeted app that would silently mangle
+    native paths like 'C:\\Users\\test\\file.py' into 'C:Userstestfile.py'.
+    Backslashes are normalized to forward slashes first (git and Windows
+    both accept forward-slash paths interchangeably) so shlex never sees
+    them as escapes, then the quoted-spaces case still works correctly."""
+    return shlex.split(files.replace("\\", "/"))
 
 
 def _run(cmd: list[str], cwd: str | None = None) -> str:
@@ -109,7 +128,7 @@ def git_branch_list() -> str:
 def git_add(files: str) -> str:
     """Stage files for commit. files can be '.' for all, or space-separated paths
     (quote individual paths that contain spaces, e.g. '"my file.txt" other.txt')."""
-    files_list = shlex.split(files)
+    files_list = _split_files(files)
     # '--' always precedes the pathspecs so a value starting with '-' can
     # never be misparsed as a git-add option.
     return _run(["git", "add", "--"] + files_list, _cwd())
@@ -121,7 +140,7 @@ def git_commit(message: str, files: str = "") -> str:
     (quote individual paths that contain spaces)."""
     cwd = _cwd()
     if files:
-        stage_result = _run(["git", "add", "--"] + shlex.split(files), cwd)
+        stage_result = _run(["git", "add", "--"] + _split_files(files), cwd)
         if stage_result.startswith("Error"):
             return stage_result
     return _run(["git", "commit", "-m", message], cwd)
@@ -130,8 +149,8 @@ def git_commit(message: str, files: str = "") -> str:
 @tool
 def git_push(remote: str = "origin", branch: str = "") -> str:
     """Push commits to remote. Defaults to origin and current branch."""
-    cmd = ["git", "push", remote] + ([branch] if branch else [])
-    return _run(cmd, _cwd())
+    positional = [remote] + ([branch] if branch else [])
+    return _run(["git", "push"] + _guarded(*positional), _cwd())
 
 
 @tool

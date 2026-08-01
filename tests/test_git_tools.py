@@ -132,6 +132,22 @@ class TestGitAdd:
         assert "my file.txt" in status
         assert status.strip().startswith("A")
 
+    def test_stages_path_with_backslash_separators(self, git_repo):
+        """Regression test: shlex.split() runs in POSIX mode by default,
+        where backslash is an escape character. A native Windows path like
+        'sub\\file.txt' passed straight to shlex.split() gets mangled into
+        'subfile.txt' (backslash silently stripped). git_add must normalize
+        backslashes to forward slashes first so the path survives intact."""
+        (git_repo / "sub").mkdir()
+        (git_repo / "sub" / "file.txt").write_text("hi", encoding="utf-8")
+        with _with_folder(str(git_repo)):
+            from openagenticskyzer.tools.git_tools import git_add
+            result = git_add.invoke({"files": "sub\\file.txt"})
+        assert not result.startswith("Error")
+        status = _git(git_repo, "status", "--short").stdout
+        assert "sub/file.txt" in status or "sub\\file.txt" in status
+        assert status.strip().startswith("A")
+
     def test_dash_prefixed_filename_is_staged_not_parsed_as_flag(self, git_repo):
         """Regression test for argument-injection fix: a filename starting
         with '-' must be treated as a pathspec (via the '--' separator),

@@ -1,6 +1,7 @@
 # openagenticskyzer/tools/git_tools.py
 """Outils git pour l'agent — workflow git complet."""
 import os
+import shlex
 import subprocess
 from langchain_core.tools import tool
 
@@ -8,6 +9,18 @@ from langchain_core.tools import tool
 def _cwd() -> str | None:
     from openagenticskyzer.app.state import state
     return state.active_folder
+
+
+def _guarded(arg: str) -> list[str]:
+    """Argv tokens for a caller-supplied ref/branch value.
+
+    Inserts a literal '--' before the value when it starts with '-', so git
+    can never parse it as an option (e.g. branch="--orphan" or "-f"). Valid
+    git ref/branch names can never start with '-' (git-check-ref-format
+    rejects them), so this never changes behavior for legitimate input —
+    it only forces a dash-prefixed string down the safe "unknown pathspec"
+    error path instead of being executed as a flag."""
+    return ["--", arg] if arg.startswith("-") else [arg]
 
 
 def _run(cmd: list[str], cwd: str | None = None) -> str:
@@ -50,7 +63,9 @@ def git_status() -> str:
 @tool
 def git_diff(file: str = "") -> str:
     """Show unstaged changes. Optionally pass a specific file path."""
-    cmd = ["git", "diff"] + ([file] if file else [])
+    # '--' always precedes the pathspec so a value starting with '-' can
+    # never be misparsed as a git-diff option.
+    cmd = ["git", "diff"] + (["--", file] if file else [])
     result = _run(cmd, _cwd())
     if result.startswith("Error"):
         return result
@@ -79,7 +94,8 @@ def git_blame(file: str, start: int = 1, end: int = 0) -> str:
     cmd = ["git", "blame"]
     if end > 0:
         cmd += [f"-L {start},{end}"]
-    cmd.append(file)
+    # '--' forces the trailing argument to be treated as a pathspec, never a flag.
+    cmd += ["--", file]
     return _run(cmd, _cwd())
 
 
@@ -91,17 +107,21 @@ def git_branch_list() -> str:
 
 @tool
 def git_add(files: str) -> str:
-    """Stage files for commit. files can be '.' for all, or space-separated paths."""
-    files_list = files.split() if files != "." else ["."]
-    return _run(["git", "add"] + files_list, _cwd())
+    """Stage files for commit. files can be '.' for all, or space-separated paths
+    (quote individual paths that contain spaces, e.g. '"my file.txt" other.txt')."""
+    files_list = shlex.split(files)
+    # '--' always precedes the pathspecs so a value starting with '-' can
+    # never be misparsed as a git-add option.
+    return _run(["git", "add", "--"] + files_list, _cwd())
 
 
 @tool
 def git_commit(message: str, files: str = "") -> str:
-    """Commit staged changes with a message. Optionally stage specific files first."""
+    """Commit staged changes with a message. Optionally stage specific files first
+    (quote individual paths that contain spaces)."""
     cwd = _cwd()
     if files:
-        stage_result = _run(["git", "add"] + files.split(), cwd)
+        stage_result = _run(["git", "add", "--"] + shlex.split(files), cwd)
         if stage_result.startswith("Error"):
             return stage_result
     return _run(["git", "commit", "-m", message], cwd)
@@ -123,13 +143,20 @@ def git_pull(remote: str = "origin") -> str:
 @tool
 def git_checkout(branch: str) -> str:
     """Switch to a branch or restore a file."""
-    return _run(["git", "checkout", branch], _cwd())
+    # `git checkout <arg>` is intentionally ambiguous (branch-or-path), so we
+    # can't unconditionally prepend '--' without breaking normal branch
+    # switches (see _guarded's docstring) — only guard dash-prefixed values,
+    # which are never valid branch/file names to begin with.
+    return _run(["git", "checkout"] + _guarded(branch), _cwd())
 
 
 @tool
 def git_create_branch(name: str, from_branch: str = "") -> str:
     """Create and switch to a new branch. Optionally based on another branch."""
-    cmd = ["git", "checkout", "-b", name] + ([from_branch] if from_branch else [])
+    # `name` is safe as-is: it's always consumed as -b's immediate value,
+    # and git rejects dash-prefixed ref names outright. `from_branch` is a
+    # trailing positional and must be guarded against flag injection.
+    cmd = ["git", "checkout", "-b", name] + (_guarded(from_branch) if from_branch else [])
     return _run(cmd, _cwd())
 
 

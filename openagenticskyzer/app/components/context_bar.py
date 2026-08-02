@@ -39,56 +39,103 @@ def _extract_summary_from_result(messages: list) -> str:
     return ""
 
 
+# Re-entrancy guard: trigger_compact is reachable both from the
+# "⚡ Auto-compact" button click (never disabled while a compaction is in
+# flight) and automatically from input_bar.py's auto-compact check after
+# any qualifying message send. Without this flag, two overlapping runs
+# would race on state.messages and each independently call
+# append_to_project_memory, writing duplicate overlapping summaries.
+_compact_in_progress = False
+
+
 async def trigger_compact():
     """Compact the conversation by asking the LLM to summarize it, then
     persist the summary into project memory. Wired directly via
     `on_click=trigger_compact` on the Auto-compact button below (NiceGUI
     schedules async event handlers automatically) and via
-    `await trigger_compact()` from input_bar.py's auto-compact check."""
+    `await trigger_compact()` from input_bar.py's auto-compact check.
+
+    Concurrency notes:
+    - Guarded against re-entrancy via `_compact_in_progress` (see above).
+    - The tail of messages to keep is snapshotted *together* with the
+      history text, before the `await run.io_bound(...)` below. That await
+      yields control back to NiceGUI's single-threaded event loop, during
+      which state.messages can grow (e.g. another message sent). Reading
+      `state.messages[-2:]` fresh *after* the await would then silently
+      drop whichever message fell between the summarized history and the
+      shifted tail — so we reuse the original snapshot's tail instead.
+    """
     from nicegui import run
     from openagenticskyzer.app.components.chat import chat_messages
     from openagenticskyzer.app.state import ChatMessage, state
     from openagenticskyzer.context.project_memory import append_to_project_memory
 
+    global _compact_in_progress
+
     if len(state.messages) < 6:
         ui.notify("Pas assez de messages à compresser.", type="warning")
         return
 
-    history_text = _build_compact_history_text(state.messages)
-    summary_prompt = _build_compact_summary_prompt(history_text)
+    if _compact_in_progress:
+        ui.notify("Compression déjà en cours…", type="warning")
+        return
 
-    ui.notify("Compression en cours…", type="info")
+    _compact_in_progress = True
     try:
-        from openagenticskyzer.agent import build_agent
-        agent = build_agent(mode="ask",
-                            provider=state.current_provider,
-                            model_name=state.current_model)
-        result = await run.io_bound(
-            agent.invoke,
-            {"messages": [{"role": "user", "content": summary_prompt}]},
-            {"recursion_limit": 10},
-        )
-        summary = _extract_summary_from_result(result.get("messages", []))
+        # Snapshot history text AND the tail to keep together, atomically,
+        # before yielding control at the await below.
+        snapshot = list(state.messages)
+        history_text = _build_compact_history_text(snapshot)
+        tail = snapshot[-2:]
+        summary_prompt = _build_compact_summary_prompt(history_text)
 
-        if summary:
-            summary_msg = ChatMessage(
-                role="ai",
-                content=f"**[Résumé de contexte compressé]**\n\n{summary}",
+        ui.notify("Compression en cours…", type="info")
+
+        # Narrow try: only the LLM call + extraction fall back to a
+        # brute-cut on failure. State mutation / persistence / UI refresh
+        # after a *successful* LLM call live outside this block, so a
+        # refresh/notify hiccup post-success can never be misreported as
+        # "LLM indisponible" nor trigger a redundant (no-op) brute-cut.
+        try:
+            from openagenticskyzer.agent import build_agent
+            agent = build_agent(mode="ask",
+                                provider=state.current_provider,
+                                model_name=state.current_model)
+            result = await run.io_bound(
+                agent.invoke,
+                {"messages": [{"role": "user", "content": summary_prompt}]},
+                {"recursion_limit": 10},
             )
-            state.messages = [summary_msg] + state.messages[-2:]
-            state.context_pct = 15.0
-            state.context_tokens = len(summary) // 4
-            if state.active_folder:
-                append_to_project_memory(state.active_folder, summary)
+            summary = _extract_summary_from_result(result.get("messages", []))
+        except Exception as exc:
+            state.messages = state.messages[-6:]
+            state.context_pct = max(0.0, state.context_pct - 50.0)
+            ui.notify(f"Compaction rapide (LLM indisponible : {exc})", type="warning")
             chat_messages.refresh()
             context_bar.refresh()
-            ui.notify("Contexte compressé avec résumé IA.", type="positive")
-    except Exception as exc:
-        state.messages = state.messages[-6:]
-        state.context_pct = max(0.0, state.context_pct - 50.0)
-        ui.notify(f"Compaction rapide (LLM indisponible : {exc})", type="warning")
+            return
+
+        if not summary:
+            ui.notify(
+                "Le modèle n'a renvoyé aucun résumé — contexte inchangé.",
+                type="negative",
+            )
+            return
+
+        summary_msg = ChatMessage(
+            role="ai",
+            content=f"**[Résumé de contexte compressé]**\n\n{summary}",
+        )
+        state.messages = [summary_msg] + tail
+        state.context_pct = 15.0
+        state.context_tokens = len(summary) // 4
+        if state.active_folder:
+            append_to_project_memory(state.active_folder, summary)
         chat_messages.refresh()
         context_bar.refresh()
+        ui.notify("Contexte compressé avec résumé IA.", type="positive")
+    finally:
+        _compact_in_progress = False
 
 
 @ui.refreshable

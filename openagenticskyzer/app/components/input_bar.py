@@ -81,6 +81,18 @@ def _extract_query_and_topic(msg: str) -> tuple[str, str]:
     topic = "news" if _NEWS_DETECT_RE.search(msg) else "general"
     return (cleaned[:200] if len(cleaned) > 10 else msg[:200]), topic
 
+
+def _format_memory_injection(global_mem: str, project_mem: str) -> str:
+    """Formate la mémoire globale + projet en un seul bloc système à injecter
+    en tête d'historique. Retourne '' si les deux sont vides (no-op côté
+    appelant — pure logique de formatage, testable sans état NiceGUI)."""
+    parts = []
+    if global_mem:
+        parts.append(f"MÉMOIRE GLOBALE (préférences utilisateur) :\n{global_mem}")
+    if project_mem:
+        parts.append(f"MÉMOIRE PROJET (contexte persistant) :\n{project_mem}")
+    return "\n\n".join(parts)
+
 from openagenticskyzer.app.state import state, ChatMessage
 from openagenticskyzer.app.components.model_modal import open_model_modal
 
@@ -242,6 +254,15 @@ async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
         # Injecte le custom_prompt comme premier message système si défini
         if custom_prompt:
             history = [{"role": "system", "content": custom_prompt}] + history
+
+        # Injecte la mémoire persistante (globale + projet) en tête d'historique
+        from openagenticskyzer.context.project_memory import load_project_memory, load_global_memory
+
+        global_mem = load_global_memory()
+        project_mem = load_project_memory(state.active_folder) if state.active_folder else ""
+        memory_injection = _format_memory_injection(global_mem, project_mem)
+        if memory_injection:
+            history = [{"role": "system", "content": memory_injection}] + history
 
         # ── Pré-fetch web : recherche + lecture de source(s) — local providers uniquement ──
         user_content_for_agent = text

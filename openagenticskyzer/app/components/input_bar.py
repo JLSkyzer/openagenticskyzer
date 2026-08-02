@@ -264,6 +264,14 @@ async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
         if memory_injection:
             history = [{"role": "system", "content": memory_injection}] + history
 
+        # Injecte les learnings confirmés (global + projet) en tête d'historique
+        from openagenticskyzer.context.learnings import load_learnings, format_learnings_for_injection
+
+        learnings = load_learnings(project_folder=state.active_folder, confirmed_only=True)
+        learnings_injection = format_learnings_for_injection(learnings)
+        if learnings_injection:
+            history = [{"role": "system", "content": learnings_injection}] + history
+
         # ── Pré-fetch web : recherche + lecture de source(s) — local providers uniquement ──
         user_content_for_agent = text
         if state.current_provider in _LOCAL_PROVIDERS and _SEARCH_DETECT_RE.search(text):

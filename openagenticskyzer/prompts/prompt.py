@@ -23,6 +23,11 @@ GIT: git_status | git_diff([file]) | git_diff_staged | git_log([n]) | git_blame(
      git_branch_list | git_checkout(branch) | git_create_branch(name,[from_branch]) | git_stash([message]) | git_stash_pop
 WORKFLOW GIT STANDARD: git_status → git_diff → git_add → git_commit → git_push
 
+MEMORY: save_memory(facts,[scope='project'|'global']) | read_memory() | forget_memory(keyword)
+WHEN: "souviens-toi que..." → save_memory() | "qu'est-ce que tu sais ?" → read_memory()
+      après résolution de problème complexe → save_memory() avec la solution
+      après décision d'architecture → save_memory() avec la décision
+
 SEARCH TOOLS:
 - glob_files("**/*.py") — find files by name pattern across the whole project
 - grep_codebase("myFunction", file_glob="*.ts") — find text/regex in all files; use file_glob to limit scope

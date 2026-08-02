@@ -14,12 +14,14 @@ _RESTRICTED_TOOLS = {
     "delete_dir", "create_dir",
     "git_add", "git_commit", "git_push", "git_pull",
     "git_checkout", "git_create_branch", "git_stash", "git_stash_pop",
+    "save_memory", "forget_memory",
 }
 _READ_ONLY_TOOLS = {
     "read_file", "view_file", "glob_files", "grep_file",
-    "grep_codebase", "list_dir", "internet_search",
+    "grep_codebase", "list_dir", "internet_search", "fetch_url",
     "git_status", "git_diff", "git_diff_staged", "git_log",
     "git_blame", "git_branch_list",
+    "read_memory",
 }
 
 

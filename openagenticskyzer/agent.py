@@ -17,6 +17,7 @@ from openagenticskyzer.tools.git_tools import (
     git_branch_list, git_add, git_commit, git_push, git_pull,
     git_checkout, git_create_branch, git_stash, git_stash_pop,
 )
+from openagenticskyzer.tools.memory_tools import save_memory, read_memory, forget_memory
 from openagenticskyzer.ui.tui import TUI, TUICallback, get_console
 from openagenticskyzer.utils.utils import get_llm, get_langfuse_handler, mode_router
 
@@ -29,6 +30,7 @@ _ALL_TOOLS = [
     git_status, git_diff, git_diff_staged, git_log, git_blame,
     git_branch_list, git_add, git_commit, git_push, git_pull,
     git_checkout, git_create_branch, git_stash, git_stash_pop,
+    save_memory, read_memory, forget_memory,
 ]
 
 

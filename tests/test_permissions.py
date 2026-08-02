@@ -60,6 +60,23 @@ def test_cli_non_tty_auto_allows(monkeypatch):
     result = mgr.check("run_command", {"command": "ls"})
     assert result is True
 
+def test_every_registered_tool_is_classified():
+    """Regression guard: every tool registered in agent._ALL_TOOLS must be in
+    either _RESTRICTED_TOOLS or _READ_ONLY_TOOLS. An unclassified writing
+    tool is silently allowed in 'strict' mode (check() only blocks
+    _RESTRICTED_TOOLS there); an unclassified read tool causes unwanted
+    permission prompts in 'demander' mode (only _READ_ONLY_TOOLS auto-pass).
+    This exact gap has bitten this codebase twice already for git tools and
+    memory tools — see tasks/lessons.md."""
+    from openagenticskyzer.agent import _ALL_TOOLS
+    from openagenticskyzer.permissions import _RESTRICTED_TOOLS, _READ_ONLY_TOOLS
+
+    classified = _RESTRICTED_TOOLS | _READ_ONLY_TOOLS
+    tool_names = {t.name for t in _ALL_TOOLS}
+    unclassified = tool_names - classified
+    assert not unclassified, f"Tools missing from permissions.py classification: {unclassified}"
+
+
 def test_make_permission_tool_node_returns_callable():
     from langchain_core.tools import tool
 

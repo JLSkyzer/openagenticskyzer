@@ -190,7 +190,8 @@ def delete_learning(learning_id: str, project_folder: str | None = None) -> None
 def format_learnings_for_injection(learnings: list[Learning]) -> str:
     """Formate les learnings confirmés pour injection dans le system prompt.
     Retourne '' pour une liste vide (no-op côté appelant, cf.
-    `_format_memory_injection` dans input_bar.py pour le même contrat)."""
+    `format_memory_injection` dans context/system_context.py — même contrat ;
+    c'est ce module qui replie ce bloc dans le prompt système effectif)."""
     if not learnings:
         return ""
     lines = ["[LEÇONS APPRISES — à appliquer systématiquement]"]

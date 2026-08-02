@@ -29,6 +29,14 @@ def trim_message_history(
     Token count is estimated as len(content) // 4 (no external dependency).
     Never returns a list starting with a ToolMessage.
     At least one message is always retained regardless of max_tokens budget.
+
+    ATTENTION — tout SystemMessage présent dans `messages` est supprimé
+    inconditionnellement ici : `agent_node` réinjecte ensuite UN seul prompt
+    système propre en tête. Conséquence : pousser du contenu système via
+    `{"role": "system", ...}` dans l'état du graphe ne l'amènera JAMAIS au
+    modèle. Tout contexte système dynamique doit passer par
+    `context/system_context.py`, qui est replié dans le prompt système effectif
+    de `agent_node`.
     """
     non_system = [m for m in messages if not isinstance(m, SystemMessage)]
 

@@ -385,7 +385,9 @@ def make_agent_node(
     au lieu de le laisser en tête — contourne le bug Jinja de certains modèles LM Studio
     qui ne peuvent pas injecter les tool definitions quand le premier message n'est pas human.
 
-    cwd: répertoire de travail courant, utilisé pour charger OPENAGENT.md / CLAUDE.md.
+    cwd: répertoire de travail courant, utilisé pour charger tout le contexte
+    dynamique du tour (OPENAGENT.md / CLAUDE.md, custom_prompt du dossier,
+    mémoire persistante, leçons apprises) — voir context/system_context.py.
     """
     from langchain_core.messages import HumanMessage
 
@@ -395,13 +397,13 @@ def make_agent_node(
         trimmed = trim_message_history(messages, max_messages=max_history, max_tokens=max_tokens)
         trimmed = clean_messages(trimmed)
 
-        from openagenticskyzer.context.project_instructions import load_project_instructions
-        project_instructions = load_project_instructions(cwd)
-        effective_system_prompt = (
-            project_instructions + "\n\n" + system_prompt
-            if project_instructions
-            else system_prompt
-        )
+        # Contexte dynamique (instructions projet, custom_prompt du dossier,
+        # mémoire persistante, leçons apprises) : chargé ICI et replié dans le
+        # prompt système, jamais injecté comme SystemMessage dans l'historique
+        # — trim_message_history supprime inconditionnellement tout
+        # SystemMessage entrant (voir context/system_context.py).
+        from openagenticskyzer.context.system_context import build_effective_system_prompt
+        effective_system_prompt = build_effective_system_prompt(cwd, system_prompt)
 
         if lmstudio_compat:
             # Cherche le premier HumanMessage dans trimmed

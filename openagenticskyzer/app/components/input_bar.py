@@ -82,17 +82,6 @@ def _extract_query_and_topic(msg: str) -> tuple[str, str]:
     return (cleaned[:200] if len(cleaned) > 10 else msg[:200]), topic
 
 
-def _format_memory_injection(global_mem: str, project_mem: str) -> str:
-    """Formate la mémoire globale + projet en un seul bloc système à injecter
-    en tête d'historique. Retourne '' si les deux sont vides (no-op côté
-    appelant — pure logique de formatage, testable sans état NiceGUI)."""
-    parts = []
-    if global_mem:
-        parts.append(f"MÉMOIRE GLOBALE (préférences utilisateur) :\n{global_mem}")
-    if project_mem:
-        parts.append(f"MÉMOIRE PROJET (contexte persistant) :\n{project_mem}")
-    return "\n\n".join(parts)
-
 from openagenticskyzer.app.state import state, ChatMessage
 from openagenticskyzer.app.components.model_modal import open_model_modal
 
@@ -242,35 +231,20 @@ async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
             model_name=state.current_model,
         )
 
-        # Contexte système personnalisé du dossier
-        custom_prompt = folder_cfg.get("custom_prompt", "").strip()
-
+        # NOTE : custom_prompt du dossier, mémoire persistante et leçons
+        # apprises ne sont PAS injectés ici. Ils étaient auparavant préfixés à
+        # `history` sous forme de `{"role": "system", ...}` — mais
+        # `trim_message_history` (context/messages.py) retire
+        # inconditionnellement tout SystemMessage avant chaque appel LLM, donc
+        # ce contenu n'atteignait jamais le modèle. Il est désormais chargé
+        # dans `agent_node` depuis le cwd (garanti égal à state.active_folder
+        # par le `os.chdir` ci-dessus) et replié dans le prompt système
+        # effectif — voir openagenticskyzer/context/system_context.py.
         history = [
             {"role": m.role if m.role != "ai" else "assistant", "content": m.content}
             for m in state.messages[:-1]
             if m.role in ("user", "ai")
         ]
-
-        # Injecte le custom_prompt comme premier message système si défini
-        if custom_prompt:
-            history = [{"role": "system", "content": custom_prompt}] + history
-
-        # Injecte la mémoire persistante (globale + projet) en tête d'historique
-        from openagenticskyzer.context.project_memory import load_project_memory, load_global_memory
-
-        global_mem = load_global_memory()
-        project_mem = load_project_memory(state.active_folder) if state.active_folder else ""
-        memory_injection = _format_memory_injection(global_mem, project_mem)
-        if memory_injection:
-            history = [{"role": "system", "content": memory_injection}] + history
-
-        # Injecte les learnings confirmés (global + projet) en tête d'historique
-        from openagenticskyzer.context.learnings import load_learnings, format_learnings_for_injection
-
-        learnings = load_learnings(project_folder=state.active_folder, confirmed_only=True)
-        learnings_injection = format_learnings_for_injection(learnings)
-        if learnings_injection:
-            history = [{"role": "system", "content": learnings_injection}] + history
 
         # ── Pré-fetch web : recherche + lecture de source(s) — local providers uniquement ──
         user_content_for_agent = text

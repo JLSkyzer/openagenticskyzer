@@ -464,7 +464,7 @@ async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
             global_cfg.get("auto_compact", True)
             and state.context_pct >= global_cfg.get("compact_threshold", 70)
         ):
-            trigger_compact()
+            await trigger_compact()
 
     except Exception as exc:
         exc_str = str(exc)

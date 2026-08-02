@@ -15,7 +15,7 @@ Gap mineur non bloquant restant : pas de test pour le cas `git_pull` non-fast-fo
 
 - [x] Task 1 — Créer `openagenticskyzer/context/project_memory.py` (mémoire projet + globale) + tests
 - [x] Task 2 — Outils mémoire pour l'agent (`tools/memory_tools.py`) + intégration `agent.py`/`prompt.py`
-- [ ] Task 3 — Injection mémoire en début de conversation (`input_bar.py`)
+- [x] Task 3 — Injection mémoire en début de conversation (`input_bar.py`)
 - [ ] Task 4 — Compaction LLM réelle (`context_bar.py`)
 - [ ] Task 5 — Apprentissage adaptatif (`context/learnings.py`) + tests + injection
 
@@ -38,3 +38,10 @@ Task 2 — review follow-up (commit 4782bb1) :
 - Fix Minor 1 : `test_restricted_and_read_only_sets_are_disjoint` ajouté (un outil dans les deux ensembles sauterait silencieusement la confirmation en mode "demander", `_READ_ONLY_TOOLS` étant vérifié en premier).
 - Fix Minor 2 : cas limite le plus risqué couvert — supprimer la seule entrée de la mémoire doit laisser `load_project_memory()` égal à `""`, pas un résidu d'espaces blancs (testé aux deux niveaux : `remove_entries_matching` directement et `forget_memory` bout en bout).
 - Point non bloquant laissé tel quel : `forget_memory` retourne toujours un message de succès même si 0 entrée matchait le mot-clé — convention volontaire identique à `save_memory` sur faits vides (déjà testée/acceptée en Task 2).
+
+Task 3 commit (master) : 5413cf9 (feat: inject project and global memory into each conversation)
+
+Task 3 — écarts vs. code suggéré par le plan :
+- Logique de formatage extraite dans une fonction pure `_format_memory_injection(global_mem, project_mem) -> str` (module `input_bar.py`) au lieu de l'inline suggéré par le plan — `_send_message` est fortement couplé à l'état NiceGUI (ui.notify, input_el, refresh…) et n'est pas testable en isolation ; extraire le formatage en fonction pure permet de le couvrir par 4 tests unitaires (`tests/test_input_bar.py`) sans harnais UI.
+- Pas de `run.io_bound` autour de `load_global_memory()`/`load_project_memory()` malgré la leçon du widget git sidebar (Phase 2.1) sur le blocking I/O dans l'event loop NiceGUI : vérifié empiriquement que `load_global_config()`/`load_folder_config()` (juste au-dessus dans la même fonction `_send_message`) font déjà des `path.read_text()` synchrones non enveloppés — un `subprocess` git (le cas qui avait motivé le fix précédent) a un coût d'ordre de grandeur différent (spawn de process, dizaines de ms à secondes) qu'une lecture de petit fichier markdown local (cache OS, sub-ms). Envelopper cette lecture dans `run.io_bound` aurait été incohérent avec le pattern déjà établi juste à côté et n'aurait rien résolu de réel.
+- Pas de cap de taille sur le contenu de mémoire injecté (le plan n'en suggère pas non plus, et `read_memory()` de la Task 2 n'en a pas non plus) — laissé identique au comportement de la Task 2 par cohérence ; signalé comme risque de croissance non bornée à surveiller si la Task 5 (learnings) ajoute un deuxième bloc système sans cap non plus.

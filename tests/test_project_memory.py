@@ -58,6 +58,21 @@ class TestProjectMemory:
         clear_project_memory(str(tmp_path))
         assert load_project_memory(str(tmp_path)) == ""
 
+    def test_clear_leaves_directory_and_sibling_files_intact(self, tmp_path):
+        """clear_project_memory must remove only memory.md — .openagent/ is a
+        shared directory (config.json, chat_history.json also live there per
+        app/storage.py) and must survive along with its other files."""
+        save_project_memory(str(tmp_path), "Test")
+        openagent_dir = tmp_path / ".openagent"
+        sibling = openagent_dir / "config.json"
+        sibling.write_text("{}", encoding="utf-8")
+
+        clear_project_memory(str(tmp_path))
+
+        assert load_project_memory(str(tmp_path)) == ""
+        assert openagent_dir.exists()
+        assert sibling.exists()
+
     def test_save_creates_directory(self, tmp_path):
         folder = str(tmp_path / "nouveau_projet")
         save_project_memory(folder, "Contenu")

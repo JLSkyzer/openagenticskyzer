@@ -13,18 +13,30 @@ def _global_memory_path() -> Path:
 
 
 def load_project_memory(folder: str) -> str:
-    """Lit la mémoire du projet. Retourne '' si aucun fichier n'existe encore."""
+    """Lit la mémoire du projet. Retourne '' si aucun fichier n'existe encore,
+    ou si la lecture échoue (fichier verrouillé par un antivirus/éditeur,
+    etc.) — même dégradation gracieuse que `project_instructions.py`, car ce
+    contenu est réinjecté dans chaque conversation (Task 3) et ne doit jamais
+    faire planter l'appelant."""
     path = _memory_path(folder)
     if not path.exists():
         return ""
-    return path.read_text(encoding="utf-8").strip()
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def save_project_memory(folder: str, content: str) -> None:
-    """Écrase le contenu de la mémoire du projet (crée .openagent/ si besoin)."""
+    """Écrase le contenu de la mémoire du projet (crée .openagent/ si besoin).
+    Échoue silencieusement sur OSError (dossier/fichier verrouillé) plutôt que
+    de propager l'exception à l'appelant."""
     path = _memory_path(folder)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content.strip(), encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content.strip(), encoding="utf-8", newline="\n")
+    except OSError:
+        pass
 
 
 def append_to_project_memory(folder: str, new_facts: str) -> None:
@@ -33,6 +45,7 @@ def append_to_project_memory(folder: str, new_facts: str) -> None:
     Un appel avec des faits vides/blancs est un no-op délibéré : la mémoire
     est réinjectée dans chaque conversation future (voir Task 3 du plan), donc
     une entrée horodatée sans contenu ne serait que du bruit qui s'accumule.
+    Les erreurs I/O sont absorbées par load_project_memory/save_project_memory.
     """
     facts = new_facts.strip()
     if not facts:
@@ -45,23 +58,33 @@ def append_to_project_memory(folder: str, new_facts: str) -> None:
 
 def clear_project_memory(folder: str) -> None:
     """Supprime le fichier memory.md du projet (laisse .openagent/ en place,
-    car d'autres fichiers — config.json, chat_history.json — peuvent y vivre)."""
+    car d'autres fichiers — config.json, chat_history.json — peuvent y vivre).
+    Échoue silencieusement sur OSError (ex. fichier verrouillé)."""
     path = _memory_path(folder)
-    if path.exists():
-        path.unlink()
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
 
 
 def load_global_memory() -> str:
-    """Lit la mémoire globale (partagée entre tous les projets)."""
+    """Lit la mémoire globale (partagée entre tous les projets). Retourne ''
+    si absente ou si la lecture échoue (même dégradation gracieuse que
+    load_project_memory)."""
     path = _global_memory_path()
     if not path.exists():
         return ""
-    return path.read_text(encoding="utf-8").strip()
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def append_to_global_memory(facts: str) -> None:
     """Ajoute des faits horodatés à la mémoire globale (même règle de no-op
-    sur faits vides que append_to_project_memory)."""
+    sur faits vides, et même dégradation gracieuse sur OSError, que
+    append_to_project_memory)."""
     clean = facts.strip()
     if not clean:
         return
@@ -69,5 +92,8 @@ def append_to_global_memory(facts: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     entry = f"\n\n<!-- {ts} -->\n{clean}"
     path = _global_memory_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text((existing + entry).strip(), encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text((existing + entry).strip(), encoding="utf-8", newline="\n")
+    except OSError:
+        pass

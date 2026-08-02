@@ -6,6 +6,7 @@ from pathlib import Path
 from openagenticskyzer.context.project_memory import (
     load_project_memory, save_project_memory, append_to_project_memory,
     clear_project_memory, load_global_memory, append_to_global_memory,
+    remove_entries_matching,
 )
 
 
@@ -79,6 +80,56 @@ class TestProjectMemory:
         memory_file = Path(folder) / ".openagent" / "memory.md"
         assert memory_file.exists()
         assert "Contenu" in memory_file.read_text(encoding="utf-8")
+
+
+class TestRemoveEntriesMatching:
+    """Logique de suppression sélective utilisée par tools/memory_tools.py's
+    forget_memory — vit ici, pas dans memory_tools.py, car ce module est le
+    seul propriétaire du format d'entrée horodatée qu'elle doit parser."""
+
+    def test_removes_matching_entry_keeps_others(self):
+        mem = "<!-- 2026-08-02 10:00 -->\nUtilise PostgreSQL" \
+              "\n\n<!-- 2026-08-02 10:05 -->\nStyle PEP8"
+        result = remove_entries_matching(mem, "PostgreSQL")
+        assert "PostgreSQL" not in result
+        assert "PEP8" in result
+
+    def test_no_match_returns_content_unchanged_modulo_whitespace(self):
+        mem = "<!-- 2026-08-02 10:00 -->\nStyle PEP8"
+        result = remove_entries_matching(mem, "nonexistent")
+        assert "PEP8" in result
+
+    def test_case_insensitive(self):
+        mem = "<!-- 2026-08-02 10:00 -->\nUtilise POSTGRESQL en prod"
+        result = remove_entries_matching(mem, "postgresql")
+        assert result == ""
+
+    def test_multiline_entry_removed_as_a_whole(self):
+        """A per-line keyword filter would leave the timestamp header
+        orphaned, or leave non-matching lines of the same fact behind as
+        dangling fragments, when only some lines of a multi-line entry
+        contain the keyword. Whole-entry removal must not do that."""
+        mem = (
+            "<!-- 2026-08-02 10:00 -->\nDécision d'architecture:\n"
+            "Utilise PostgreSQL comme base principale\n"
+            "Justification: support JSONB natif"
+            "\n\n<!-- 2026-08-02 10:05 -->\nStyle PEP8"
+        )
+        result = remove_entries_matching(mem, "PostgreSQL")
+        assert "PostgreSQL" not in result
+        assert "JSONB" not in result
+        assert "Décision d'architecture" not in result
+        assert "PEP8" in result
+        import re
+        assert len(re.findall(r"<!--\s*\d{4}-\d{2}-\d{2} \d{2}:\d{2}\s*-->", result)) == 1
+
+    def test_removing_the_only_entry_leaves_empty_string(self):
+        mem = "<!-- 2026-08-02 10:00 -->\nUtilise PostgreSQL"
+        result = remove_entries_matching(mem, "PostgreSQL")
+        assert result == ""
+
+    def test_empty_input_returns_empty_string(self):
+        assert remove_entries_matching("", "anything") == ""
 
 
 class TestGlobalMemory:

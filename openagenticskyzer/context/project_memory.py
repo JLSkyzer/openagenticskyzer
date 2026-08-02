@@ -1,7 +1,40 @@
 # openagenticskyzer/context/project_memory.py
 """Mémoire persistante par projet (.openagent/memory.md) et globale (~/.openagent/memory.md)."""
+import re
 from datetime import datetime
 from pathlib import Path
+
+# Découpe le contenu de memory.md sur les marqueurs horodatés écrits par
+# append_to_project_memory/append_to_global_memory ci-dessous (`<!-- YYYY-MM-DD
+# HH:MM -->`, précédé de `\n\n`). Ce module est le seul propriétaire du format
+# d'entrée horodatée — le pattern ne doit être défini qu'ici, jamais
+# re-dérivé ailleurs (ex. tools/memory_tools.py), sous peine de désynchronisation
+# silencieuse si ce format change un jour.
+_ENTRY_SPLIT_RE = re.compile(r"\n\n(?=<!-- \d{4}-\d{2}-\d{2} \d{2}:\d{2} -->)")
+
+
+def _split_entries(mem: str) -> list[str]:
+    """Découpe la mémoire en entrées horodatées entières (voir _ENTRY_SPLIT_RE)."""
+    if not mem.strip():
+        return []
+    return [entry for entry in _ENTRY_SPLIT_RE.split(mem) if entry.strip()]
+
+
+def remove_entries_matching(existing: str, keyword: str) -> str:
+    """Retire les entrées horodatées entières contenant `keyword` (recherche
+    insensible à la casse) du contenu `existing`, et retourne le contenu
+    résultant (prêt à passer à save_project_memory).
+
+    Opère au niveau de l'entrée entière plutôt que ligne par ligne : un fait
+    peut s'étaler sur plusieurs lignes, et un filtrage ligne par ligne
+    laisserait soit un en-tête horodaté orphelin (aucune ligne de contenu
+    derrière), soit des fragments du même fait sans le contexte qui leur
+    donnait sens. Voir tests/test_project_memory.py et
+    tests/test_memory_tools.py pour les cas de régression couverts."""
+    entries = _split_entries(existing)
+    keyword_lower = keyword.lower()
+    kept = [entry for entry in entries if keyword_lower not in entry.lower()]
+    return "\n\n".join(kept)
 
 
 def _memory_path(folder: str) -> Path:

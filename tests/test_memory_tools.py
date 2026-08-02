@@ -179,6 +179,25 @@ class TestForgetMemory:
         import re
         assert len(re.findall(r"<!--\s*\d{4}-\d{2}-\d{2} \d{2}:\d{2}\s*-->", mem)) == 1
 
+    def test_removing_the_only_entry_leaves_memory_truly_empty(self, tmp_path):
+        """Highest-risk edge case: with exactly one entry in memory, removing
+        it must leave the file empty ('') — not a stray blank line or
+        whitespace-only remainder — since load_project_memory().strip() is
+        what every other tool (read_memory, the future memory-injection in
+        Task 3) treats as 'nothing to show'."""
+        from openagenticskyzer.tools.memory_tools import forget_memory
+        from openagenticskyzer.context.project_memory import (
+            append_to_project_memory, load_project_memory,
+        )
+
+        append_to_project_memory(str(tmp_path), "Utilise PostgreSQL")
+
+        with _with_folder(str(tmp_path)):
+            result = forget_memory.invoke({"keyword": "PostgreSQL"})
+
+        assert "PostgreSQL" in result
+        assert load_project_memory(str(tmp_path)) == ""
+
     def test_no_match_keeps_memory_untouched(self, tmp_path):
         from openagenticskyzer.tools.memory_tools import forget_memory
         from openagenticskyzer.context.project_memory import (

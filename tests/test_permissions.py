@@ -77,6 +77,16 @@ def test_every_registered_tool_is_classified():
     assert not unclassified, f"Tools missing from permissions.py classification: {unclassified}"
 
 
+def test_restricted_and_read_only_sets_are_disjoint():
+    """A tool landing in both sets would silently skip the confirmation
+    prompt in 'demander' mode: check() tests _READ_ONLY_TOOLS first and
+    returns True immediately, so _RESTRICTED_TOOLS membership would never
+    even be consulted for that tool."""
+    from openagenticskyzer.permissions import _RESTRICTED_TOOLS, _READ_ONLY_TOOLS
+
+    assert _RESTRICTED_TOOLS.isdisjoint(_READ_ONLY_TOOLS)
+
+
 def test_make_permission_tool_node_returns_callable():
     from langchain_core.tools import tool
 

@@ -252,6 +252,41 @@ class TestTailSnapshotSurvivesConcurrentGrowth:
         assert any(type_ == "positive" for _, type_ in notifications)
 
 
+class TestCompactionHasNoToolAccess:
+    """Régression sécurité : le résumeur de compaction ne doit avoir AUCUN outil.
+
+    Avant le correctif, `build_agent(mode="ask", ...)` était appelé sans
+    `tools` ni `permission_manager` : toute la surface `_ALL_TOOLS`
+    (run_command, delete_file, git_push…) était bindée au modèle et exécutable
+    via un `ToolNode` sans aucun contrôle de permission — sur une entrée
+    dérivée de l'historique de conversation, et de façon automatique/non
+    surveillée depuis l'auto-compact de input_bar.py.
+    """
+
+    def test_build_agent_is_called_with_an_empty_tool_list(self, monkeypatch):
+        _patch_nicegui_side_effects(monkeypatch)
+        state.messages = _make_messages(6)
+        state.active_folder = None
+        context_bar_module._compact_in_progress = False
+
+        build_agent_kwargs: list[dict] = []
+
+        class _FakeAgent:
+            def invoke(self, payload, config):
+                return {"messages": [SimpleNamespace(content="SUMMARY", tool_calls=None)]}
+
+        def _fake_build_agent(**kw):
+            build_agent_kwargs.append(kw)
+            return _FakeAgent()
+
+        monkeypatch.setattr("openagenticskyzer.agent.build_agent", _fake_build_agent)
+
+        asyncio.run(trigger_compact())
+
+        assert len(build_agent_kwargs) == 1
+        assert build_agent_kwargs[0].get("tools") == []
+
+
 class TestLlmFailureFallback:
     def test_brute_cut_fallback_and_warning_notify_on_llm_exception(self, monkeypatch):
         notifications = _patch_nicegui_side_effects(monkeypatch)

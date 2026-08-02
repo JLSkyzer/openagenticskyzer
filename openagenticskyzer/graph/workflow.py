@@ -36,18 +36,24 @@ def build_graph(
                                   → [critical, no tools] → critique → [issues?] → agent
                                   → [ok] → END
     """
-    bound_model = model.bind_tools(tools)
+    # tools == [] → aucun bind du tout (le modèle n'a littéralement aucun outil
+    # à appeler). On ne fait PAS `bind_tools([])` : cela poserait `tools: []`
+    # dans la requête, que certains providers rejettent, et masquerait
+    # l'intention « surface d'outils vide » derrière un bind vide.
+    bound_model = model.bind_tools(tools) if tools else model
     agent_node = make_agent_node(bound_model, system_prompt, max_history, max_tokens, lmstudio_compat, cwd=cwd, provider=provider)
     reasoning_node = make_reasoning_node(model)
     critique_node = make_critique_node(model)
 
-    if permission_manager is not None:
+    # L'ordre compte : une liste d'outils vide ne doit JAMAIS produire un nœud
+    # d'exécution d'outils, même si un permission_manager est fourni.
+    if not tools:
+        tool_node = _noop_tool_node
+    elif permission_manager is not None:
         from openagenticskyzer.permissions import make_permission_tool_node
         tool_node = make_permission_tool_node(tools, permission_manager)
-    elif tools:
-        tool_node = ToolNode(tools)
     else:
-        tool_node = _noop_tool_node
+        tool_node = ToolNode(tools)
 
     graph = StateGraph(AgentState)
     graph.add_node("reasoning", reasoning_node)

@@ -98,9 +98,18 @@ async def trigger_compact():
         # "LLM indisponible" nor trigger a redundant (no-op) brute-cut.
         try:
             from openagenticskyzer.agent import build_agent
+            # tools=[] : ce résumeur n'a aucune raison légitime d'appeler un
+            # outil. Sans ce paramètre, build_agent bindait toute la surface
+            # `_ALL_TOOLS` (run_command, delete_file, git_push…) et, faute de
+            # permission_manager, montait un `ToolNode` SANS aucun contrôle de
+            # permission — alors que l'entrée de cet appel est l'historique de
+            # conversation (contenu web/fichiers potentiellement porteur d'une
+            # injection de prompt) et qu'il se déclenche automatiquement,
+            # sans surveillance, depuis l'auto-compact de input_bar.py.
             agent = build_agent(mode="ask",
                                 provider=state.current_provider,
-                                model_name=state.current_model)
+                                model_name=state.current_model,
+                                tools=[])
             result = await run.io_bound(
                 agent.invoke,
                 {"messages": [{"role": "user", "content": summary_prompt}]},

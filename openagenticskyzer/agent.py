@@ -35,8 +35,19 @@ _ALL_TOOLS = [
 
 
 def build_agent(mode: str = "auto", max_tokens: int | None = None, permission_manager=None,
-                provider: str | None = None, model_name: str | None = None):
+                provider: str | None = None, model_name: str | None = None,
+                tools: list | None = None):
+    """Construit l'agent compilé.
+
+    tools : None (défaut) = surface d'outils complète (`_ALL_TOOLS`), comportement
+    normal du CLI et du chat. Passer une liste explicite pour restreindre la
+    surface — notamment `tools=[]` pour un agent sans AUCUN outil (cas de la
+    compaction dans app/components/context_bar.py : un résumeur de conversation
+    n'a aucune raison légitime d'exécuter un outil, et cet appel tourne sans
+    surveillance sur du contenu potentiellement issu du web).
+    """
     model = get_llm(provider=provider, model=model_name)
+    effective_tools = _ALL_TOOLS if tools is None else tools
     cwd = os.getcwd()
     mode_instruction = mode_router(mode)
     system_prompt = (
@@ -49,7 +60,7 @@ def build_agent(mode: str = "auto", max_tokens: int | None = None, permission_ma
         + mode_instruction
     )
     return build_graph(
-        model, _ALL_TOOLS, system_prompt,
+        model, effective_tools, system_prompt,
         max_tokens=max_tokens,
         permission_manager=permission_manager,
         lmstudio_compat=(provider == "lmstudio"),

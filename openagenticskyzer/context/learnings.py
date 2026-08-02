@@ -117,7 +117,17 @@ def load_learnings(project_folder: str | None = None,
                     confirmed_only: bool = True) -> list[Learning]:
     """Charge les learnings du projet ET du store global, fusionnés et
     dédupliqués par id (le premier fichier lu — projet, puis global — gagne
-    en cas de collision d'id). Filtre sur `confirmed` si `confirmed_only`."""
+    en cas de collision d'id). Filtre sur `confirmed` si `confirmed_only`.
+
+    Un id n'est marqué comme "retenu" qu'une fois effectivement gardé dans
+    `result` — pas dès qu'il est simplement rencontré. Sans cette distinction,
+    une copie non confirmée d'un id (filtrée par `confirmed_only`) marquerait
+    quand même cet id comme vu, et une copie confirmée du même id rencontrée
+    plus tard dans un autre fichier serait alors sautée à tort alors qu'elle
+    n'a jamais été ajoutée à `result` — un vrai learning confirmé disparaîtrait
+    silencieusement. Non atteignable aujourd'hui (rien n'écrit encore d'id en
+    collision), mais le champ `contributed` du dataclass laisse présager un
+    futur flux de promotion projet→global où ce cas deviendrait réel."""
     paths = []
     if project_folder:
         paths.append(_learnings_path(project_folder))
@@ -126,13 +136,13 @@ def load_learnings(project_folder: str | None = None,
         paths.append(global_path)
 
     result: list[Learning] = []
-    seen_ids: set[str] = set()
+    kept_ids: set[str] = set()
     for path in paths:
         for learning in _read_learnings_file(path):
-            if learning.id in seen_ids:
+            if learning.id in kept_ids:
                 continue
-            seen_ids.add(learning.id)
             if not confirmed_only or learning.confirmed:
+                kept_ids.add(learning.id)
                 result.append(learning)
     return result
 

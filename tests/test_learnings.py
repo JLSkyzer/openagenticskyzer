@@ -184,6 +184,41 @@ class TestGlobalLearnings:
         assert l_project.id in ids
         assert len(result) == 2
 
+    def test_unconfirmed_id_collision_does_not_hide_confirmed_copy(self, tmp_path, monkeypatch):
+        """Régression : si le fichier projet (lu en premier) contient une
+        copie NON confirmée d'un id, et que le fichier global contient une
+        copie CONFIRMÉE du même id, la copie confirmée doit quand même
+        apparaître dans le résultat filtré par confirmed_only=True.
+
+        L'ancienne implémentation marquait l'id comme "vu" dès la première
+        rencontre, indépendamment du filtre confirmed_only — la copie
+        non confirmée du projet aurait donc masqué la copie confirmée du
+        global, faisant disparaître silencieusement un vrai learning
+        confirmé. Pas encore atteignable en pratique (aucun outil n'écrit
+        de collisions d'id aujourd'hui), mais le champ `contributed` laisse
+        présager un futur flux de promotion projet→global qui produirait
+        exactement ce scénario."""
+        global_path = tmp_path / "global" / "learnings.jsonl"
+        monkeypatch.setattr(
+            "openagenticskyzer.context.learnings._global_learnings_path",
+            lambda: global_path,
+        )
+        project_dir = tmp_path / "proj"
+
+        unconfirmed = new_learning("error", "ctx", "bad project copy", "good project copy")
+        unconfirmed.confirmed = False
+        confirmed = new_learning("error", "ctx", "bad global copy", "good global copy")
+        confirmed.confirmed = True
+        confirmed.id = unconfirmed.id  # force la collision d'id entre les deux portées
+
+        save_learning(unconfirmed, project_folder=str(project_dir))
+        save_learning(confirmed)  # portée globale
+
+        result = load_learnings(project_folder=str(project_dir), confirmed_only=True)
+        assert len(result) == 1
+        assert result[0].id == confirmed.id
+        assert result[0].mistake == "bad global copy"
+
     def test_delete_removes_from_global_when_no_project_folder(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "openagenticskyzer.context.learnings._global_learnings_path",
@@ -216,10 +251,30 @@ class TestGlobalLearnings:
     def test_load_never_touches_real_home_without_monkeypatch(self, tmp_path, monkeypatch):
         """Vérifie explicitement l'isolation : en pointant Path.home() vers un
         dossier vide temporaire (sans monkeypatcher _global_learnings_path),
-        load_learnings ne doit lever aucune exception et retourner []."""
+        load_learnings ne doit lever aucune exception et retourner [].
+
+        Cette seule assertion ne suffit pas à prouver que le patch est
+        réellement pris en compte — un poste de dev réel n'a presque
+        certainement pas de learnings confirmés dans son vrai
+        ~/.openagent/learnings.jsonl, donc [] serait retourné même SANS
+        patch effectif. On complète donc par une assertion positive : un
+        learning sentinelle écrit sous le home patché doit être relu, ce qui
+        ne peut réussir que si _global_learnings_path() résout bien vers
+        Path.home() (patché) et non vers le vrai home de la machine."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         result = load_learnings(project_folder=str(tmp_path / "proj"))
         assert result == []
+
+        sentinel = new_learning("preference", "ctx", "sentinel bad", "sentinel good")
+        sentinel.confirmed = True
+        save_learning(sentinel)  # portée globale -> doit atterrir sous tmp_path patché
+
+        on_disk_path = tmp_path / ".openagent" / "learnings.jsonl"
+        assert on_disk_path.exists()
+
+        result = load_learnings(project_folder=str(tmp_path / "proj"))
+        assert len(result) == 1
+        assert result[0].id == sentinel.id
 
 
 class TestOSErrorDegradation:

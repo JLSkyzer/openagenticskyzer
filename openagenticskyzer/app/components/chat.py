@@ -52,10 +52,11 @@ def _render_diff(diff_text: str):
 def _render_message(msg: ChatMessage, idx: int = -1, is_last_ai: bool = False):
     if msg.role == "user":
         with ui.column().classes("items-end w-full gap-1 group"):
-            with ui.row().classes("opacity-0 group-hover:opacity-100 gap-1 transition-opacity"):
-                ui.button("✏️", on_click=lambda: _trigger_edit(idx)).classes(
-                    "w-6 h-6 bg-gray-800 text-gray-400 hover:text-white text-xs rounded"
-                ).tooltip("Éditer ce message")
+            if not state.agent_running:
+                with ui.row().classes("opacity-0 group-hover:opacity-100 gap-1 transition-opacity"):
+                    ui.button("✏️", on_click=lambda: _trigger_edit(idx)).classes(
+                        "w-6 h-6 bg-gray-800 text-gray-400 hover:text-white text-xs rounded"
+                    ).tooltip("Éditer ce message")
             if getattr(msg, "images", None):
                 with ui.row().classes("justify-end flex-wrap gap-2"):
                     for uri in msg.images:

@@ -518,6 +518,8 @@ def _find_last_user_index(messages) -> int:
 
 def edit_message(idx: int):
     """Restaure le message `idx` dans l'input et tronque l'historique avant lui."""
+    if state.agent_running:
+        return
     input_el = _input_refs.get("input_el")
     if input_el is None or not (0 <= idx < len(state.messages)):
         return

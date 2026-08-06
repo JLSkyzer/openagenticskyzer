@@ -78,3 +78,26 @@ def test_build_iframe_html_uses_double_quoted_attribute():
     # literal JS entre backticks (invalide en tant que valeur d'attribut HTML).
     assert 'srcdoc=`' not in result
     assert 'sandbox="allow-scripts"' in result
+
+
+# --- Tests Task 3 : bibliothèque de prompts (storage.py) ---
+
+def test_load_prompts_returns_defaults():
+    from unittest.mock import patch
+    from pathlib import Path
+    with patch("openagenticskyzer.app.storage._openagent_home", return_value=Path("/nonexistent/path")):
+        from openagenticskyzer.app.storage import load_prompts
+        prompts = load_prompts()
+    assert isinstance(prompts, list)
+    assert len(prompts) > 0
+    assert all("id" in p and "name" in p and "template" in p for p in prompts)
+
+
+def test_save_and_load_prompts(tmp_path, monkeypatch):
+    import openagenticskyzer.app.storage as storage
+    monkeypatch.setattr(storage, "_openagent_home", lambda: tmp_path)
+    from openagenticskyzer.app.storage import save_prompts, load_prompts
+    custom = [{"id": "test", "name": "Test", "icon": "🔧", "template": "Hello {filename}", "description": "Test template"}]
+    save_prompts(custom)
+    loaded = load_prompts()
+    assert loaded[0]["id"] == "test"

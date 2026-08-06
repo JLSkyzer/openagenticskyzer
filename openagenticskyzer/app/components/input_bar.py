@@ -85,6 +85,7 @@ def _extract_query_and_topic(msg: str) -> tuple[str, str]:
 from openagenticskyzer.app.state import state, ChatMessage
 from openagenticskyzer.app.components.model_modal import open_model_modal
 from openagenticskyzer.app.components.artifact_panel import artifact_panel, _extract_artifact
+from openagenticskyzer.app.components.prompt_library import render_prompt_picker
 
 _TOOL_TAGS_STREAM = {
     "run_command": "run",
@@ -522,6 +523,8 @@ def render_input_bar():
 
             model_button()
 
+            _prompt_btn, _open_prompt_picker = render_prompt_picker(input_el)
+
             # Bouton upload fichiers
             def _handle_upload(e):
                 from openagenticskyzer.app.file_processor import process_upload
@@ -637,6 +640,18 @@ def render_input_bar():
                 asyncio.ensure_future(_send_message(input_el.value, input_el, send_lbl, send_btn))
 
         send_btn.on("click", _on_send_click)
+
+        # Détection de "/" en début de message vide → ouvre la bibliothèque de
+        # prompts. Mécanisme séparé et indépendant du bloc JS brut ci-dessous
+        # (Enter-to-send / resize) : `.on("keydown", ...)` côté NiceGUI et un
+        # `addEventListener('keydown', ...)` JS brut attaché au même textarea
+        # ne se bloquent pas mutuellement, les deux se déclenchent à chaque
+        # keydown sans interférence.
+        def _check_slash_trigger(event):
+            if event.args.get("key") == "/" and not (input_el.value or ""):
+                _open_prompt_picker()
+
+        input_el.on("keydown", _check_slash_trigger)
 
         # JS : Enter seul = envoyer, Shift/Ctrl+Enter = saut de ligne
         # + word-wrap + resize vertical avec sauvegarde localStorage

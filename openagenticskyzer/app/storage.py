@@ -108,6 +108,63 @@ def save_folder_config(folder: str, config: dict) -> None:
     path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
+# ── Bibliothèque de prompts ───────────────────────────────────────────────────
+
+DEFAULT_PROMPTS: list[dict] = [
+    {"id": "refactor", "name": "Refactoriser", "icon": "🔧",
+     "description": "Améliore la lisibilité et la structure du code",
+     "template": "Refactorise ce fichier en suivant les bonnes pratiques.\n\nObjectifs :\n- Nommer clairement les fonctions et variables\n- Réduire la duplication\n- Améliorer la lisibilité\n- Ajouter des types si manquants\n\nFichier : {filename}"},
+    {"id": "tests", "name": "Écrire les tests", "icon": "🧪",
+     "description": "Génère des tests unitaires",
+     "template": "Écris des tests unitaires exhaustifs pour {filename}.\nUtilise pytest. Couvre les cas normaux, les cas limites, et les erreurs."},
+    {"id": "explain", "name": "Expliquer", "icon": "📖",
+     "description": "Explique le code sélectionné",
+     "template": "Explique ce code en détail, ligne par ligne si nécessaire :\n{filename}"},
+    {"id": "pr_desc", "name": "Description PR", "icon": "📝",
+     "description": "Génère une description de Pull Request",
+     "template": "Génère une description de Pull Request à partir du git diff.\nFormat : titre, résumé des changements, type de changement (feat/fix/refactor), impact."},
+    {"id": "debug", "name": "Déboguer", "icon": "🐛",
+     "description": "Analyse une erreur et propose un fix",
+     "template": "Analyse cette erreur et propose un fix avec explication :\n\n"},
+    {"id": "optimize", "name": "Optimiser", "icon": "⚡",
+     "description": "Améliore les performances",
+     "template": "Analyse les performances de {filename} et propose des optimisations concrètes avec benchmarks si possible."},
+    {"id": "security", "name": "Audit sécurité", "icon": "🔒",
+     "description": "Cherche les vulnérabilités",
+     "template": "Effectue un audit de sécurité complet de {filename}.\nVérifie : injection, XSS, CSRF, secrets exposés, dépendances vulnérables, OWASP Top 10."},
+    {"id": "review", "name": "Code review", "icon": "👁️",
+     "description": "Revue complète avec suggestions",
+     "template": "Effectue une revue de code complète de {filename}.\nPriorise : CRITIQUE > IMPORTANT > SUGGESTION. Référence les numéros de ligne."},
+    {"id": "document", "name": "Documenter", "icon": "📚",
+     "description": "Ajoute docstrings et commentaires",
+     "template": "Ajoute des docstrings et commentaires clairs à {filename}.\nRespecte le style existant."},
+    {"id": "translate", "name": "Traduire", "icon": "🔄",
+     "description": "Traduit le code dans un autre langage",
+     "template": "Traduis {filename} dans un autre langage de programmation.\nPrécise le langage cible si tu le sais."},
+]
+
+
+def _prompts_path() -> Path:
+    return _openagent_home() / "prompts.json"
+
+
+def load_prompts() -> list[dict]:
+    path = _prompts_path()
+    if not path.exists():
+        return DEFAULT_PROMPTS.copy()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else DEFAULT_PROMPTS.copy()
+    except (json.JSONDecodeError, OSError):
+        return DEFAULT_PROMPTS.copy()
+
+
+def save_prompts(prompts: list[dict]) -> None:
+    path = _prompts_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(prompts, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 # ── Calcul du contexte ────────────────────────────────────────────────────────
 
 def compute_context_pct(messages: list, provider: str | None = None) -> tuple[int, float]:

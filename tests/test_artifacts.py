@@ -211,3 +211,35 @@ def test_export_html_escapes_code_block_exactly_once(tmp_path, monkeypatch):
     assert "&amp;lt;" not in content
     assert "&amp;quot;" not in content
     assert "&amp;gt;" not in content
+
+
+# --- Tests supplémentaires : édition de message / régénération (Task 5) ---
+#
+# `_find_last_user_index` est la seule portion de logique pure de cette
+# fonctionnalité — `edit_message`/`regenerate` sont couplés à NiceGUI
+# (input_el, _send_message) et ne sont pas testés unitairement, même
+# limitation documentée que `_send_message` lui-même (voir l'en-tête de
+# tests/test_context_bar.py pour le précédent).
+
+
+def test_find_last_user_index_finds_most_recent_user_message():
+    from openagenticskyzer.app.components.input_bar import _find_last_user_index
+    from openagenticskyzer.app.state import ChatMessage
+    messages = [
+        ChatMessage(role="user", content="Message 1"),
+        ChatMessage(role="ai", content="Réponse 1"),
+        ChatMessage(role="user", content="Message 2"),
+        ChatMessage(role="ai", content="Réponse 2"),
+    ]
+    assert _find_last_user_index(messages) == 2
+
+
+def test_find_last_user_index_returns_negative_one_when_no_user_message():
+    from openagenticskyzer.app.components.input_bar import _find_last_user_index
+    from openagenticskyzer.app.state import ChatMessage
+    assert _find_last_user_index([ChatMessage(role="ai", content="x")]) == -1
+
+
+def test_find_last_user_index_empty_list():
+    from openagenticskyzer.app.components.input_bar import _find_last_user_index
+    assert _find_last_user_index([]) == -1

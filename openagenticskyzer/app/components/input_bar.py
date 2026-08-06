@@ -87,6 +87,13 @@ from openagenticskyzer.app.components.model_modal import open_model_modal
 from openagenticskyzer.app.components.artifact_panel import artifact_panel, _extract_artifact
 from openagenticskyzer.app.components.prompt_library import render_prompt_picker
 
+# Références partagées vers les éléments d'input, exposées pour chat.py
+# (édition/régénération de message déclenchées depuis un autre module). Le
+# process ne sert qu'un seul client NiceGUI à la fois (voir _LOCK_PORT dans
+# main.py), donc un singleton module-level est sûr ici — même principe que
+# _GIT_STATUS_CACHE dans sidebar.py.
+_input_refs: dict = {}
+
 _TOOL_TAGS_STREAM = {
     "run_command": "run",
     "create_file": "write", "edit_file": "write", "delete_file": "write",
@@ -495,6 +502,48 @@ async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
             pass
 
 
+def _find_last_user_index(messages) -> int:
+    """Retourne l'index du dernier message role='user' dans `messages`, ou -1 si aucun.
+
+    Logique pure, testée unitairement — voir tests/test_artifacts.py. Le reste
+    de `regenerate()` est couplé à NiceGUI (input_el, _send_message) et n'est
+    pas testé unitairement, même limitation documentée que `_send_message`
+    lui-même (voir l'en-tête de tests/test_context_bar.py pour le précédent).
+    """
+    idx = len(messages) - 1
+    while idx >= 0 and messages[idx].role != "user":
+        idx -= 1
+    return idx
+
+
+def edit_message(idx: int):
+    """Restaure le message `idx` dans l'input et tronque l'historique avant lui."""
+    input_el = _input_refs.get("input_el")
+    if input_el is None or not (0 <= idx < len(state.messages)):
+        return
+    msg = state.messages[idx]
+    input_el.set_value(msg.content)
+    state.messages = state.messages[:idx]
+    from openagenticskyzer.app.components.chat import chat_messages
+    chat_messages.refresh()
+    input_el.run_method("focus")
+
+
+async def regenerate():
+    """Retire le dernier tour user+AI et relance l'agent sur le même message utilisateur."""
+    if state.agent_running:
+        return
+    idx = _find_last_user_index(state.messages)
+    if idx < 0:
+        return
+    input_el = _input_refs.get("input_el")
+    if input_el is None:
+        return
+    text = state.messages[idx].content
+    state.messages = state.messages[:idx]
+    await _send_message(text, input_el, _input_refs.get("send_lbl"), _input_refs.get("send_btn"))
+
+
 @ui.refreshable
 def model_button():
     full_name = state.current_model or 'Aucun modèle'
@@ -556,6 +605,10 @@ def render_input_bar():
                 "w-10 h-10 bg-purple-600 hover:bg-purple-700 rounded-lg flex-shrink-0 oa-send-btn"
             ) as send_btn:
                 send_lbl = ui.label("➤").classes("text-white text-sm leading-none")
+
+        _input_refs["input_el"] = input_el
+        _input_refs["send_lbl"] = send_lbl
+        _input_refs["send_btn"] = send_btn
 
         @ui.refreshable
         def _attachments_display():

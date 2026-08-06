@@ -1,7 +1,20 @@
 """Chat message list with tool previews and permission banner."""
+import asyncio
+
 from nicegui import ui
 
 from openagenticskyzer.app.state import state, ChatMessage
+
+
+def _trigger_edit(idx: int):
+    from openagenticskyzer.app.components.input_bar import edit_message
+    edit_message(idx)
+
+
+def _trigger_regenerate():
+    from openagenticskyzer.app.components.input_bar import regenerate
+    asyncio.ensure_future(regenerate())
+
 
 _TOOL_TAG_STYLES = {
     "write":  ("bg-green-900 text-green-400",  "WRITE"),
@@ -36,9 +49,13 @@ def _render_diff(diff_text: str):
                 ui.label(line).style("color:#9ca3af;white-space:pre;display:block;padding:0px 4px")
 
 
-def _render_message(msg: ChatMessage):
+def _render_message(msg: ChatMessage, idx: int = -1, is_last_ai: bool = False):
     if msg.role == "user":
-        with ui.column().classes("items-end w-full gap-1"):
+        with ui.column().classes("items-end w-full gap-1 group"):
+            with ui.row().classes("opacity-0 group-hover:opacity-100 gap-1 transition-opacity"):
+                ui.button("✏️", on_click=lambda: _trigger_edit(idx)).classes(
+                    "w-6 h-6 bg-gray-800 text-gray-400 hover:text-white text-xs rounded"
+                ).tooltip("Éditer ce message")
             if getattr(msg, "images", None):
                 with ui.row().classes("justify-end flex-wrap gap-2"):
                     for uri in msg.images:
@@ -67,13 +84,18 @@ def _render_message(msg: ChatMessage):
         return
 
     # AI message
-    with ui.row().classes("w-full gap-2"):
-        ui.label("AI").classes(
-            "w-7 h-7 rounded-full bg-purple-600 text-white text-xs font-bold flex items-center justify-center flex-shrink-0"
-        )
-        ui.markdown(msg.content).classes(
-            "flex-1 max-w-3xl px-3 py-2 rounded-lg text-xs text-gray-300 leading-relaxed"
-        ).style("background:#1a1a1a;border-radius:2px 10px 10px 10px")
+    with ui.column().classes("w-full gap-1"):
+        with ui.row().classes("w-full gap-2"):
+            ui.label("AI").classes(
+                "w-7 h-7 rounded-full bg-purple-600 text-white text-xs font-bold flex items-center justify-center flex-shrink-0"
+            )
+            ui.markdown(msg.content).classes(
+                "flex-1 max-w-3xl px-3 py-2 rounded-lg text-xs text-gray-300 leading-relaxed"
+            ).style("background:#1a1a1a;border-radius:2px 10px 10px 10px")
+        if is_last_ai and not state.agent_running:
+            ui.button("🔄", on_click=lambda: _trigger_regenerate()).classes(
+                "text-xs text-gray-500 hover:text-purple-400 bg-transparent mt-1 ml-9"
+            ).tooltip("Régénérer cette réponse")
 
 
 @ui.refreshable
@@ -117,8 +139,13 @@ def chat_messages():
         return
 
     # Messages finalisés
-    for msg in state.messages:
-        _render_message(msg)
+    last_ai_idx = -1
+    for _idx, _m in enumerate(state.messages):
+        if _m.role == "ai":
+            last_ai_idx = _idx
+
+    for idx, msg in enumerate(state.messages):
+        _render_message(msg, idx, idx == last_ai_idx)
 
     # Messages en cours (live_log + streaming)
     if state.agent_running:

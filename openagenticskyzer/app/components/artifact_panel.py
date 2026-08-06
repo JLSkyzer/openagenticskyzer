@@ -35,13 +35,20 @@ def _build_iframe_html(content: str) -> str:
     `"`, `<`, `>` et `&`, qui redeviennent leur caractère d'origine une fois
     décodés par le navigateur au moment où il parse le document `srcdoc` dans
     l'iframe (c'est le fonctionnement standard de `srcdoc`, pas un contournement).
+
+    Le sandbox n'inclut volontairement pas `allow-same-origin` : un iframe
+    `srcdoc` n'a pas d'origine propre, donc `allow-same-origin` lui accorderait
+    l'origine de la page englobante ; combiné à `allow-scripts`, un script du
+    contenu généré par l'IA pourrait alors atteindre `window.parent.document`.
+    Les previews d'artifact sont des documents autonomes qui n'ont pas besoin
+    d'accéder à la même origine.
     """
     escaped = _html.escape(content, quote=True)
     return (
         '<iframe '
         'style="width:100%;height:500px;border:none;background:white;border-radius:8px" '
         f'srcdoc="{escaped}" '
-        'sandbox="allow-scripts allow-same-origin">'
+        'sandbox="allow-scripts">'
         '</iframe>'
     )
 
@@ -58,7 +65,17 @@ def artifact_panel():
             )
         with ui.scroll_area().classes("flex-1 w-full"):
             if state.artifact_type == "html":
-                ui.html(_build_iframe_html(state.artifact_content))
+                # sanitize=False : ui.html() par défaut passe le contenu dans DOMPurify
+                # côté client avec l'allowlist par défaut, qui ne contient pas <iframe>
+                # (et le place dans FORBID_CONTENTS) — l'iframe entier serait donc
+                # silencieusement supprimé avant d'atteindre le DOM. C'est sûr de
+                # contourner le sanitizer ici car la valeur de l'attribut srcdoc est
+                # déjà encodée par `html.escape(content, quote=True)` dans
+                # `_build_iframe_html` : aucun contenu généré par l'IA non échappé
+                # n'atteint le parseur HTML de la page englobante. Le risque résiduel
+                # est contenu par l'attribut `sandbox` de l'iframe lui-même, pas par
+                # DOMPurify.
+                ui.html(_build_iframe_html(state.artifact_content), sanitize=False)
             elif state.artifact_type == "svg":
                 ui.html(f'<div style="padding:16px">{state.artifact_content}</div>')
             elif state.artifact_type == "mermaid":

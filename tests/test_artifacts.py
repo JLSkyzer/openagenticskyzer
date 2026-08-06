@@ -77,4 +77,4 @@ def test_build_iframe_html_uses_double_quoted_attribute():
     # Doit produire un attribut srcdoc="..." valide en HTML, jamais un template
     # literal JS entre backticks (invalide en tant que valeur d'attribut HTML).
     assert 'srcdoc=`' not in result
-    assert 'sandbox="allow-scripts allow-same-origin"' in result
+    assert 'sandbox="allow-scripts"' in result

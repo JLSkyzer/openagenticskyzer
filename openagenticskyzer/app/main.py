@@ -12,6 +12,7 @@ from openagenticskyzer.app.components.sidebar import render_sidebar
 from openagenticskyzer.app.components.chat import render_chat, chat_messages
 from openagenticskyzer.app.components.context_bar import render_context_bar
 from openagenticskyzer.app.components.input_bar import render_input_bar
+from openagenticskyzer.app.components.artifact_panel import artifact_panel
 from openagenticskyzer.app.components.settings import render_settings
 from openagenticskyzer.app.components.downloads import make_downloads_top_btn
 
@@ -285,6 +286,7 @@ def main_page(client: Client):
                 scroll = render_chat()
                 render_context_bar()
                 render_input_bar()
+            artifact_panel()
 
         def _scroll_chat_to_bottom():
             try:

@@ -84,6 +84,7 @@ def _extract_query_and_topic(msg: str) -> tuple[str, str]:
 
 from openagenticskyzer.app.state import state, ChatMessage
 from openagenticskyzer.app.components.model_modal import open_model_modal
+from openagenticskyzer.app.components.artifact_panel import artifact_panel, _extract_artifact
 
 _TOOL_TAGS_STREAM = {
     "run_command": "run",
@@ -430,6 +431,14 @@ async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
 
         if ai_text:
             state.messages.append(ChatMessage(role="ai", content=ai_text))
+
+            # Détection d'un artifact (bloc ```html/svg/mermaid/markdown```) dans
+            # la réponse — déclenche l'ouverture du panneau de preview latéral.
+            artifact = _extract_artifact(ai_text)
+            if artifact:
+                state.artifact_type, state.artifact_content = artifact
+                state.show_artifact = True
+                artifact_panel.refresh()
 
         # Sauvegarde de l'historique chat sur disque
         from openagenticskyzer.app.storage import save_chat_history

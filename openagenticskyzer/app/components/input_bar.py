@@ -575,6 +575,7 @@ def render_input_bar():
             model_button()
 
             _prompt_btn, _open_prompt_picker = render_prompt_picker(input_el)
+            _input_refs["open_prompt_picker"] = _open_prompt_picker
 
             # Bouton upload fichiers
             def _handle_upload(e):
@@ -686,7 +687,9 @@ def render_input_bar():
                 _attachments_display.refresh()
         ui.timer(0.8, _poll_attachments)
 
-        ui.label("Entrée = envoyer · Shift+Entrée / Ctrl+Entrée = nouvelle ligne").classes("text-xs text-gray-700 px-1")
+        ui.label("Entrée → envoyer · Shift+Entrée → nouvelle ligne · Ctrl+K → commandes").classes(
+            "text-xs text-gray-700 px-1"
+        )
 
         def _on_send_click():
             if state.agent_running:

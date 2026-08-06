@@ -243,3 +243,61 @@ def test_find_last_user_index_returns_negative_one_when_no_user_message():
 def test_find_last_user_index_empty_list():
     from openagenticskyzer.app.components.input_bar import _find_last_user_index
     assert _find_last_user_index([]) == -1
+
+
+# --- Tests supplémentaires : palette de commandes Ctrl+K (Task 6) ---
+#
+# `_match_commands` est la seule portion de logique pure de cette
+# fonctionnalité. `render_command_palette` et les fonctions d'action
+# (`_clear_history`, `_show_memory`, `_export_conversation`, etc.) restent
+# non testées unitairement car couplées à NiceGUI (mêmes limitations
+# documentées que `_send_message`/`edit_message`/`regenerate` ci-dessus).
+# Chaque test appelle réellement `_match_commands` — aucun ne duplique la
+# logique de filtrage pour vérifier sa propre copie.
+
+def test_match_commands_empty_query_returns_all():
+    from openagenticskyzer.app.components.command_palette import _match_commands
+    commands = [
+        ("Alpha", "desc a", None),
+        ("Beta", "desc b", None),
+        ("Gamma", "desc g", None),
+    ]
+    result = _match_commands(commands, "")
+    assert result == commands
+
+
+def test_match_commands_case_insensitive_label_match():
+    from openagenticskyzer.app.components.command_palette import _match_commands
+    commands = [
+        ("Ouvrir un dossier", "Sélectionner un projet", None),
+        ("Paramètres", "Ouvrir les paramètres", None),
+    ]
+    result = _match_commands(commands, "OUVRIR")
+    labels = [c[0] for c in result]
+    assert "Ouvrir un dossier" in labels
+    assert "Paramètres" in labels  # match via la description, cf. test suivant
+
+
+def test_match_commands_matches_on_description_not_only_label():
+    from openagenticskyzer.app.components.command_palette import _match_commands
+    commands = [
+        ("Paramètres", "Ouvrir les paramètres de l'application", None),
+        ("Bibliothèque de prompts", "Ouvrir la bibliothèque de prompts", None),
+    ]
+    result = _match_commands(commands, "application")
+    assert len(result) == 1
+    assert result[0][0] == "Paramètres"
+
+
+def test_match_commands_no_match_returns_empty_list():
+    from openagenticskyzer.app.components.command_palette import _match_commands
+    commands = [("Alpha", "desc a", None), ("Beta", "desc b", None)]
+    result = _match_commands(commands, "zzz-inexistant")
+    assert result == []
+
+
+def test_match_commands_caps_at_eight_results():
+    from openagenticskyzer.app.components.command_palette import _match_commands
+    commands = [(f"Commande {i}", "match", None) for i in range(12)]
+    result = _match_commands(commands, "")
+    assert len(result) == 8

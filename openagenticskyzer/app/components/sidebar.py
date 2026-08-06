@@ -9,6 +9,44 @@ from openagenticskyzer.app.state import state, DownloadEntry
 from openagenticskyzer.app.storage import load_folder_index, add_folder_to_index
 
 
+def open_folder_prompt():
+    """Ouvre un dialog pour sélectionner/saisir un dossier de projet à activer.
+
+    Remontée au niveau module (au lieu d'une closure locale de
+    render_sidebar) pour être réutilisable ailleurs — voir command_palette.py
+    (commande « 📂 Ouvrir un dossier »). Ne capture rien d'autre que
+    `activate_folder` et `ui`/`run`, tous déjà importés au niveau module ici.
+    """
+    with ui.dialog() as dlg, ui.card().classes("bg-gray-900 text-white"):
+        ui.label("Ouvrir un dossier").classes("text-sm font-bold mb-2")
+        path_input = ui.input(placeholder="D:\\chemin\\vers\\projet").classes("w-full")
+
+        async def _pick_folder():
+            def _tkpick():
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                folder = filedialog.askdirectory(title="Sélectionner un dossier")
+                root.destroy()
+                return folder or ""
+            picked = await run.io_bound(_tkpick)
+            if picked:
+                path_input.set_value(picked)
+
+        with ui.row().classes("items-center gap-2 mt-1"):
+            ui.button("📁 Parcourir…", on_click=_pick_folder).classes(
+                "bg-gray-800 border border-gray-700 text-xs text-gray-300 hover:border-purple-500"
+            )
+        with ui.row().classes("mt-2"):
+            ui.button("Ouvrir", on_click=lambda: (
+                activate_folder(path_input.value), dlg.close()
+            )).classes("bg-purple-600")
+            ui.button("Annuler", on_click=dlg.close).classes("bg-gray-700")
+    dlg.open()
+
+
 def activate_folder(folder_path: str):
     """Set the active folder in state and persist to index."""
     if not os.path.isdir(folder_path):
@@ -200,36 +238,6 @@ def render_sidebar():
         "border-right:1px solid #222;display:flex;flex-direction:column;overflow:hidden"
     ):
         with ui.element("div").classes("p-2 border-b border-gray-800"):
-            def open_folder_prompt():
-                with ui.dialog() as dlg, ui.card().classes("bg-gray-900 text-white"):
-                    ui.label("Ouvrir un dossier").classes("text-sm font-bold mb-2")
-                    path_input = ui.input(placeholder="D:\\chemin\\vers\\projet").classes("w-full")
-
-                    async def _pick_folder():
-                        def _tkpick():
-                            import tkinter as tk
-                            from tkinter import filedialog
-                            root = tk.Tk()
-                            root.withdraw()
-                            root.attributes("-topmost", True)
-                            folder = filedialog.askdirectory(title="Sélectionner un dossier")
-                            root.destroy()
-                            return folder or ""
-                        picked = await run.io_bound(_tkpick)
-                        if picked:
-                            path_input.set_value(picked)
-
-                    with ui.row().classes("items-center gap-2 mt-1"):
-                        ui.button("📁 Parcourir…", on_click=_pick_folder).classes(
-                            "bg-gray-800 border border-gray-700 text-xs text-gray-300 hover:border-purple-500"
-                        )
-                    with ui.row().classes("mt-2"):
-                        ui.button("Ouvrir", on_click=lambda: (
-                            activate_folder(path_input.value), dlg.close()
-                        )).classes("bg-purple-600")
-                        ui.button("Annuler", on_click=dlg.close).classes("bg-gray-700")
-                dlg.open()
-
             ui.button("📂 Ouvrir un dossier", on_click=open_folder_prompt).classes(
                 "w-full bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-lg"
             )

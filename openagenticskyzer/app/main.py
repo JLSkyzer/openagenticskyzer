@@ -163,7 +163,11 @@ _browser_proc = None  # processus navigateur en cours
 def _do_export(fmt: str) -> None:
     """Exporte la conversation courante dans le dossier actif et ouvre le fichier."""
     fn = {"md": export_markdown, "html": export_html, "json": export_json}[fmt]
-    path = fn()
+    try:
+        path = fn()
+    except Exception as exc:
+        ui.notify(f"Échec de l'export : {exc}", type="negative")
+        return
     if os.name == "nt":
         os.startfile(path)
     ui.notify(f"Exporté : {path.name}", type="positive")

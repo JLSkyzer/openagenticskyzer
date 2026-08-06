@@ -156,6 +156,33 @@ def test_export_json(tmp_path, monkeypatch):
     assert data[0]["role"] == "user"
 
 
+def test_export_markdown_quotes_every_line_of_multiline_tool_content(tmp_path, monkeypatch):
+    # Bug relevé en code-review (voir tasks\lessons.md) : une blockquote Markdown
+    # perd sa citation dès la première ligne blanche (pas de continuation
+    # paresseuse) — un contenu d'outil multi-lignes sans préfixe "> " sur chaque
+    # ligne se retrouvait donc rendu hors citation après la 1re ligne blanche.
+    import openagenticskyzer.app.exporter as exp
+    from openagenticskyzer.app.state import state, ChatMessage
+    monkeypatch.setattr(state, "active_folder", str(tmp_path))
+    monkeypatch.setattr(state, "messages", [
+        ChatMessage(
+            role="tool",
+            content="file1.py\nfile2.py\n\nsubdir/\n  a.py",
+            tool_tag="read",
+            tool_name="list_dir",
+        ),
+    ])
+
+    path = exp.export_markdown()
+    content = path.read_text(encoding="utf-8")
+    tool_block = content.split("---\n", 1)[1]
+    for line in tool_block.splitlines():
+        if line.strip():
+            assert line.startswith(">"), f"ligne hors blockquote : {line!r}"
+    assert "subdir/" in tool_block
+    assert "  a.py" in tool_block
+
+
 def test_export_html_escapes_code_block_exactly_once(tmp_path, monkeypatch):
     # Bug identifié avant implémentation (voir tasks/lessons.md et tasks/todo.md) :
     # le plan construisait export_html() en échappant tout le message AI une

@@ -23,7 +23,12 @@ def export_markdown() -> Path:
         elif m.role == "tool":
             tag = getattr(m, "tool_tag", None) or "tool"
             tool_name = getattr(m, "tool_name", "") or ""
-            lines.append(f"\n> **[{tag.upper()}]** `{tool_name}` — {m.content}\n")
+            # Chaque ligne d'une blockquote Markdown doit porter le préfixe "> " :
+            # une ligne blanche ferme la citation (pas de continuation paresseuse
+            # au-delà), donc un contenu d'outil multi-lignes (sorties de commande,
+            # listings...) sans préfixe par ligne se retrouve rendu hors citation.
+            quoted_content = "\n".join(f"> {line}" for line in m.content.split("\n"))
+            lines.append(f"\n> **[{tag.upper()}]** `{tool_name}` —\n{quoted_content}\n")
     out = _out_path("md")
     out.write_text("".join(lines), encoding="utf-8", newline="\n")
     return out

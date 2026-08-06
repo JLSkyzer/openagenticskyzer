@@ -101,3 +101,19 @@ def test_save_and_load_prompts(tmp_path, monkeypatch):
     save_prompts(custom)
     loaded = load_prompts()
     assert loaded[0]["id"] == "test"
+
+
+def test_load_prompts_falls_back_on_malformed_shape(tmp_path, monkeypatch):
+    # Review follow-up (b8480ec) : un prompts.json valide-en-JSON mais dont les
+    # éléments ne sont pas des dicts avec {id, name, template} plantait
+    # prompt_library._filter() avec un TypeError dès l'ouverture de la picker
+    # (p["name"] sur une chaîne). load_prompts() doit détecter cette forme
+    # invalide et retomber sur DEFAULT_PROMPTS, sans jamais lever.
+    import json
+    import openagenticskyzer.app.storage as storage
+    monkeypatch.setattr(storage, "_openagent_home", lambda: tmp_path)
+    (tmp_path / "prompts.json").write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
+    from openagenticskyzer.app.storage import load_prompts, DEFAULT_PROMPTS
+    loaded = load_prompts()
+    assert loaded == DEFAULT_PROMPTS
+    assert all(isinstance(p, dict) and "id" in p and "name" in p and "template" in p for p in loaded)

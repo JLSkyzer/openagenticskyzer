@@ -154,7 +154,11 @@ def load_prompts() -> list[dict]:
         return DEFAULT_PROMPTS.copy()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else DEFAULT_PROMPTS.copy()
+        if not isinstance(data, list):
+            return DEFAULT_PROMPTS.copy()
+        if not all(isinstance(p, dict) and "id" in p and "name" in p and "template" in p for p in data):
+            return DEFAULT_PROMPTS.copy()
+        return data
     except (json.JSONDecodeError, OSError):
         return DEFAULT_PROMPTS.copy()
 

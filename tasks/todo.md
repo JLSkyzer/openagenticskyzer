@@ -89,3 +89,15 @@ Tests : 32 tests dans `tests/test_learnings.py` (création/troncature, save/load
 `tests/test_input_bar.py` supprimé (ne testait que `_format_memory_injection`, elle-même supprimée de `input_bar.py`) ; ses 4 cas sont repris et étendus dans `test_system_context.py`. Ajout de `tests/conftest.py` : fixture autouse pointant `Path.home()` vers un tmp dir — devenu nécessaire parce que tout test construisant un `agent_node` lit maintenant `~/.openagent/memory.md` et `~/.openagent/learnings.jsonl` ; sans ça la suite serait verte sur une machine vierge et rouge sur un poste ayant réellement utilisé l'app. C'est la classe de bug « chemin global `Path.home()` non isolé » relevée deux fois dans lessons.md, traitée cette fois une bonne fois pour toutes au niveau de la suite.
 
 Suite complète : 325 passed / 3 failed — mêmes 3 échecs pré-existants sans rapport (`test_context_limit.py::test_ctx_limits_has_all_providers`, `test_loop_detector.py::TestLoopDetectorSameFileEdit::test_interleaved_tool_resets_file_streak`, `test_utils.py::TestParseMentions::test_email_like_not_captured`), aucune régression.
+
+## Plan 2026-04-27-artifacts-content — EN COURS
+
+- [x] Task 1 — Extraction d'artifacts (`_extract_artifact`), champs `AppState`/`ConversationBranch`, composant `artifact_panel.py`
+
+Task 1 commit (master) : voir `git log` (feat: add artifact panel HTML/SVG/Mermaid + state fields, Phase 3.1)
+
+Task 1 — écart vs. code suggéré par le plan (bug identifié avant implémentation, cf. lessons.md) :
+- Le plan construisait l'attribut `srcdoc` de l'iframe HTML comme un template literal JavaScript entre backticks (`srcdoc=\`{escaped}\``) avec un échappement de type chaîne JS (`.replace("\\", "\\\\").replace("\`", "\\\`")`). `ui.html(...)` rend du HTML brut, pas du JS : les backticks ne sont pas des guillemets d'attribut HTML valides (HTML invalide en sortie), et cet échappement ne neutralise ni `"` ni `<`, donc un artifact HTML généré par l'IA contenant `"><script>...` aurait pu casser l'attribut et injecter du markup dans la page englobante. Remplacé par une fonction pure `_build_iframe_html(content) -> str` (testable sans harnais NiceGUI, suivant la convention déjà établie par `context_bar._build_compact_history_text` etc.) qui construit `srcdoc="..."` entre guillemets doubles standards avec `html.escape(content, quote=True)` — l'échappement HTML réel, adapté au fait que `srcdoc` est reparsé comme document HTML complet par l'iframe une fois décodé par le navigateur.
+- 3 tests ajoutés au-delà des 4 suggérés par le plan (`tests/test_artifacts.py`) pour couvrir spécifiquement ce point : guillemet double dans le contenu correctement échappé (`&quot;`), tag `<script>` échappé (`&lt;script&gt;`), et absence de tout `srcdoc=\`` (template literal) dans la sortie.
+
+Tests : 7 tests dans `tests/test_artifacts.py` (4 extraction + 3 échappement iframe). Suite complète : 332 passed / 3 failed — mêmes 3 échecs pré-existants sans rapport, aucune régression.

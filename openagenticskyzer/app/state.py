@@ -33,6 +33,14 @@ class AttachedFile:
 
 
 @dataclass
+class ConversationBranch:
+    branch_id: str
+    label: str
+    messages: list          # list[ChatMessage]
+    created_at: str
+
+
+@dataclass
 class AppState:
     active_folder: Optional[str] = None
     messages: list[ChatMessage] = field(default_factory=list)
@@ -52,6 +60,13 @@ class AppState:
     is_streaming: bool = False
     # Fichiers attachés
     attached_files: list = field(default_factory=list)  # list[AttachedFile]
+    # Artifacts
+    artifact_type: str = ""       # "html" | "svg" | "mermaid" | "markdown" | ""
+    artifact_content: str = ""
+    show_artifact: bool = False
+    # Branches
+    branches: list = field(default_factory=list)        # list[ConversationBranch]
+    current_branch_id: str = "main"
 
 
 # Singleton — imported everywhere in the app

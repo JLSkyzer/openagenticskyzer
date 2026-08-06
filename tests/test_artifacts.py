@@ -117,3 +117,70 @@ def test_load_prompts_falls_back_on_malformed_shape(tmp_path, monkeypatch):
     loaded = load_prompts()
     assert loaded == DEFAULT_PROMPTS
     assert all(isinstance(p, dict) and "id" in p and "name" in p and "template" in p for p in loaded)
+
+
+# --- Tests Task 4 : export de conversation (exporter.py) ---
+
+def test_export_markdown(tmp_path, monkeypatch):
+    import openagenticskyzer.app.exporter as exp
+    from openagenticskyzer.app.state import state
+    monkeypatch.setattr(state, "active_folder", str(tmp_path))
+    monkeypatch.setattr(state, "current_model", "llama3")
+    monkeypatch.setattr(state, "current_provider", "ollama")
+
+    from openagenticskyzer.app.state import ChatMessage
+    monkeypatch.setattr(state, "messages", [
+        ChatMessage(role="user", content="Bonjour"),
+        ChatMessage(role="ai", content="Salut !"),
+    ])
+
+    path = exp.export_markdown()
+    assert path.exists()
+    content = path.read_text(encoding="utf-8")
+    assert "Bonjour" in content
+    assert "Salut" in content
+
+
+def test_export_json(tmp_path, monkeypatch):
+    import json
+    import openagenticskyzer.app.exporter as exp
+    from openagenticskyzer.app.state import state, ChatMessage
+    monkeypatch.setattr(state, "active_folder", str(tmp_path))
+    monkeypatch.setattr(state, "messages", [
+        ChatMessage(role="user", content="Test"),
+    ])
+
+    path = exp.export_json()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(data, list)
+    assert data[0]["role"] == "user"
+
+
+def test_export_html_escapes_code_block_exactly_once(tmp_path, monkeypatch):
+    # Bug identifié avant implémentation (voir tasks/lessons.md et tasks/todo.md) :
+    # le plan construisait export_html() en échappant tout le message AI une
+    # première fois avec html.escape(m.content), PUIS ré-échappait le contenu
+    # (déjà échappé) du bloc de code trouvé par regex dans cette chaîne déjà
+    # échappée — un `<` du code devenait `&lt;` à la 1re passe puis `&amp;lt;`
+    # à la 2e, ce qui s'affiche comme le texte littéral "&lt;" dans le navigateur
+    # au lieu d'un `<` décodé. Corrigé en séparant code/non-code sur le texte
+    # BRUT avant toute passe d'échappement, pour que chaque segment ne soit
+    # échappé qu'une seule fois.
+    import openagenticskyzer.app.exporter as exp
+    from openagenticskyzer.app.state import state, ChatMessage
+    monkeypatch.setattr(state, "active_folder", str(tmp_path))
+    monkeypatch.setattr(state, "messages", [
+        ChatMessage(
+            role="ai",
+            content='before\n```python\nx = "<b>"\n```\nafter',
+        ),
+    ])
+
+    path = exp.export_html()
+    content = path.read_text(encoding="utf-8")
+    # Le groupe de capture du fence inclut le saut de ligne final avant les
+    # ``` de fermeture — d'où le \n avant </code></pre>.
+    assert "<pre><code class='language-python'>x = &quot;&lt;b&gt;&quot;\n</code></pre>" in content
+    assert "&amp;lt;" not in content
+    assert "&amp;quot;" not in content
+    assert "&amp;gt;" not in content

@@ -15,6 +15,7 @@ from openagenticskyzer.app.components.input_bar import render_input_bar
 from openagenticskyzer.app.components.artifact_panel import artifact_panel
 from openagenticskyzer.app.components.settings import render_settings
 from openagenticskyzer.app.components.downloads import make_downloads_top_btn
+from openagenticskyzer.app.exporter import export_markdown, export_html, export_json
 
 # ── Vendor local (highlight.js + mermaid) ─────────────────────────────────────
 
@@ -157,6 +158,17 @@ _PROFILE_DIR = pathlib.Path.home() / ".openagenticskyzer" / "browser_profile"
 _browser_proc = None  # processus navigateur en cours
 
 
+# ── Export de conversation ────────────────────────────────────────────────────
+
+def _do_export(fmt: str) -> None:
+    """Exporte la conversation courante dans le dossier actif et ouvre le fichier."""
+    fn = {"md": export_markdown, "html": export_html, "json": export_json}[fmt]
+    path = fn()
+    if os.name == "nt":
+        os.startfile(path)
+    ui.notify(f"Exporté : {path.name}", type="positive")
+
+
 # ── Page NiceGUI ──────────────────────────────────────────────────────────────
 
 @ui.page("/")
@@ -269,6 +281,14 @@ def main_page(client: Client):
             ui.element("div").style("flex:1")
             # Bouton statique (non-refreshable) — évite la destruction du dialog au refresh
             _dl_lbl = make_downloads_top_btn()
+            with ui.button().classes(
+                "h-7 px-2 bg-gray-900 border border-gray-800 text-gray-500 text-xs rounded"
+            ):
+                ui.label("⬇").classes("text-xs leading-none")
+                with ui.menu():
+                    ui.menu_item("Markdown (.md)", lambda: _do_export("md"))
+                    ui.menu_item("HTML (.html)", lambda: _do_export("html"))
+                    ui.menu_item("JSON (.json)", lambda: _do_export("json"))
             ui.button("⚙️", on_click=render_settings).classes(
                 "w-7 h-7 bg-gray-900 border border-gray-800 text-purple-400 text-xs rounded"
             )

@@ -28,6 +28,12 @@ def activate_folder(folder_path: str):
     state.current_provider = folder_cfg.get("current_provider") or None
     # Recalcule la jauge de contexte depuis l'historique chargé
     state.context_tokens, state.context_pct = compute_context_pct(state.messages, state.current_provider)
+    # L'artifact affiché appartenait à la conversation précédente : le fermer
+    # pour éviter qu'un panneau resté ouvert montre un contenu déconnecté du
+    # nouvel historique chargé.
+    state.artifact_type = ""
+    state.artifact_content = ""
+    state.show_artifact = False
     try:
         from openagenticskyzer.app.components.input_bar import model_button
         model_button.refresh()
@@ -36,6 +42,11 @@ def activate_folder(folder_path: str):
     try:
         from openagenticskyzer.app.components.chat import chat_messages
         chat_messages.refresh()
+    except Exception:
+        pass
+    try:
+        from openagenticskyzer.app.components.artifact_panel import artifact_panel
+        artifact_panel.refresh()
     except Exception:
         pass
     sidebar_list.refresh()

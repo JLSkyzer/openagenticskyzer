@@ -353,9 +353,17 @@ def _tab_danger(cfg: dict):
                                     n = delete_folder_sessions(state.active_folder)
                                     clear_chat_history(state.active_folder)
                                     state.messages = []
+                                    state.artifact_type = ""
+                                    state.artifact_content = ""
+                                    state.show_artifact = False
                                     try:
                                         from openagenticskyzer.app.components.chat import chat_messages
                                         chat_messages.refresh()
+                                    except Exception:
+                                        pass
+                                    try:
+                                        from openagenticskyzer.app.components.artifact_panel import artifact_panel
+                                        artifact_panel.refresh()
                                     except Exception:
                                         pass
                                     confirm_dlg.close()
@@ -379,11 +387,16 @@ def _tab_danger(cfg: dict):
                     remove_folder_from_index(folder)
                     state.active_folder = None
                     state.messages = []
+                    state.artifact_type = ""
+                    state.artifact_content = ""
+                    state.show_artifact = False
                     try:
                         from openagenticskyzer.app.components.sidebar import sidebar_list
                         from openagenticskyzer.app.components.chat import chat_messages
+                        from openagenticskyzer.app.components.artifact_panel import artifact_panel
                         sidebar_list.refresh()
                         chat_messages.refresh()
+                        artifact_panel.refresh()
                     except Exception:
                         pass
                     ui.notify("Dossier retiré de la sidebar.", type="positive")

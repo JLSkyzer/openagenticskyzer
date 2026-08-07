@@ -32,6 +32,16 @@ def _snapshot_active_branch():
             b.messages = state.messages.copy()
 
 
+def active_branch_label() -> str:
+    """Libellé lisible de la vue actuellement active (main ou branche), pour
+    affichage dans les dialogs d'export — évite qu'un export silencieux sur
+    une branche soit confondu avec un export de toute la conversation."""
+    if state.current_branch_id == "main":
+        return "🌿 Main"
+    b = next((b for b in state.branches if b.branch_id == state.current_branch_id), None)
+    return b.label if b else "🌿 Main"
+
+
 def _fork_from(idx: int):
     """Crée une nouvelle branche à partir des messages [0, idx] inclus et bascule dessus."""
     if state.agent_running:

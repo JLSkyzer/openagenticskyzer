@@ -109,6 +109,10 @@ def _export_conversation():
     ):
         dlg.open()
         ui.label("Exporter la conversation").classes("text-sm font-bold mb-2")
+        # Import différé obligatoire : chat.py importe indirectement ce module
+        # (via main.py), un import module-level ici créerait un cycle.
+        from openagenticskyzer.app.components.chat import active_branch_label
+        ui.label(f"Depuis : {active_branch_label()}").classes("text-xs text-gray-500 mb-2")
 
         def _pick(fmt: str):
             dlg.close()

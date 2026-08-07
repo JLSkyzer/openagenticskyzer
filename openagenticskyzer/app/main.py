@@ -9,7 +9,7 @@ from nicegui import ui, Client
 from openagenticskyzer.app.state import state
 from openagenticskyzer.app.storage import load_global_config, load_folder_index
 from openagenticskyzer.app.components.sidebar import render_sidebar
-from openagenticskyzer.app.components.chat import render_chat, chat_messages
+from openagenticskyzer.app.components.chat import render_chat, chat_messages, active_branch_label
 from openagenticskyzer.app.components.context_bar import render_context_bar
 from openagenticskyzer.app.components.input_bar import render_input_bar
 from openagenticskyzer.app.components.artifact_panel import artifact_panel
@@ -296,6 +296,9 @@ def main_page(client: Client):
             ):
                 ui.label("⬇").classes("text-xs leading-none")
                 with ui.menu():
+                    ui.label(f"Depuis : {active_branch_label()}").classes(
+                        "text-xs text-gray-500 px-2 py-1"
+                    )
                     ui.menu_item("Markdown (.md)", lambda: _do_export("md"))
                     ui.menu_item("HTML (.html)", lambda: _do_export("html"))
                     ui.menu_item("JSON (.json)", lambda: _do_export("json"))

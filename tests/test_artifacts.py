@@ -502,3 +502,111 @@ def test_reset_branches_clears_branch_state(monkeypatch):
     assert state.branches == []
     assert state.current_branch_id == "main"
     assert state.main_messages == []
+
+
+# ── Régression : la persistance disque ne doit jamais écraser main avec une
+# branche ─────────────────────────────────────────────────────────────────
+#
+# Bug Critical trouvé en audit holistique (voir tasks/lessons.md, entrée du
+# 2026-08-07 "branch persistence") : save_chat_history(folder, state.messages)
+# était appelée sans condition dans _send_message (input_bar.py), après CHAQUE
+# tour de conversation — y compris quand state.current_branch_id pointe vers
+# une branche, auquel cas state.messages ne contient que le sous-ensemble de
+# main jusqu'au point de fork + les nouveaux messages de la branche. Ça
+# écrasait silencieusement chat_history.json avec ce contenu partiel, perdant
+# définitivement tout ce qui suit le point de fork sur main.
+#
+# _send_message elle-même n'est pas raisonnablement testable en isolation
+# (fortement couplée à NiceGUI/LLM — même constat déjà documenté dans
+# tests/test_context_bar.py pour trigger_compact), donc le fix extrait la
+# logique de garde dans _save_main_chat_history() (input_bar.py), appelée
+# par _send_message. Les tests ci-dessous appellent cette fonction réelle,
+# pas une réplique de sa logique.
+def test_save_main_chat_history_persists_when_on_main(tmp_path, monkeypatch):
+    from openagenticskyzer.app.components import input_bar as input_bar_mod
+    from openagenticskyzer.app.state import state, ChatMessage
+
+    calls = []
+    monkeypatch.setattr(
+        "openagenticskyzer.app.storage.save_chat_history",
+        lambda folder, messages: calls.append((folder, messages)),
+    )
+    monkeypatch.setattr(state, "active_folder", str(tmp_path))
+    monkeypatch.setattr(state, "current_branch_id", "main")
+    monkeypatch.setattr(state, "messages", [
+        ChatMessage(role="user", content="Msg1"),
+        ChatMessage(role="ai", content="Rép1"),
+    ])
+
+    input_bar_mod._save_main_chat_history()
+
+    assert len(calls) == 1
+    folder, messages = calls[0]
+    assert folder == str(tmp_path)
+    assert messages == state.messages
+
+
+def test_save_main_chat_history_is_noop_when_on_branch(tmp_path, monkeypatch):
+    """Reproduit le scénario du bug : state.messages contient la vue tronquée
+    d'une branche (main jusqu'au fork + nouveaux messages de la branche) —
+    la sauvegarde disque doit être un no-op, pour ne jamais écraser
+    chat_history.json (qui représente main) avec ce contenu partiel."""
+    from openagenticskyzer.app.components import input_bar as input_bar_mod
+    from openagenticskyzer.app.state import state, ChatMessage
+
+    calls = []
+    monkeypatch.setattr(
+        "openagenticskyzer.app.storage.save_chat_history",
+        lambda folder, messages: calls.append((folder, messages)),
+    )
+    monkeypatch.setattr(state, "active_folder", str(tmp_path))
+    monkeypatch.setattr(state, "current_branch_id", "branch-abc123")
+    # Vue partielle typique d'une branche : main tronquée au point de fork
+    # (Msg1) + un nouveau tour propre à la branche (b_ai).
+    monkeypatch.setattr(state, "messages", [
+        ChatMessage(role="user", content="Msg1"),
+        ChatMessage(role="ai", content="b_ai"),
+    ])
+
+    input_bar_mod._save_main_chat_history()
+
+    assert calls == []
+
+
+def test_active_branch_label_returns_main_marker_when_on_main(monkeypatch):
+    from openagenticskyzer.app.components import chat as chat_mod
+    from openagenticskyzer.app.state import state
+
+    monkeypatch.setattr(state, "current_branch_id", "main")
+    monkeypatch.setattr(state, "branches", [])
+
+    assert chat_mod.active_branch_label() == "🌿 Main"
+
+
+def test_active_branch_label_returns_branch_label_when_on_known_branch(monkeypatch):
+    from openagenticskyzer.app.components import chat as chat_mod
+    from openagenticskyzer.app.state import state, ConversationBranch
+
+    branch = ConversationBranch(
+        branch_id="branch-abc123",
+        label="Branche 1",
+        messages=[],
+        created_at="2026-08-07T00:00:00",
+    )
+    monkeypatch.setattr(state, "branches", [branch])
+    monkeypatch.setattr(state, "current_branch_id", "branch-abc123")
+
+    assert chat_mod.active_branch_label() == "Branche 1"
+
+
+def test_active_branch_label_falls_back_to_main_marker_for_unknown_branch_id(monkeypatch):
+    """Garde défensive : un current_branch_id qui ne correspond à aucune
+    branche connue (ne devrait normalement pas arriver) ne doit jamais lever
+    d'exception ni afficher un libellé vide — retombe sur le marqueur main."""
+    from openagenticskyzer.app.components import chat as chat_mod
+    from openagenticskyzer.app.state import state
+
+    monkeypatch.setattr(state, "branches", [])
+    monkeypatch.setattr(state, "current_branch_id", "does-not-exist")
+
+    assert chat_mod.active_branch_label() == "🌿 Main"

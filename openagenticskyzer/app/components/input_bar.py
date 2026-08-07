@@ -167,6 +167,28 @@ async def _stream_agent(agent, initial_state: dict) -> str:
     return state.streaming_content
 
 
+def _save_main_chat_history() -> None:
+    """Sauvegarde l'historique chat sur disque — uniquement pour "main" : les
+    branches (state.branches/state.current_branch_id) sont un état éphémère,
+    en mémoire seulement (voir reset_branches() dans chat.py), et ne doivent
+    jamais écraser le fichier disque qui représente la conversation "main" du
+    dossier. Sans ce garde, envoyer un message sur une branche appelait
+    save_chat_history(folder, state.messages) avec le contenu de la branche
+    (une vue partielle de main, tronquée au point de fork), écrasant
+    silencieusement chat_history.json et perdant définitivement tout ce qui
+    suit le point de fork sur main (voir tasks/lessons.md, entrée branch
+    persistence / audit holistique).
+
+    Extraite en fonction dédiée (plutôt que laissée inline dans
+    _send_message) pour rester testable sans avoir à mocker tout le flux
+    agent — _send_message est fortement couplé à NiceGUI/LLM et n'est pas
+    raisonnablement testable en isolation (même constat déjà documenté pour
+    trigger_compact dans tests/test_context_bar.py)."""
+    if state.current_branch_id == "main":
+        from openagenticskyzer.app.storage import save_chat_history
+        save_chat_history(state.active_folder, state.messages)
+
+
 async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
     """Append user message, run agent, append AI response."""
     if not text.strip() or state.agent_running:
@@ -448,9 +470,9 @@ async def _send_message(text: str, input_el, send_lbl=None, send_btn=None):
                 state.show_artifact = True
                 artifact_panel.refresh()
 
-        # Sauvegarde de l'historique chat sur disque
-        from openagenticskyzer.app.storage import save_chat_history
-        save_chat_history(state.active_folder, state.messages)
+        # Sauvegarde de l'historique chat sur disque — uniquement pour "main"
+        # (voir _save_main_chat_history, plus haut dans ce fichier)
+        _save_main_chat_history()
 
         # Mise à jour de la jauge de contexte (tokens réservés déduits)
         total_chars = sum(len(m.content) for m in state.messages if m.role in ("user", "ai"))

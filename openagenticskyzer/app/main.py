@@ -262,6 +262,11 @@ def main_page(client: Client):
                 state.current_provider = folder_cfg.get("current_provider") or None
                 history_data = load_chat_history(last)
                 state.messages = [ChatMessage(**entry) for entry in history_data]
+                # Idem pour les branches : au démarrage à froid, aucune branche ne peut
+                # encore exister, mais on reset par cohérence avec les autres call-sites
+                # qui remplacent state.messages (voir tasks/lessons.md).
+                from openagenticskyzer.app.components.chat import reset_branches
+                reset_branches()
                 state.context_tokens, state.context_pct = compute_context_pct(state.messages, state.current_provider)
                 # Charge le .env du dossier (clés API + config spécifiques au projet)
                 try:

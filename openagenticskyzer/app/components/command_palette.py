@@ -51,9 +51,12 @@ def _clear_history():
             state.artifact_type = ""
             state.artifact_content = ""
             state.show_artifact = False
+            from openagenticskyzer.app.components.chat import reset_branches
+            reset_branches()
             try:
-                from openagenticskyzer.app.components.chat import chat_messages
+                from openagenticskyzer.app.components.chat import chat_messages, branch_selector
                 chat_messages.refresh()
+                branch_selector.refresh()
             except Exception:
                 pass
             try:

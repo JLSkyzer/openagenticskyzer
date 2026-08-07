@@ -51,6 +51,19 @@ def _fork_from(idx: int):
     ui.notify(f"Branche '{branch.label}' créée.", type="positive")
 
 
+def reset_branches():
+    """Réinitialise l'état de branchement — à appeler chaque fois que
+    state.messages est remplacé en dehors du flux fork/switch (changement de
+    dossier actif, effacement d'historique, retrait de dossier), pour éviter
+    qu'une branche d'un dossier/contexte précédent ne soit confondue avec le
+    nouveau contenu chargé (voir _snapshot_active_branch : sans ce reset, un
+    switch vers "main" après un changement de dossier écraserait le contenu
+    d'une branche du dossier précédent avec les messages du nouveau dossier)."""
+    state.branches = []
+    state.current_branch_id = "main"
+    state.main_messages = []
+
+
 def _switch_branch(branch_id: str):
     """Bascule la vue courante sur "main" ou une branche existante, en sauvegardant
     d'abord le contenu de la vue quittée pour ne jamais le perdre."""

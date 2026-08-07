@@ -356,9 +356,12 @@ def _tab_danger(cfg: dict):
                                     state.artifact_type = ""
                                     state.artifact_content = ""
                                     state.show_artifact = False
+                                    from openagenticskyzer.app.components.chat import reset_branches
+                                    reset_branches()
                                     try:
-                                        from openagenticskyzer.app.components.chat import chat_messages
+                                        from openagenticskyzer.app.components.chat import chat_messages, branch_selector
                                         chat_messages.refresh()
+                                        branch_selector.refresh()
                                     except Exception:
                                         pass
                                     try:
@@ -390,12 +393,15 @@ def _tab_danger(cfg: dict):
                     state.artifact_type = ""
                     state.artifact_content = ""
                     state.show_artifact = False
+                    from openagenticskyzer.app.components.chat import reset_branches
+                    reset_branches()
                     try:
                         from openagenticskyzer.app.components.sidebar import sidebar_list
-                        from openagenticskyzer.app.components.chat import chat_messages
+                        from openagenticskyzer.app.components.chat import chat_messages, branch_selector
                         from openagenticskyzer.app.components.artifact_panel import artifact_panel
                         sidebar_list.refresh()
                         chat_messages.refresh()
+                        branch_selector.refresh()
                         artifact_panel.refresh()
                     except Exception:
                         pass

@@ -421,3 +421,84 @@ def test_switch_branch_unknown_id_does_not_crash_or_change_current_branch(monkey
     assert state.current_branch_id == "main"
     assert len(state.messages) == 1
     assert state.messages[0].content == "Msg1"
+
+
+# --- Tests supplémentaires : fix du bug Critical trouvé en review qualité sur le
+# commit 6ce1a90 (Task 7) — voir tasks/lessons.md et tasks/todo.md pour le diagnostic
+# complet. Deux trous distincts corrigés ici :
+#
+# 1. Aucun des 4 tests ci-dessus n'exerçait la branche `else` de
+#    `_snapshot_active_branch` (sauvegarde vers un `ConversationBranch` existant de
+#    `state.branches`, PAS vers `state.main_messages`) — tous partaient de
+#    `current_branch_id == "main"`. `test_snapshot_saves_non_main_branch_before_forking_away`
+#    couvre ce chemin : fork depuis "main" vers la branche A, modification de la
+#    conversation SUR la branche A, puis nouveau fork depuis A vers B — vérifie que
+#    le contenu à jour de A est bien sauvegardé dans son objet `ConversationBranch`
+#    avant d'en partir, pas perdu.
+#
+# 2. `state.branches`/`state.current_branch_id`/`state.main_messages` n'étaient
+#    jamais réinitialisés aux 4 call-sites où `state.messages` est remplacé EN
+#    DEHORS du flux fork/switch (`sidebar.activate_folder`, effacement d'historique
+#    dans `command_palette.py`/`settings.py`, retrait de dossier dans `settings.py`)
+#    — une branche du dossier/contexte précédent pouvait donc être confondue avec le
+#    nouveau contenu chargé, avec un risque de mélange silencieux de conversations
+#    entre dossiers différents via `_switch_branch("main")`. Corrigé par
+#    `reset_branches()`, appelée aux 4 call-sites. `test_reset_branches_clears_branch_state`
+#    vérifie directement le contrat de cette fonction.
+
+def test_snapshot_saves_non_main_branch_before_forking_away(monkeypatch):
+    from openagenticskyzer.app.components import chat as chat_mod
+    from openagenticskyzer.app.state import state, ChatMessage
+    monkeypatch.setattr(chat_mod.chat_messages, "refresh", lambda: None)
+    monkeypatch.setattr(chat_mod.branch_selector, "refresh", lambda: None)
+    monkeypatch.setattr(state, "messages", [
+        ChatMessage(role="user", content="Msg1"),
+        ChatMessage(role="ai", content="Rép1"),
+    ])
+    monkeypatch.setattr(state, "branches", [])
+    monkeypatch.setattr(state, "current_branch_id", "main")
+    monkeypatch.setattr(state, "main_messages", [])
+    monkeypatch.setattr(state, "agent_running", False)
+
+    chat_mod._fork_from(1)  # crée la branche A (2 messages), bascule dessus
+    branch_a_id = state.current_branch_id
+
+    # La conversation évolue SUR la branche A (pas main) avant un nouveau fork.
+    state.messages.append(ChatMessage(role="user", content="Msg2-sur-branche-A"))
+
+    chat_mod._fork_from(2)  # fork depuis la branche A -> branche B
+
+    branch_a = next(b for b in state.branches if b.branch_id == branch_a_id)
+    # Le contenu à jour de la branche A (avec le message ajouté) doit avoir été
+    # sauvegardé dans son propre objet ConversationBranch au moment de la quitter,
+    # pas perdu (chemin `else` de _snapshot_active_branch, jamais exercé par les
+    # tests précédents qui partaient tous de current_branch_id == "main").
+    assert len(branch_a.messages) == 3
+    assert branch_a.messages[-1].content == "Msg2-sur-branche-A"
+
+
+def test_reset_branches_clears_branch_state(monkeypatch):
+    from openagenticskyzer.app.components import chat as chat_mod
+    from openagenticskyzer.app.state import state, ChatMessage
+    monkeypatch.setattr(chat_mod.chat_messages, "refresh", lambda: None)
+    monkeypatch.setattr(chat_mod.branch_selector, "refresh", lambda: None)
+    monkeypatch.setattr(state, "messages", [
+        ChatMessage(role="user", content="Msg1"),
+        ChatMessage(role="ai", content="Rép1"),
+    ])
+    monkeypatch.setattr(state, "branches", [])
+    monkeypatch.setattr(state, "current_branch_id", "main")
+    monkeypatch.setattr(state, "main_messages", [])
+    monkeypatch.setattr(state, "agent_running", False)
+
+    chat_mod._fork_from(1)
+    assert state.branches != []
+    assert state.current_branch_id != "main"
+
+    # Simule ce que font maintenant activate_folder/_clear_history/etc. après
+    # avoir remplacé state.messages par le contenu d'un autre dossier/contexte.
+    chat_mod.reset_branches()
+
+    assert state.branches == []
+    assert state.current_branch_id == "main"
+    assert state.main_messages == []

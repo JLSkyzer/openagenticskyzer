@@ -72,14 +72,19 @@ def activate_folder(folder_path: str):
     state.artifact_type = ""
     state.artifact_content = ""
     state.show_artifact = False
+    # Idem pour les branches : une branche du dossier précédent ne doit jamais
+    # être confondue avec le nouvel historique chargé (voir tasks/lessons.md).
+    from openagenticskyzer.app.components.chat import reset_branches
+    reset_branches()
     try:
         from openagenticskyzer.app.components.input_bar import model_button
         model_button.refresh()
     except Exception:
         pass
     try:
-        from openagenticskyzer.app.components.chat import chat_messages
+        from openagenticskyzer.app.components.chat import chat_messages, branch_selector
         chat_messages.refresh()
+        branch_selector.refresh()
     except Exception:
         pass
     try:

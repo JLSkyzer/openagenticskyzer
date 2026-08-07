@@ -301,3 +301,123 @@ def test_match_commands_caps_at_eight_results():
     commands = [(f"Commande {i}", "match", None) for i in range(12)]
     result = _match_commands(commands, "")
     assert len(result) == 8
+
+
+# --- Tests supplémentaires : branchement de conversation (fork) + sélecteur (Task 7) ---
+#
+# Le pseudocode du plan avait un bug de perte de données (voir tasks/lessons.md et
+# tasks/todo.md, entrée Task 7) : `_fork_from`/`_switch_branch` remplaçaient
+# `state.messages` sans jamais sauvegarder son contenu courant nulle part quand on
+# était sur "main" — revenir sur "main" après un fork perdait alors silencieusement
+# tout le contenu de la branche principale au-delà du point de fork. Corrigé via
+# `state.main_messages` (snapshot de "main") + `_snapshot_active_branch()`, appelé
+# systématiquement avant toute mutation de `state.current_branch_id`.
+#
+# Chaque test ci-dessous appelle réellement `_fork_from`/`_switch_branch` importées
+# depuis `chat.py` — aucun ne duplique la logique en construisant sa propre copie
+# de `ConversationBranch` pour vérifier son propre travail (cf. lessons.md, Task 5 :
+# le test suggéré par le plan pour cette fonctionnalité-là était un no-op de ce type).
+#
+# `chat_messages`/`branch_selector` sont des `@ui.refreshable` — appeler `.refresh()`
+# hors d'un contexte NiceGUI actif (aucun client/page ouvert, comme en test) lève un
+# `AssertionError` (`core.loop is not None`, voir `nicegui/background_tasks.py`) :
+# monkeypatchés en no-op pour chaque test qui exerce un chemin de code où l'un des
+# deux est appelé.
+
+def test_fork_from_creates_branch_with_correct_messages_and_switches_view(monkeypatch):
+    from openagenticskyzer.app.components import chat as chat_mod
+    from openagenticskyzer.app.state import state, ChatMessage
+    monkeypatch.setattr(chat_mod.chat_messages, "refresh", lambda: None)
+    monkeypatch.setattr(chat_mod.branch_selector, "refresh", lambda: None)
+    monkeypatch.setattr(state, "messages", [
+        ChatMessage(role="user", content="Msg1"),
+        ChatMessage(role="ai", content="Rép1"),
+        ChatMessage(role="user", content="Msg2"),
+    ])
+    monkeypatch.setattr(state, "branches", [])
+    monkeypatch.setattr(state, "current_branch_id", "main")
+    monkeypatch.setattr(state, "main_messages", [])
+    monkeypatch.setattr(state, "agent_running", False)
+
+    # Forker depuis le message index 1 (Rép1) -> conserve les messages [0, 1]
+    chat_mod._fork_from(1)
+
+    assert len(state.branches) == 1
+    branch = state.branches[0]
+    assert len(branch.messages) == 2
+    assert branch.messages[0].content == "Msg1"
+    assert branch.messages[1].content == "Rép1"
+    # La vue courante bascule sur la nouvelle branche
+    assert state.current_branch_id == branch.branch_id
+    assert len(state.messages) == 2
+    # Le contenu de "main" a bien été snapshotté avant d'être remplacé
+    assert len(state.main_messages) == 3
+
+
+def test_switch_branch_back_to_main_restores_all_original_messages(monkeypatch):
+    # Test de régression critique sur le bug de perte de données identifié avant
+    # implémentation : forker depuis "main" puis revenir sur "main" doit restaurer
+    # la TOTALITÉ des messages originaux de main, pas seulement ceux du fork.
+    from openagenticskyzer.app.components import chat as chat_mod
+    from openagenticskyzer.app.state import state, ChatMessage
+    monkeypatch.setattr(chat_mod.chat_messages, "refresh", lambda: None)
+    monkeypatch.setattr(chat_mod.branch_selector, "refresh", lambda: None)
+    original = [
+        ChatMessage(role="user", content="Msg1"),
+        ChatMessage(role="ai", content="Rép1"),
+        ChatMessage(role="user", content="Msg2"),
+    ]
+    monkeypatch.setattr(state, "messages", list(original))
+    monkeypatch.setattr(state, "branches", [])
+    monkeypatch.setattr(state, "current_branch_id", "main")
+    monkeypatch.setattr(state, "main_messages", [])
+    monkeypatch.setattr(state, "agent_running", False)
+
+    chat_mod._fork_from(1)  # bascule sur une branche à 2 messages
+    assert len(state.messages) == 2
+
+    chat_mod._switch_branch("main")
+
+    assert state.current_branch_id == "main"
+    assert len(state.messages) == 3
+    assert [m.content for m in state.messages] == ["Msg1", "Rép1", "Msg2"]
+
+
+def test_fork_from_and_switch_branch_are_noop_when_agent_running(monkeypatch):
+    from openagenticskyzer.app.components import chat as chat_mod
+    from openagenticskyzer.app.state import state, ChatMessage
+    monkeypatch.setattr(chat_mod.chat_messages, "refresh", lambda: None)
+    monkeypatch.setattr(chat_mod.branch_selector, "refresh", lambda: None)
+    monkeypatch.setattr(state, "messages", [ChatMessage(role="user", content="Msg1")])
+    monkeypatch.setattr(state, "branches", [])
+    monkeypatch.setattr(state, "current_branch_id", "main")
+    monkeypatch.setattr(state, "main_messages", [])
+    monkeypatch.setattr(state, "agent_running", True)
+
+    chat_mod._fork_from(0)
+    assert state.branches == []
+    assert len(state.messages) == 1
+
+    chat_mod._switch_branch("main")
+    assert state.current_branch_id == "main"
+    assert len(state.messages) == 1
+
+
+def test_switch_branch_unknown_id_does_not_crash_or_change_current_branch(monkeypatch):
+    from openagenticskyzer.app.components import chat as chat_mod
+    from openagenticskyzer.app.state import state, ChatMessage, ConversationBranch
+    monkeypatch.setattr(chat_mod.chat_messages, "refresh", lambda: None)
+    monkeypatch.setattr(chat_mod.branch_selector, "refresh", lambda: None)
+    monkeypatch.setattr(state, "messages", [ChatMessage(role="user", content="Msg1")])
+    monkeypatch.setattr(state, "branches", [
+        ConversationBranch(branch_id="abc123", label="Branche 1", messages=[], created_at="")
+    ])
+    monkeypatch.setattr(state, "current_branch_id", "main")
+    monkeypatch.setattr(state, "main_messages", [])
+    monkeypatch.setattr(state, "agent_running", False)
+
+    chat_mod._switch_branch("does-not-exist")
+
+    assert state.current_branch_id == "main"
+    assert len(state.messages) == 1
+    assert state.messages[0].content == "Msg1"

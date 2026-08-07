@@ -67,6 +67,7 @@ class AppState:
     # Branches
     branches: list = field(default_factory=list)        # list[ConversationBranch]
     current_branch_id: str = "main"
+    main_messages: list = field(default_factory=list)   # snapshot de la branche "main", peuplé quand on la quitte
 
 
 # Singleton — imported everywhere in the app

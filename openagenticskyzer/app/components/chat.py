@@ -1,9 +1,11 @@
 """Chat message list with tool previews and permission banner."""
 import asyncio
+import uuid
+from datetime import datetime
 
 from nicegui import ui
 
-from openagenticskyzer.app.state import state, ChatMessage
+from openagenticskyzer.app.state import state, ChatMessage, ConversationBranch
 
 
 def _trigger_edit(idx: int):
@@ -14,6 +16,56 @@ def _trigger_edit(idx: int):
 def _trigger_regenerate():
     from openagenticskyzer.app.components.input_bar import regenerate
     asyncio.ensure_future(regenerate())
+
+
+def _snapshot_active_branch():
+    """Sauvegarde state.messages vers son propriétaire (main ou branche) avant de
+    changer de vue. Sans ça, remplacer state.messages par le contenu d'une autre
+    branche perdrait silencieusement tout ce qui n'a été stocké nulle part
+    ailleurs — en particulier la branche "main", qui n'a pas d'objet
+    ConversationBranch dédié (voir state.main_messages)."""
+    if state.current_branch_id == "main":
+        state.main_messages = state.messages.copy()
+    else:
+        b = next((b for b in state.branches if b.branch_id == state.current_branch_id), None)
+        if b:
+            b.messages = state.messages.copy()
+
+
+def _fork_from(idx: int):
+    """Crée une nouvelle branche à partir des messages [0, idx] inclus et bascule dessus."""
+    if state.agent_running:
+        return
+    _snapshot_active_branch()
+    branch = ConversationBranch(
+        branch_id=str(uuid.uuid4())[:8],
+        label=f"Branche {len(state.branches) + 1}",
+        messages=state.messages[:idx + 1].copy(),
+        created_at=datetime.now().isoformat(),
+    )
+    state.branches.append(branch)
+    state.current_branch_id = branch.branch_id
+    state.messages = branch.messages.copy()
+    chat_messages.refresh()
+    branch_selector.refresh()
+    ui.notify(f"Branche '{branch.label}' créée.", type="positive")
+
+
+def _switch_branch(branch_id: str):
+    """Bascule la vue courante sur "main" ou une branche existante, en sauvegardant
+    d'abord le contenu de la vue quittée pour ne jamais le perdre."""
+    if state.agent_running or branch_id == state.current_branch_id:
+        return
+    _snapshot_active_branch()
+    if branch_id == "main":
+        state.messages = state.main_messages.copy()
+    else:
+        b = next((b for b in state.branches if b.branch_id == branch_id), None)
+        if b is None:
+            return  # id inconnu (ne devrait pas arriver via le select) — no-op défensif
+        state.messages = b.messages.copy()
+    state.current_branch_id = branch_id
+    chat_messages.refresh()
 
 
 _TOOL_TAG_STYLES = {
@@ -57,6 +109,9 @@ def _render_message(msg: ChatMessage, idx: int = -1, is_last_ai: bool = False):
                     ui.button("✏️", on_click=lambda: _trigger_edit(idx)).classes(
                         "w-6 h-6 bg-gray-800 text-gray-400 hover:text-white text-xs rounded"
                     ).tooltip("Éditer ce message")
+                    ui.button("⑂", on_click=lambda: _fork_from(idx)).classes(
+                        "w-6 h-6 bg-gray-800 text-gray-400 hover:text-purple-400 text-xs rounded"
+                    ).tooltip("Créer une branche depuis ici")
             if getattr(msg, "images", None):
                 with ui.row().classes("justify-end flex-wrap gap-2"):
                     for uri in msg.images:
@@ -177,10 +232,25 @@ def chat_messages():
     ui.run_javascript("if(typeof applyHighlight==='function') setTimeout(applyHighlight, 150)")
 
 
+@ui.refreshable
+def branch_selector():
+    """Sélecteur de branche affiché seulement si au moins une branche existe."""
+    if not state.branches:
+        return
+    with ui.row().classes("px-5 pt-2 items-center gap-2"):
+        ui.label("🌿").classes("text-xs text-gray-600")
+        ui.select(
+            options={"main": "🌿 Main"} | {b.branch_id: b.label for b in state.branches},
+            value=state.current_branch_id,
+            on_change=lambda e: _switch_branch(e.value),
+        ).classes("text-xs bg-gray-900 border-gray-700 max-w-36")
+
+
 def render_chat():
     with ui.element("div").style(
         "flex:1 1 0;min-height:0;position:relative;display:flex;flex-direction:column;overflow:hidden"
     ):
+        branch_selector()
         with ui.scroll_area().classes("w-full oa-chat-scroll").style(
             "flex:1 1 0;background:#0d0d0d"
         ) as scroll:

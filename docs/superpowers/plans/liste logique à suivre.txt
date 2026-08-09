@@ -1,0 +1,22 @@
+Ordre recommandé
+- 1. git-dev-tools — petit, rapide, valeur immédiate
+Aucune dépendance sur les autres plans. 14 outils git pour l'agent + widget branche dans la sidebar. Utilisable dès le lendemain.
+
+- 2. memory-learning — standalone, fort levier
+Aucune dépendance non-construite. La mémoire projet persistante (.openagent/memory.md) et l'apprentissage adaptatif changent complètement l'expérience d'une session à l'autre.
+
+3. artifacts-content — plus gros impact UX quotidien
+7 tâches : panneau preview, bibliothèque de prompts, export MD/HTML/JSON, édition/régénération, command palette Ctrl+K, branching. Dépend de state.py qui est déjà en place.
+
+4. onboarding-auto — polish produit
+Auto-détection de stack → OPENAGENT.md, wizard 4 étapes, thème custom. Utile une fois que les fonctions core sont stables (donc après les 3 premiers).
+
+5. semantic-plugins — feature puissance
+ChromaDB + RAG + plugins dynamiques + adaptateur MCP. Grosse dépendance sur les libs externes (chromadb, sentence-transformers). Enrichit l'agent sans casser l'existant.
+
+6. multiagent-advanced — feature puissance complexe
+Sous-agents, terminal xterm.js, preview browser, personas, voice Whisper. Requiert les artifacts (diff viewer accept/reject est dans artifacts-content). À faire après.
+
+7. infrastructure — pro / monitoring
+Cost tracker, analytics, audit log, API REST, webhooks, circuit breaker, budget. Aucune dépendance fonctionnelle sur les autres, mais ça a plus de sens une fois que le reste est stable.
+

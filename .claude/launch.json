@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "openagenticskyzer",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "openagenticskyzer.app_launcher"],
+      "port": 8765
+    }
+  ]
+}

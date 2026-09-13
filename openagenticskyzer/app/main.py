@@ -17,6 +17,8 @@ from openagenticskyzer.app.components.settings import render_settings
 from openagenticskyzer.app.components.command_palette import render_command_palette
 from openagenticskyzer.app.components.downloads import make_downloads_top_btn
 from openagenticskyzer.app.exporter import export_markdown, export_html, export_json
+from openagenticskyzer.app.components.onboarding import onboarding_wizard, should_show_onboarding
+from openagenticskyzer.app.theme import _apply_theme
 
 # ── Vendor local (highlight.js + mermaid) ─────────────────────────────────────
 
@@ -246,6 +248,7 @@ def main_page(client: Client):
     ui.add_head_html(_SCROLL_JS)
 
     cfg = load_global_config()
+    _apply_theme()
     state.permission_mode = cfg.get("permission_mode", "demander")
 
     if cfg.get("restore_last_folder", True):
@@ -277,12 +280,12 @@ def main_page(client: Client):
 
     with ui.element("div").style(
         "width:100%;height:100vh;"
-        "display:flex;flex-direction:column;overflow:hidden;background:#0d0d0d"
+        "display:flex;flex-direction:column;overflow:hidden;background:var(--bg,#0d0d0d)"
     ):
         # Top bar
         with ui.element("div").style(
             f"width:100%;height:{_TOP}px;min-height:{_TOP}px;flex-shrink:0;"
-            "background:#161616;border-bottom:1px solid #2a2a2a;"
+            "background:var(--surface,#161616);border-bottom:1px solid var(--border,#2a2a2a);"
             "display:flex;align-items:center;padding:0 12px;gap:8px"
         ):
             ui.label("◈ openagent").classes("text-sm font-bold text-purple-500")
@@ -322,6 +325,9 @@ def main_page(client: Client):
             artifact_panel()
 
         render_command_palette()
+
+    if should_show_onboarding():
+        onboarding_wizard()
 
         def _scroll_chat_to_bottom():
             try:

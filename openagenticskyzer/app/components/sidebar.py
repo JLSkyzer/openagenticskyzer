@@ -281,8 +281,8 @@ def sidebar_list():
 
 def render_sidebar():
     with ui.element("div").style(
-        "width:230px;height:100%;flex-shrink:0;background:#111;"
-        "border-right:1px solid #222;display:flex;flex-direction:column;overflow:hidden"
+        "width:230px;height:100%;flex-shrink:0;background:var(--surface,#111);"
+        "border-right:1px solid var(--border,#222);display:flex;flex-direction:column;overflow:hidden"
     ):
         with ui.element("div").classes("p-2 border-b border-gray-800"):
             ui.button("📂 Ouvrir un dossier", on_click=open_folder_prompt).classes(

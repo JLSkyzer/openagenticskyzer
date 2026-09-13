@@ -14,6 +14,27 @@ from openagenticskyzer.app.storage import (
 from openagenticskyzer.utils.utils import _DEFAULT_CTX_LIMITS
 
 
+def _set_theme(name: str, cfg: dict | None = None) -> None:
+    """Persist a theme selection and apply it to the current page."""
+    from openagenticskyzer.app.theme import _apply_theme
+
+    config = cfg if cfg is not None else load_global_config()
+    config["theme"] = name if name in {"dark", "light"} else "dark"
+    save_global_config(config)
+    _apply_theme()
+    ui.notify(f"Thème « {config['theme']} » appliqué.", type="positive")
+
+
+def _set_accent(color: str, cfg: dict | None = None) -> None:
+    """Persist only a safe hex accent and apply it immediately."""
+    from openagenticskyzer.app.theme import _apply_theme, normalize_accent
+
+    config = cfg if cfg is not None else load_global_config()
+    config["accent_color"] = normalize_accent(color)
+    save_global_config(config)
+    _apply_theme()
+
+
 def _group():
     return ui.element("div").classes("rounded-xl overflow-hidden border border-gray-800").style("background:#111")
 
@@ -175,6 +196,23 @@ def _tab_general(cfg: dict):
                 ui.button("Tester le token", on_click=_test_token).classes(
                     "bg-gray-900 border border-gray-700 text-xs text-gray-300 hover:border-purple-500 mt-1 self-start"
                 )
+
+
+# ── Onglet Apparence ──────────────────────────────────────────────────────────
+
+def _tab_appearance(cfg: dict):
+    with ui.column().classes("gap-5"):
+        _section("Apparence", "GLOBAL")
+        with _group():
+            with ui.column().classes("px-4 py-3 gap-3"):
+                ui.label("Thème").classes("text-xs text-gray-300 font-medium")
+                with ui.row().classes("gap-2"):
+                    ui.button("🌙 Sombre", on_click=lambda: _set_theme("dark", cfg)).classes("text-xs")
+                    ui.button("☀️ Clair", on_click=lambda: _set_theme("light", cfg)).classes("text-xs")
+                ui.label("Couleur d'accentuation").classes("text-xs text-gray-300 font-medium mt-2")
+                color = ui.color_input(value=cfg.get("accent_color", "#3b82f6"))
+                color.classes("w-48")
+                color.on_value_change(lambda event: _set_accent(event.value, cfg))
 
 
 # ── Onglet Contexte ───────────────────────────────────────────────────────────
@@ -433,6 +471,7 @@ def render_settings():
                 tabs = ui.tabs().classes("flex-col w-full").props("vertical")
                 with tabs:
                     ui.tab("general", label="🌐 Général")
+                    ui.tab("appearance", label="🎨 Apparence")
                     ui.tab("context", label="🧠 Contexte & Mémoire")
                     ui.tab("permissions", label="🔒 Permissions")
                     ui.tab("folder", label=f"📁 {Path(state.active_folder).name if state.active_folder else 'Dossier'}")
@@ -443,6 +482,8 @@ def render_settings():
                 with ui.tab_panels(tabs, value="general").classes("w-full"):
                     with ui.tab_panel("general"):
                         _tab_general(cfg)
+                    with ui.tab_panel("appearance"):
+                        _tab_appearance(cfg)
                     with ui.tab_panel("context"):
                         _tab_context(cfg)
                     with ui.tab_panel("permissions"):

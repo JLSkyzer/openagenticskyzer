@@ -14,7 +14,7 @@
   - [x] Observer le RED ciblé contre l'API de génération absente
   - [x] Étendre `context/project_instructions.py` sans modifier le loader existant
   - [x] Vérifier le GREEN ciblé, la régression du loader et la suite associée
-  - [ ] Documenter les preuves TDD et publier uniquement les fichiers Task 2
+  - [x] Documenter les preuves TDD et publier uniquement les fichiers Task 2
 - [ ] Task 3 — Intégration agent, permissions et bouton sidebar avec confirmation
 - [ ] Task 4 — Wizard d'onboarding NiceGUI 4 étapes compatible avec le code actuel
 - [ ] Task 5 — Thème sombre/clair + accent validé et réellement appliqué dans les paramètres

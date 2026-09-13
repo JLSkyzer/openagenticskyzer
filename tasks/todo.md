@@ -2,7 +2,13 @@
 
 ## Plan 2026-04-27-onboarding-auto — EN COURS (reprise 2026-09-13)
 
-- [ ] Task 1 — Analyse automatique de la stack (`tools/project_analyzer.py`) + tests TDD
+- [x] Task 1 — Analyse automatique de la stack (`tools/project_analyzer.py`) + tests TDD
+  - [x] Écrire les tests comportementaux de détection déterministe et de dégradation I/O
+  - [x] Observer leur échec RED contre l'absence du module
+  - [x] Implémenter uniquement `_scan_project` et une interface d'outil non-écrivable
+  - [x] Vérifier le test ciblé GREEN puis la suite hors dépendance Deepeval
+  - [x] Documenter les preuves et publier le commit Task 1
+  - Preuves : RED `0 passed, 7 failed` (`ModuleNotFoundError` attendu) ; GREEN `8 passed` ; suite `tests/` hors Deepeval : `365 passed, 4 failed` identiques au baseline (voir le rapport SDD).
 - [ ] Task 2 — Génération de `OPENAGENT.md` en préservant le loader d'instructions existant
 - [ ] Task 3 — Intégration agent, permissions et bouton sidebar avec confirmation
 - [ ] Task 4 — Wizard d'onboarding NiceGUI 4 étapes compatible avec le code actuel

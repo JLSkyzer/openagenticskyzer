@@ -1,6 +1,6 @@
 # Todo
 
-## Plan 2026-04-27-semantic-plugins — EN COURS (reprise 2026-09-13)
+## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 
 - [x] Task 1 — Module d'embedding lazy et singleton
 - [x] Task 2 — Index ChromaDB, chunking et recherche déterministe

@@ -1,5 +1,7 @@
 # Lessons
 
+[2026-09-13] | Le défaut `folder='.'` d'un nouvel outil d'initialisation visait le dossier de lancement même lorsqu'un autre projet était actif dans l'UI (reproduit par deux tests RED). Règle : pour les outils projet utilisés par GUI et CLI, résoudre dossier explicite → dossier actif → cwd, et couvrir ces chemins avec de vrais fichiers. L'écriture exclusive `x` protège la création des collisions sans imposer les hard links, indisponibles sur certains volumes; conserver temp + `os.replace` pour les écrasements autorisés.
+
 [2026-09-13] | Une table de priorité dont le commentaire promet « lockfiles avant manifests » peut rester incohérente dès qu'elle mêle plusieurs écosystèmes : vérifier seulement les collisions internes (pnpm contre npm) ne détecte pas `package.json` placé avant un lockfile Python. Règle : pour toute sélection par artefacts mixtes, séparer la politique en strates exhaustives (tous les lockfiles, puis tous les manifests) et ajouter au moins un test de collision inter-écosystèmes.
 
 [2026-09-13] | Le scan projet gérait déjà les erreurs d'énumération (`os.walk`/`iterdir`) mais pas l'échec de `Path.is_dir()` ou `Path.is_file()` sur une entrée obtenue juste avant — une permission peut changer entre ces deux opérations. Règle : pour tout résumé fondé sur une liste de `Path`, garder un `try/except OSError` autour de chaque métadonnée de chaque entrée, pas seulement autour de l'énumération initiale.

@@ -15,6 +15,7 @@ _RESTRICTED_TOOLS = {
     "git_add", "git_commit", "git_push", "git_pull",
     "git_checkout", "git_create_branch", "git_stash", "git_stash_pop",
     "save_memory", "forget_memory",
+    "analyze_project_and_init",
 }
 _READ_ONLY_TOOLS = {
     "read_file", "view_file", "glob_files", "grep_file",

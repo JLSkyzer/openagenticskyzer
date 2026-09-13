@@ -7,6 +7,48 @@ from nicegui import ui, run
 
 from openagenticskyzer.app.state import state, DownloadEntry
 from openagenticskyzer.app.storage import load_folder_index, add_folder_to_index
+from openagenticskyzer.tools.project_analyzer import initialize_project
+
+
+def _project_init_confirmation(openagent_exists: bool, claude_exists: bool) -> str:
+    """Explain the effect of the pending write without changing any files."""
+    if openagent_exists:
+        return "OPENAGENT.md existe déjà. Écraser vos instructions par une nouvelle analyse ?"
+    message = "Créer OPENAGENT.md à partir de l'analyse de ce dossier ?"
+    if claude_exists:
+        message += " Ce nouveau fichier deviendra prioritaire sur CLAUDE.md."
+    return message
+
+
+def _auto_init_project():
+    """Confirm creation or replacement for the folder selected when clicked."""
+    if not state.active_folder:
+        ui.notify("Ouvre un dossier d'abord.", type="warning")
+        return
+    try:
+        root = Path(state.active_folder).resolve()
+        if not root.is_dir():
+            ui.notify("Dossier absent ou invalide.", type="negative")
+            return
+        overwrite = (root / "OPENAGENT.md").exists()
+        claude_exists = (root / "CLAUDE.md").exists()
+    except (OSError, ValueError) as exc:
+        ui.notify(f"Impossible d'accéder au dossier : {exc}", type="negative")
+        return
+
+    with ui.dialog() as dialog, ui.card():
+        ui.label(_project_init_confirmation(overwrite, claude_exists))
+        ui.label(str(root)).classes("text-xs break-all")
+
+        def confirm():
+            dialog.close()
+            result = initialize_project(root, overwrite=overwrite)
+            ui.notify(result.message, type="positive" if result.success else "negative")
+
+        with ui.row():
+            ui.button("Confirmer", on_click=confirm)
+            ui.button("Annuler", on_click=dialog.close)
+    dialog.open()
 
 
 def open_folder_prompt():
@@ -246,6 +288,7 @@ def render_sidebar():
             ui.button("📂 Ouvrir un dossier", on_click=open_folder_prompt).classes(
                 "w-full bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-lg"
             )
+            ui.button("⚡ Init projet", on_click=_auto_init_project).classes("text-xs w-full mt-2")
 
         _git_branch_widget()
         _schedule_git_status_refresh(state.active_folder)

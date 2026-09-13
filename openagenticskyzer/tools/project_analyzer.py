@@ -1,10 +1,15 @@
-"""Analyse déterministe de la stack d'un projet, sans effet de bord."""
+"""Analyse déterministe de stack et initialisation explicite des instructions."""
 from __future__ import annotations
 
 import os
 import re
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
+from langchain_core.tools import tool
+
+from openagenticskyzer.context.project_instructions import generate_openagent_md
 
 _IGNORED_DIRECTORIES = {
     ".git",
@@ -261,3 +266,65 @@ def _scan_project(root: Path) -> dict[str, object]:
         "entry_points": sorted(entry_points),
         "structure_summary": _safe_top_level_summary(root),
     }
+
+
+@dataclass(frozen=True)
+class ProjectInitResult:
+    success: bool
+    message: str
+
+
+def initialize_project(folder: str | Path, *, overwrite: bool = False) -> ProjectInitResult:
+    """Scan, generate and write OPENAGENT.md after caller authorization.
+
+    Existing instructions require explicit overwrite permission and are replaced
+    atomically. Exclusive creation prevents collisions on filesystems without
+    hard links too; a partial new file is removed if its write fails.
+    """
+    temporary: Path | None = None
+    try:
+        if not folder or not Path(folder).is_dir():
+            return ProjectInitResult(False, "Dossier absent ou invalide.")
+        root = Path(folder).resolve()
+        target = root / "OPENAGENT.md"
+        if target.exists() and not overwrite:
+            return ProjectInitResult(False, "OPENAGENT.md existe déjà. Confirmez son écrasement.")
+
+        analysis = _scan_project(root)
+        content = generate_openagent_md(analysis)
+        try:
+            stream = tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", newline="\n", dir=root,
+                prefix=".openagent-init-", suffix=".tmp", delete=False,
+            ) if overwrite else target.open("x", encoding="utf-8", newline="\n")
+            with stream:
+                temporary = Path(stream.name)
+                stream.write(content)
+            if overwrite:
+                os.replace(temporary, target)
+            else:
+                temporary = None  # the exclusively created file is complete
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    except FileExistsError:
+        return ProjectInitResult(False, "OPENAGENT.md existe déjà. Confirmez son écrasement.")
+    except (OSError, ValueError) as exc:
+        return ProjectInitResult(False, f"Impossible d'initialiser le dossier : {exc}")
+
+    languages = ", ".join(analysis["languages"]) or "Non détecté"
+    return ProjectInitResult(True, f"OPENAGENT.md généré dans {root} ({languages}).")
+
+
+@tool
+def analyze_project_and_init(folder: str = "", overwrite: bool = False) -> str:
+    """Analyse un dossier et ÉCRIT OPENAGENT.md avec les instructions de sa stack.
+
+    Cette action nécessite une autorisation d'écriture. Si OPENAGENT.md existe,
+    demander l'accord explicite avant de passer overwrite=True. Le nouveau
+    OPENAGENT.md devient prioritaire sur un éventuel CLAUDE.md.
+    Un dossier vide utilise le projet actif de l'application, puis le cwd du CLI.
+    """
+    from openagenticskyzer.app.state import state
+
+    return initialize_project(folder or state.active_folder or os.getcwd(), overwrite=overwrite).message

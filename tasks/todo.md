@@ -16,6 +16,9 @@
   - [x] Vérifier le GREEN ciblé, la régression du loader et la suite associée
   - [x] Documenter les preuves TDD et publier uniquement les fichiers Task 2
 - [ ] Task 3 — Intégration agent, permissions et bouton sidebar avec confirmation
+  - [x] RED : couvrir initialisation réelle, collisions/erreurs I/O, wrapper, permissions et confirmation UI
+  - [ ] GREEN : centraliser scan/génération/écriture et intégrer l'outil restreint + bouton confirmé
+  - [ ] Vérifier les tests ciblés et les régressions agent/permissions/sidebar, documenter et publier
 - [ ] Task 4 — Wizard d'onboarding NiceGUI 4 étapes compatible avec le code actuel
 - [ ] Task 5 — Thème sombre/clair + accent validé et réellement appliqué dans les paramètres
 - [ ] Task 6 — Intégration du thème et du wizard dans `main.py`

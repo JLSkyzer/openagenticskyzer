@@ -1,5 +1,18 @@
 # Todo
 
+## Plan 2026-04-27-onboarding-auto — EN COURS (reprise 2026-09-13)
+
+- [ ] Task 1 — Analyse automatique de la stack (`tools/project_analyzer.py`) + tests TDD
+- [ ] Task 2 — Génération de `OPENAGENT.md` en préservant le loader d'instructions existant
+- [ ] Task 3 — Intégration agent, permissions et bouton sidebar avec confirmation
+- [ ] Task 4 — Wizard d'onboarding NiceGUI 4 étapes compatible avec le code actuel
+- [ ] Task 5 — Thème sombre/clair + accent validé et réellement appliqué dans les paramètres
+- [ ] Task 6 — Intégration du thème et du wizard dans `main.py`
+- [ ] Task 7 — Vérifications d'intégration, audit global, commit et push
+
+Plan source : `docs/superpowers/plans/2026-04-27-onboarding-auto.md`.
+Décisions d'adaptation et preuves : `.superpowers/sdd/2026-04-27-onboarding-auto/progress.md` (journal git-ignoré).
+
 ## Plan 2026-04-27-git-dev-tools — TERMINÉ (2026-08-01)
 
 - [x] Task 1 — Créer `openagenticskyzer/tools/git_tools.py` (14 outils git) + tests

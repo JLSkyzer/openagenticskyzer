@@ -1,5 +1,22 @@
 # Todo
 
+## Migration 2026-09-14-electron-autonomous — CONCEPTION, NON LIVRÉE
+
+- [x] Confirmer la cible demandée : Electron + moteur JS/TS, sans Python final, sur master.
+- [x] Relever les surfaces NiceGUI et les écarts statiques du prototype ; matrice `docs/superpowers/plans/2026-09-14-electron-parity.md`.
+- [x] Remplacer la conception contradictoire avec pont Python par `docs/superpowers/specs/2026-09-14-electron-autonomous-design.md`.
+- [ ] Relire/valider la nouvelle spécification écrite, notamment données Chroma et plugins Python personnalisés.
+- [ ] Stockage Node : migrations sauvegardées, settings globaux/projet distincts, secrets, isolation de projets et branches ; tests temporaires.
+- [ ] Moteur Node : providers, streaming, outils, permissions, annulation, contexte et mémoire ; serveurs simulés.
+- [ ] Interface Electron : navigation et paramètres complets, conversation et panneaux ; tests de clic et rendu réel.
+- [ ] Modèles locaux, téléchargements, index/BDC, extensions et MCP sans Python ; tests de chaque contrat.
+- [ ] Vérifier chaque ligne de la matrice de parité, corriger les régressions.
+- [ ] Packager et tester Windows sans Python, supprimer les anciens chemins actifs, documenter npm/exécutable.
+- [ ] Commit/push des changements propres et preuves de validation.
+
+Le shell Electron/pont Python précédent existe encore ; ses anciennes cases cochées
+ne prouvaient ni la parité ni l'autonomie. Ne pas annoncer la migration terminée.
+
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 
 - [x] Task 1 — Module d'embedding lazy et singleton

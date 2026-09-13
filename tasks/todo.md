@@ -22,7 +22,7 @@
 - [x] Task 4 — Wizard d'onboarding NiceGUI 4 étapes compatible avec le code actuel
 - [x] Task 5 — Thème sombre/clair + accent validé et réellement appliqué dans les paramètres
 - [x] Task 6 — Intégration du thème et du wizard dans `main.py`
-- [ ] Task 7 — Vérifications d'intégration, audit global, commit et push
+- [x] Task 7 — Vérifications d'intégration, audit global, commit et push
 
 Plan source : `docs/superpowers/plans/2026-04-27-onboarding-auto.md`.
 Décisions d'adaptation et preuves : `.superpowers/sdd/2026-04-27-onboarding-auto/progress.md` (journal git-ignoré).

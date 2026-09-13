@@ -18,6 +18,7 @@ from openagenticskyzer.tools.git_tools import (
     git_checkout, git_create_branch, git_stash, git_stash_pop,
 )
 from openagenticskyzer.tools.memory_tools import save_memory, read_memory, forget_memory
+from openagenticskyzer.tools.index_tools import semantic_search, knowledge_search
 from openagenticskyzer.tools.project_analyzer import analyze_project_and_init
 from openagenticskyzer.ui.tui import TUI, TUICallback, get_console
 from openagenticskyzer.utils.utils import get_llm, get_langfuse_handler, mode_router
@@ -32,13 +33,14 @@ _ALL_TOOLS = [
     git_branch_list, git_add, git_commit, git_push, git_pull,
     git_checkout, git_create_branch, git_stash, git_stash_pop,
     save_memory, read_memory, forget_memory,
+    semantic_search, knowledge_search,
     analyze_project_and_init,
 ]
 
 
 def build_agent(mode: str = "auto", max_tokens: int | None = None, permission_manager=None,
                 provider: str | None = None, model_name: str | None = None,
-                tools: list | None = None):
+                tools: list | None = None, folder_cwd: str | None = None):
     """Construit l'agent compilé.
 
     tools : None (défaut) = surface d'outils complète (`_ALL_TOOLS`), comportement
@@ -51,6 +53,25 @@ def build_agent(mode: str = "auto", max_tokens: int | None = None, permission_ma
     model = get_llm(provider=provider, model=model_name)
     effective_tools = _ALL_TOOLS if tools is None else tools
     cwd = os.getcwd()
+    if tools is None:
+        try:
+            from openagenticskyzer.plugins.loader import load_plugins
+            plugin_tools, plugin_errors = load_plugins(folder_cwd or cwd)
+            effective_tools = effective_tools + plugin_tools
+            for error in plugin_errors:
+                logging.getLogger("openagentic.plugins").warning("Plugin ignoré: %s", error)
+        except Exception as exc:
+            logging.getLogger("openagentic.plugins").warning("Chargement plugins impossible: %s", exc)
+        try:
+            from openagenticskyzer.app.storage import load_mcp_config
+            from openagenticskyzer.mcp_client.adapter import load_mcp_tools
+            for server in load_mcp_config():
+                mcp_tools, mcp_errors = load_mcp_tools(server)
+                effective_tools.extend(mcp_tools)
+                for error in mcp_errors:
+                    logging.getLogger("openagentic.mcp").warning("Serveur MCP ignoré: %s", error)
+        except Exception as exc:
+            logging.getLogger("openagentic.mcp").warning("Chargement MCP impossible: %s", exc)
     mode_instruction = mode_router(mode)
     system_prompt = (
         DEEP_AGENT_SYSTEM_PROMPT

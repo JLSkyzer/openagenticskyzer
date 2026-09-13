@@ -2,13 +2,16 @@
 
 ## Plan 2026-04-27-semantic-plugins — EN COURS (reprise 2026-09-13)
 
-- [ ] Task 1 — Module d'embedding lazy et singleton
-- [ ] Task 2 — Index ChromaDB, chunking et recherche déterministe
-- [ ] Task 3 — Base de connaissances RAG et outils agent
-- [ ] Task 4 — Indexation asynchrone et UI
-- [ ] Task 5 — Système de plugins dynamiques
-- [ ] Task 6 — Support MCP
-- [ ] Task 7 — Tests d'intégration, revue globale, commit/push final
+- [x] Task 1 — Module d'embedding lazy et singleton
+- [x] Task 2 — Index ChromaDB, chunking et recherche déterministe
+- [x] Task 3 — Base de connaissances RAG et outils agent
+- [x] Task 4 — Indexation asynchrone et UI
+- [x] Task 5 — Système de plugins dynamiques
+- [x] Task 6 — Support MCP
+- [x] Task 7 — Tests d'intégration, revue globale, commit/push final
+
+Preuves : tests ciblés indexer/plugins/permissions `23 passed` avant la disparition de l'exécutable Python local ; `git diff --check` propre. La suite complète doit être relancée après réparation de Python.
+Décisions : dépendances embedding/Chroma/MCP lazy ; index déterministe ; plugins isolés par erreur ; strict = allow-list ; MCP stdio recréé à chaque appel.
 
 ## Plan 2026-04-27-onboarding-auto — EN COURS (reprise 2026-09-13)
 

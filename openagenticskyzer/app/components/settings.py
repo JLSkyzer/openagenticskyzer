@@ -10,6 +10,7 @@ from openagenticskyzer.app.storage import (
     migrate_data_dir, get_data_home,
     clear_chat_history,
     DEFAULT_GLOBAL_CONFIG,
+    load_mcp_config, save_mcp_config,
 )
 from openagenticskyzer.utils.utils import _DEFAULT_CTX_LIMITS
 
@@ -363,6 +364,44 @@ def _tab_folder():
             )
         ).classes("bg-purple-700 text-xs text-white mt-2")
 
+def _tab_tools():
+    """Display discovered Python plugins and editable MCP definitions."""
+    with ui.column().classes("gap-5"):
+        _section("Outils et intégrations", "EXTENSIONS")
+        try:
+            from openagenticskyzer.plugins.loader import load_plugins
+            plugins, errors = load_plugins(state.active_folder)
+        except Exception as exc:
+            plugins, errors = [], [str(exc)]
+        with _group():
+            with ui.column().classes("px-4 py-3 gap-2"):
+                ui.label("Plugins Python").classes("text-xs text-gray-300 font-medium")
+                if plugins:
+                    for plugin in plugins:
+                        ui.label(f"🧩 {plugin.name}").classes("text-xs text-green-400 font-mono")
+                else:
+                    ui.label("Aucun plugin chargé.").classes("text-xs text-gray-600")
+                for error in errors:
+                    ui.label(f"⚠️ {error}").classes("text-xs text-yellow-600")
+
+        cfg = load_mcp_config()
+        with _group():
+            with ui.column().classes("px-4 py-3 gap-2"):
+                ui.label("Serveurs MCP (stdio)").classes("text-xs text-gray-300 font-medium")
+                ui.label("Les commandes sont enregistrées ; elles ne sont lancées qu'au chargement d'un agent.").classes("text-xs text-gray-600")
+                for server in cfg:
+                    ui.label(f"• {server['command']} {' '.join(server.get('args') or [])}").classes("text-xs text-blue-400 font-mono")
+                command = ui.input(placeholder="Commande, ex. npx -y @modelcontextprotocol/server-filesystem").classes("w-full text-xs font-mono")
+                def add_server():
+                    value = command.value.strip()
+                    if not value:
+                        return
+                    parts = value.split()
+                    cfg.append({"command": parts[0], "args": parts[1:]})
+                    save_mcp_config(cfg)
+                    ui.notify("Serveur MCP enregistré.", type="positive")
+                ui.button("Ajouter", on_click=add_server).classes("bg-gray-900 border border-gray-700 text-xs text-gray-300 self-start")
+
 
 # ── Onglet Danger ─────────────────────────────────────────────────────────────
 
@@ -474,6 +513,7 @@ def render_settings():
                     ui.tab("appearance", label="🎨 Apparence")
                     ui.tab("context", label="🧠 Contexte & Mémoire")
                     ui.tab("permissions", label="🔒 Permissions")
+                    ui.tab("tools", label="🧩 Outils")
                     ui.tab("folder", label=f"📁 {Path(state.active_folder).name if state.active_folder else 'Dossier'}")
                     ui.tab("danger", label="⚠️ Danger")
 
@@ -488,6 +528,8 @@ def render_settings():
                         _tab_context(cfg)
                     with ui.tab_panel("permissions"):
                         _tab_permissions(cfg)
+                    with ui.tab_panel("tools"):
+                        _tab_tools()
                     with ui.tab_panel("folder"):
                         _tab_folder()
                     with ui.tab_panel("danger"):

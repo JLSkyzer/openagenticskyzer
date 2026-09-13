@@ -8,7 +8,7 @@ from nicegui import ui, Client
 
 from openagenticskyzer.app.state import state
 from openagenticskyzer.app.storage import load_global_config, load_folder_index
-from openagenticskyzer.app.components.sidebar import render_sidebar
+from openagenticskyzer.app.components.sidebar import render_sidebar, _index_folder_async
 from openagenticskyzer.app.components.chat import render_chat, chat_messages, active_branch_label
 from openagenticskyzer.app.components.context_bar import render_context_bar
 from openagenticskyzer.app.components.input_bar import render_input_bar
@@ -271,6 +271,7 @@ def main_page(client: Client):
                 from openagenticskyzer.app.components.chat import reset_branches
                 reset_branches()
                 state.context_tokens, state.context_pct = compute_context_pct(state.messages, state.current_provider)
+                _index_folder_async(last)
                 # Charge le .env du dossier (clés API + config spécifiques au projet)
                 try:
                     from dotenv import load_dotenv as _ld

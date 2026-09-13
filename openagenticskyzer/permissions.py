@@ -23,6 +23,7 @@ _READ_ONLY_TOOLS = {
     "git_status", "git_diff", "git_diff_staged", "git_log",
     "git_blame", "git_branch_list",
     "read_memory",
+    "semantic_search", "knowledge_search",
 }
 
 
@@ -73,7 +74,9 @@ class PermissionManager:
         if self.mode == "auto":
             return True
         if self.mode == "strict":
-            return tool_name not in _RESTRICTED_TOOLS
+            # Unknown tools (including dynamically loaded plugins) are denied
+            # by default: strict mode is an allow-list, not merely a blocklist.
+            return tool_name in _READ_ONLY_TOOLS
 
         # mode == "demander"
         if tool_name in _READ_ONLY_TOOLS:

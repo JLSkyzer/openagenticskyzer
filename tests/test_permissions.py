@@ -19,6 +19,10 @@ def test_strict_mode_allows_read_tools():
     assert mgr.check("view_file", {}) is True
     assert mgr.check("glob_files", {}) is True
 
+def test_strict_mode_denies_unknown_dynamic_tools():
+    mgr = PermissionManager(mode="strict")
+    assert mgr.check("plugin_write_tool", {}) is False
+
 def test_invalid_mode_raises():
     import pytest
     with pytest.raises(ValueError, match="Invalid permission mode"):

@@ -27,6 +27,29 @@ def _folder_index_path() -> Path:
 def _folder_config_path(folder: str) -> Path:
     return Path(folder) / ".openagent" / "config.json"
 
+def _mcp_config_path() -> Path:
+    return _openagent_home() / "mcp.json"
+
+def load_mcp_config() -> list[dict]:
+    """Load MCP server definitions without executing any command."""
+    path = _mcp_config_path()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict) and isinstance(item.get("command"), str) and item["command"].strip()]
+
+def save_mcp_config(servers: list[dict]) -> None:
+    """Persist validated MCP definitions as UTF-8 JSON with LF newlines."""
+    valid = [item for item in servers if isinstance(item, dict) and isinstance(item.get("command"), str) and item["command"].strip()]
+    path = _mcp_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(valid, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+
 
 def get_data_home() -> Path:
     """Répertoire de données configuré par l'utilisateur (défaut : ~/.openagent/)."""

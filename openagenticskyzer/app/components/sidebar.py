@@ -2,6 +2,7 @@
 import asyncio
 import os
 import subprocess
+import threading
 from pathlib import Path
 from nicegui import ui, run
 
@@ -95,6 +96,7 @@ def activate_folder(folder_path: str):
         ui.notify(f"Dossier introuvable : {folder_path}", type="negative")
         return
     state.active_folder = folder_path
+    _index_folder_async(folder_path)
     state.context_pct = 0.0
     add_folder_to_index(folder_path)
     # Restaure le modèle associé à ce dossier
@@ -138,6 +140,28 @@ def activate_folder(folder_path: str):
     _git_branch_widget.refresh()
     _schedule_git_status_refresh(folder_path)
     ui.notify(f"Dossier ouvert : {Path(folder_path).name}", type="positive")
+
+
+def _index_folder_async(folder: str) -> None:
+    """Index a folder in a daemon worker without blocking the NiceGUI loop."""
+    state.index_status = "⏳ Indexation…"
+
+    def worker() -> None:
+        try:
+            from openagenticskyzer.indexer.indexer import index_folder
+
+            def progress(current, total, _filepath):
+                state.index_status = f"📊 Index : {current}/{total}"
+
+            index_folder(folder, on_progress=progress)
+            if folder == state.active_folder:
+                state.index_status = "✓ Index prêt"
+        except (ImportError, RuntimeError):
+            state.index_status = ""
+        except Exception:
+            state.index_status = ""
+
+    threading.Thread(target=worker, name="openagent-index", daemon=True).start()
 
 
 # Cache clé = chemin du dossier -> (branche, is_dirty). Alimenté hors event loop
@@ -299,5 +323,26 @@ def render_sidebar():
 
         with ui.scroll_area().classes("flex-1"):
             sidebar_list()
+            _render_knowledge_section()
 
         downloads_panel()
+
+
+def _render_knowledge_section():
+    try:
+        from openagenticskyzer.indexer.knowledge import list_sources
+    except ImportError:
+        return
+    with ui.expansion("📚 Base de connaissances", value=False).classes("w-full"):
+        sources = list_sources()
+        if not sources:
+            ui.label("Aucun document").classes("text-xs text-gray-600 px-2")
+        for source in sources:
+            ui.label(source[:40]).classes("text-xs text-gray-400 px-2 truncate")
+        ui.button("+ Ajouter un document", on_click=_open_knowledge_import).classes(
+            "w-full text-xs text-purple-400 bg-transparent border border-purple-900 rounded mt-1 py-1"
+        )
+
+
+def _open_knowledge_import():
+    ui.notify("Glisse un fichier .txt ou .md sur l'app pour l'ajouter.", type="info")

@@ -50,6 +50,7 @@ class AppState:
     current_provider: Optional[str] = None
     context_pct: float = 0.0
     context_tokens: int = 0
+    index_status: str = ""
     permission_mode: str = "demander"
     pending_permission: Any = None
     stop_requested: bool = False

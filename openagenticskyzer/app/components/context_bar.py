@@ -164,6 +164,8 @@ def context_bar():
         with ui.element("div").classes("flex-1 h-1 rounded bg-gray-800").style("max-width:120px"):
             ui.element("div").classes(f"h-1 rounded {color}").style(f"width:{pct:.0f}%")
         ui.label(f"{pct:.0f}% · ~{tokens:,} tokens").classes("text-xs text-gray-600")
+        if state.index_status:
+            ui.label(state.index_status).classes("text-xs text-gray-600 ml-2")
 
         if pct >= cfg.get("compact_threshold", 70):
             ui.button("⚡ Auto-compact", on_click=trigger_compact).classes(

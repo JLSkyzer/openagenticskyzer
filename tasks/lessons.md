@@ -1,5 +1,7 @@
 # Lessons
 
+[2026-09-14] | Les premiers tests du nouveau stockage ont montré que `null` servait à la fois de valeur JSON et de sentinelle « fichier absent », autorisant un reset silencieux de coffre/conversation. Règle : distinguer l'absence physique avec `undefined`, valider toute valeur lue (y compris null), et tester la conservation exacte des fichiers invalides avant la migration.
+
 [2026-09-14] | Le prototype Electron conservait un processus Python, omettait les réglages globaux et remplaçait plusieurs actions NiceGUI par des boutons sans implémentation équivalente. Règle : avant une migration d'interface/runtime, inventorier les gestionnaires et les services historiques dans une matrice de parité, distinguer interface et moteur, puis exiger une preuve clic → effet → persistance pour chaque fonction et un lancement du paquet sans l'ancien runtime avant d'annoncer la migration livrée.
 
 [2026-09-13] | Le défaut `folder='.'` d'un nouvel outil d'initialisation visait le dossier de lancement même lorsqu'un autre projet était actif dans l'UI (reproduit par deux tests RED). Règle : pour les outils projet utilisés par GUI et CLI, résoudre dossier explicite → dossier actif → cwd, et couvrir ces chemins avec de vrais fichiers. L'écriture exclusive `x` protège la création des collisions sans imposer les hard links, indisponibles sur certains volumes; conserver temp + `os.replace` pour les écrasements autorisés.

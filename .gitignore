@@ -1,4 +1,9 @@
 # Environment
+node_modules/
+electron/out/
+electron/release/
+electron/test-results/
+electron/playwright-report/
 .env
 .env.*
 !.env.example

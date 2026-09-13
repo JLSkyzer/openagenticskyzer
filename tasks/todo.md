@@ -5,7 +5,7 @@
 - [x] Confirmer la cible demandée : Electron + moteur JS/TS, sans Python final, sur master.
 - [x] Relever les surfaces NiceGUI et les écarts statiques du prototype ; matrice `docs/superpowers/plans/2026-09-14-electron-parity.md`.
 - [x] Remplacer la conception contradictoire avec pont Python par `docs/superpowers/specs/2026-09-14-electron-autonomous-design.md`.
-- [ ] Relire/valider la nouvelle spécification écrite, notamment données Chroma et plugins Python personnalisés.
+- [x] Relire/valider la nouvelle spécification écrite, notamment données Chroma et plugins Python personnalisés (utilisateur : « go »).
 - [ ] Stockage Node : migrations sauvegardées, settings globaux/projet distincts, secrets, isolation de projets et branches ; tests temporaires.
 - [ ] Moteur Node : providers, streaming, outils, permissions, annulation, contexte et mémoire ; serveurs simulés.
 - [ ] Interface Electron : navigation et paramètres complets, conversation et panneaux ; tests de clic et rendu réel.
@@ -16,6 +16,20 @@
 
 Le shell Electron/pont Python précédent existe encore ; ses anciennes cases cochées
 ne prouvaient ni la parité ni l'autonomie. Ne pas annoncer la migration terminée.
+
+### Lot actif — services de données Node (tests avant implémentation)
+
+- [x] Écrire `electron/tests/storage.test.mts` : conservation JSON corrompu, sauvegarde avant transformation, écritures concurrentes, homes temporaires, projets et branches isolés.
+- [x] RED constaté : 6 tests stockage échouent sur modules absents ; lancement direct Node car l'isolation par subprocess est interdite dans le sandbox.
+- [x] Implémenter `electron/core/json-store.mts`, `settings.mts`, `conversations.mts` sans importer Electron ou Python ; chemins injectés par le propriétaire des services.
+- [x] Écrire puis vérifier les tests de résolution provider/clé et de chiffrement via un adaptateur coffre, sans modifier les `.env` historiques.
+- [x] Tests Node : 16 passent ; contrôle TypeScript strict sans erreur. Les tests du coffre utilisent AES-GCM ; l'adaptateur OS Electron reste à vérifier dans l'intégration.
+- [ ] Publier uniquement le lot testé.
+- [ ] Brancher ensuite ces services sur l'IPC et les pages de réglages, sans annoncer ce lot backend comme une interface livrée.
+
+Audit npm du prototype : Electron 38 et extract-zip signalés vulnérables (2 entrées high).
+Mettre à jour lors du remplacement du runtime, sans `audit fix --force` ; l'ancien
+prototype n'est pas validé pour distribution.
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

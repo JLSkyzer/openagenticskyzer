@@ -1,5 +1,15 @@
 # Todo
 
+## Plan 2026-04-27-semantic-plugins — EN COURS (reprise 2026-09-13)
+
+- [ ] Task 1 — Module d'embedding lazy et singleton
+- [ ] Task 2 — Index ChromaDB, chunking et recherche déterministe
+- [ ] Task 3 — Base de connaissances RAG et outils agent
+- [ ] Task 4 — Indexation asynchrone et UI
+- [ ] Task 5 — Système de plugins dynamiques
+- [ ] Task 6 — Support MCP
+- [ ] Task 7 — Tests d'intégration, revue globale, commit/push final
+
 ## Plan 2026-04-27-onboarding-auto — EN COURS (reprise 2026-09-13)
 
 - [x] Task 1 — Analyse automatique de la stack (`tools/project_analyzer.py`) + tests TDD

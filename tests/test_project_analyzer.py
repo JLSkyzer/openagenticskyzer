@@ -75,6 +75,15 @@ class TestScanProject:
 
         assert _scan_project(tmp_path)["package_manager"] == "pnpm"
 
+    def test_selects_poetry_lockfile_before_an_unlocked_node_manifest(self, tmp_path: Path):
+        """Would fail if package.json incorrectly beat a lockfile from another stack."""
+        (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "poetry.lock").write_text("# lock\n", encoding="utf-8")
+
+        from openagenticskyzer.tools.project_analyzer import _scan_project
+
+        assert _scan_project(tmp_path)["package_manager"] == "poetry"
+
     def test_falls_back_to_pip_for_a_python_project_without_a_specialized_lockfile(
         self, python_project: Path
     ):

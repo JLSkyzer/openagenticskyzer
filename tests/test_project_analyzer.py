@@ -163,3 +163,84 @@ class TestScanProject:
 
         assert "Python" in result["languages"]
         assert result["structure_summary"].startswith("Dossiers: aucun")
+
+
+class TestGenerateOpenagentMd:
+    def test_renders_complete_markdown_for_a_scanned_python_project(
+        self, python_project: Path
+    ):
+        """Would fail if the generated instructions changed an observable section or value."""
+        from openagenticskyzer.context.project_instructions import generate_openagent_md
+        from openagenticskyzer.tools.project_analyzer import _scan_project
+
+        markdown = generate_openagent_md(_scan_project(python_project))
+
+        assert markdown == (
+            "# OPENAGENT.md — Instructions pour l'agent\n\n"
+            "> Fichier généré automatiquement par OpenAgentic Skyzer. Modifiez selon vos besoins.\n\n"
+            "## Stack\n"
+            "- **Langages :** Python\n"
+            "- **Gestionnaire de paquets :** pip\n\n"
+            "## Règles\n"
+            "- Suis le style de code existant dans le projet.\n"
+            "- N'installe pas de nouvelles dépendances sans accord explicite.\n"
+            "- Écris des tests pour tout nouveau code.\n"
+            "- Commits atomiques avec messages descriptifs.\n\n"
+            "## Tests\n"
+            "- **Runner :** `pytest`\n"
+            "- **Commande :** `pytest -v`\n"
+            "- Exécute les tests avant chaque commit.\n\n"
+            "## Structure\n"
+            "```\n"
+            "Dossiers: tests\n"
+            "Fichiers racine: main.py, pyproject.toml, requirements.txt\n"
+            "```\n\n"
+            "## Points d'entrée\n"
+            "- `main.py`\n\n"
+            "## Notes\n"
+            "_À compléter manuellement : architecture spécifique, conventions d'équipe, contraintes métier._"
+        )
+
+    def test_renders_sensitive_relative_paths_without_secret_contents(
+        self, sensitive_project: Path
+    ):
+        """Would fail if generation exposed file contents instead of scanner-provided paths."""
+        from openagenticskyzer.context.project_instructions import generate_openagent_md
+        from openagenticskyzer.tools.project_analyzer import _scan_project
+
+        markdown = generate_openagent_md(_scan_project(sensitive_project))
+
+        assert (
+            "## ⚠️ Fichiers sensibles — NE PAS MODIFIER\n"
+            "- `.env`\n"
+            "- `config/.env.production`\n"
+            "- `keys/private.key`\n"
+        ) in markdown
+        assert "SECRET=abc" not in markdown
+        assert "SECRET=def" not in markdown
+        assert "\nprivate\n" not in markdown
+
+    @pytest.mark.parametrize(
+        ("runner", "expected_command"),
+        [
+            ("pytest", "pytest -v"),
+            ("unittest", "python -m unittest discover"),
+            ("jest", "npx jest"),
+            ("vitest", "npx vitest run"),
+            ("mocha", "npx mocha"),
+            ("rspec", "bundle exec rspec"),
+        ],
+    )
+    def test_uses_the_expected_command_for_each_known_test_runner(
+        self, runner: str, expected_command: str
+    ):
+        """Would fail if a generated test command stopped matching its runner."""
+        from openagenticskyzer.context.project_instructions import _get_test_cmd
+
+        assert _get_test_cmd(runner) == expected_command
+
+    def test_keeps_an_unknown_test_runner_as_its_command(self):
+        """Would fail if unrecognized scanner output were discarded or guessed."""
+        from openagenticskyzer.context.project_instructions import _get_test_cmd
+
+        assert _get_test_cmd("custom-test") == "custom-test"

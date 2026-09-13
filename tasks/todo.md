@@ -10,6 +10,11 @@
   - [x] Documenter les preuves et publier le commit Task 1
   - Preuves : RED `0 passed, 7 failed` (`ModuleNotFoundError` attendu) ; GREEN `8 passed` ; suite `tests/` hors Deepeval : `365 passed, 4 failed` identiques au baseline (voir le rapport SDD).
 - [ ] Task 2 — Génération de `OPENAGENT.md` en préservant le loader d'instructions existant
+  - [x] Ajouter les tests comportementaux de rendu Stack/Tests/fichiers sensibles/Markdown
+  - [x] Observer le RED ciblé contre l'API de génération absente
+  - [x] Étendre `context/project_instructions.py` sans modifier le loader existant
+  - [x] Vérifier le GREEN ciblé, la régression du loader et la suite associée
+  - [ ] Documenter les preuves TDD et publier uniquement les fichiers Task 2
 - [ ] Task 3 — Intégration agent, permissions et bouton sidebar avec confirmation
 - [ ] Task 4 — Wizard d'onboarding NiceGUI 4 étapes compatible avec le code actuel
 - [ ] Task 5 — Thème sombre/clair + accent validé et réellement appliqué dans les paramètres

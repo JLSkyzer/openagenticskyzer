@@ -2,6 +2,7 @@
 node_modules/
 electron/out/
 electron/release/
+electron/renderer-dist/
 electron/test-results/
 electron/playwright-report/
 .env

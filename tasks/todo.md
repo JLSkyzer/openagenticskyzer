@@ -74,8 +74,21 @@ de `workspace.mts` existent côté Node à ce stade).
       pointe désormais vers un chemin `renderer/index.html` inexistant — état transitoire
       attendu, corrigé par la Tâche 3 (aucun test n'exerce `createWindow()` actuellement,
       elle est gardée par `if (require.main === module)`).
-- [ ] Tâche 3 — Socle Vite + React (`electron/renderer-src/`) + chargement dev/prod dans
+- [x] Tâche 3 — Socle Vite + React (`electron/renderer-src/`) + chargement dev/prod dans
       `main.cjs` (CSP stricte en prod, assouplie seulement en dev non packagé).
+      Preuves : `main.cjs` expose `buildCsp`/`chooseLoadTarget` (pures, testées sans
+      Electron dans `tests/renderer-loading.test.mts` — CSP jamais relâchée si
+      `isPackaged`, cible de chargement toujours le build sauf non-packagé + flag dev
+      explicite) ; `ipcMain.handle`/`app.whenReady` déplacés derrière le garde
+      `require.main === module` pour rester testables. `npm run renderer:build` produit
+      `renderer-dist/index.html` (script relatif `./assets/...`, requis pour `loadFile`
+      en `file://`). Bug CSS trouvé et corrigé avant de committer : `App.tsx` utilisait
+      `100vh`/`100vw` sans reset CSS → le texte apparaissait en bas à droite au lieu
+      d'être centré (marge par défaut du `body`) ; corrigé par `index.css` (reset
+      minimal) + `100%`. Vérifié visuellement via le serveur Vite réel dans le navigateur
+      (capture : "◈ openagent" centré, aucune erreur console). `npx tsc` strict (renderer
+      + core) : aucune erreur. `node --experimental-strip-types --test tests/all.mts` :
+      35/35 passed. `node tests/run-os-vault.cjs` : toujours PASS (Task 1 non régressée).
 - [ ] Tâche 4 — Preload typé + bridge IPC renderer (`onAgentEvent` avec désinscription,
       plus de relais générique).
 - [ ] Tâche 5a — Thème clair/sombre + accent (variables CSS calquées sur `theme.py`).

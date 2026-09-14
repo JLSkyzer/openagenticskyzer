@@ -1,0 +1,25 @@
+{
+  "name": "openagent-desktop",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Native desktop interface for openagent",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "renderer:dev": "vite --config renderer-src/vite.config.mts",
+    "renderer:build": "vite build --config renderer-src/vite.config.mts",
+    "dev": "electron .",
+    "test": "node --experimental-strip-types --test tests/all.mts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^38.1.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  }
+}

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, session } = require('electron');
 const path = require('node:path');
 const { homedir } = require('node:os');
 const { Worker } = require('node:worker_threads');
@@ -8,6 +8,34 @@ let backend;
 let connections;
 const pending = new Map();
 const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop']);
+
+/**
+ * Content-Security-Policy for the renderer. Strict in a packaged build (no eval, no
+ * remote origins beyond https:). Relaxed ONLY for the Vite dev server (HMR needs
+ * 'unsafe-eval' and a ws:// connection) — and only when the app is NOT packaged, so a
+ * packaged build can never end up with the relaxed policy regardless of stray env vars.
+ */
+function buildCsp(isPackaged) {
+  const scriptSrc = isPackaged ? "'self'" : "'self' 'unsafe-eval'";
+  const connectSrc = isPackaged ? "'self' https:" : "'self' https: ws://localhost:5173 http://localhost:5173";
+  return `default-src 'self'; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ${connectSrc}; object-src 'none'`;
+}
+
+/**
+ * Where the renderer loads from: the Vite dev server only when explicitly requested via
+ * OPENAGENT_RENDERER_DEV and the app is not packaged; the built output otherwise. A
+ * packaged app can never load from the dev server, whatever the env var says.
+ */
+function chooseLoadTarget({ isPackaged, devFlag }) {
+  if (!isPackaged && devFlag === '1') return { mode: 'url', target: 'http://localhost:5173' };
+  return { mode: 'file', target: path.join(__dirname, 'renderer-dist', 'index.html') };
+}
+
+function installCsp() {
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [buildCsp(app.isPackaged)] } });
+  });
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -24,7 +52,8 @@ function createWindow() {
       sandbox: true,
     },
   });
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  const target = chooseLoadTarget({ isPackaged: app.isPackaged, devFlag: process.env.OPENAGENT_RENDERER_DEV });
+  if (target.mode === 'url') mainWindow.loadURL(target.target); else mainWindow.loadFile(target.target);
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) shell.openExternal(url);
     return { action: 'deny' };
@@ -55,7 +84,7 @@ async function resolveSendPayload(connectionsService, request) {
   return { ...request, payload: { ...request.payload, connection } };
 }
 
-ipcMain.handle('backend-request', async (event, request) => {
+async function handleBackendRequest(event, request) {
   if (event.sender !== mainWindow?.webContents || !request || typeof request.op !== 'string') throw new Error('Requête IPC invalide');
   if (request.op === 'open-folder') { const picked = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] }); return picked.canceled ? null : picked.filePaths[0]; }
   if (request.op === 'connection-snapshot') return connections.snapshot(request.payload?.folder ?? null);
@@ -69,11 +98,21 @@ ipcMain.handle('backend-request', async (event, request) => {
     pending.set(id, { resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } });
     backend.postMessage({ ...request, id });
   });
-});
+}
 
+// Real IPC registration and app lifecycle only run for the actual Electron entry point
+// (package.json "main") — never when this module is required as a library by tests,
+// which would otherwise crash: require('electron') resolves to a path string (not the
+// API object) outside a real Electron process, so ipcMain/app are undefined there.
 if (require.main === module) {
-  app.whenReady().then(async () => { connections = await createConnections(); createWindow(); startBackend(); });
+  ipcMain.handle('backend-request', handleBackendRequest);
+  app.whenReady().then(async () => {
+    installCsp();
+    connections = await createConnections();
+    createWindow();
+    startBackend();
+  });
   app.on('window-all-closed', () => { backend?.terminate(); if (process.platform !== 'darwin') app.quit(); });
 }
 
-module.exports = { resolveSendPayload, createConnections };
+module.exports = { resolveSendPayload, createConnections, buildCsp, chooseLoadTarget, handleBackendRequest };

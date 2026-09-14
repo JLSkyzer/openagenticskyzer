@@ -9,7 +9,9 @@
     "renderer:dev": "vite --config renderer-src/vite.config.mts",
     "renderer:build": "vite build --config renderer-src/vite.config.mts",
     "dev": "electron .",
-    "test": "node --experimental-strip-types --test tests/all.mts"
+    "test": "node --experimental-strip-types --test tests/all.mts",
+    "test:vault": "node tests/run-os-vault.cjs",
+    "test:preload": "node tests/run-preload-bridge.cjs"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",

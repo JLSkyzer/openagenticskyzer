@@ -89,8 +89,23 @@ de `workspace.mts` existent côté Node à ce stade).
       (capture : "◈ openagent" centré, aucune erreur console). `npx tsc` strict (renderer
       + core) : aucune erreur. `node --experimental-strip-types --test tests/all.mts` :
       35/35 passed. `node tests/run-os-vault.cjs` : toujours PASS (Task 1 non régressée).
-- [ ] Tâche 4 — Preload typé + bridge IPC renderer (`onAgentEvent` avec désinscription,
+- [x] Tâche 4 — Preload typé + bridge IPC renderer (`onAgentEvent` avec désinscription,
       plus de relais générique).
+      Preuves : `preload.cjs::onMessage` (relais générique de tout `backend-message`,
+      y compris les messages `{type:'response', id, ok, ...}` de bookkeeping) remplacé
+      par `onAgentEvent`, filtré sur `{type:'event', event:'agent'}`, désinscription via
+      `removeListener`. Test Electron réel (nouveau `tests/preload-bridge.cjs` +
+      `run-preload-bridge.cjs`, `npm run test:preload`) : fenêtre cachée avec le vrai
+      preload chargé, prouve qu'un message `response` n'atteint jamais le callback, qu'un
+      événement `agent` l'atteint bien, et qu'après désinscription plus aucun événement
+      n'arrive — `PASS preload onAgentEvent filters and unsubscribes`. Côté renderer,
+      nouveau `renderer-src/src/ipc/{types.ts,bridge.ts}` : `sendMessage`/`stop`/
+      `decidePermission`/`onAgentEvent` typés, seul point de contact avec
+      `window.openagent` (`decidePermission` n'est pas encore fonctionnelle bout en bout :
+      `permission-decision` n'est pas encore dans les allow-lists `main.cjs`/`worker.mjs`,
+      câblage réel prévu Tâche 9). `npx tsc` strict (renderer + core) : aucune erreur.
+      `node --experimental-strip-types --test tests/all.mts` : 35/35 passed. Tests Tâches
+      1 et 3 non régressés (`test:vault`, build renderer).
 - [ ] Tâche 5a — Thème clair/sombre + accent (variables CSS calquées sur `theme.py`).
 - [ ] Tâche 5b — Service historique dossiers `electron/core/folders.mts` (nouveau, TDD).
 - [ ] Tâche 6 — Sidebar React (ouvrir dossier natif + historique, preuve persistance

@@ -1,0 +1,34 @@
+import type { AgentEvent } from './types';
+
+// The only place in the renderer allowed to touch window.openagent directly — every
+// component goes through these typed functions instead.
+function request<T>(op: string, payload?: Record<string, unknown>): Promise<T> {
+  return window.openagent.request({ op, payload }) as Promise<T>;
+}
+
+export function sendMessage(
+  folder: string | null,
+  branchId: string,
+  text: string,
+): Promise<{ runId: string }> {
+  return request('send', { folder, branchId, text });
+}
+
+export function stop(runId: string): Promise<{ stopped: boolean }> {
+  return request('stop', { runId });
+}
+
+export function decidePermission(
+  runId: string,
+  requestId: string,
+  allow: boolean,
+  always: boolean,
+): Promise<{ ok: boolean }> {
+  return request('permission-decision', { runId, requestId, allow, always });
+}
+
+export function onAgentEvent(callback: (event: AgentEvent) => void): () => void {
+  return window.openagent.onAgentEvent(callback);
+}
+
+export type { AgentEvent, ChatMessage } from './types';

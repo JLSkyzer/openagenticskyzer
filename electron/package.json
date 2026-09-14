@@ -11,7 +11,8 @@
     "dev": "electron .",
     "test": "node --experimental-strip-types --test tests/all.mts",
     "test:vault": "node tests/run-os-vault.cjs",
-    "test:preload": "node tests/run-preload-bridge.cjs"
+    "test:preload": "node tests/run-preload-bridge.cjs",
+    "test:theme": "node tests/run-theme-visual.cjs"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",

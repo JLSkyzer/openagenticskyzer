@@ -6,7 +6,7 @@ export const globalDefaults = {
   max_tokens: null as number | null, reserved_tokens: 2048, show_context_bar: true,
   session_retention_days: 30, animations: true, restore_last_folder: true,
   permission_mode: 'demander', shell_ask: true, files_ask: false, search_ask: false,
-  data_dir: '', theme: 'dark', accent_color: '#8b5cf6', onboarding_done: false,
+  data_dir: '', theme: 'dark', accent_color: '#3b82f6', onboarding_done: false,
 };
 export const projectDefaults = {
   agent_mode: 'inherit', ignored_patterns: 'node_modules/, .env, dist/',

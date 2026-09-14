@@ -1,0 +1,21 @@
+/* Values copied exactly from openagenticskyzer/app/theme.py (_THEMES / _DEFAULT_ACCENT) —
+   the Python app is the source of truth for these colors. Do not tweak a value here
+   without updating theme.py too, or the two apps will visibly diverge. */
+:root {
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --surface2: #334155;
+  --border: #475569;
+  --text: #f1f5f9;
+  --text-muted: #94a3b8;
+  --accent: #3b82f6;
+}
+
+:root[data-theme='light'] {
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface2: #f1f5f9;
+  --border: #cbd5e1;
+  --text: #0f172a;
+  --text-muted: #64748b;
+}

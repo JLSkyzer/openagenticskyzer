@@ -106,7 +106,24 @@ de `workspace.mts` existent côté Node à ce stade).
       câblage réel prévu Tâche 9). `npx tsc` strict (renderer + core) : aucune erreur.
       `node --experimental-strip-types --test tests/all.mts` : 35/35 passed. Tests Tâches
       1 et 3 non régressés (`test:vault`, build renderer).
-- [ ] Tâche 5a — Thème clair/sombre + accent (variables CSS calquées sur `theme.py`).
+- [x] Tâche 5a — Thème clair/sombre + accent (variables CSS calquées sur `theme.py`).
+      Preuves : `renderer-src/src/theme/{theme.css,ThemeProvider.tsx}` reprend
+      exactement les valeurs de `openagenticskyzer/app/theme.py::_THEMES` (dark/light) et
+      `_DEFAULT_ACCENT` (`#3b82f6`) ; persistance via `global-settings`/`save-global-
+      settings` déjà existants (`settings.mts`), aucun nouveau champ. Écart de parité
+      découvert et corrigé au passage (hors scope initial mais directement lié à la
+      fidélité du thème) : `settings.mts::globalDefaults.accent_color` valait `'#8b5cf6'`
+      côté Node contre `'#3b82f6'` côté Python (`theme.py`/`settings.py:214`, les deux
+      sources Python s'accordent) — corrigé pour matcher la source de vérité Python.
+      Test Electron réel bout en bout (nouveau `tests/theme-visual.cjs` +
+      `run-theme-visual.cjs`, `npm run test:theme`) : vrai `preload.cjs` + build réel +
+      `SettingsService` sur un répertoire temporaire isolé (jamais `~/.openagent` réel) —
+      prouve le thème sombre par défaut avec l'accent Python, le clic qui bascule
+      `data-theme`/`--accent` vers clair, ET la persistance réelle sur disque (relecture
+      via une seconde instance `SettingsService`) — `PASS theme toggle applies to the
+      DOM/CSS and persists to disk`. Captures d'écran des deux thèmes générées et
+      vérifiées visuellement (couleurs identiques à `theme.py`). `npx tsc` strict
+      (renderer + core) : aucune erreur. `npm test` : 35/35 passed.
 - [ ] Tâche 5b — Service historique dossiers `electron/core/folders.mts` (nouveau, TDD).
 - [ ] Tâche 6 — Sidebar React (ouvrir dossier natif + historique, preuve persistance
       après redémarrage sur home de test isolé).

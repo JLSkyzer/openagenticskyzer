@@ -31,4 +31,18 @@ export function onAgentEvent(callback: (event: AgentEvent) => void): () => void 
   return window.openagent.onAgentEvent(callback);
 }
 
+export interface GlobalSettings {
+  theme: 'dark' | 'light';
+  accent_color: string;
+  [key: string]: unknown;
+}
+
+export function getGlobalSettings(): Promise<GlobalSettings> {
+  return request('global-settings');
+}
+
+export function saveGlobalSettings(patch: Partial<GlobalSettings>): Promise<GlobalSettings> {
+  return request('save-global-settings', { patch });
+}
+
 export type { AgentEvent, ChatMessage } from './types';

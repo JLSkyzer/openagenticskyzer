@@ -16,6 +16,7 @@ body,
 }
 
 body {
-  background: #0d0d0d;
+  background: var(--bg, #0d0d0d);
+  color: var(--text, #e0e0e0);
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
 }

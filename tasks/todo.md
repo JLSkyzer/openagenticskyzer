@@ -24,12 +24,73 @@ ne prouvaient ni la parité ni l'autonomie. Ne pas annoncer la migration termin�
 - [x] Implémenter `electron/core/json-store.mts`, `settings.mts`, `conversations.mts` sans importer Electron ou Python ; chemins injectés par le propriétaire des services.
 - [x] Écrire puis vérifier les tests de résolution provider/clé et de chiffrement via un adaptateur coffre, sans modifier les `.env` historiques.
 - [x] Tests Node : 16 passent ; contrôle TypeScript strict sans erreur. Les tests du coffre utilisent AES-GCM ; l'adaptateur OS Electron reste à vérifier dans l'intégration.
-- [ ] Publier uniquement le lot testé.
+- [x] Publier uniquement le lot testé : `cb48ff4` poussé sur master.
 - [ ] Brancher ensuite ces services sur l'IPC et les pages de réglages, sans annoncer ce lot backend comme une interface livrée.
 
 Audit npm du prototype : Electron 38 et extract-zip signalés vulnérables (2 entrées high).
 Mettre à jour lors du remplacement du runtime, sans `audit fix --force` ; l'ancien
 prototype n'est pas validé pour distribution.
+
+### Lot actif suivant — boucle agent Node
+
+- [x] Tests de streaming SSE fragmenté, appels outils fragmentés, erreurs HTTP, redirection refusée, arrêt.
+- [x] `electron/core/provider.mts` : transport de chat compatible OpenAI, sans SDK Python, dépendance réseau injectable pour les tests.
+- [x] `electron/core/agent.mts` : boucle bornée, validation des arguments, modes ask/plan sans écritures, permissions effectives, résultats outils réinjectés, annulation.
+- [x] Tester les requêtes réellement envoyées et les effets des outils : 9 tests agent/provider + HTTP réel passent.
+- [ ] Mise à jour Electron 44.3.0 bloquée par le quota d’exécution escaladée ; le prototype reste en 38.8.6 et n’est pas distribuable tant que ce point n’est pas réglé.
+
+### Lot actif suivant — socle renderer React + câblage agent réel
+
+Contexte : une tentative précédente ("Codex") a produit un renderer vanilla JS
+(`electron/renderer/`) au CSS cassé (minifié 3 lignes, classes jamais stylées, thème
+clair mort), jamais branché à une vraie conversation (`worker.mjs::send` renvoyait un
+texte statique). Décision validée (utilisateur) : réécriture complète du renderer en
+TypeScript + React (conforme à `docs/superpowers/specs/2026-09-14-electron-autonomous-design.md`,
+seule spec faisant autorité), le vanilla JS de Codex est jeté. Plan détaillé :
+`C:\Users\killi\.claude\plans\vivid-snacking-snail.md`.
+
+Hors scope de ce lot : branches, artifacts, palette de commandes, bibliothèque de
+prompts, sélecteur de modèle complet, réglages 7 onglets, téléchargements, onboarding,
+index sémantique/plugins/MCP, outils git/shell/web/mémoire (seuls les outils fichiers
+de `workspace.mts` existent côté Node à ce stade).
+
+- [x] Tâche 1 — Réparer le placement du coffre de connexions (`Connections`/`safeStorage`
+      géré uniquement dans `main.cjs`, jamais dans `worker.mjs` où il est actuellement du
+      code mort inatteignable) ; tests étendus `os-vault.cjs`/`run-os-vault.cjs`.
+      Preuves : `main.cjs` instancie `Connections` dans `app.whenReady()` (gardé par
+      `if (require.main === module)` pour rester testable sans fenêtre réelle), gère
+      `connection-snapshot`/`save-connection` avant le check d'allow-list (même patron que
+      `open-folder`), et résout la connexion (`resolveSendPayload`, exportée) pour l'injecter
+      dans le payload `send` transmis au worker — jamais exposée au renderer. Code mort
+      (`Connections` importé et 2 branches inatteignables) supprimé de `worker.mjs`.
+      `node --experimental-strip-types --test tests/all.mts` : 32/32 passed (inchangé).
+      `node tests/run-os-vault.cjs` : `PASS OS vault persistence and redaction` + nouvelle
+      assertion prouvant que `resolveSendPayload` fournit un `api_key` en clair au worker
+      tout en gardant `snapshot()` (renderer-facing) sans ce champ. `npx tsc -p
+      tsconfig.core.json --noEmit` : aucune erreur.
+- [ ] Tâche 2 — Suppression du renderer vanilla JS Codex (`electron/renderer/*`).
+- [ ] Tâche 3 — Socle Vite + React (`electron/renderer-src/`) + chargement dev/prod dans
+      `main.cjs` (CSP stricte en prod, assouplie seulement en dev non packagé).
+- [ ] Tâche 4 — Preload typé + bridge IPC renderer (`onAgentEvent` avec désinscription,
+      plus de relais générique).
+- [ ] Tâche 5a — Thème clair/sombre + accent (variables CSS calquées sur `theme.py`).
+- [ ] Tâche 5b — Service historique dossiers `electron/core/folders.mts` (nouveau, TDD).
+- [ ] Tâche 6 — Sidebar React (ouvrir dossier natif + historique, preuve persistance
+      après redémarrage sur home de test isolé).
+- [ ] Tâche 7 — Zone de chat (messages user/AI/tool, streaming, markdown+coloration
+      syntaxique locale, diff coloré).
+- [ ] Tâche 8 — Barre de saisie (envoi/stop réel, raccourcis clavier).
+- [ ] Tâche 9 — Bannière de permission + appel d'outil réel bout en bout (test Electron
+      réel : aucune écriture avant décision, écriture réelle après "Autoriser").
+- [ ] Tâche 10 — Top bar (stubs hors scope) + layout global, preuve taille mini fenêtre.
+- [ ] Tâche 11 — Packaging minimal Windows (electron-builder), pas de distribution
+      complète (installeur signé/auto-update hors scope).
+- [ ] Tâche 12 — Electron 38.8.6 vulnérable : tenter la mise à jour vers 44.3.0 tôt (avant
+      le packaging), documenter précisément si le blocage de quota se reproduit.
+- [ ] Tâche 13 — Vérification bout-en-bout finale (app packagée, sans Python, dossier
+      réel, message réel streamé, outil réel avec permission, Stop réellement effectif) ;
+      preuves consignées ici, ne cocher que la ligne "Interface Electron" de la section
+      migration ci-dessus, jamais les lignes hors scope.
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

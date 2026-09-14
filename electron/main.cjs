@@ -67,9 +67,15 @@ function startBackend() {
   backend.on('error', error => { for (const item of pending.values()) item.reject(error); pending.clear(); });
 }
 
+// Mirrors worker.mjs's OPENAGENT_HOME override — lets integration tests point the whole
+// data layer at a temp directory instead of the real user's ~/.openagent.
+function dataHome() {
+  return process.env.OPENAGENT_HOME || path.join(homedir(), '.openagent');
+}
+
 async function createConnections() {
   const { Connections } = await import('./core/connections.mts');
-  return new Connections({ home: path.join(homedir(), '.openagent'), cipher: safeStorage, environment: process.env });
+  return new Connections({ home: dataHome(), cipher: safeStorage, environment: process.env });
 }
 
 /**

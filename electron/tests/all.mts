@@ -6,3 +6,5 @@ import './workspace.test.mts';
 import './context.test.mts';
 import './worker.test.mts';
 import './renderer-loading.test.mts';
+import './folders.test.mts';
+import './worker-folders.test.mts';

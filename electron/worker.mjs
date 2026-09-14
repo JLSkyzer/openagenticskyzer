@@ -1,14 +1,16 @@
 import { parentPort } from 'node:worker_threads';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { readFile } from 'node:fs/promises';
 import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
-import { JsonStore } from './core/json-store.mts';
+import { FoldersService } from './core/folders.mts';
 
-const settings = new SettingsService(join(homedir(), '.openagent'));
-const store = new JsonStore();
+// OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
+// instead of the real user's ~/.openagent — never rely on the default outside tests.
+const dataHome = process.env.OPENAGENT_HOME || join(homedir(), '.openagent');
+const settings = new SettingsService(dataHome);
 const conversations = new Conversations();
+const folders = new FoldersService(dataHome);
 const active = new Map();
 const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop']);
 
@@ -18,11 +20,11 @@ async function handle(message) {
   if (!id || !ops.has(op)) { reply(id, false, null, 'Opération IPC inconnue'); return; }
   try {
     let result;
-    if (op === 'list_folders') {
-      const entries = await store.read(join(homedir(), '.openagent', 'folders.json'), []);
-      result = Array.isArray(entries) ? entries.map(entry => ({ path: entry.path, name: String(entry.path || '').split(/[\\/]/).pop(), last_used: entry.last_used })) : [];
+    if (op === 'list_folders') result = await folders.list();
+    if (op === 'activate_folder') {
+      const list = await folders.recordOpened(payload.folder);
+      result = { history: await conversations.messages(payload.folder, 'main').catch(() => []), folders: list };
     }
-    if (op === 'activate_folder') result = { history: await conversations.messages(payload.folder, 'main').catch(() => []) };
     if (op === 'settings') result = payload.folder ? await settings.project(payload.folder) : await settings.publicGlobal();
     if (op === 'save_settings') {
       if (!payload.folder) result = await settings.saveGlobal(payload.settings || {});

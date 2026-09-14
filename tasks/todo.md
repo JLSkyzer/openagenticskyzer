@@ -124,7 +124,22 @@ de `workspace.mts` existent côté Node à ce stade).
       DOM/CSS and persists to disk`. Captures d'écran des deux thèmes générées et
       vérifiées visuellement (couleurs identiques à `theme.py`). `npx tsc` strict
       (renderer + core) : aucune erreur. `npm test` : 35/35 passed.
-- [ ] Tâche 5b — Service historique dossiers `electron/core/folders.mts` (nouveau, TDD).
+- [x] Tâche 5b — Service historique dossiers `electron/core/folders.mts` (nouveau, TDD).
+      Preuves : RED constaté (`ERR_MODULE_NOT_FOUND`, 7 tests) avant implémentation.
+      `FoldersService.list()`/`recordOpened()` : upsert + déplacement en tête, tolère un
+      `folders.json` corrompu (racine non-array, entrées sans `path`/`last_used`, valeurs
+      non-objet) en ignorant seulement les entrées invalides, rejette un chemin relatif
+      ou inexistant/non-dossier. GREEN : 7/7. `worker.mjs::activate_folder` câblé sur
+      `recordOpened` (retourne désormais `{history, folders}` en un seul aller-retour,
+      au lieu de forcer un second `list_folders`) ; `list_folders` délègue à `list()`.
+      Ajout de `OPENAGENT_HOME` (worker.mjs) / `dataHome()` (main.cjs) pour isoler le
+      répertoire de données en test — nécessaire pour tester ce câblage sans jamais
+      toucher `~/.openagent` réel, réutilisable par les Tâches 6/9. Nouveau test
+      d'intégration réel `worker-folders.test.mts` : vrai `worker_threads.Worker`,
+      home temporaire, prouve que `activate_folder` enregistre bien le dossier ET que
+      `list_folders` le retrouve ensuite. `npm test` : 43/43 passed (35 + 7 + 1).
+      `npx tsc` strict (core + renderer) : aucune erreur. `test:vault`/`test:preload` non
+      régressés.
 - [ ] Tâche 6 — Sidebar React (ouvrir dossier natif + historique, preuve persistance
       après redémarrage sur home de test isolé).
 - [ ] Tâche 7 — Zone de chat (messages user/AI/tool, streaming, markdown+coloration

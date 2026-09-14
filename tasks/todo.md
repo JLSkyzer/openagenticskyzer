@@ -68,7 +68,12 @@ de `workspace.mts` existent côté Node à ce stade).
       assertion prouvant que `resolveSendPayload` fournit un `api_key` en clair au worker
       tout en gardant `snapshot()` (renderer-facing) sans ce champ. `npx tsc -p
       tsconfig.core.json --noEmit` : aucune erreur.
-- [ ] Tâche 2 — Suppression du renderer vanilla JS Codex (`electron/renderer/*`).
+- [x] Tâche 2 — Suppression du renderer vanilla JS Codex (`electron/renderer/*`).
+      Preuve : fichiers jamais trackés par git (`?? electron/renderer/` dans le statut
+      initial), supprimés directement (`rm`), dossier vide retiré. `main.cjs::createWindow`
+      pointe désormais vers un chemin `renderer/index.html` inexistant — état transitoire
+      attendu, corrigé par la Tâche 3 (aucun test n'exerce `createWindow()` actuellement,
+      elle est gardée par `if (require.main === module)`).
 - [ ] Tâche 3 — Socle Vite + React (`electron/renderer-src/`) + chargement dev/prod dans
       `main.cjs` (CSP stricte en prod, assouplie seulement en dev non packagé).
 - [ ] Tâche 4 — Preload typé + bridge IPC renderer (`onAgentEvent` avec désinscription,

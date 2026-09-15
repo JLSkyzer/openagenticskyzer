@@ -140,8 +140,31 @@ de `workspace.mts` existent côté Node à ce stade).
       `list_folders` le retrouve ensuite. `npm test` : 43/43 passed (35 + 7 + 1).
       `npx tsc` strict (core + renderer) : aucune erreur. `test:vault`/`test:preload` non
       régressés.
-- [ ] Tâche 6 — Sidebar React (ouvrir dossier natif + historique, preuve persistance
+- [x] Tâche 6 — Sidebar React (ouvrir dossier natif + historique, preuve persistance
       après redémarrage sur home de test isolé).
+      Décision d'implémentation : Tailwind CSS installé dans le renderer (`@tailwindcss/
+      vite`, import `tailwindcss` dans `index.css`) — les classes Tailwind déjà utilisées
+      dans le code Python (`sidebar.py`, et tout le reste à venir aux Tâches 7-10) sont
+      reprises quasiment telles quelles au lieu d'être retraduites à la main en hex CSS
+      par composant, pour une fidélité visuelle exacte et moins d'erreurs.
+      Preuves : `components/Sidebar.tsx` — bouton "📂 Ouvrir un dossier" (bg-purple-600/
+      700, dialog natif via `open-folder` déjà géré par `main.cjs`), historique cliquable
+      avec styles actif (`border-purple-500 bg-indigo-950 text-purple-300`)/inactif
+      (`border-transparent text-gray-400`) identiques à `sidebar.py`, chemin tronqué 30
+      caractères. Nouveau test Electron réel bout en bout (`tests/sidebar-visual.cjs`/
+      `run-sidebar-visual.cjs`, `npm run test:sidebar`) : historique pré-rempli (2
+      dossiers réels sur disque temporaire) chargé dans le bon ordre au montage
+      (= persistance après "redémarrage"), clic sur l'entrée inactive → passe en tête +
+      surlignée active, ET relecture par une seconde instance `FoldersService` confirmant
+      l'écriture réelle sur disque — `PASS sidebar click moves folder to front and
+      persists`. Captures d'écran avant/après clic vérifiées visuellement. Bugs trouvés
+      et corrigés au passage : `ThemeProvider` n'avait pas de `.catch()` sur son
+      chargement initial (rejection non gérée si le backend échoue) ; le test de thème
+      ciblait `document.querySelector('button')`, qui matchait désormais le bouton
+      "Ouvrir un dossier" de la Sidebar au lieu du bouton de thème (Sidebar rendue avant
+      dans le DOM) — corrigé avec des ids stables des deux côtés. `npm test` : 43/43
+      passed. `npx tsc` strict (renderer + core) : aucune erreur. `test:vault`/
+      `test:preload`/`test:theme` non régressés.
 - [ ] Tâche 7 — Zone de chat (messages user/AI/tool, streaming, markdown+coloration
       syntaxique locale, diff coloré).
 - [ ] Tâche 8 — Barre de saisie (envoi/stop réel, raccourcis clavier).

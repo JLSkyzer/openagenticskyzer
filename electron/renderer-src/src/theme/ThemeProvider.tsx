@@ -30,14 +30,20 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // worker.mjs/SettingsService, no new backend surface needed for this.
   useEffect(() => {
     let cancelled = false;
-    getGlobalSettings().then(settings => {
-      if (cancelled) return;
-      const nextTheme: ThemeName = settings.theme === 'light' ? 'light' : 'dark';
-      const nextAccent = ACCENT_HEX.test(settings.accent_color) ? settings.accent_color : DEFAULT_ACCENT;
-      setThemeState(nextTheme);
-      setAccentState(nextAccent);
-      applyToDocument(nextTheme, nextAccent);
-    });
+    getGlobalSettings()
+      .then(settings => {
+        if (cancelled) return;
+        const nextTheme: ThemeName = settings.theme === 'light' ? 'light' : 'dark';
+        const nextAccent = ACCENT_HEX.test(settings.accent_color) ? settings.accent_color : DEFAULT_ACCENT;
+        setThemeState(nextTheme);
+        setAccentState(nextAccent);
+        applyToDocument(nextTheme, nextAccent);
+      })
+      .catch(() => {
+        // Keep the dark/default-accent initial state — no settings backend available
+        // yet is not a reason to crash with an unhandled rejection.
+        applyToDocument('dark', DEFAULT_ACCENT);
+      });
     return () => {
       cancelled = true;
     };

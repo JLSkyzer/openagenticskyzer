@@ -12,14 +12,17 @@
     "test": "node --experimental-strip-types --test tests/all.mts",
     "test:vault": "node tests/run-os-vault.cjs",
     "test:preload": "node tests/run-preload-bridge.cjs",
-    "test:theme": "node tests/run-theme-visual.cjs"
+    "test:theme": "node tests/run-theme-visual.cjs",
+    "test:sidebar": "node tests/run-sidebar-visual.cjs"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "electron": "^38.1.0",
+    "tailwindcss": "^4.3.3",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "typescript": "^7.0.2",

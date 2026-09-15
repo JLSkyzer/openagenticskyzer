@@ -21,6 +21,10 @@ app.whenReady().then(async () => {
     ipcMain.handle('backend-request', async (_event, request) => {
       if (request.op === 'global-settings') return settings.publicGlobal();
       if (request.op === 'save-global-settings') return settings.saveGlobal(request.payload.patch);
+      // The Sidebar (Tâche 6) also mounts alongside the theme toggle placeholder and
+      // fetches its own history on load — not under test here, just needs a quiet reply.
+      if (request.op === 'list_folders') return [];
+      if (request.op === 'open-folder') return null;
       throw new Error('opération inattendue dans le test de thème : ' + request.op);
     });
 
@@ -47,8 +51,7 @@ app.whenReady().then(async () => {
     const darkShot = await win.webContents.capturePage();
     await writeFile(join(screenshotDir, 'theme-dark.png'), darkShot.toPNG());
 
-    // The only button in the placeholder App is the theme toggle.
-    await win.webContents.executeJavaScript("document.querySelector('button').click()");
+    await win.webContents.executeJavaScript("document.getElementById('oa-theme-toggle-btn').click()");
     await new Promise(resolve => setTimeout(resolve, 100));
     const toggledTheme = await win.webContents.executeJavaScript("document.documentElement.getAttribute('data-theme')");
     assert.equal(toggledTheme, 'light', 'toggles to the light theme on click');

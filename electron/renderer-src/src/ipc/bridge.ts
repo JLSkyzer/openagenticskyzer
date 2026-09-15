@@ -1,4 +1,4 @@
-import type { AgentEvent } from './types';
+import type { AgentEvent, ChatMessage, FolderListItem } from './types';
 
 // The only place in the renderer allowed to touch window.openagent directly — every
 // component goes through these typed functions instead.
@@ -45,4 +45,16 @@ export function saveGlobalSettings(patch: Partial<GlobalSettings>): Promise<Glob
   return request('save-global-settings', { patch });
 }
 
-export type { AgentEvent, ChatMessage } from './types';
+export function openFolderDialog(): Promise<string | null> {
+  return request('open-folder');
+}
+
+export function activateFolder(folder: string): Promise<{ history: ChatMessage[]; folders: FolderListItem[] }> {
+  return request('activate_folder', { folder });
+}
+
+export function listFolders(): Promise<FolderListItem[]> {
+  return request('list_folders');
+}
+
+export type { AgentEvent, ChatMessage, FolderListItem } from './types';

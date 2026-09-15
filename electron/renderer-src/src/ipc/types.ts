@@ -4,6 +4,13 @@ export interface ChatMessage {
   [key: string]: unknown;
 }
 
+// Mirrors core/folders.mts::FolderListItem exactly.
+export interface FolderListItem {
+  path: string;
+  name: string;
+  last_used: string;
+}
+
 // Mirrors the events worker.mjs posts on the existing `backend-message` channel for an
 // agent run (agent.mts::runAgent's `emit` option, enriched with runId/category) — see
 // the "Canal IPC streaming" section of the socle plan.

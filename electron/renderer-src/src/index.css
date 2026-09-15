@@ -1,5 +1,9 @@
+@import 'tailwindcss';
+
 /* Minimal reset so 100%/100vh layouts behave — no default body margin, no box-model
-   surprises. Theme colors/variables are layered on top in a later task (Tâche 5a). */
+   surprises. Theme variables come from theme/theme.css (Tâche 5a). Tailwind utility
+   classes below are used verbatim from the Python source (sidebar.py etc.) for exact
+   visual parity, rather than hand-translated to raw hex CSS per component. */
 *,
 *::before,
 *::after {

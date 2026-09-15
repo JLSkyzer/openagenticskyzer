@@ -1,6 +1,7 @@
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
+  tool_call_id?: string;
   [key: string]: unknown;
 }
 
@@ -19,6 +20,9 @@ export type AgentEvent =
   | { type: 'event'; event: 'agent'; runId: string; kind: 'delta'; text: string }
   | { type: 'event'; event: 'agent'; runId: string; kind: 'message'; message: ChatMessage }
   | {
+      // worker.mjs only enriches agent.mts's own emit({type:'tool-start', id, tool})
+      // with `category` — no `arguments` here (unlike permission-request, which the
+      // worker constructs itself and does include them).
       type: 'event';
       event: 'agent';
       runId: string;
@@ -26,7 +30,6 @@ export type AgentEvent =
       id: string;
       tool: string;
       category?: string;
-      arguments: Record<string, unknown>;
     }
   | {
       type: 'event';

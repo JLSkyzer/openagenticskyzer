@@ -1,0 +1,50 @@
+/* Matches the Python app's markdown/code block styling (main.py CSS const):
+   background #1e1e2e, border #2a2a3a, JetBrains Mono/Fira Code 0.8rem. */
+.oa-markdown {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+.oa-markdown p {
+  margin: 0 0 0.5em;
+}
+.oa-markdown p:last-child {
+  margin-bottom: 0;
+}
+.oa-markdown ul,
+.oa-markdown ol {
+  margin: 0.25em 0 0.5em 1.25em;
+}
+.oa-markdown a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.oa-markdown code {
+  background: #1e1e2e;
+  border: 1px solid #2a2a3a;
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  font-size: 0.8rem;
+}
+.oa-markdown pre {
+  background: #1e1e2e;
+  border: 1px solid #2a2a3a;
+  border-radius: 8px;
+  padding: 0.75rem;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.oa-markdown pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+.oa-markdown table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+}
+.oa-markdown th,
+.oa-markdown td {
+  border: 1px solid #2a2a3a;
+  padding: 0.25em 0.5em;
+}

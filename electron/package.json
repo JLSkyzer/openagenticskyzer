@@ -13,7 +13,8 @@
     "test:vault": "node tests/run-os-vault.cjs",
     "test:preload": "node tests/run-preload-bridge.cjs",
     "test:theme": "node tests/run-theme-visual.cjs",
-    "test:sidebar": "node tests/run-sidebar-visual.cjs"
+    "test:sidebar": "node tests/run-sidebar-visual.cjs",
+    "test:chat": "node tests/run-chat-visual.cjs"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
@@ -22,9 +23,13 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "electron": "^38.1.0",
-    "tailwindcss": "^4.3.3",
+    "highlight.js": "^11.12.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
+    "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
   }

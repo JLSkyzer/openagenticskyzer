@@ -5,6 +5,12 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
 
+// app.exit() can cut stdout before an async pipe write (common on Windows) actually
+// reaches the OS — flush explicitly before exiting instead of racing it.
+function flush() {
+  return new Promise(resolve => process.stdout.write('', resolve));
+}
+
 app.whenReady().then(async () => {
   const home = await mkdtemp(join(tmpdir(), 'openagent-os-vault-'));
   try {
@@ -26,7 +32,8 @@ app.whenReady().then(async () => {
 
     process.stdout.write(`PASS OS vault persistence and redaction (Electron ${process.versions.electron}, ${process.platform})\n`);
   } finally { await rm(home, { recursive: true, force: true }); }
-}).then(() => app.exit(0)).catch(error => {
+}).then(() => flush()).then(() => app.exit(0)).catch(async error => {
   process.stderr.write(`FAIL OS vault: ${error.code || error.name}\n`);
+  await flush();
   app.exit(1);
 });

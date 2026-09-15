@@ -9,6 +9,12 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
 
+// app.exit() can cut stdout before an async pipe write (common on Windows) actually
+// reaches the OS — flush explicitly before exiting instead of racing it.
+function flush() {
+  return new Promise(resolve => process.stdout.write('', resolve));
+}
+
 app.whenReady().then(async () => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-sidebar-'));
   const home = join(root, 'home');
@@ -35,6 +41,9 @@ app.whenReady().then(async () => {
       if (request.op === 'open-folder') return null;
       if (request.op === 'global-settings') return settings.publicGlobal();
       if (request.op === 'save-global-settings') return settings.saveGlobal(request.payload.patch);
+      // ChatProvider (Tâche 7) also mounts alongside the Sidebar and fetches the active
+      // folder's history — not under test here, just needs a quiet reply.
+      if (request.op === 'messages') return [];
       throw new Error('opération inattendue dans le test sidebar : ' + request.op);
     });
 
@@ -75,7 +84,7 @@ app.whenReady().then(async () => {
     assert.equal(activeAfter, 'project-a', 'the clicked folder is highlighted as active');
 
     const activePathText = await win.webContents.executeJavaScript(
-      "document.querySelector('span')?.parentElement && Array.from(document.querySelectorAll('span')).map(el => el.textContent).find(t => t?.startsWith('▸'))",
+      "Array.from(document.querySelectorAll('div')).map(el => el.textContent).find(t => t?.startsWith('▸'))",
     );
     assert.ok(activePathText?.includes(a), 'the active folder path is shown in the placeholder header');
 
@@ -94,7 +103,8 @@ app.whenReady().then(async () => {
     win?.destroy();
     if (!process.env.OPENAGENT_SIDEBAR_SCREENSHOT_DIR) await rm(root, { recursive: true, force: true });
   }
-}).then(() => app.exit(0)).catch(error => {
+}).then(() => flush()).then(() => app.exit(0)).catch(async error => {
   process.stderr.write(`FAIL sidebar visual: ${error.stack || error}\n`);
+  await flush();
   app.exit(1);
 });

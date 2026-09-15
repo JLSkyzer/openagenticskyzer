@@ -5,6 +5,12 @@ const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 
+// app.exit() can cut stdout before an async pipe write (common on Windows) actually
+// reaches the OS — flush explicitly before exiting instead of racing it.
+function flush() {
+  return new Promise(resolve => process.stdout.write('', resolve));
+}
+
 app.whenReady().then(async () => {
   const win = new BrowserWindow({
     show: false,
@@ -46,7 +52,8 @@ app.whenReady().then(async () => {
   } finally {
     win.destroy();
   }
-}).then(() => app.exit(0)).catch(error => {
+}).then(() => flush()).then(() => app.exit(0)).catch(async error => {
   process.stderr.write(`FAIL preload bridge: ${error.stack || error}\n`);
+  await flush();
   app.exit(1);
 });

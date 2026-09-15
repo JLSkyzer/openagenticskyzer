@@ -24,3 +24,55 @@ body {
   color: var(--text, #e0e0e0);
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
+
+/* Matches main.py's .typing-dots: 3 purple dots pulsing while waiting for the first
+   token of a response. */
+.oa-typing-dots {
+  display: inline-flex;
+  gap: 4px;
+}
+.oa-typing-dots::before,
+.oa-typing-dots::after,
+.oa-typing-dots {
+  content: '';
+}
+.oa-typing-dots {
+  width: 0;
+}
+.oa-typing-dots::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #7c3aed;
+  box-shadow:
+    12px 0 #7c3aed,
+    24px 0 #7c3aed;
+  animation: oa-typing-pulse 1s infinite ease-in-out;
+}
+@keyframes oa-typing-pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.3;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+.oa-typing-caret {
+  display: inline-block;
+  width: 6px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: currentColor;
+  animation: oa-caret-blink 1s step-start infinite;
+}
+@keyframes oa-caret-blink {
+  50% {
+    opacity: 0;
+  }
+}

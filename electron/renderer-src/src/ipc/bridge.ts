@@ -57,4 +57,8 @@ export function listFolders(): Promise<FolderListItem[]> {
   return request('list_folders');
 }
 
+export function getMessages(folder: string, branchId = 'main'): Promise<ChatMessage[]> {
+  return request('messages', { folder, branchId });
+}
+
 export type { AgentEvent, ChatMessage, FolderListItem } from './types';

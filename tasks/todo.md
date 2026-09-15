@@ -165,8 +165,53 @@ de `workspace.mts` existent côté Node à ce stade).
       dans le DOM) — corrigé avec des ids stables des deux côtés. `npm test` : 43/43
       passed. `npx tsc` strict (renderer + core) : aucune erreur. `test:vault`/
       `test:preload`/`test:theme` non régressés.
-- [ ] Tâche 7 — Zone de chat (messages user/AI/tool, streaming, markdown+coloration
+- [x] Tâche 7 — Zone de chat (messages user/AI/tool, streaming, markdown+coloration
       syntaxique locale, diff coloré).
+      Écart majeur vs découpage initial : le câblage réel de `agent.mts`/`provider.mts`
+      dans `worker.mjs::send`/`stop` (prévu en filigrane dans la section "Canal IPC
+      streaming" du plan, sans tâche numérotée dédiée) a été fait ICI, car la preuve de
+      cette tâche l'exigeait. `send` ne renvoie plus un texte statique : boucle agent
+      bornée réelle, événements `turn/delta/message/tool-start/done/stopped/error`
+      streamés via `backend-message` (enrichis `runId`/catégorie réelle), persistance de
+      la transcription (y compris partielle sur Stop/erreur — voir commit dédié).
+      `permission-decision` devient un op réel (allow-lists `main.cjs`/`worker.mjs`).
+      Rôles legacy `ai`/`human` (historique migré Python) normalisés en
+      `assistant`/`user` avant d'atteindre le provider. Vérifié par un test
+      d'intégration Node réel (`worker-send.test.mts`, faux serveur HTTP comme
+      `agent.test.mts`) : un tour complet qui appelle `create_file` écrit vraiment le
+      fichier, émet la bonne séquence d'événements, persiste ; un second test confirme
+      qu'un Stop en cours de tour persiste quand même le message utilisateur déjà
+      envoyé.
+      Composants React : `state/{reducer.ts,ChatProvider.tsx}` (reducer pur + contexte,
+      charge l'historique au changement de dossier, s'abonne à `onAgentEvent`),
+      `markdown/Markdown.tsx` (react-markdown + remark-gfm + rehype-highlight, thème
+      atom-one-dark, tout en paquets locaux), `components/{MessageBubble,ToolMessage,
+      EmptyState,ChatView}.tsx` — styles copiés de `chat.py` (bulle user bg-indigo-950,
+      avatar IA bg-purple-600, badges outil WRITE/RUN/READ/SEARCH verts/bleus/oranges/
+      violets, diff coloré +vert/-rouge/@@violet).
+      Preuve bout en bout (nouveau `tests/chat-visual.cjs`/`run-chat-visual.cjs`,
+      `npm run test:chat`) : vrai `preload.cjs` + vrai build + **vrai `worker.mjs`**
+      spawné (pas un stub) contre un faux serveur HTTP compatible OpenAI, à travers le
+      vrai clic "Ouvrir un dossier" puis une vraie saisie clavier — le tour 1 appelle
+      `create_file` (badge WRITE affiché, fichier réellement écrit sur disque, vérifié
+      par lecture directe), le tour 2 répond avec du markdown réellement rendu
+      (`**notes.md**` → vrai `<strong>`, pas des astérisques bruts). Captures d'écran
+      des 3 étapes vérifiées visuellement. Bug UX trouvé et corrigé au passage : un tour
+      outil-seul (réponse vide avant l'appel d'outil) affichait une bulle IA vide —
+      supprimé, cohérent avec l'absence d'un tel artefact dans `chat.py`.
+      Bug de tests trouvé et corrigé sur PLUSIEURS scripts (`chat-visual.cjs`,
+      `sidebar-visual.cjs`, `theme-visual.cjs`, `os-vault.cjs`, `preload-bridge.cjs`) :
+      `app.exit()` peut couper la sortie stdout avant qu'une écriture pipe asynchrone
+      (fréquent sous Windows) n'atteigne réellement l'OS, tronquant silencieusement le
+      message PASS/FAIL — corrigé par un flush explicite (`process.stdout.write('',
+      callback)`) avant `app.exit()`, partout.
+      Barre de saisie temporaire ajoutée dans `App.tsx` (textarea + bouton) uniquement
+      pour permettre cette preuve — sera remplacée par la vraie `InputBar` en Tâche 8
+      (raccourcis clavier complets, pièces jointes, sélecteur de modèle).
+      `npm test` : 45/45 passed (stable, re-vérifié plusieurs fois). `npx tsc` strict
+      (renderer + core) : aucune erreur. Tous les tests visuels (`test:vault`,
+      `test:preload`, `test:theme`, `test:sidebar`, `test:chat`) verts de façon fiable
+      après le correctif de flush.
 - [ ] Tâche 8 — Barre de saisie (envoi/stop réel, raccourcis clavier).
 - [ ] Tâche 9 — Bannière de permission + appel d'outil réel bout en bout (test Electron
       réel : aucune écriture avant décision, écriture réelle après "Autoriser").

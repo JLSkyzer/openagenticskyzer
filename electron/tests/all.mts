@@ -8,3 +8,4 @@ import './worker.test.mts';
 import './renderer-loading.test.mts';
 import './folders.test.mts';
 import './worker-folders.test.mts';
+import './worker-send.test.mts';

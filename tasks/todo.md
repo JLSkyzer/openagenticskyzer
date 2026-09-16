@@ -212,7 +212,48 @@ de `workspace.mts` existent côté Node à ce stade).
       (renderer + core) : aucune erreur. Tous les tests visuels (`test:vault`,
       `test:preload`, `test:theme`, `test:sidebar`, `test:chat`) verts de façon fiable
       après le correctif de flush.
-- [ ] Tâche 8 — Barre de saisie (envoi/stop réel, raccourcis clavier).
+- [x] Tâche 8 — Barre de saisie (envoi/stop réel, raccourcis clavier).
+      Preuves : `components/InputBar.tsx` (textarea non contrôlée par ref, Entrée envoie,
+      Shift/Ctrl/Alt+Entrée = nouvelle ligne, bouton violet→rouge ■ pendant l'exécution)
+      remplace le stub de la Tâche 7 dans `App.tsx`.
+      **2 bugs réels trouvés et corrigés en construisant la preuve "Stop en plein
+      streaming"** (pas des bugs de test — de vrais défauts applicatifs) :
+      1. **Course critique** — `ChatProvider` refaisait un fetch `getMessages()` séparé
+         après l'activation de dossier (déjà renvoyée par `activate_folder`). Si ce
+         fetch résolvait APRÈS qu'un envoi ait démarré, son dispatch `folder-loaded`
+         réinitialisait tout l'état du reducer, effaçant silencieusement le run en
+         cours. Corrigé : `Sidebar.onActivated(folder, history)` transmet l'historique
+         déjà obtenu ; `ChatProvider` reçoit `initialMessages` en prop au lieu de
+         re-fetcher — plus de round-trip asynchrone redondant, plus de course possible.
+      2. **`ReferenceError` qui tuait le worker silencieusement** — `partialText` (texte
+         en cours de streaming, ajouté pour capturer un Stop avant tout message complet)
+         était déclarée à l'intérieur du bloc `try` de `runSend`, donc invisible depuis
+         le `catch` qui la lit sur abort : `worker.mjs` crashait sur chaque Stop en
+         cours de streaming, sans qu'aucun événement `stopped` n'atteigne jamais le
+         renderer (bouton bloqué sur ■). Corrigé : déclaration remontée au niveau de la
+         fonction, aux côtés de `collected`. Diagnostiqué par un script isolé
+         (`worker_threads.Worker` + faux serveur SSE lent, sans Electron) qui a
+         directement révélé `ReferenceError: partialText is not defined` dans les logs
+         `worker.on('error')` — invisible depuis l'UI, qui se contentait de rester bloquée.
+      Aussi corrigé au passage : `liveToolStarts` n'était pas vidé sur `done`/`stopped`/
+      `error` dans le reducer — une carte d'outil "en attente" pouvait rester affichée
+      indéfiniment après un Stop en cours d'exécution d'outil.
+      Test Electron réel bout en bout (nouveau `tests/stop-visual.cjs`/
+      `run-stop-visual.cjs`, `npm run test:stop`) : faux serveur SSE qui ne termine
+      jamais de lui-même, interrompu par un vrai clic sur le bouton Stop — prouve que
+      (a) le flux s'arrête réellement (aucun texte n'arrive plus après une attente,
+      ET le serveur observe la vraie fermeture de connexion côté client, pas juste
+      l'UI qui ignore les événements), (b) le texte partiel reste affiché comme un
+      message normal (pas perdu), (c) le contenu persisté sur disque correspond
+      exactement à ce qui est affiché (aux espaces de fin près, rognés par le rendu
+      markdown — comportement normal, vérifié explicitement) — `PASS Stop mid-stream
+      keeps the partial reply visible and persists it exactly`. Captures d'écran
+      vérifiées (au moins la capture post-Stop, `capturePage()` sur une fenêtre cachée
+      ayant un léger délai de rendu pour la toute première capture — non bloquant,
+      limitation de preuve visuelle notée, pas un bug fonctionnel puisque toutes les
+      assertions DOM réelles ont passé).
+      `npm test` : 45/45 passed. `npx tsc` strict (renderer + core) : aucune erreur.
+      `test:vault`/`test:preload`/`test:theme`/`test:sidebar`/`test:chat` tous verts.
 - [ ] Tâche 9 — Bannière de permission + appel d'outil réel bout en bout (test Electron
       réel : aucune écriture avant décision, écriture réelle après "Autoriser").
 - [ ] Tâche 10 — Top bar (stubs hors scope) + layout global, preuve taille mini fenêtre.

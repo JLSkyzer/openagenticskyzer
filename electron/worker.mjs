@@ -39,6 +39,11 @@ async function runSend(runId, folder, branchId, text, connection) {
   active.set(runId, { controller });
   const post = message => parentPort.postMessage({ type: 'event', event: 'agent', runId, ...message });
   let collected = [];
+  // Tracks the assistant text currently streaming in, so a Stop mid-delta (before
+  // agent.mts ever emits the completed 'message') still has something to persist and
+  // show — cleared once that turn's real 'message' event lands. Declared here (not
+  // inside the try block) so the catch block below can actually see it.
+  let partialText = '';
   try {
     const effective = await settings.effective(folder);
     const tools = await workspaceTools(folder, effective.ignored_patterns);
@@ -48,7 +53,11 @@ async function runSend(runId, folder, branchId, text, connection) {
     collected = [...history, { role: 'user', content: text }];
     const emit = event => {
       const { type: kind, ...rest } = event;
-      if (kind === 'message') accumulated.push(rest.message);
+      if (kind === 'delta') partialText += rest.text;
+      if (kind === 'message') {
+        accumulated.push(rest.message);
+        if (rest.message.role === 'assistant') partialText = '';
+      }
       const enriched = { kind, ...rest };
       if (kind === 'tool-start') enriched.category = toolCategory.get(rest.tool);
       post(enriched);
@@ -67,10 +76,18 @@ async function runSend(runId, folder, branchId, text, connection) {
     await conversations.save(folder, branchId, result);
     post({ kind: 'done' });
   } catch (error) {
+    const aborted = error?.name === 'AbortError';
+    // A Stop mid-stream (before the turn's 'message' event ever fired) would otherwise
+    // discard the text already shown to the user — turn it into a real message, exactly
+    // like a completed turn, so the UI and the saved transcript end up consistent.
+    if (aborted && partialText.trim()) {
+      const partial = { role: 'assistant', content: partialText };
+      accumulated.push(partial);
+      post({ kind: 'message', message: partial });
+    }
     // Persist whatever the model/tools actually produced even on Stop/error — losing an
     // in-flight tool-call's already-emitted messages would silently discard real work.
     await conversations.save(folder, branchId, [...collected, ...accumulated]).catch(() => {});
-    const aborted = error?.name === 'AbortError';
     post(aborted ? { kind: 'stopped' } : { kind: 'error', message: error instanceof Error ? error.message : 'Erreur interne' });
   } finally {
     active.delete(runId);

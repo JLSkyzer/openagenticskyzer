@@ -101,14 +101,14 @@ app.whenReady().then(async () => {
     ));
 
     const inputPresent = await win.webContents.executeJavaScript(
-      "!!document.getElementById('oa-temp-input')",
+      "!!document.getElementById('oa-input-ta')",
     );
-    assert.ok(inputPresent, 'the temp input bar is present once a folder is active');
+    assert.ok(inputPresent, 'the real InputBar is present once a folder is active');
 
-    // Type through the real InputBar stand-in and send via Enter, exactly like a user.
+    // Type through the real InputBar and send via Enter, exactly like a user.
     await win.webContents.executeJavaScript(`
       (() => {
-        const el = document.getElementById('oa-temp-input');
+        const el = document.getElementById('oa-input-ta');
         const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
         setter.call(el, 'crée un fichier notes.md');
         el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -151,7 +151,7 @@ app.whenReady().then(async () => {
     );
     assert.ok(strongRendered, 'markdown bold (**notes.md**) actually renders as a real <strong> element, not raw asterisks');
 
-    const running = await win.webContents.executeJavaScript("document.getElementById('oa-temp-send')?.textContent");
+    const running = await win.webContents.executeJavaScript("document.getElementById('oa-send-btn')?.textContent");
     assert.equal(running, '➤', 'the send/stop button is back to its idle state once the run is done');
 
     const shotDone = await win.webContents.capturePage();

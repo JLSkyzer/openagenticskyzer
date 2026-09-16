@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { activateFolder, listFolders, openFolderDialog, type FolderListItem } from '../ipc/bridge';
+import { activateFolder, listFolders, openFolderDialog, type ChatMessage, type FolderListItem } from '../ipc/bridge';
 
 interface SidebarProps {
   activeFolder: string | null;
-  onActivated(folder: string): void;
+  // Passes activate_folder's own history along with the folder — ChatProvider must not
+  // re-fetch it separately: a second async round trip can resolve after a send has
+  // already started and wipe it out.
+  onActivated(folder: string, history: ChatMessage[]): void;
 }
 
 // Mirrors sidebar.py's truncation of the path shown under each folder name.
@@ -30,7 +33,7 @@ export function Sidebar({ activeFolder, onActivated }: SidebarProps) {
     async (folder: string) => {
       const result = await activateFolder(folder);
       setFolders(result.folders);
-      onActivated(folder);
+      onActivated(folder, result.history);
     },
     [onActivated],
   );

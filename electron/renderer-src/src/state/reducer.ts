@@ -87,9 +87,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         }
         case 'done':
         case 'stopped':
-          return { ...state, agentRunning: false, runId: null, streamingText: '' };
+          // Also clear liveToolStarts: a Stop mid tool-execute leaves no 'message'
+          // event for that call (agent.mts re-throws the abort before building one), so
+          // without this a "pending" tool card would stay stuck on screen forever.
+          return { ...state, agentRunning: false, runId: null, streamingText: '', liveToolStarts: {} };
         case 'error':
-          return { ...state, agentRunning: false, runId: null, streamingText: '', error: event.message };
+          return { ...state, agentRunning: false, runId: null, streamingText: '', liveToolStarts: {}, error: event.message };
         default:
           // permission-request (Tâche 9) and any future kind fall through untouched.
           return state;

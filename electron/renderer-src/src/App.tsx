@@ -1,12 +1,12 @@
 // The theme toggle/accent picker in the top strip exist only to prove ThemeProvider
-// end-to-end and will move into the real Settings/TopBar components in Tâche 10+. The
-// bare textarea+button below ChatView is a throwaway stand-in for the real InputBar
-// (keyboard shortcuts, attachments, model picker, ...), which Tâche 8 replaces it with.
+// end-to-end and will move into the real Settings/TopBar components in Tâche 10+.
 import { useState } from 'react';
 import { useTheme } from './theme/ThemeProvider';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
-import { ChatProvider, useChat } from './state/ChatProvider';
+import { InputBar } from './components/InputBar';
+import { ChatProvider } from './state/ChatProvider';
+import type { ChatMessage } from './ipc/bridge';
 
 function TempThemeStrip() {
   const { theme, accent, setTheme, setAccent } = useTheme();
@@ -32,66 +32,19 @@ function TempThemeStrip() {
   );
 }
 
-function TempInputBar() {
-  const { state, send, stopRun } = useChat();
-  const [text, setText] = useState('');
-
-  const handleSend = async () => {
-    if (!text.trim() || state.agentRunning) return;
-    const toSend = text;
-    setText('');
-    await send(toSend);
-  };
-
-  return (
-    <div style={{ display: 'flex', gap: '0.5rem', borderTop: '1px solid var(--border)', padding: '0.5rem' }}>
-      <textarea
-        id="oa-temp-input"
-        value={text}
-        onChange={event => setText(event.target.value)}
-        onKeyDown={event => {
-          if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            void handleSend();
-          }
-        }}
-        placeholder="Un message…"
-        style={{
-          flex: 1,
-          minHeight: 40,
-          resize: 'none',
-          background: 'var(--surface)',
-          border: '1px solid var(--border)',
-          borderRadius: '8px',
-          color: 'var(--text)',
-          padding: '0.5rem',
-          fontSize: '0.75rem',
-        }}
-      />
-      <button
-        id="oa-temp-send"
-        onClick={() => (state.agentRunning ? stopRun() : handleSend())}
-        style={{
-          background: state.agentRunning ? '#b91c1c' : '#9333ea',
-          color: 'white',
-          borderRadius: '8px',
-          width: 40,
-          border: 'none',
-          cursor: 'pointer',
-        }}
-      >
-        {state.agentRunning ? '■' : '➤'}
-      </button>
-    </div>
-  );
-}
-
 export default function App() {
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
+  const [initialMessages, setInitialMessages] = useState<ChatMessage[]>([]);
 
   return (
     <div style={{ display: 'flex', height: '100%', width: '100%', background: 'var(--bg)' }}>
-      <Sidebar activeFolder={activeFolder} onActivated={setActiveFolder} />
+      <Sidebar
+        activeFolder={activeFolder}
+        onActivated={(folder, history) => {
+          setActiveFolder(folder);
+          setInitialMessages(history);
+        }}
+      />
       <div style={{ display: 'flex', flex: 1, flexDirection: 'column', minWidth: 0 }}>
         <TempThemeStrip />
         {activeFolder && (
@@ -99,10 +52,10 @@ export default function App() {
             ▸ {activeFolder}
           </div>
         )}
-        <ChatProvider activeFolder={activeFolder}>
+        <ChatProvider activeFolder={activeFolder} initialMessages={initialMessages}>
           <div style={{ display: 'flex', flex: 1, flexDirection: 'column', minHeight: 0 }}>
             <ChatView />
-            <TempInputBar />
+            <InputBar />
           </div>
         </ChatProvider>
       </div>

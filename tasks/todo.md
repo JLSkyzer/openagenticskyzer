@@ -309,8 +309,32 @@ de `workspace.mts` existent côté Node à ce stade).
       `npm test` : 45/45 passed. `npx tsc` strict (renderer + core) : aucune erreur.
       `test:vault`/`test:preload`/`test:theme`/`test:sidebar`/`test:chat`/`test:stop`/
       `test:permission` tous verts.
-- [ ] Tâche 11 — Packaging minimal Windows (electron-builder), pas de distribution
+- [x] Tâche 11 — Packaging minimal Windows (electron-builder), pas de distribution
       complète (installeur signé/auto-update hors scope).
+      Preuves : `electron-builder` en devDependency, config `build` dans
+      `package.json` (`directories.output: "release"` — déjà dans `.gitignore` — cible
+      `win: {target: "dir"}`, `files` liste explicitement `main.cjs`/`preload.cjs`/
+      `worker.mjs`/`core/**/*`/`renderer-dist/**/*`/`package.json`, exclut
+      `node_modules` : l'app n'a **aucune** dépendance runtime, tout est Node/Electron
+      natif). `npm run package:win` produit `release/win-unpacked/openagent.exe` ;
+      `app.asar` inspecté (`npx asar list`) — contient exactement les fichiers attendus,
+      rien de superflu (pas de tests, pas de node_modules).
+      Preuve bout en bout (nouveau `tests/package-smoke.cjs`, `npm run test:package`,
+      script Node simple — pas lancé "en tant qu'Electron" comme les autres tests,
+      puisqu'il teste justement l'exécutable packagé lui-même) : lance
+      `openagent.exe` **directement**, hors `npm start`/`node`/tout harnais dev, avec
+      `--remote-debugging-port` ; interroge le port CDP réel — confirme un vrai
+      Chromium/Electron 44.4.2 (pas un build périmé), une vraie page chargée depuis
+      `app.asar/renderer-dist/index.html` (pas un serveur de dev ni des fichiers
+      épars), avec le vrai titre "openagent" une fois la page effectivement chargée —
+      `PASS packaged executable launches outside npm start and loads the real UI`.
+      Aucun processus résiduel après le test (vérifié `tasklist`).
+      Limite assumée et documentée (pas de "distribution complète") :
+      `electron-winstaller` (nécessaire pour un vrai installeur NSIS/Squirrel signé)
+      n'a pas son script d'installation exécuté (politique `allow-scripts` du dépôt) —
+      sans conséquence puisque la cible `dir` ne l'utilise pas ; à traiter séparément
+      si un jour un installeur signé devient dans le périmètre.
+      `npm test` : 45/45 passed (inchangé après ajout de la dépendance de build).
 - [x] Tâche 12 — Electron 38.8.6 vulnérable : tenter la mise à jour vers 44.3.0 tôt (avant
       le packaging), documenter précisément si le blocage de quota se reproduit.
       **Mise à jour réussie** (pas de blocage de quota cette fois) : `electron` passé de

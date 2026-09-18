@@ -17,7 +17,9 @@
     "test:chat": "node tests/run-chat-visual.cjs",
     "test:stop": "node tests/run-stop-visual.cjs",
     "test:permission": "node tests/run-permission-visual.cjs",
-    "test:layout": "node tests/run-layout-visual.cjs"
+    "test:layout": "node tests/run-layout-visual.cjs",
+    "package:win": "npm run renderer:build && electron-builder --win dir",
+    "test:package": "node tests/package-smoke.cjs"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
@@ -26,6 +28,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "electron": "^44.4.2",
+    "electron-builder": "^26.15.3",
     "highlight.js": "^11.12.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
@@ -35,5 +38,25 @@
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
+  },
+  "build": {
+    "appId": "com.openagent.desktop",
+    "productName": "openagent",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "worker.mjs",
+      "core/**/*",
+      "renderer-dist/**/*",
+      "package.json",
+      "!**/*.test.mts",
+      "!node_modules/**/*"
+    ],
+    "win": {
+      "target": "dir"
+    }
   }
 }

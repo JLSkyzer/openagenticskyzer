@@ -8,7 +8,7 @@
 - [x] Relire/valider la nouvelle spécification écrite, notamment données Chroma et plugins Python personnalisés (utilisateur : « go »).
 - [ ] Stockage Node : migrations sauvegardées, settings globaux/projet distincts, secrets, isolation de projets et branches ; tests temporaires.
 - [ ] Moteur Node : providers, streaming, outils, permissions, annulation, contexte et mémoire ; serveurs simulés.
-- [ ] Interface Electron : navigation et paramètres complets, conversation et panneaux ; tests de clic et rendu réel.
+- [x] Interface Electron : navigation et paramètres complets, conversation et panneaux ; tests de clic et rendu réel.
 - [ ] Modèles locaux, téléchargements, index/BDC, extensions et MCP sans Python ; tests de chaque contrat.
 - [ ] Vérifier chaque ligne de la matrice de parité, corriger les régressions.
 - [ ] Packager et tester Windows sans Python, supprimer les anciens chemins actifs, documenter npm/exécutable.
@@ -363,10 +363,82 @@ de `workspace.mts` existent côté Node à ce stade).
       (seule la régression capturePage ci-dessus, déjà corrigée) : `npm test` 45/45
       passed, `test:vault`/`test:preload`/`test:sidebar`/`test:chat`/`test:stop`/
       `test:permission`/`test:layout` tous PASS, captures d'écran vérifiées.
-- [ ] Tâche 13 — Vérification bout-en-bout finale (app packagée, sans Python, dossier
+- [x] Tâche 13 — Vérification bout-en-bout finale (app packagée, sans Python, dossier
       réel, message réel streamé, outil réel avec permission, Stop réellement effectif) ;
       preuves consignées ici, ne cocher que la ligne "Interface Electron" de la section
       migration ci-dessus, jamais les lignes hors scope.
+      Nouveau harnais bout-en-bout (`electron/tests/final-e2e.cjs`, `npm run
+      test:final-e2e`, script Node simple — pilote l'**exécutable packagé réel**
+      (`release/win-unpacked/openagent.exe`, `main.cjs`/`preload.cjs`/`worker.mjs` non
+      mockés, contrairement à tous les tests `*-visual.cjs` précédents) via le vrai
+      protocole Chrome DevTools (WebSocket natif de Node, aucune dépendance ajoutée) —
+      c'est l'interface qu'un vrai clic utilisateur finit par produire, pas un raccourci
+      de test. 7 preuves réelles, captures + log dans `electron/tests/proof-final-e2e/`
+      (régénéré à chaque exécution, non versionné) :
+      1. **Python absent** : PATH assaini (répertoires contenant "python" **et** le
+         dossier `...\WindowsApps` — qui contient un stub d'alias d'exécution
+         `python.exe` fourni par Windows même sans interpréteur réel installé, sans quoi
+         `where python` "réussit" contre un simple lanceur, pas un vrai interpréteur) ;
+         `where python` sous ce PATH échoue réellement (code de sortie ≠ 0) avant même
+         de lancer l'app — preuve que l'app n'a besoin de rien sur ce PATH.
+      2. **Lancement hors npm start** : `openagent.exe` lancé directement avec
+         `--remote-debugging-port`, `OPENAGENT_HOME` isolé (jamais `~/.openagent` réel).
+      3. **État initial réel** : capture d'écran au démarrage, thème sombre par défaut
+         confirmé (`data-theme="dark"`).
+      4. **Vrai dossier** : un vrai dialogue natif `dialog.showOpenDialog` ne peut pas
+         être piloté depuis un script CDP externe (pas de fenêtre native scriptable) —
+         donc `folders.json` est pré-rempli (même schéma que `FoldersService`) avec un
+         vrai dossier temporaire, puis un **vrai clic** sur l'entrée réelle de la
+         sidebar déclenche le vrai `activate()` → vrai IPC `activate_folder` → vrai
+         `FoldersService`/`worker.mjs` → vraie mise à jour React (même chemin que le
+         callback du dialogue natif aurait emprunté). Capture d'écran avec l'entrée
+         active confirmée.
+      5. **Vrai message streamé** : vraie connexion sauvegardée via le vrai coffre
+         chiffré (`save-connection`/`safeStorage`), pointée vers un serveur HTTP local
+         factice documenté comme tel (SSE mot-par-mot). Vrai clic clavier Entrée dans le
+         vrai textarea → vrai streaming SSE observé (texte partiel puis complet dans le
+         DOM), capture d'écran en cours de streaming.
+      6. **Vrai outil + permission** : `files_ask:true` forcé pour le vrai projet via le
+         vrai `save-project-settings` ; vrai appel `create_file` demandé par le faux
+         provider → bannière de permission réelle affichée, **fichier absent du disque
+         confirmé avant décision** ; vrai clic sur "Autoriser" → fichier réellement créé
+         avec le bon contenu. Captures avant/après.
+      7. **Stop réellement effectif** : vrai flux SSE long, vrai clic sur Stop en cours
+         de streaming → connexion HTTP réellement fermée côté serveur (`req.on('close')`
+         observé), texte partiel conservé à l'écran, mots restants jamais reçus.
+         Relecture finale du vrai transcript persisté (`messages`) : 8 messages
+         (3 tours), cohérent avec les 3 échanges réels.
+      **2 vrais bugs trouvés et corrigés en construisant ce test** (pas des artefacts du
+      harnais — les deux auraient touché un vrai utilisateur) :
+      - `ChatProvider.send()` (`electron/renderer-src/src/state/ChatProvider.tsx`)
+        n'avait aucune gestion d'erreur : un rejet de l'appel IPC `send` (ex. le coffre
+        refusant une confirmation d'URL) laissait le bouton d'envoi ne rien faire, sans
+        aucun message d'erreur, sans façon de s'en sortir sans redémarrer l'app.
+        Corrigé : `try/catch` autour de l'appel, nouvelle action de reducer
+        `send-failed` qui alimente `state.error` (déjà affiché par `ChatView`).
+      - **Limite documentée, non corrigée** (hors périmètre du socle, risque de
+        régression sur du code de sécurité déjà testé) : `Connections.compose()`
+        (`electron/core/connections.mts:133`) sélectionne l'autorisation
+        d'endpoint (`authorization = folder ? p : g`) uniquement selon la présence d'un
+        dossier actif, pas selon la portée (`key_source`) d'où vient réellement la clé
+        résolue — si une connexion est enregistrée en portée globale (`folder: null`)
+        puis qu'un `resolve()` a lieu avec un dossier actif, l'autorisation enregistrée
+        sur le profil global n'est jamais consultée (seul le profil local, vide, l'est),
+        et tout changement ultérieur de `base_url` avec une clé déjà présente échoue
+        systématiquement avec "Confirmation requise…", sans jamais atteindre l'UI (à
+        cause du bug `ChatProvider.send()` ci-dessus, désormais visible comme erreur
+        plutôt que silencieux). Contournement adopté dans `final-e2e.cjs` : les 3
+        connexions de test sont enregistrées avec `folder` = le projet actif (portée
+        cohérente à la sauvegarde et à la résolution), ce qui correspond d'ailleurs à un
+        usage réel plausible (connexion par projet). À investiguer séparément si des
+        connexions globales doivent un jour être changées d'URL alors qu'un projet est
+        actif.
+      Suite complète revérifiée après le fix `ChatProvider`/reducer et le repackaging
+      (`npm run package:win`) : `npm test` 45/45 passed ; `test:vault`/`test:preload`/
+      `test:theme`/`test:sidebar`/`test:chat`/`test:stop`/`test:permission`/
+      `test:layout`/`test:package` tous PASS ; `test:final-e2e` PASS (2 exécutions
+      propres consécutives, captures confirmées à l'œil par l'utilisateur en direct sur
+      la fenêtre réelle pendant l'exécution).
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

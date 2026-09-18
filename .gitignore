@@ -5,6 +5,7 @@ electron/release/
 electron/renderer-dist/
 electron/test-results/
 electron/playwright-report/
+electron/tests/proof-final-e2e/
 .env
 .env.*
 !.env.example

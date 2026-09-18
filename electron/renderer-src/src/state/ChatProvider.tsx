@@ -42,8 +42,15 @@ export function ChatProvider({ activeFolder, initialMessages, children }: ChatPr
   const send = useCallback(
     async (text: string) => {
       if (!activeFolder || !text.trim()) return;
-      const { runId } = await sendMessage(activeFolder, 'main', text);
-      dispatch({ type: 'send-started', runId, text });
+      try {
+        const { runId } = await sendMessage(activeFolder, 'main', text);
+        dispatch({ type: 'send-started', runId, text });
+      } catch (error) {
+        // Without this, a rejected IPC call (e.g. connections.resolve() refusing an
+        // unconfirmed key/endpoint pairing) left the send silently doing nothing — no
+        // message, no error, no way out of the input box short of restarting the app.
+        dispatch({ type: 'send-failed', error: error instanceof Error ? error.message : 'Échec de l’envoi du message' });
+      }
     },
     [activeFolder],
   );

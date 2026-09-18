@@ -19,7 +19,8 @@
     "test:permission": "node tests/run-permission-visual.cjs",
     "test:layout": "node tests/run-layout-visual.cjs",
     "package:win": "npm run renderer:build && electron-builder --win dir",
-    "test:package": "node tests/package-smoke.cjs"
+    "test:package": "node tests/package-smoke.cjs",
+    "test:final-e2e": "node tests/final-e2e.cjs"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",

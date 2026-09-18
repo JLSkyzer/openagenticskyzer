@@ -40,6 +40,7 @@ export const initialChatState: ChatState = {
 export type ChatAction =
   | { type: 'folder-loaded'; messages: ChatMessage[] }
   | { type: 'send-started'; runId: string; text: string }
+  | { type: 'send-failed'; error: string }
   | { type: 'agent-event'; event: AgentEvent }
   | { type: 'permission-decided' }
   | { type: 'clear-error' };
@@ -59,6 +60,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         liveToolStarts: {},
         error: null,
       };
+
+    case 'send-failed':
+      // The IPC round trip itself failed (e.g. a rejected connection resolution) before
+      // any runId ever existed — nothing to mark as running, just surface the failure.
+      return { ...state, error: action.error };
 
     case 'clear-error':
       return { ...state, error: null };

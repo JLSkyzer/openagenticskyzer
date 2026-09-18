@@ -4,16 +4,20 @@
 // disk persistence of the choice) without needing the full main.cjs app lifecycle or the
 // real user home directory.
 const { app, BrowserWindow, ipcMain } = require('electron');
+app.disableHardwareAcceleration();
 const path = require('node:path');
 const { mkdtemp, rm, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
 
-// app.exit() can cut stdout before an async pipe write (common on Windows) actually
-// reaches the OS — flush explicitly before exiting instead of racing it.
+// app.exit() can cut stdout/stderr before an async pipe write (common on Windows)
+// actually reaches the OS — flush both explicitly before exiting instead of racing them.
 function flush() {
-  return new Promise(resolve => process.stdout.write('', resolve));
+  return Promise.all([
+    new Promise(resolve => process.stdout.write('', resolve)),
+    new Promise(resolve => process.stderr.write('', resolve)),
+  ]);
 }
 
 app.whenReady().then(async () => {

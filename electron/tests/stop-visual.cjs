@@ -4,6 +4,10 @@
 // still render as a normal message (not lost), and it must be the exact text persisted
 // to disk, not just React state that would vanish on reload.
 const { app, BrowserWindow, ipcMain } = require('electron');
+// Fixes a real Electron 38→44 regression found while upgrading (Tâche 12):
+// capturePage() throws "UnknownVizError" on a hidden BrowserWindow in this environment
+// unless hardware acceleration is disabled first.
+app.disableHardwareAcceleration();
 const { Worker } = require('node:worker_threads');
 const path = require('node:path');
 const { mkdtemp, rm, mkdir, writeFile } = require('node:fs/promises');
@@ -23,7 +27,10 @@ async function waitFor(fn, { timeout = 8000, interval = 50 } = {}) {
 }
 
 function flush() {
-  return new Promise(resolve => process.stdout.write('', resolve));
+  return Promise.all([
+    new Promise(resolve => process.stdout.write('', resolve)),
+    new Promise(resolve => process.stderr.write('', resolve)),
+  ]);
 }
 
 app.whenReady().then(async () => {

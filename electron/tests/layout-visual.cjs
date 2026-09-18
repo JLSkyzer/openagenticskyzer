@@ -3,6 +3,10 @@
 // minWidth/minHeight = 1080x680) — no horizontal overflow, no region overlapping
 // another, with a real conversation on screen (not just the empty state).
 const { app, BrowserWindow, ipcMain } = require('electron');
+// Fixes a real Electron 38→44 regression found while upgrading (Tâche 12):
+// capturePage() throws "UnknownVizError" on a hidden BrowserWindow in this environment
+// unless hardware acceleration is disabled first.
+app.disableHardwareAcceleration();
 const path = require('node:path');
 const { mkdtemp, rm, mkdir, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
@@ -10,7 +14,10 @@ const { join } = require('node:path');
 const assert = require('node:assert/strict');
 
 function flush() {
-  return new Promise(resolve => process.stdout.write('', resolve));
+  return Promise.all([
+    new Promise(resolve => process.stdout.write('', resolve)),
+    new Promise(resolve => process.stderr.write('', resolve)),
+  ]);
 }
 
 app.whenReady().then(async () => {

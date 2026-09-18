@@ -3,6 +3,10 @@
 // must NOT write anything until the user clicks "Autoriser" on a real click, and must
 // write for real immediately after.
 const { app, BrowserWindow, ipcMain } = require('electron');
+// Fixes a real Electron 38→44 regression found while upgrading (Tâche 12):
+// capturePage() throws "UnknownVizError" on a hidden BrowserWindow in this environment
+// unless hardware acceleration is disabled first.
+app.disableHardwareAcceleration();
 const { Worker } = require('node:worker_threads');
 const path = require('node:path');
 const { mkdtemp, rm, mkdir, writeFile, readFile } = require('node:fs/promises');
@@ -22,7 +26,10 @@ async function waitFor(fn, { timeout = 8000, interval = 50 } = {}) {
 }
 
 function flush() {
-  return new Promise(resolve => process.stdout.write('', resolve));
+  return Promise.all([
+    new Promise(resolve => process.stdout.write('', resolve)),
+    new Promise(resolve => process.stderr.write('', resolve)),
+  ]);
 }
 
 async function fileExists(file) {

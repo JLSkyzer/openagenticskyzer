@@ -8,7 +8,10 @@ const assert = require('node:assert/strict');
 // app.exit() can cut stdout before an async pipe write (common on Windows) actually
 // reaches the OS — flush explicitly before exiting instead of racing it.
 function flush() {
-  return new Promise(resolve => process.stdout.write('', resolve));
+  return Promise.all([
+    new Promise(resolve => process.stdout.write('', resolve)),
+    new Promise(resolve => process.stderr.write('', resolve)),
+  ]);
 }
 
 app.whenReady().then(async () => {

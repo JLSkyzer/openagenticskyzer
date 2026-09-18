@@ -3,6 +3,10 @@
 // Sidebar end to end: click → moves to the front of the history → survives a "restart"
 // (a fresh FoldersService instance over the same temp home reads the same order back).
 const { app, BrowserWindow, ipcMain } = require('electron');
+// Fixes a real Electron 38→44 regression found while upgrading (Tâche 12):
+// capturePage() throws "UnknownVizError" on a hidden BrowserWindow in this environment
+// unless hardware acceleration is disabled first.
+app.disableHardwareAcceleration();
 const path = require('node:path');
 const { mkdtemp, rm, mkdir, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
@@ -12,7 +16,10 @@ const assert = require('node:assert/strict');
 // app.exit() can cut stdout before an async pipe write (common on Windows) actually
 // reaches the OS — flush explicitly before exiting instead of racing it.
 function flush() {
-  return new Promise(resolve => process.stdout.write('', resolve));
+  return Promise.all([
+    new Promise(resolve => process.stdout.write('', resolve)),
+    new Promise(resolve => process.stderr.write('', resolve)),
+  ]);
 }
 
 app.whenReady().then(async () => {

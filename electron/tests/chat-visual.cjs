@@ -4,6 +4,10 @@
 // streamed tool-start/message events → a real create_file write → assistant reply
 // rendered as markdown, against a fake HTTP provider (same pattern as agent.test.mts).
 const { app, BrowserWindow, ipcMain } = require('electron');
+// Fixes a real Electron 38→44 regression found while upgrading (Tâche 12):
+// capturePage() throws "UnknownVizError" on a hidden BrowserWindow in this environment
+// unless hardware acceleration is disabled first.
+app.disableHardwareAcceleration();
 const { Worker } = require('node:worker_threads');
 const path = require('node:path');
 const { mkdtemp, rm, mkdir, writeFile, readFile } = require('node:fs/promises');
@@ -25,7 +29,10 @@ async function waitFor(fn, { timeout = 8000, interval = 50 } = {}) {
 // app.exit() can cut stdout before an async pipe write (common on Windows) actually
 // reaches the OS — flush explicitly before exiting instead of racing it.
 function flush() {
-  return new Promise(resolve => process.stdout.write('', resolve));
+  return Promise.all([
+    new Promise(resolve => process.stdout.write('', resolve)),
+    new Promise(resolve => process.stderr.write('', resolve)),
+  ]);
 }
 
 app.whenReady().then(async () => {

@@ -311,8 +311,34 @@ de `workspace.mts` existent côté Node à ce stade).
       `test:permission` tous verts.
 - [ ] Tâche 11 — Packaging minimal Windows (electron-builder), pas de distribution
       complète (installeur signé/auto-update hors scope).
-- [ ] Tâche 12 — Electron 38.8.6 vulnérable : tenter la mise à jour vers 44.3.0 tôt (avant
+- [x] Tâche 12 — Electron 38.8.6 vulnérable : tenter la mise à jour vers 44.3.0 tôt (avant
       le packaging), documenter précisément si le blocage de quota se reproduit.
+      **Mise à jour réussie** (pas de blocage de quota cette fois) : `electron` passé de
+      `^38.1.0` à `^44.4.2` (dernière version publiée, plus récente que le 44.3.0 visé
+      initialement) dans `electron/package.json`. `npm audit` : **0 vulnérabilité**
+      (les 2 entrées "high" électron + `extract-zip` transitif ont disparu). Binaire
+      téléchargé et vérifié (`electron --version` → `v44.4.2`).
+      **Vraie régression Electron 38→44 trouvée et corrigée** (exactement le genre de
+      chose que cette tâche visait à détecter) : `webContents.capturePage()` sur une
+      fenêtre cachée (`show:false`) lève `Error: UnknownVizError` sous Electron 44 dans
+      cet environnement — le service GPU (Viz) de Chromium échoue silencieusement sans
+      accélération matérielle correctement disponible. Diagnostiqué en isolant chaque
+      étape (script minimal Electron 44 fonctionnel → ajout progressif de logs de debug
+      dans `theme-visual.cjs` jusqu'à localiser l'échec exactement à `capturePage()`).
+      Corrigé par `app.disableHardwareAcceleration()` avant `app.whenReady()` — appliqué
+      aux 6 scripts de test utilisant `capturePage()`
+      (`theme/sidebar/chat/stop/permission/layout-visual.cjs`). **Non appliqué à
+      `main.cjs`** (l'app réelle) : `capturePage()` n'est utilisé nulle part dans l'app
+      de production, ce problème est spécifique à cet environnement de test sandboxé
+      sans accès GPU correct — désactiver l'accélération matérielle pour de vrais
+      utilisateurs sur leur propre machine dégraderait le rendu sans nécessité.
+      Bug de robustesse corrigé au passage sur tous les scripts de test (`flush()` ne
+      vidait que stdout, pas stderr — une erreur pouvait être coupée avant `app.exit()`
+      sur certaines machines/versions ; désormais les deux flux sont vidés partout).
+      **Toute la suite revérifiée sur Electron 44.4.2, aucune régression fonctionnelle**
+      (seule la régression capturePage ci-dessus, déjà corrigée) : `npm test` 45/45
+      passed, `test:vault`/`test:preload`/`test:sidebar`/`test:chat`/`test:stop`/
+      `test:permission`/`test:layout` tous PASS, captures d'écran vérifiées.
 - [ ] Tâche 13 — Vérification bout-en-bout finale (app packagée, sans Python, dossier
       réel, message réel streamé, outil réel avec permission, Stop réellement effectif) ;
       preuves consignées ici, ne cocher que la ligne "Interface Electron" de la section

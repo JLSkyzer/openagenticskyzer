@@ -16,7 +16,8 @@
     "test:sidebar": "node tests/run-sidebar-visual.cjs",
     "test:chat": "node tests/run-chat-visual.cjs",
     "test:stop": "node tests/run-stop-visual.cjs",
-    "test:permission": "node tests/run-permission-visual.cjs"
+    "test:permission": "node tests/run-permission-visual.cjs",
+    "test:layout": "node tests/run-layout-visual.cjs"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",

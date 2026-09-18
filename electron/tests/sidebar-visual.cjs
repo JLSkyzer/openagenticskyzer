@@ -83,10 +83,11 @@ app.whenReady().then(async () => {
     );
     assert.equal(activeAfter, 'project-a', 'the clicked folder is highlighted as active');
 
+    // main.py's top bar shows only the basename after ▸, not the full path.
     const activePathText = await win.webContents.executeJavaScript(
-      "Array.from(document.querySelectorAll('div')).map(el => el.textContent).find(t => t?.startsWith('▸'))",
+      "Array.from(document.querySelectorAll('span')).map(el => el.textContent).find(t => t?.startsWith('▸'))",
     );
-    assert.ok(activePathText?.includes(a), 'the active folder path is shown in the placeholder header');
+    assert.ok(activePathText?.includes('project-a'), 'the active folder basename is shown in the top bar');
 
     const shotAfter = await win.webContents.capturePage();
     await writeFile(join(screenshotDir, 'sidebar-after-click.png'), shotAfter.toPNG());

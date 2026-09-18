@@ -279,7 +279,36 @@ de `workspace.mts` existent côté Node à ce stade).
       `npm test` : 45/45 passed. `npx tsc` strict (renderer + core) : aucune erreur.
       `test:vault`/`test:preload`/`test:theme`/`test:sidebar`/`test:chat`/`test:stop`
       tous verts.
-- [ ] Tâche 10 — Top bar (stubs hors scope) + layout global, preuve taille mini fenêtre.
+- [x] Tâche 10 — Top bar (stubs hors scope) + layout global, preuve taille mini fenêtre.
+      Bug de layout trouvé et corrigé au passage (pas un bug de test) : depuis la Tâche
+      7, le "TempThemeStrip" était positionné DANS la colonne chat (à côté de Sidebar),
+      pas en pleine largeur au-dessus de toute l'app comme `main.py` — donc la sidebar
+      n'était jamais alignée sous une vraie top bar. Corrigé par la vraie structure
+      `main.py` : `TopBar` (38px, pleine largeur) au-dessus, puis une rangée flex
+      (Sidebar 230px + colonne chat) en dessous.
+      `components/TopBar.tsx` : logo "◈ openagent", nom de dossier actif (`▸ {basename}`
+      — uniquement le nom de base, pas le chemin complet, fidèle à `main.py` : mon
+      ancien placeholder affichait le chemin complet par erreur, corrigé aussi dans
+      `sidebar-visual.cjs`), boutons stub désactivés 📥/⬇/⚙️ (téléchargements/export/
+      réglages, hors scope de tout le lot) au lieu de les omettre — suit littéralement
+      la formulation du plan pour cette tâche, à la différence des autres éléments hors
+      scope (widget git, panneau téléchargements) omis entièrement dans les tâches
+      précédentes. Contrôles de thème (Tâche 5a) relogés dans la top bar, faute de vrai
+      panneau Réglages (hors scope de tout le lot) pour les accueillir.
+      Preuve bout en bout (nouveau `tests/layout-visual.cjs`/`run-layout-visual.cjs`,
+      `npm run test:layout`) : fenêtre à la taille minimale réelle de `main.cjs`
+      (1080×680 — dimensions du cadre, donc viewport réel un peu plus étroit, mesuré et
+      vérifié plutôt que supposé), conversation réelle pré-remplie (pas l'état vide),
+      nom de dossier volontairement long pour tester la troncature CSS — aucun
+      débordement horizontal, aucun chevauchement entre la top bar et la rangée
+      principale ni entre la sidebar et la colonne chat, tout le contenu reste dans le
+      viewport réel. Capture d'écran vérifiée visuellement après correction d'un
+      problème de timing de rendu sur fenêtre cachée (`webContents.invalidate()` +
+      délai avant capture, cette fois corrigé plutôt que simplement noté comme dans les
+      Tâches 8/9).
+      `npm test` : 45/45 passed. `npx tsc` strict (renderer + core) : aucune erreur.
+      `test:vault`/`test:preload`/`test:theme`/`test:sidebar`/`test:chat`/`test:stop`/
+      `test:permission` tous verts.
 - [ ] Tâche 11 — Packaging minimal Windows (electron-builder), pas de distribution
       complète (installeur signé/auto-update hors scope).
 - [ ] Tâche 12 — Electron 38.8.6 vulnérable : tenter la mise à jour vers 44.3.0 tôt (avant

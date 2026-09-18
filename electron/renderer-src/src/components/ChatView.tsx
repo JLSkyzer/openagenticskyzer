@@ -3,6 +3,7 @@ import { useChat } from '../state/ChatProvider';
 import { AssistantBubble, UserBubble } from './MessageBubble';
 import { ToolMessage } from './ToolMessage';
 import { EmptyState } from './EmptyState';
+import { PermissionBanner } from './PermissionBanner';
 
 export function ChatView() {
   const { state } = useChat();
@@ -11,10 +12,11 @@ export function ChatView() {
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [state.messages, state.streamingText, state.liveToolStarts]);
+  }, [state.messages, state.streamingText, state.liveToolStarts, state.pendingPermission]);
 
   const pendingTools = Object.entries(state.liveToolStarts);
-  const waitingForFirstToken = state.agentRunning && !state.streamingText && pendingTools.length === 0;
+  const waitingForFirstToken =
+    state.agentRunning && !state.streamingText && pendingTools.length === 0 && !state.pendingPermission;
   const hasContent = state.messages.length > 0 || state.agentRunning;
 
   if (!hasContent) return <EmptyState />;
@@ -47,6 +49,7 @@ export function ChatView() {
           <span className="oa-typing-dots" aria-label="En cours…" />
         </div>
       )}
+      <PermissionBanner />
       {state.error && (
         <div className="mx-4 my-2 rounded border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-400">
           {state.error}

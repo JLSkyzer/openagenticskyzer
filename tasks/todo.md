@@ -254,8 +254,31 @@ de `workspace.mts` existent côté Node à ce stade).
       assertions DOM réelles ont passé).
       `npm test` : 45/45 passed. `npx tsc` strict (renderer + core) : aucune erreur.
       `test:vault`/`test:preload`/`test:theme`/`test:sidebar`/`test:chat` tous verts.
-- [ ] Tâche 9 — Bannière de permission + appel d'outil réel bout en bout (test Electron
+- [x] Tâche 9 — Bannière de permission + appel d'outil réel bout en bout (test Electron
       réel : aucune écriture avant décision, écriture réelle après "Autoriser").
+      Preuves : `reducer.ts` gère `kind:'permission-request'` (nouveau champ
+      `pendingPermission`), vidé sur `permission-decided`/`done`/`stopped`/`error` (une
+      bannière orpheline après un Stop pendant l'attente de décision aurait été le même
+      genre de bug que les Tâches 7/8). `ChatProvider.decide(allow, always)` appelle
+      `decidePermission` (bridge déjà exposée depuis la Tâche 4, `worker.mjs` déjà câblé
+      depuis la Tâche 7 — seule la Tâche 9 branche enfin l'UI dessus).
+      `components/PermissionBanner.tsx` : styles copiés de `chat.py::permission_banner`
+      (bordure/fond jaune, `{tool}({args tronqués 60c})`, 3 boutons Toujours/bleu,
+      Autoriser/vert, Refuser/rouge).
+      Test Electron réel bout en bout (nouveau `tests/permission-visual.cjs`/
+      `run-permission-visual.cjs`, `npm run test:permission`) : `files_ask` forcé à
+      `true` sur le projet (réglage par défaut = auto-autorisé, aurait rendu le test
+      vide de sens) — la bannière affiche le vrai nom d'outil et les vrais arguments,
+      **aucun fichier n'existe sur disque tant que la décision n'a pas été prise**, clic
+      réel sur "Autoriser" → la bannière disparaît, l'outil s'exécute, **le fichier est
+      réellement créé avec le bon contenu**, la conversation continue normalement —
+      `PASS permission banner blocks the write until Autoriser is clicked, then it
+      happens for real`. Bug de test trouvé et corrigé en cours de route (pas un bug
+      d'app) : `.click()` ne retourne jamais rien, donc `find(...)?.click() !==
+      undefined` échouait systématiquement quel que soit le résultat réel du clic.
+      `npm test` : 45/45 passed. `npx tsc` strict (renderer + core) : aucune erreur.
+      `test:vault`/`test:preload`/`test:theme`/`test:sidebar`/`test:chat`/`test:stop`
+      tous verts.
 - [ ] Tâche 10 — Top bar (stubs hors scope) + layout global, preuve taille mini fenêtre.
 - [ ] Tâche 11 — Packaging minimal Windows (electron-builder), pas de distribution
       complète (installeur signé/auto-update hors scope).

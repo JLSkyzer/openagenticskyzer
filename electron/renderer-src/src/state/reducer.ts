@@ -10,6 +10,13 @@ export interface ToolMeta {
 // carries tool_call_id + content, not which tool produced it.
 export type RenderedMessage = ChatMessage & { _tool?: string; _category?: string };
 
+export interface PendingPermission {
+  requestId: string;
+  tool: string;
+  category?: string;
+  arguments: Record<string, unknown>;
+}
+
 export interface ChatState {
   messages: RenderedMessage[];
   liveToolStarts: Record<string, ToolMeta>;
@@ -17,6 +24,7 @@ export interface ChatState {
   agentRunning: boolean;
   runId: string | null;
   error: string | null;
+  pendingPermission: PendingPermission | null;
 }
 
 export const initialChatState: ChatState = {
@@ -26,12 +34,14 @@ export const initialChatState: ChatState = {
   agentRunning: false,
   runId: null,
   error: null,
+  pendingPermission: null,
 };
 
 export type ChatAction =
   | { type: 'folder-loaded'; messages: ChatMessage[] }
   | { type: 'send-started'; runId: string; text: string }
   | { type: 'agent-event'; event: AgentEvent }
+  | { type: 'permission-decided' }
   | { type: 'clear-error' };
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
@@ -52,6 +62,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     case 'clear-error':
       return { ...state, error: null };
+
+    case 'permission-decided':
+      return { ...state, pendingPermission: null };
 
     case 'agent-event': {
       const event = action.event;
@@ -85,16 +98,34 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             streamingText: message.role === 'assistant' ? '' : state.streamingText,
           };
         }
+        case 'permission-request':
+          return {
+            ...state,
+            pendingPermission: {
+              requestId: event.requestId,
+              tool: event.tool,
+              category: event.category,
+              arguments: event.arguments,
+            },
+          };
         case 'done':
         case 'stopped':
-          // Also clear liveToolStarts: a Stop mid tool-execute leaves no 'message'
-          // event for that call (agent.mts re-throws the abort before building one), so
-          // without this a "pending" tool card would stay stuck on screen forever.
-          return { ...state, agentRunning: false, runId: null, streamingText: '', liveToolStarts: {} };
+          // Also clear liveToolStarts and any pendingPermission: a Stop while waiting
+          // on a decision (or mid tool-execute) leaves no further event for that call
+          // (agent.mts re-throws the abort before building one), so without this a
+          // "pending" tool card or a stale permission banner would stay stuck forever.
+          return { ...state, agentRunning: false, runId: null, streamingText: '', liveToolStarts: {}, pendingPermission: null };
         case 'error':
-          return { ...state, agentRunning: false, runId: null, streamingText: '', liveToolStarts: {}, error: event.message };
+          return {
+            ...state,
+            agentRunning: false,
+            runId: null,
+            streamingText: '',
+            liveToolStarts: {},
+            pendingPermission: null,
+            error: event.message,
+          };
         default:
-          // permission-request (Tâche 9) and any future kind fall through untouched.
           return state;
       }
     }

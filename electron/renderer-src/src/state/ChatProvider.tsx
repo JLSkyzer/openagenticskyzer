@@ -1,11 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useReducer, useRef, type ReactNode } from 'react';
-import { onAgentEvent, sendMessage, stop, type ChatMessage } from '../ipc/bridge';
+import { decidePermission, onAgentEvent, sendMessage, stop, type ChatMessage } from '../ipc/bridge';
 import { chatReducer, initialChatState, type ChatState } from './reducer';
 
 interface ChatContextValue {
   state: ChatState;
   send(text: string): Promise<void>;
   stopRun(): Promise<void>;
+  decide(allow: boolean, always: boolean): Promise<void>;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
@@ -51,7 +52,16 @@ export function ChatProvider({ activeFolder, initialMessages, children }: ChatPr
     if (state.runId) await stop(state.runId);
   }, [state.runId]);
 
-  return <ChatContext.Provider value={{ state, send, stopRun }}>{children}</ChatContext.Provider>;
+  const decide = useCallback(
+    async (allow: boolean, always: boolean) => {
+      if (!state.runId || !state.pendingPermission) return;
+      await decidePermission(state.runId, state.pendingPermission.requestId, allow, always);
+      dispatch({ type: 'permission-decided' });
+    },
+    [state.runId, state.pendingPermission],
+  );
+
+  return <ChatContext.Provider value={{ state, send, stopRun, decide }}>{children}</ChatContext.Provider>;
 }
 
 export function useChat(): ChatContextValue {

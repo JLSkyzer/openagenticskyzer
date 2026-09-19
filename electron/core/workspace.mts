@@ -2,7 +2,8 @@ import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm } from 'nod
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AgentTool } from './agent.mts';
-import { metadataDirectory, object } from './json-store.mts';
+import { metadataDirectory } from './json-store.mts';
+import { defineTool, type ParamRule } from './tool-kit.mts';
 
 /** Only the agent's permission gate should call these capability implementations. */
 export async function workspaceTools(folder: string, ignoredPatterns: string): Promise<AgentTool[]> {
@@ -41,19 +42,8 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
     return { file, text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), bytes: info.size };
   };
   const pathField = { type: 'string', description: 'Chemin dans le projet actif' };
-  const make = (name: string, description: string, category: AgentTool['category'], properties: Record<string, any>, required: string[], execute: AgentTool['execute']): AgentTool => ({
-    name, description, category, parameters: { type: 'object', properties, required, additionalProperties: false },
-    validate(args) {
-      object(args);
-      for (const key of required) if (!Object.hasOwn(args, key)) throw new Error('Argument requis');
-      for (const [key, value] of Object.entries(args)) {
-        const rule = Object.hasOwn(properties, key) ? properties[key] : undefined;
-        if (!rule) throw new Error('Argument inconnu');
-        if (rule.type === 'string' && (typeof value !== 'string' || value.length > 1048576 || value.includes('\0'))) throw new Error('Texte invalide');
-        if (rule.type === 'integer' && (!Number.isInteger(value) || Number(value) < 1 || Number(value) > 1000000)) throw new Error('Nombre invalide');
-      }
-    }, execute: async (args, signal) => { signal.throwIfAborted(); return execute(args, signal); },
-  });
+  const make = (name: string, description: string, category: AgentTool['category'], properties: Record<string, ParamRule>, required: string[], execute: AgentTool['execute']): AgentTool =>
+    defineTool({ name, description, category, properties, required, execute });
   return [
     make('read_file', 'Lire un fichier texte avec numéros de lignes.', 'read', { path: pathField, offset: { type: 'integer' }, limit: { type: 'integer' } }, ['path'], async (args, signal) => {
       const { text } = await textFile(args.path as string, signal);

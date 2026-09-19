@@ -650,6 +650,76 @@ réglages LM Studio (contexte/VRAM/`lms`), lanceur de serveur llama.cpp.
       contexte, téléchargements, onboarding), les outils git/shell/web/mémoire et
       l'index sémantique. La migration NiceGUI → Electron n'est **pas** terminée.
 
+### Lot actif suivant — outils du moteur Node (fichiers, mémoire, git, shell, web)
+
+Inventaire Python relevé le 2026-09-19 (`tools/*.py`, `permissions.py`, tests). Node n'a
+aujourd'hui que 7 outils fichiers (`workspace.mts`) ; le prompt système ne parle que
+d'eux. Ordre choisi : du moins risqué au plus risqué, chaque outil en TDD (RED d'abord)
+avec ses tests de sécurité, chaque catégorie de permission vérifiée par un test de garde.
+
+Décisions de sécurité prises (à relire, elles changent parfois le comportement Python) :
+- **Git** : argv sans shell, `--` avant tout pathspec/valeur, garde `_guarded` (un seul
+  `--` si une valeur commence par `-`), `git pull` = `fetch` gardé + `merge --ff-only
+  FETCH_HEAD` (test de non-régression `--upload-pack=` sur pull **et** push),
+  `GIT_TERMINAL_PROMPT=0`, entiers validés, timeout 15 s (60 s pour push/pull/fetch),
+  `AbortSignal` câblé. Les mutations locales sont `write` ; **push/pull sont `shell`**
+  (demandent toujours, même si `files_ask=false` — Python les demandait toujours).
+- **Shell** : `cwd` = racine du projet réelle, environnement épuré des secrets
+  (`*_API_KEY`, `*TOKEN*`, `*SECRET*`, `HF_TOKEN`…), `windowsHide`, timeout **avec arrêt de
+  l'arbre de processus** (`taskkill /T /F` ; Python ne tuait que le shell), `AbortSignal`
+  câblé (le Stop tue vraiment la commande), sortie mise en forme comme Python (3000 car.,
+  bruit pnpm replié, blobs HTML/JSON résumés), serveurs de dev lancés en arrière-plan,
+  dédupliqués et nettoyés à la fermeture. Pas de réécriture de chemins absolus (le
+  `_normalize_paths` Python est best-effort et dangereux). Le réglage `shell_ask` (toggle
+  « Exécution shell » des réglages, aujourd'hui **sans effet**, `policy()` ne le lit
+  jamais) sera honoré : `false` → autorisé, sinon demande.
+- **Web** : `fetch_url` http/https uniquement, résolution DNS + blocage des adresses
+  privées/loopback/link-local (SSRF) revérifié à **chaque** redirection (suivies à la main,
+  5 max), corps limité en octets, `max_chars` plafonné, timeout + `AbortSignal`. Python
+  n'avait aucune de ces protections (`file://` lisible). Catégorie `network` : plus stricte
+  que Python (lecture seule) — refusé en modes ask/plan/strict, décision assumée.
+- **Mémoire** : écriture atomique via `metadataDirectory`/`dataHome` (jamais `homedir()`
+  en dur), `forget_memory("")` refusé (effaçait tout en Python), `scope` validé.
+- **`delete_dir`** : récupérable (corbeille `.openagent/trash` comme `delete_file`), refuse
+  la racine, jamais de `rmtree` définitif comme en Python.
+
+Hors lot, reporté : `semantic_search`/`knowledge_search` (ChromaDB + embeddings, pas
+d'équivalent Node : décision d'architecture à part), plugins Python et MCP,
+`analyze_project_and_init`.
+
+- [x] Tâche 20 — Socle des outils : `core/tool-kit.mts` (validation booléen/enum/entier
+      borné, plus le `make()` aujourd'hui enfermé dans `workspace.mts`) + test de garde :
+      chaque outil enregistré a une catégorie valide et conforme à une table attendue.
+      `defineTool({name, description, category, properties, required, execute})` : les
+      règles (sous-ensemble JSON Schema : `string` avec `maxLength`/`enum`, `integer` avec
+      `minimum`/`maximum`, `boolean`) servent **à la fois** au schéma publié au modèle et à
+      la validation ; tout argument non déclaré est refusé, `signal` vérifié avant
+      exécution. Comble les trous relevés dans l'ancien `make()` (ni booléen, ni enum, ni
+      borne configurable — un entier 0 était impossible). `workspace.mts` délègue à
+      `defineTool` sans changer de comportement.
+      Tests : `tests/tool-kit.test.mts` (8), RED prouvé (module absent) puis GREEN : schéma
+      publié, requis/inconnu/non-objet, texte (type, NUL, longueur), entiers (défaut 1..1e6,
+      bornes explicites dont 0, flottants et chaînes refusés), booléens (`'true'`, `1`, `0`,
+      `null` refusés), enum, arrêt sur signal déjà abandonné. **Test de garde** : chaque
+      outil enregistré doit figurer dans une table `EXPECTED_CATEGORIES` avec la bonne
+      catégorie ; un outil non listé ou mal classé fait échouer le test (chaque tâche
+      suivante y ajoute ses outils). `npm test` 67/67 (les 7 outils fichiers inchangés).
+- [ ] Tâche 21 — Recherche/fichiers manquants : `grep_file`, `glob_files`, `grep_codebase`
+      (read, `.env`/secrets/ignorés exclus, plafonds), `delete_dir` (write, corbeille).
+- [ ] Tâche 22 — Mémoire : `save_memory`, `read_memory`, `forget_memory` (garde mot-clé
+      vide, blocs horodatés supprimés en entier, atomique).
+- [ ] Tâche 23 — Outils git (13) sur un vrai dépôt temporaire, dont les tests
+      d'injection (`--upload-pack=` pull/push, valeur `-f`, fichier `-weird.txt`).
+- [ ] Tâche 24 — `run_command` : timeout + arbre tué, Stop réel, env épuré, mise en forme
+      de la sortie, serveurs de dev en arrière-plan + nettoyage, `shell_ask` honoré.
+- [ ] Tâche 25 — `fetch_url` (SSRF, redirections, plafonds) puis `internet_search`
+      (Tavily si clé, sinon DuckDuckGo).
+- [ ] Tâche 26 — Branchement : `worker.mjs` enregistre tous les outils, prompt système
+      mis à jour, affichage des nouveaux outils dans le chat, permissions par catégorie.
+- [ ] Tâche 27 — Vérification finale sur l'app packagée (Python absent) : l'agent appelle
+      git et le shell avec la bannière de permission, Stop tue réellement la commande
+      longue, une URL privée est refusée ; preuves consignées ici.
+
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 
 - [x] Task 1 — Module d'embedding lazy et singleton

@@ -61,7 +61,13 @@ app.whenReady().then(async () => {
     const darkShot = await win.webContents.capturePage();
     await writeFile(join(screenshotDir, 'theme-dark.png'), darkShot.toPNG());
 
-    await win.webContents.executeJavaScript("document.getElementById('oa-theme-toggle-btn').click()");
+    // Theme + accent live in Réglages > Apparence now (like settings.py) — reach the
+    // control the way a user would: ⚙️, then the Apparence tab, then "Clair".
+    await win.webContents.executeJavaScript("document.getElementById('oa-settings-btn').click()");
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await win.webContents.executeJavaScript("document.querySelector('[data-testid=\"oa-settings-tab\"][data-tab=\"appearance\"]').click()");
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await win.webContents.executeJavaScript("document.getElementById('oa-theme-light-btn').click()");
     await new Promise(resolve => setTimeout(resolve, 100));
     const toggledTheme = await win.webContents.executeJavaScript("document.documentElement.getAttribute('data-theme')");
     assert.equal(toggledTheme, 'light', 'toggles to the light theme on click');

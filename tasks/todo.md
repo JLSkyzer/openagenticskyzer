@@ -483,9 +483,34 @@ réglages LM Studio (contexte/VRAM/`lms`), lanceur de serveur llama.cpp.
         n'est pas dans `HEAD` (ligne de `settings.mts` non commitée, issue d'une autre
         session, dont l'onglet Général a besoin) ; à corriger avec elle (réponse via
         `publicGlobal()`), test RED d'abord.
-- [ ] Tâche 15 — Coque du dialogue Réglages (rail vertical, 7 onglets, pied
+- [x] Tâche 15 — Coque du dialogue Réglages (rail vertical, 7 onglets, pied
       Enregistrer/Fermer) ouverte par le vrai bouton ⚙️ de la TopBar ; thème/accent
       déplacés dans l'onglet Apparence (retirés de la TopBar) ; capture à 1080×680.
+      Nouveaux `components/settings/{SettingsDialog,AppearanceTab,parts}.tsx` :
+      dialogue maximisé (`fixed inset-0`, fond `#0d0d0d`), rail 200px `#111` avec en-tête
+      « Paramètres » et 7 onglets verticaux dans l'ordre/libellés de `settings.py`
+      (l'onglet dossier porte le nom du dossier actif), pied Enregistrer/Fermer, Échap
+      ferme ; `TopBar` : bouton ⚙️ réel `#oa-settings-btn`, `ThemeControls` retiré,
+      thème/accent (boutons 🌙 Sombre / ☀️ Clair + sélecteur `#RRGGBB`, appliqués et
+      persistés immédiatement comme l'original) dans l'onglet Apparence.
+      Les 6 autres onglets affichent pour l'instant un texte « à venir » (Tâches 16-17) ;
+      **Enregistrer est volontairement désactivé** jusqu'à la Tâche 16 (rien à enregistrer
+      avant), et signalé comme tel par son titre.
+      Preuve : nouveau `tests/settings-visual.cjs` (`npm run test:settings`), RED d'abord
+      (bouton ⚙️ absent) puis GREEN, dans une vraie fenêtre 1080×680 : clic réel ⚙️ →
+      dialogue ; 7 onglets dans l'ordre avec les bons libellés ; rail 200px ; changement
+      de panneau par clic réel ; dialogue au premier plan (`elementFromPoint` aux 4
+      coins + centre) et sans débordement ; Fermer et Échap ferment ; réouverture sur
+      Général ; onglet dossier = `📁 mon-projet` avec un vrai dossier actif. Capture
+      relue à l'œil : rendu conforme. `theme-visual.cjs` adapté au nouveau parcours
+      (⚙️ → Apparence → Clair) et toujours vert, persistance disque comprise.
+      `npm test` 48/48, `tsc` propre, tous les tests `*-visual` PASS.
+      **Constat sur les tests précédents** : une fenêtre `show:false` cesse de peindre
+      après le chargement — `capturePage()` renvoyait l'écran d'avant l'ouverture du
+      dialogue (constaté ici, invalidate/`backgroundThrottling` inefficaces, capture par
+      débogueur bloquante). Correctif retenu : fenêtre `show:true` mais `opacity:0`.
+      Les captures des tests chat/stop/permission/layout (fenêtres cachées) peuvent donc
+      être elles aussi périmées ; leurs assertions DOM restent valables, pas les images.
 - [ ] Tâche 16 — Onglets Général/Apparence/Contexte/Permissions : Enregistrer écrit
       réellement `config.json` ; preuve clic → relecture disque → rechargement.
 - [ ] Tâche 17 — Onglet Dossier (mode, patterns ignorés, prompt custom) + Danger

@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { TopBar } from './components/TopBar';
+import { SettingsDialog } from './components/settings/SettingsDialog';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
 import { InputBar } from './components/InputBar';
@@ -11,10 +12,13 @@ import type { ChatMessage } from './ipc/bridge';
 export default function App() {
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [initialMessages, setInitialMessages] = useState<ChatMessage[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', background: 'var(--bg)' }}>
-      <TopBar activeFolder={activeFolder} />
+      <TopBar activeFolder={activeFolder} onOpenSettings={() => setSettingsOpen(true)} />
+      {settingsOpen && <SettingsDialog activeFolder={activeFolder} onClose={closeSettings} />}
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <Sidebar
           activeFolder={activeFolder}

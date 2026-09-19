@@ -34,15 +34,40 @@ export function Group({ children }: { children: ReactNode }) {
   );
 }
 
-export function Row({ label, hint, children, last }: { label: string; hint?: string; children?: ReactNode; last?: boolean }) {
+export function Row({
+  label,
+  hint,
+  children,
+  last,
+  labelTestId,
+}: {
+  label: string;
+  hint?: string;
+  children?: ReactNode;
+  last?: boolean;
+  labelTestId?: string;
+}) {
   return (
     <div className={'flex items-center gap-3 px-4 py-3 ' + (last ? '' : 'border-b border-gray-900')}>
       <div className="flex flex-1 flex-col">
-        <span className="text-xs font-medium text-gray-300">{label}</span>
+        <span data-testid={labelTestId} className="text-xs font-medium text-gray-300">{label}</span>
         {hint && <span className="text-xs text-gray-600">{hint}</span>}
       </div>
       {children}
     </div>
+  );
+}
+
+// settings.py's ui.switch: a boolean control identified by data-setting for the tests.
+export function Toggle({ setting, checked, onChange }: { setting: string; checked: boolean; onChange(value: boolean): void }) {
+  return (
+    <input
+      type="checkbox"
+      data-setting={setting}
+      checked={checked}
+      onChange={event => onChange(event.target.checked)}
+      className="h-4 w-4 cursor-pointer accent-purple-500"
+    />
   );
 }
 

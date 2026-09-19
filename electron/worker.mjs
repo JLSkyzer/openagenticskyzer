@@ -107,7 +107,7 @@ async function handle(message) {
     }
     if (op === 'settings') result = payload.folder ? await settings.project(payload.folder) : await settings.publicGlobal();
     if (op === 'save_settings') {
-      if (!payload.folder) result = await settings.saveGlobal(payload.settings || {});
+      if (!payload.folder) { await settings.saveGlobal(payload.settings || {}); result = await settings.publicGlobal(); }
       else result = await settings.saveProject(payload.folder, { agent_mode: payload.settings?.agent_mode || 'inherit', custom_prompt: payload.settings?.custom_prompt || '' });
     }
     if (op === 'send') {
@@ -134,7 +134,9 @@ async function handle(message) {
     }
     if (op === 'global-settings') result = await settings.publicGlobal();
     if (op === 'project-settings') result = await settings.project(payload.folder);
-    if (op === 'save-global-settings') result = await settings.saveGlobal(payload.patch);
+    // Replies go through publicGlobal(): the HuggingFace token is written to disk but must
+    // never travel back to the renderer (only hf_token_configured does).
+    if (op === 'save-global-settings') { await settings.saveGlobal(payload.patch); result = await settings.publicGlobal(); }
     if (op === 'save-project-settings') result = await settings.saveProject(payload.folder, payload.patch);
     if (op === 'list-branches') result = await conversations.list(payload.folder);
     if (op === 'messages') result = await conversations.messages(payload.folder, payload.branchId || 'main');

@@ -511,8 +511,35 @@ réglages LM Studio (contexte/VRAM/`lms`), lanceur de serveur llama.cpp.
       débogueur bloquante). Correctif retenu : fenêtre `show:true` mais `opacity:0`.
       Les captures des tests chat/stop/permission/layout (fenêtres cachées) peuvent donc
       être elles aussi périmées ; leurs assertions DOM restent valables, pas les images.
-- [ ] Tâche 16 — Onglets Général/Apparence/Contexte/Permissions : Enregistrer écrit
+- [x] Tâche 16 — Onglets Général/Apparence/Contexte/Permissions : Enregistrer écrit
       réellement `config.json` ; preuve clic → relecture disque → rechargement.
+      **Correctif de sécurité d'abord (TDD)** : `tests/worker-settings.test.mts` (3
+      tests) — RED prouvé (le `hf_token` revenait en clair dans les réponses de
+      `save-global-settings` et de `save_settings`), puis `worker.mjs` répond via
+      `publicGlobal()` (le jeton reste écrit sur disque, seul `hf_token_configured`
+      revient). Le rejet « tokens réservés » était déjà correct côté Node.
+      Ligne `data_dir`/`hf_token` de `settings.mts` (laissée non commitée par une autre
+      session, requise par l'onglet Général) incluse dans ce commit.
+      UI : `useSettingsDraft` (brouillon des seules clés modifiées, message d'erreur du
+      backend nettoyé du préfixe Electron), `GeneralTab` (mode agent ask/auto/plan,
+      dernier dossier, animations, répertoire de données affiché, token HuggingFace
+      masqué avec 👁), `ContextTab` (limite de contexte selon le fournisseur actif,
+      tokens réservés, auto-compact + seuil, jauge, rétention), `PermissionsTab`
+      (niveau + 3 interrupteurs), Enregistrer réel avec statut vert / erreur rouge.
+      Preuve : `tests/settings-tabs-visual.cjs` (`npm run test:settings-tabs`), vrai
+      `worker.mjs` + vrais clics/saisies, RED puis GREEN : valeurs par défaut lues du
+      backend ; 11 clés modifiées → `config.json` relu contient exactement ces valeurs
+      et **pas** les clés non touchées ; le jeton est écrit mais absent de la page
+      (DOM et champs) ; réouverture du dialogue → valeurs rechargées, jeton affiché
+      « configuré » sans sa valeur ; combinaison invalide (contexte 3000 < réservés
+      4096) → message du backend affiché, `config.json` inchangé. Capture relue à l'œil.
+      `npm test` 51/51, `tsc` propre, tous les tests réels PASS.
+      Reporté (boutons affichés désactivés « à venir ») : « Changer le dossier… »
+      (migration `data_dir`) et « Tester le token » (appel HuggingFace).
+      Écarts assumés vs `settings.py` : limite de contexte minimale clampée à 2048 (règle
+      du moteur Node ; le slider Python partait de 2000) ; vider le champ token ne
+      l'efface pas (pas de bouton d'effacement encore) ; Enregistrer ne recharge pas
+      `state.permission_mode` (pas d'état équivalent côté React).
 - [ ] Tâche 17 — Onglet Dossier (mode, patterns ignorés, prompt custom) + Danger
       (effacer l'historique, retirer de la sidebar, réinitialiser) ; nouveaux ops
       worker en TDD (RED d'abord).

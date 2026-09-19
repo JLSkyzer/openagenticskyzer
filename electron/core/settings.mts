@@ -26,6 +26,7 @@ const globalRules: Record<string, Rule> = {
   max_tokens: v => v === null || integer(2048, 2097152)(v), reserved_tokens: integer(1, 65536),
   show_context_bar: bool, session_retention_days: choice(0, 7, 30, 90), animations: bool,
   restore_last_folder: bool, ...permissionRules,
+  data_dir: text(1000), hf_token: text(1000),
   // Data directory changes have a separate, transactional migration operation.
   theme: choice('dark', 'light'), accent_color: v => typeof v === 'string' && /^#[\da-f]{6}$/i.test(v),
   onboarding_done: bool,

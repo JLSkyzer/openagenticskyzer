@@ -1,6 +1,10 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { AppearanceTab } from './AppearanceTab';
+import { ContextTab } from './ContextTab';
+import { GeneralTab } from './GeneralTab';
+import { PermissionsTab } from './PermissionsTab';
 import { Placeholder, Section } from './parts';
+import { useSettingsDraft } from './useSettingsDraft';
 
 type TabId = 'general' | 'appearance' | 'context' | 'permissions' | 'tools' | 'folder' | 'danger';
 
@@ -13,6 +17,7 @@ function basename(path: string): string {
 // Enregistrer / Fermer footer at its end.
 export function SettingsDialog({ activeFolder, onClose }: { activeFolder: string | null; onClose(): void }) {
   const [tab, setTab] = useState<TabId>('general');
+  const draft = useSettingsDraft();
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -32,12 +37,12 @@ export function SettingsDialog({ activeFolder, onClose }: { activeFolder: string
     { id: 'danger', label: '⚠️ Danger' },
   ];
 
-  // Tabs other than Apparence get their real controls in the following tasks of this lot.
+  // Tabs without controls yet get theirs in the following tasks of this lot.
   const panels: Record<TabId, ReactNode> = {
-    general: <TabStub title="Général" badge="GLOBAL" />,
+    general: <GeneralTab draft={draft} />,
     appearance: <AppearanceTab />,
-    context: <TabStub title="Contexte & Mémoire" badge="GLOBAL" />,
-    permissions: <TabStub title="Permissions" badge="GLOBAL" />,
+    context: <ContextTab draft={draft} activeFolder={activeFolder} />,
+    permissions: <PermissionsTab draft={draft} />,
     tools: <TabStub title="Outils" badge="EXTENSIONS" />,
     folder: <TabStub title="Dossier" badge="DOSSIER" />,
     danger: <TabStub title="Zone Danger" />,
@@ -76,14 +81,14 @@ export function SettingsDialog({ activeFolder, onClose }: { activeFolder: string
       </div>
       <div className="h-full flex-1 overflow-y-auto p-8">
         <div data-testid="oa-settings-panel" data-tab={tab}>
-          {panels[tab]}
+          {draft.loaded ? panels[tab] : null}
         </div>
-        <div className="mt-6 flex gap-2">
+        <div className="mt-6 flex items-center gap-2">
           <button
             id="oa-settings-save-btn"
-            disabled
-            title="Enregistrement des onglets — à venir"
-            className="rounded-lg bg-purple-600 px-4 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={() => void draft.save()}
+            disabled={!draft.loaded || draft.saving}
+            className="rounded-lg bg-purple-600 px-4 py-2 text-xs text-white hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
             Enregistrer
           </button>
@@ -94,6 +99,16 @@ export function SettingsDialog({ activeFolder, onClose }: { activeFolder: string
           >
             Fermer
           </button>
+          {draft.status && (
+            <span data-testid="oa-settings-status" className="text-xs text-green-500">
+              {draft.status}
+            </span>
+          )}
+          {draft.error && (
+            <span data-testid="oa-settings-error" className="text-xs text-red-400">
+              {draft.error}
+            </span>
+          )}
         </div>
       </div>
     </div>

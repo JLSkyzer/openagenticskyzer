@@ -764,8 +764,44 @@ d'équivalent Node : décision d'architecture à part), plugins Python et MCP,
       Rappel de risque (inchangé vs Python) : un texte récupéré sur le web peut être mémorisé
       puis réinjecté à chaque session ; `save_memory` reste donc derrière la permission
       `write` et refusé en modes ask/plan/strict.
-- [ ] Tâche 23 — Outils git (13) sur un vrai dépôt temporaire, dont les tests
+- [x] Tâche 23 — Outils git (13) sur un vrai dépôt temporaire, dont les tests
       d'injection (`--upload-pack=` pull/push, valeur `-f`, fichier `-weird.txt`).
+      **Socle** `core/process.mts` (`runProcess`, `killTree`) : timeout **et** abandon tuent
+      tout l'arbre de processus (`taskkill /T /F`) — prouvé par un petit-enfant qui aurait
+      écrit un fichier marqueur — sortie plafonnée sans bloquer l'enfant, ENOENT rejeté,
+      signal déjà abandonné = rien ne démarre (`tests/process.test.mts`, 7).
+      **Outils** `core/git-tools.mts` (`gitTools(folder)`, jamais de shell, chaque valeur =
+      un argument argv) : lecture `git_status`/`git_diff`/`git_diff_staged`/`git_log`/
+      `git_blame`/`git_branch_list` ; écriture `git_add`/`git_commit`/`git_checkout`/
+      `git_create_branch`/`git_stash`/`git_stash_pop` ; distants **`git_push`/`git_pull`
+      en catégorie `shell`** (demandent toujours).
+      Durcissements au-delà du Python (le Python se contentait d'un garde `--`) :
+      - Valeurs validées **à la frontière** : un remote est un **nom** configuré (pas d'URL,
+        pas de `:` donc pas de transport `ext::` qui exécute des commandes, jamais d'option) ;
+        une branche/révision sans `:` ni `+` initial ni `-` initial → impossible de
+        supprimer ou forcer une branche distante (`:main`, `+main`, `main:other` refusés).
+      - `git_checkout` : `checkout <rev> --` → nommer un fichier échoue au lieu d'**écraser
+        silencieusement le travail non commité** (Python le permettait).
+      - `git pull` = `fetch` + `merge --ff-only FETCH_HEAD` (l'exploit `--upload-pack`
+        reproduit dans l'historique du projet) ; `--` avant tout chemin ; `-weird.txt` reste
+        un fichier ; `\` conservés dans `sub\file.txt` ; guillemets pour les espaces.
+      - `--no-ext-diff --no-textconv` + `core.fsmonitor=false` + `protocol.ext.allow=never` :
+        un pilote de diff configuré dans le dépôt n'est **jamais exécuté** (test : sanity
+        prouvant qu'un `git diff` nu l'exécute, puis l'outil ne le fait pas).
+      - `.env*` jamais visibles dans un diff/blame, **même suivis par git** (exclusions de
+        pathspec) et non demandables par nom.
+      - `GIT_TERMINAL_PROMPT=0` (pas de blocage sur un mot de passe), `LC_ALL=C` (messages
+        d'erreur stables), timeouts 15 s / 60 s (commit, checkout, push, pull), entiers et
+        booléens validés (`n` 1..200, plage blame).
+      Tests : `tests/git-tools.test.mts` (22) sur de vrais dépôts temporaires (dépôt, dépôt
+      nu distant, second clone), port des tests de `test_git_tools.py` + injections ;
+      garde de catégories étendue (13 outils). RED prouvé (module absent) puis GREEN ; `npm
+      test` 126/126, 0 ignoré.
+      À traiter en Tâche 26 : la protection anti-boucle de `agent.mts` refuse un même appel
+      (nom + arguments) plus de 3 fois par exécution — `git_status` avant et après chaque
+      modification s'y heurtera ; à affiner (compter seulement les répétitions consécutives).
+      Hors périmètre : les hooks du dépôt (`pre-commit`) s'exécutent toujours au commit,
+      comme avec git en ligne de commande.
 - [ ] Tâche 24 — `run_command` : timeout + arbre tué, Stop réel, env épuré, mise en forme
       de la sortie, serveurs de dev en arrière-plan + nettoyage, `shell_ask` honoré.
 - [ ] Tâche 25 — `fetch_url` (SSRF, redirections, plafonds) puis `internet_search`

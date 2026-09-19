@@ -15,3 +15,5 @@ import './worker-danger.test.mts';
 import './tool-kit.test.mts';
 import './workspace-search.test.mts';
 import './memory-tools.test.mts';
+import './process.test.mts';
+import './git-tools.test.mts';

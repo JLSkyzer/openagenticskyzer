@@ -82,13 +82,18 @@ const EXPECTED_CATEGORIES: Record<string, string> = {
   create_file: 'write', edit_file: 'write', create_dir: 'write', delete_file: 'write',
   grep_file: 'read', glob_files: 'read', grep_codebase: 'read', delete_dir: 'write',
   save_memory: 'write', read_memory: 'read', forget_memory: 'write',
+  git_status: 'read', git_diff: 'read', git_diff_staged: 'read', git_log: 'read', git_blame: 'read', git_branch_list: 'read',
+  git_add: 'write', git_commit: 'write', git_checkout: 'write', git_create_branch: 'write', git_stash: 'write', git_stash_pop: 'write',
+  // Remote operations always ask (like a shell command), even when file writes are pre-approved.
+  git_push: 'shell', git_pull: 'shell',
 };
 
 test('every registered workspace tool has a valid, expected permission category', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-toolkit-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const { memoryTools } = await import('../core/memory-tools.mts');
-  const tools = [...await workspaceTools(root, ''), ...await memoryTools(root, join(root, 'home'))];
+  const { gitTools } = await import('../core/git-tools.mts');
+  const tools = [...await workspaceTools(root, ''), ...await memoryTools(root, join(root, 'home')), ...await gitTools(root)];
   const valid = ['read', 'write', 'shell', 'network', 'extension'];
   for (const entry of tools) {
     assert.ok(valid.includes(entry.category), `${entry.name} has an unknown category`);

@@ -12,15 +12,7 @@ const { join, delimiter } = require('node:path');
 const { createServer } = require('node:http');
 const assert = require('node:assert/strict');
 
-const { httpGetJson, waitFor, Cdp } = require('./cdp-helper.cjs');
-
-function sanitizedPathWithoutPython() {
-  const entries = (process.env.PATH || process.env.Path || '').split(delimiter);
-  // Windows also ships a `python.exe`/`python3.exe` App Execution Alias stub under
-  // ...\WindowsApps regardless of whether a real interpreter is installed — strip that
-  // directory too, or `where python` keeps "succeeding" against a non-interpreter shim.
-  return entries.filter(entry => !/python/i.test(entry) && !/\\WindowsApps\\?$/i.test(entry)).join(delimiter);
-}
+const { httpGetJson, waitFor, Cdp, checkPythonAbsent } = require('./cdp-helper.cjs');
 
 async function main() {
   const proofDir = process.env.OPENAGENT_E2E_PROOF_DIR;
@@ -30,18 +22,11 @@ async function main() {
   const record = line => { log.push(line); process.stdout.write(line + '\n'); };
 
   // --- Proof 1: Python is not on PATH for this process ------------------------------
-  const sanitizedPath = sanitizedPathWithoutPython();
-  const originalPythonDirs = (process.env.PATH || '').split(delimiter).filter(e => /python/i.test(e));
-  record(`PROOF 1 — PATH entries referencing Python that were stripped for this run: ${JSON.stringify(originalPythonDirs)}`);
-  const whereCheck = spawn('cmd', ['/c', 'where python || where python3'], { env: { ...process.env, PATH: sanitizedPath } });
-  const whereOutput = await new Promise(resolve => {
-    let out = '';
-    whereCheck.stdout.on('data', d => { out += d; });
-    whereCheck.stderr.on('data', d => { out += d; });
-    whereCheck.on('close', code => resolve({ code, out }));
-  });
-  record(`PROOF 1 — "where python" under the sanitized PATH: exit=${whereOutput.code} output=${JSON.stringify(whereOutput.out.trim())}`);
-  assert.notEqual(whereOutput.code, 0, 'python must not be resolvable on the PATH used to launch the app');
+  const python = await checkPythonAbsent();
+  const sanitizedPath = python.sanitizedPath;
+  record(`PROOF 1 — PATH entries referencing Python that were stripped for this run: ${JSON.stringify(python.stripped)}`);
+  record(`PROOF 1 — "where python" under the sanitized PATH: exit=${python.whereCode} output=${JSON.stringify(python.whereOutput)}`);
+  assert.notEqual(python.whereCode, 0, 'python must not be resolvable on the PATH used to launch the app');
 
   const home = await mkdtemp(join(tmpdir(), 'openagent-e2e-home-'));
   const project = await mkdtemp(join(tmpdir(), 'openagent-e2e-project-'));

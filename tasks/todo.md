@@ -616,7 +616,39 @@ réglages LM Studio (contexte/VRAM/`lms`), lanceur de serveur llama.cpp.
       modèles cloud n'est pas proposée (champ libre), l'API du moteur ne les liste pas.
       Écart assumé vs `model_modal.py` : les clés ne viennent plus d'un `.env` en clair
       mais du coffre chiffré ; une clé `.env` héritée reste lue (`legacy_plaintext`).
-- [ ] Tâche 19 — Vérification finale packagée (pas de Python), preuves consignées ici.
+- [x] Tâche 19 — Vérification finale packagée (pas de Python), preuves consignées ici.
+      Repackaging (`npm run package:win`) depuis les sources courantes, puis nouveau
+      `tests/final-e2e-lot2.cjs` (`npm run test:final-e2e-lot2`) : pilote l'**exécutable
+      packagé réel** (vrai `main.cjs`, vrai `safeStorage`, vrai worker, rien de mocké) par
+      CDP, PATH sans Python. 7 preuves, PASS au premier passage, captures relues à l'œil
+      (fenêtre réellement peinte) :
+      1. Python absent : PATH assaini, `where python` échoue (code 1).
+      2. Lancement direct de `openagent.exe`, `OPENAGENT_HOME` isolé.
+      3. Vrai dossier activé par un vrai clic sur l'historique, son historique s'affiche.
+      4. Réglages globaux (mode agent, animations, contexte, rétention, permissions, token
+         HuggingFace) modifiés par clics/saisies réels → `config.json` contient exactement
+         ces valeurs, pas les clés non touchées ; le token est stocké mais absent de la page.
+      5. Réglages projet → `<projet>/.openagent/config.json`.
+      6. Sélecteur de modèle avec le coffre chiffré réel : fichier du coffre sans la clé en
+         clair ; le message suivant atteint **vraiment** le serveur A (`Bearer` + modèle
+         enregistrés) ; changement d'URL → confirmation, Annuler ne change rien, Confirmer →
+         le message suivant atteint le serveur B avec la même clé, A ne reçoit plus rien.
+      7. Zone Danger : effacer l'historique (disque + chat visible), retirer le dossier
+         (sidebar + `folders.json`, fichiers du projet intacts), réinitialiser (thème
+         vivant repassé à sombre, `config.json` = `{}`).
+      Suite complète revérifiée sur ce package : `final-e2e` (lot 1) PASS, `test:package`
+      PASS, `test:bridge-real` PASS, `npm test` 59/59, `tsc` propre, 12 tests
+      `*-visual` PASS, `npm audit` 0 vulnérabilité. Vérification Python factorisée dans
+      `tests/cdp-helper.cjs::checkPythonAbsent` (partagée avec `final-e2e.cjs`).
+
+      **Bilan du lot « réglages + sélecteur de modèle » : livré** pour son périmètre
+      (Tâches 14-19). Reste hors lot, explicitement reporté : migration du répertoire de
+      données (`data_dir`), test du token HuggingFace, onglet Outils (plugins/MCP),
+      détection/téléchargement Ollama/LM Studio/llama.cpp, catalogue HuggingFace, réglages
+      LM Studio, lanceur llama.cpp ; puis, côté migration globale, les autres surfaces
+      (branches, artifacts, palette de commandes, bibliothèque de prompts, jauge de
+      contexte, téléchargements, onboarding), les outils git/shell/web/mémoire et
+      l'index sémantique. La migration NiceGUI → Electron n'est **pas** terminée.
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

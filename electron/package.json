@@ -25,6 +25,7 @@
     "package:win": "npm run renderer:build && electron-builder --win dir",
     "test:package": "node tests/package-smoke.cjs",
     "test:final-e2e": "node tests/final-e2e.cjs",
+    "test:final-e2e-lot2": "node tests/final-e2e-lot2.cjs",
     "test:bridge-real": "node tests/bridge-real.cjs"
   },
   "devDependencies": {

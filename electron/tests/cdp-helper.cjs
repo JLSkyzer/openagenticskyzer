@@ -1,6 +1,8 @@
 // Shared helpers for tests that drive a real, separately-launched Electron process over
 // the Chrome DevTools Protocol (Node's built-in WebSocket, no extra dependency).
 const http = require('node:http');
+const { spawn } = require('node:child_process');
+const { delimiter } = require('node:path');
 const { writeFile } = require('node:fs/promises');
 
 function httpGetJson(url) {
@@ -75,4 +77,27 @@ class Cdp {
   close() { this.ws.close(); }
 }
 
-module.exports = { httpGetJson, waitFor, Cdp };
+function sanitizedPathWithoutPython() {
+  const entries = (process.env.PATH || process.env.Path || '').split(delimiter);
+  // Windows also ships a `python.exe`/`python3.exe` App Execution Alias stub under
+  // ...\WindowsApps regardless of whether a real interpreter is installed — strip that
+  // directory too, or `where python` keeps "succeeding" against a non-interpreter shim.
+  return entries.filter(entry => !/python/i.test(entry) && !/\\WindowsApps\\?$/i.test(entry)).join(delimiter);
+}
+
+// Strips every Python from PATH, then proves `where python` really fails under it. The
+// returned PATH is what the app under test must be launched with.
+async function checkPythonAbsent() {
+  const sanitizedPath = sanitizedPathWithoutPython();
+  const stripped = (process.env.PATH || '').split(delimiter).filter(entry => /python/i.test(entry));
+  const lookup = spawn('cmd', ['/c', 'where python || where python3'], { env: { ...process.env, PATH: sanitizedPath } });
+  const { code, out } = await new Promise(resolve => {
+    let output = '';
+    lookup.stdout.on('data', chunk => { output += chunk; });
+    lookup.stderr.on('data', chunk => { output += chunk; });
+    lookup.on('close', exitCode => resolve({ code: exitCode, out: output }));
+  });
+  return { sanitizedPath, stripped, whereCode: code, whereOutput: out.trim() };
+}
+
+module.exports = { httpGetJson, waitFor, Cdp, checkPythonAbsent };

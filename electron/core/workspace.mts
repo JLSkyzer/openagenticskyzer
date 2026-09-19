@@ -1,6 +1,7 @@
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { runInNewContext } from 'node:vm';
 import type { AgentTool } from './agent.mts';
 import { metadataDirectory } from './json-store.mts';
 import { defineTool, type ParamRule } from './tool-kit.mts';
@@ -41,7 +42,53 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
     if (bytes.includes(0)) throw new Error('Fichier binaire');
     return { file, text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), bytes: info.size };
   };
-  const pathField = { type: 'string', description: 'Chemin dans le projet actif' };
+  const pathField: ParamRule = { type: 'string', description: 'Chemin dans le projet actif' };
+
+  // ── Search helpers ──────────────────────────────────────────────────────────────
+  // Build/vendor directories and dot-directories are never worth searching, and key
+  // material is skipped on top of blocked() (.env*, .git, .openagent, ignored patterns) so
+  // a broad search cannot hand it to the model.
+  const SKIP_DIRS = new Set(['node_modules', '__pycache__', '.git', 'dist', '.next', 'build', 'venv', '.venv', 'env']);
+  const SENSITIVE_FILE = /^id_(rsa|dsa|ecdsa|ed25519)$|\.(pem|key|p12|pfx)$|^(credentials|secrets)\.json$/i;
+  const MAX_WALKED = 20000;
+  const MAX_FILE_BYTES = 2 * 1024 * 1024;
+  /** Regular files under `start`, in name order. Symlinks and junctions are never followed. */
+  const walkFiles = async (start: string, signal: AbortSignal): Promise<Array<{ abs: string; rel: string }>> => {
+    const found: Array<{ abs: string; rel: string }> = [];
+    let visited = 0;
+    const visit = async (dir: string) => {
+      signal.throwIfAborted();
+      const entries = (await readdir(dir, { withFileTypes: true })).sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
+      for (const entry of entries) {
+        if (++visited > MAX_WALKED) return;
+        if (entry.isSymbolicLink()) continue;
+        const abs = join(dir, entry.name);
+        const rel = relative(root, abs).split(sep).join('/');
+        if (blocked(rel)) continue;
+        if (entry.isDirectory()) {
+          if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
+          await visit(abs);
+        } else if (entry.isFile() && !SENSITIVE_FILE.test(entry.name)) found.push({ abs, rel });
+      }
+    };
+    await visit(start);
+    return found;
+  };
+  const readSearchable = async (abs: string): Promise<string | null> => {
+    const info = await lstat(abs);
+    if (!info.isFile() || info.size > MAX_FILE_BYTES) return null;
+    const bytes = await readFile(abs);
+    return bytes.includes(0) ? null : bytes.toString('utf8');
+  };
+  const toTrash = async (target: string, original: string, signal: AbortSignal) => {
+    const metadata = await metadataDirectory(root);
+    const trash = join(metadata, 'trash');
+    await mkdir(trash, { recursive: true });
+    if ((await lstat(trash)).isSymbolicLink()) throw new Error('Corbeille redirigée');
+    const recovery = join(trash, randomUUID() + '-' + basename(target));
+    signal.throwIfAborted(); await safePath(original); await rename(target, recovery);
+    return JSON.stringify({ removed: relative(root, target), recovery_path: relative(root, recovery) });
+  };
   const make = (name: string, description: string, category: AgentTool['category'], properties: Record<string, ParamRule>, required: string[], execute: AgentTool['execute']): AgentTool =>
     defineTool({ name, description, category, properties, required, execute });
   return [
@@ -90,13 +137,86 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
     make('delete_file', 'Retirer un fichier en le conservant dans la corbeille du projet.', 'write', { path: pathField }, ['path'], async (args, signal) => {
       const file = await safePath(args.path as string);
       if (!(await lstat(file)).isFile()) throw new Error('Fichier régulier requis');
-      const metadata = await metadataDirectory(root);
-      const trash = join(metadata, 'trash');
-      await mkdir(trash, { recursive: true });
-      if ((await lstat(trash)).isSymbolicLink()) throw new Error('Corbeille redirigée');
-      const recovery = join(trash, randomUUID() + '-' + basename(file));
-      signal.throwIfAborted(); await safePath(args.path as string); await rename(file, recovery);
-      return JSON.stringify({ removed: relative(root, file), recovery_path: relative(root, recovery) });
+      return toTrash(file, args.path as string, signal);
+    }),
+    make('delete_dir', 'Retirer un dossier du projet en le conservant dans la corbeille du projet.', 'write', { path: pathField }, ['path'], async (args, signal) => {
+      // safePath refuses the project root, protected/ignored paths and anything reached
+      // through a link; a link inside the directory is moved as a link, never followed.
+      const dir = await safePath(args.path as string);
+      if (!(await lstat(dir)).isDirectory()) throw new Error('Dossier régulier requis');
+      return toTrash(dir, args.path as string, signal);
+    }),
+    make('grep_file', 'Chercher un texte exact (sensible à la casse) dans un fichier ; renvoie les lignes.', 'read', { path: pathField, pattern: { type: 'string', maxLength: 1000, description: 'Texte littéral à trouver' } }, ['path', 'pattern'], async (args, signal) => {
+      const pattern = args.pattern as string;
+      if (!pattern) throw new Error('Motif vide');
+      const { text } = await textFile(args.path as string, signal);
+      const hits: string[] = [];
+      let total = 0;
+      text.split(/\r?\n/).forEach((line, index) => {
+        if (!line.includes(pattern)) return;
+        total++;
+        if (hits.length < 200) hits.push(`Line ${index + 1}: ${line.slice(0, 300)}`);
+      });
+      if (!total) return `No matches for '${pattern}'.`;
+      return hits.join('\n') + (total > hits.length ? '\n... [capped at 200 matches]' : '');
+    }),
+    make('glob_files', 'Lister les fichiers du projet correspondant à un motif glob (ex. src/**/*.ts, *.md).', 'read', {
+      pattern: { type: 'string', maxLength: 500, description: 'Motif glob ; sans « / » il s’applique au nom du fichier à toute profondeur' },
+      path: pathField,
+    }, ['pattern'], async (args, signal) => {
+      const pattern = (args.pattern as string).replace(/\\/g, '/');
+      if (!pattern) throw new Error('Motif vide');
+      const start = await safePath((args.path as string) || '.', true);
+      const matches = (await walkFiles(start, signal))
+        .filter(({ abs }) => {
+          const fromStart = relative(start, abs).split(sep).join('/');
+          return posix.matchesGlob(fromStart, pattern) || (!pattern.includes('/') && posix.matchesGlob(basename(abs), pattern));
+        })
+        .map(({ rel }) => rel);
+      const shown = matches.slice(0, 500);
+      return `${shown.join('\n')}\n\n${matches.length} file(s) found.${matches.length > shown.length ? ' [capped at 500 shown]' : ''}`;
+    }),
+    make('grep_codebase', 'Chercher une expression régulière (insensible à la casse) dans les fichiers texte du projet.', 'read', {
+      pattern: { type: 'string', maxLength: 500, description: 'Expression régulière' },
+      path: pathField,
+      file_glob: { type: 'string', maxLength: 200, description: 'Filtre sur le nom des fichiers, ex. *.ts' },
+    }, ['pattern'], async (args, signal) => {
+      const pattern = args.pattern as string;
+      if (!pattern) throw new Error('Motif vide');
+      try { new RegExp(pattern, 'i'); } catch (error) { return `Motif regex invalide : ${(error as Error).message}`; }
+      const fileGlob = (args.file_glob as string) || '*';
+      const start = await safePath((args.path as string) || '.', true);
+      const out: string[] = [];
+      let capped = false;
+      const deadline = Date.now() + 30000;
+      for (const { abs, rel } of await walkFiles(start, signal)) {
+        signal.throwIfAborted();
+        if (!posix.matchesGlob(basename(abs), fileGlob)) continue;
+        if (Date.now() > deadline) { out.push('... [search stopped after 30 s]'); break; }
+        const text = await readSearchable(abs);
+        if (text === null) continue;
+        let indexes: number[];
+        try {
+          // The regex runs in its own context with a hard time limit: a catastrophic
+          // pattern (e.g. (a+)+$) is interrupted instead of freezing the whole engine.
+          indexes = Array.from(runInNewContext(
+            'const re = new RegExp(pattern, "i"); const hits = []; const lines = text.split(/\\r?\\n/);' +
+            'for (let i = 0; i < lines.length && hits.length < limit; i++) if (re.test(lines[i].slice(0, 2000))) hits.push(i);' +
+            'hits', { pattern, text, limit: 201 - out.length }, { timeout: 1500 },
+          ) as number[]);
+        } catch (error: any) {
+          if (error?.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') throw new Error('Motif trop coûteux (délai dépassé) : simplifiez l’expression régulière');
+          throw error;
+        }
+        const lines = text.split(/\r?\n/);
+        for (const index of indexes) {
+          if (out.length >= 200) { capped = true; break; }
+          out.push(`${rel}:${index + 1}: ${lines[index].slice(0, 300)}`);
+        }
+        if (capped) break;
+      }
+      if (!out.length) return `No matches for '${pattern}'.`;
+      return out.join('\n') + (capped ? '\n... [capped at 200 matches]' : '');
     }),
   ];
 }

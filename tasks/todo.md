@@ -704,8 +704,34 @@ d'équivalent Node : décision d'architecture à part), plugins Python et MCP,
       outil enregistré doit figurer dans une table `EXPECTED_CATEGORIES` avec la bonne
       catégorie ; un outil non listé ou mal classé fait échouer le test (chaque tâche
       suivante y ajoute ses outils). `npm test` 67/67 (les 7 outils fichiers inchangés).
-- [ ] Tâche 21 — Recherche/fichiers manquants : `grep_file`, `glob_files`, `grep_codebase`
+- [x] Tâche 21 — Recherche/fichiers manquants : `grep_file`, `glob_files`, `grep_codebase`
       (read, `.env`/secrets/ignorés exclus, plafonds), `delete_dir` (write, corbeille).
+      Quatre outils dans `workspace.mts`, sous la même confinement que les 7 existants
+      (`safePath`/`blocked`, liens et jonctions jamais suivis) :
+      - `grep_file(path, pattern)` (read) : texte **littéral**, sensible à la casse,
+        `Line N: …`, plafonné à 200 résultats (`[capped at 200 matches]`), lignes à 300
+        car., motif vide refusé, fichiers binaires/`.env`/ignorés refusés.
+      - `glob_files(pattern, path=".")` (read) : glob (`src/**/*.ts`) ou nom nu à toute
+        profondeur (`*.md`), chemins relatifs au projet triés + `N file(s) found.`,
+        plafonné à 500 ; saute dossiers de build/vendor (`node_modules`, `dist`, `.git`…),
+        dossiers cachés, `.env*`, patterns ignorés et **matériel de clé** (`id_rsa*`,
+        `*.pem/.key/.p12`, `credentials.json`, `secrets.json`) — garde supplémentaire
+        propre à la recherche pour qu'une requête large ne les remette pas au modèle.
+      - `grep_codebase(pattern, path, file_glob)` (read) : regex insensible à la casse,
+        `fichier:ligne: texte`, mêmes exclusions, binaires et fichiers > 2 Mio ignorés,
+        200 résultats max, lignes à 300 car., regex invalide → message (pas d'exception).
+        **Regex catastrophique** (`(a+)+$`) : exécutée dans un contexte `vm` avec délai de
+        1,5 s par fichier → « Motif trop coûteux » au lieu de figer tout le moteur
+        (Python n'avait aucune protection) ; budget global 30 s, 20 000 entrées.
+      - `delete_dir(path)` (write) : dossier déplacé dans `.openagent/trash` (récupérable,
+        jamais de `rmtree` définitif comme en Python), racine/protégés/ignorés/hors projet/
+        via un lien refusés, un lien *dans* le dossier est déplacé sans être suivi. Corbeille
+        factorisée avec `delete_file`.
+      Tests : `tests/workspace-search.test.mts` (16), RED prouvé (16/16) après avoir
+      **durci mon propre test** : « outil manquant » lève une erreur distincte qui ne compte
+      jamais comme un refus (sinon les `assert.rejects` passaient sans que l'outil existe).
+      Table de garde `EXPECTED_CATEGORIES` étendue (grep_file/glob_files/grep_codebase =
+      read, delete_dir = write). GREEN au premier passage, `npm test` 83/83.
 - [ ] Tâche 22 — Mémoire : `save_memory`, `read_memory`, `forget_memory` (garde mot-clé
       vide, blocs horodatés supprimés en entier, atomique).
 - [ ] Tâche 23 — Outils git (13) sur un vrai dépôt temporaire, dont les tests

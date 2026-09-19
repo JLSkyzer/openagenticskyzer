@@ -80,6 +80,7 @@ test('an aborted signal stops the tool before it runs', async () => {
 const EXPECTED_CATEGORIES: Record<string, string> = {
   read_file: 'read', view_file: 'read', list_dir: 'read',
   create_file: 'write', edit_file: 'write', create_dir: 'write', delete_file: 'write',
+  grep_file: 'read', glob_files: 'read', grep_codebase: 'read', delete_dir: 'write',
 };
 
 test('every registered workspace tool has a valid, expected permission category', async t => {

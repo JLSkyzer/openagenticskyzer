@@ -114,6 +114,25 @@ test('saving a model retains endpoint consent without asking again or copying th
   assert.equal((await service.resolve(a)).model, 'another');
 });
 
+test('consent granted on the global connection also covers a project that inherits it', async t => {
+  const { service, a } = await fixture(t);
+  await service.save(null, { provider: 'openrouter', api_key: 'fake-key', model: 'm' });
+  await service.save(null, { provider: 'openrouter', base_url: 'https://approved.example/v1' }, { confirmEndpoint: true });
+  // A project with no override of its own inherits both the key and the approved URL.
+  const resolved = await service.resolve(a);
+  assert.equal(resolved.base_url, 'https://approved.example/v1');
+  assert.equal(resolved.api_key, 'fake-key');
+});
+
+test('consent is per key/URL pair: another project cannot borrow a different pair', async t => {
+  const { service, a, b } = await fixture(t);
+  await service.save(null, { provider: 'openrouter', api_key: 'fake-key' });
+  await service.save(a, { provider: 'openrouter', base_url: 'https://approved.example/v1' }, { confirmEndpoint: true });
+  assert.equal((await service.resolve(a)).base_url, 'https://approved.example/v1');
+  // Project b never approved anything: it still sends the key to the original endpoint only.
+  assert.equal((await service.resolve(b)).base_url, 'https://openrouter.ai/api/v1');
+});
+
 test('a JSON null vault is corrupt, not an invitation to reset credentials', async t => {
   const { home, service } = await fixture(t);
   const file = join(home, 'connections.v1.json');

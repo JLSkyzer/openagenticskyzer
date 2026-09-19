@@ -580,9 +580,42 @@ réglages LM Studio (contexte/VRAM/`lms`), lanceur de serveur llama.cpp.
       Robustesse des tests : `capturePage()` a échoué 1 fois sur 7 avec `UnknownVizError`
       (service GPU d'Electron 44, sans rapport avec la page) → `tests/capture-helper.cjs`
       réessaie la capture, utilisé par les 3 tests de réglages (6 exécutions PASS).
-- [ ] Tâche 18 — Modale sélecteur de modèle + bouton de la barre de saisie ; preuve :
+- [x] Tâche 18 — Modale sélecteur de modèle + bouton de la barre de saisie ; preuve :
       changer de fournisseur/modèle/URL/clé via l'UI, coffre chiffré relu, le message
       suivant part réellement vers le nouveau serveur simulé.
+      **Limite de la Tâche 13 corrigée (TDD)** : le flux normal du sélecteur la rendait
+      atteignable (changer l'URL d'une connexion globale puis ouvrir un projet aurait fait
+      échouer chaque envoi). `connections.test.mts` : nouveau test RED reproduisant
+      exactement « Confirmation requise… » à la résolution, + un test de garde (un autre
+      projet ne peut pas emprunter un accord qu'il n'a pas donné). Correctif dans
+      `Connections.compose()` : l'accord d'endpoint est cherché sur le profil du projet
+      **ou** sur le profil global dont il hérite, toujours pour la paire exacte
+      clé-endpoint → URL, jamais entre projets. `npm test` 59/59.
+      UI : `ModelButton` dans la barre de saisie (« ● nom tronqué à 20 car. ▾ », infobulle
+      = nom complet, comme `input_bar.py`) et `ModelDialog` (« Sélectionner un modèle » :
+      bandeau modèle actif ✓ / ⚠ aucun, fournisseur parmi les 8 du moteur, modèle, URL de
+      base, clé API **en écriture seule** avec « Retirer la clé », portée ce dossier /
+      global, confirmation avant d'envoyer une clé à une autre URL). `Modal` : Échap ferme
+      la modale du dessus (pile) et le contenu défile. `ipc/errors.ts` factorise le
+      nettoyage des messages IPC (3 copies → 1). `ChatProvider` expose `activeFolder`.
+      Preuve : `tests/model-selector-visual.cjs` (`npm run test:model`) avec le **vrai coffre
+      chiffré** (`safeStorage`), le vrai `resolveSendPayload` de `main.cjs`, le vrai worker
+      et deux serveurs HTTP locaux factices qui enregistrent `Authorization` et `model`,
+      RED (bouton absent) puis GREEN : rien de configuré → « Aucun modèle » ; enregistrer
+      modèle + URL A + clé → bandeau mis à jour, champ clé vidé et « configurée », fichier
+      du coffre sans la clé en clair, clé absente de la page ; le message suivant part
+      **vraiment vers A** avec `Bearer <clé>` et le bon modèle ; URL B → confirmation
+      qui nomme l'URL, Annuler ne change rien, Confirmer déplace la connexion ; le
+      message suivant part vers B (A ne reçoit plus rien) avec la même clé stockée ;
+      changement vers Ollama (URL locale par défaut, clé non partagée) puis retour à
+      OpenRouter (modèle et clé conservés) ; « Retirer la clé » l'enlève réellement.
+      Capture relue à l'œil. `npm test` 59/59, `tsc` propre, 12 tests réels PASS
+      (dont `layout` à 1080×680 avec le nouveau bouton).
+      Reporté (hors lot, déjà listé) : détection/téléchargement des modèles Ollama,
+      LM Studio et llama.cpp, catalogue HuggingFace, réglages LM Studio ; la liste des
+      modèles cloud n'est pas proposée (champ libre), l'API du moteur ne les liste pas.
+      Écart assumé vs `model_modal.py` : les clés ne viennent plus d'un `.env` en clair
+      mais du coffre chiffré ; une clé `.env` héritée reste lue (`legacy_plaintext`).
 - [ ] Tâche 19 — Vérification finale packagée (pas de Python), preuves consignées ici.
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)

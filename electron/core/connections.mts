@@ -130,8 +130,11 @@ export class Connections {
     else if (Object.hasOwn(g, 'api_key')) { api_key = g.api_key ?? ''; key_endpoint = g.key_endpoint ?? providers[selected]; key_source = 'global'; }
     else if (legacy.localEnv[prefix + '_API_KEY']) { api_key = legacy.localEnv[prefix + '_API_KEY']; key_endpoint = legacyEndpoint(legacy.localEnv); key_source = 'legacy-project'; }
     else if (legacy.globalEnv[prefix + '_API_KEY']) { api_key = legacy.globalEnv[prefix + '_API_KEY']!; key_endpoint = legacyEndpoint(legacy.globalEnv); key_source = 'legacy-global'; }
-    const authorization = folder ? p : g;
-    if (api_key && key_endpoint !== base_url && !(authorization.authorized_from === key_endpoint && authorization.authorized_to === base_url) && !allowUnbound) {
+    // Consent is recorded on the profile where the URL was approved: the project's own, or
+    // the global one that a project without an override inherits from. It only counts for
+    // the exact key-endpoint -> URL pair that was approved, and never crosses projects.
+    const consented = (profile: Profile) => profile.authorized_from === key_endpoint && profile.authorized_to === base_url;
+    if (api_key && key_endpoint !== base_url && !consented(p) && !consented(g) && !allowUnbound) {
       throw new Error('Confirmation requise avant de transmettre la clé à une autre URL');
     }
     return { provider: selected, model, base_url, api_key, key_endpoint, key_source,

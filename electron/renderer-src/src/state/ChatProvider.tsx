@@ -4,6 +4,7 @@ import { chatReducer, initialChatState, type ChatState } from './reducer';
 
 interface ChatContextValue {
   state: ChatState;
+  activeFolder: string | null;
   send(text: string): Promise<void>;
   stopRun(): Promise<void>;
   decide(allow: boolean, always: boolean): Promise<void>;
@@ -68,7 +69,7 @@ export function ChatProvider({ activeFolder, initialMessages, children }: ChatPr
     [state.runId, state.pendingPermission],
   );
 
-  return <ChatContext.Provider value={{ state, send, stopRun, decide }}>{children}</ChatContext.Provider>;
+  return <ChatContext.Provider value={{ state, activeFolder, send, stopRun, decide }}>{children}</ChatContext.Provider>;
 }
 
 export function useChat(): ChatContextValue {

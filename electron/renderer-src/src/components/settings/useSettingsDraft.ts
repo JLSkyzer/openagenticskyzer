@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getGlobalSettings, getProjectSettings, saveGlobalSettings, saveProjectSettings } from '../../ipc/bridge';
+import { cleanIpcError as cleanMessage } from '../../ipc/errors';
 
 type Values = Record<string, unknown>;
 
@@ -25,13 +26,6 @@ export interface SettingsDraft {
 interface DraftSource {
   load(): Promise<Values>;
   save(patch: Values): Promise<Values>;
-}
-
-// Electron prefixes rejected IPC calls with "Error invoking remote method '…': Error: " —
-// strip it so the user sees the backend's own message.
-function cleanMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/^Error invoking remote method '[^']*': (Error: )?/, '');
 }
 
 // Mirrors settings.py's `cfg` dict, but only the keys the user actually touched are sent on

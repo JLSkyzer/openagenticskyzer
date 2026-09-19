@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { clearHistory, removeFolder, resetGlobalSettings } from '../../ipc/bridge';
+import { cleanIpcError as cleanMessage } from '../../ipc/errors';
 import { Modal } from './Modal';
 
 interface DangerTabProps {
@@ -21,11 +22,6 @@ function DangerRow({ label, hint, last, children }: { label: string; hint?: stri
       {children}
     </div>
   );
-}
-
-function cleanMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/^Error invoking remote method '[^']*': (Error: )?/, '');
 }
 
 // Mirrors settings.py::_tab_danger. None of these actions deletes project files.

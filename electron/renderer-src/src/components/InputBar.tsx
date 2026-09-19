@@ -1,10 +1,11 @@
 import { useCallback, useRef, type KeyboardEvent } from 'react';
 import { useChat } from '../state/ChatProvider';
+import { ModelButton } from './model/ModelButton';
 
 // Uncontrolled textarea (ref, not useState) — matches input_bar.py's intent (plain text
 // box, no per-keystroke React state) and avoids re-rendering the whole bar on every key.
 export function InputBar() {
-  const { state, send, stopRun } = useChat();
+  const { state, activeFolder, send, stopRun } = useChat();
   const textRef = useRef<HTMLTextAreaElement>(null);
 
   const handleSend = useCallback(async () => {
@@ -42,6 +43,7 @@ export function InputBar() {
           className="oa-input-ta min-h-[40px] flex-1 resize-y rounded-lg px-3 py-2 text-xs outline-none"
           style={{ background: '#1a1a1a', border: '1px solid #2a2a2a', color: '#e0e0e0' }}
         />
+        <ModelButton activeFolder={activeFolder} />
         <button
           id="oa-send-btn"
           onClick={() => (state.agentRunning ? stopRun() : handleSend())}

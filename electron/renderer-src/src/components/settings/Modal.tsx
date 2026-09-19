@@ -1,8 +1,12 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
+
+// Open modals, oldest first: with a confirmation stacked on top of another modal, Escape
+// must close the one on top only.
+const openModals: object[] = [];
 
 // Card dialog stacked above the maximized settings dialog (settings.py's nested ui.dialog).
-// Escape closes ONLY this modal: the listener runs in the capture phase and stops the
-// event, so the settings dialog's own Escape handler never sees it.
+// Escape closes ONLY the topmost modal: the listener runs in the capture phase and stops
+// the event, so neither the modal below nor the settings dialog's own handler sees it.
 export function Modal({
   children,
   onClose,
@@ -14,14 +18,21 @@ export function Modal({
   width?: number;
   tone?: 'default' | 'danger';
 }) {
+  const identity = useRef({});
+
   useEffect(() => {
+    const me = identity.current;
+    openModals.push(me);
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      if (event.key !== 'Escape' || openModals[openModals.length - 1] !== me) return;
       event.stopImmediatePropagation();
       onClose();
     };
     window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      openModals.splice(openModals.indexOf(me), 1);
+    };
   }, [onClose]);
 
   return (
@@ -32,6 +43,8 @@ export function Modal({
         style={{
           width,
           maxWidth: '90vw',
+          maxHeight: '85vh',
+          overflowY: 'auto',
           color: '#e0e0e0',
           background: tone === 'danger' ? '#1a0a0a' : '#111',
           border: tone === 'danger' ? '1px solid #7f1d1d' : '1px solid #2a2a2a',

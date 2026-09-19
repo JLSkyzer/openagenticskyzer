@@ -17,3 +17,4 @@ import './workspace-search.test.mts';
 import './memory-tools.test.mts';
 import './process.test.mts';
 import './git-tools.test.mts';
+import './shell-tool.test.mts';

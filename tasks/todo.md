@@ -802,8 +802,44 @@ d'équivalent Node : décision d'architecture à part), plugins Python et MCP,
       modification s'y heurtera ; à affiner (compter seulement les répétitions consécutives).
       Hors périmètre : les hooks du dépôt (`pre-commit`) s'exécutent toujours au commit,
       comme avec git en ligne de commande.
-- [ ] Tâche 24 — `run_command` : timeout + arbre tué, Stop réel, env épuré, mise en forme
+- [x] Tâche 24 — `run_command` : timeout + arbre tué, Stop réel, env épuré, mise en forme
       de la sortie, serveurs de dev en arrière-plan + nettoyage, `shell_ask` honoré.
+      Nouveau `core/shell-tool.mts` : `shellTools(folder)` → `run_command(command, timeout=300,
+      max 600)` en catégorie `shell` (demande toujours, sauf `shell_ask=false`/mode auto).
+      - Exécuté dans la **racine réelle du projet** ; `cd` sans effet durable, rappelé par
+        `[cwd: …]` comme en Python.
+      - **Environnement épuré des secrets** (`*API_KEY*`, `*TOKEN*`, `*SECRET*`, `*PASSWORD*`,
+        `*ACCESS_KEY*`, `*_KEY`, `*CREDENTIAL*`…, par nom) : `printenv` ne rend plus les clés de
+        l'app (Python héritait de tout l'environnement). `PATH`/`SystemRoot`… conservés.
+      - **Timeout et Stop tuent tout l'arbre** (via `runProcess`) — prouvé par un petit-enfant
+        qui aurait écrit un marqueur — au lieu du seul shell ; le timeout renvoie
+        `Command timed out after Ns.` + la sortie partielle.
+      - Sortie au format Python : `stdout`, `[stderr]`, `[exit code: N]`, `(no output)` ;
+        mise en forme **portée à l'identique** pour protéger le contexte du modèle (bruit
+        pnpm replié, blobs HTML/JSON résumés, sinon 5 premières + 20 dernières lignes, plafond
+        3000 car.). Windows : `chcp 65001` pour que les accents du shell soient lisibles.
+      - **Serveurs de dev** (`npm run dev`, `uvicorn`, `next dev`…) lancés en arrière-plan,
+        **dédupliqués** (`Server is already running`), arrêtés avec leur arbre par
+        `stopAllServers()`. Améliorations vs Python : détection **resserrée** (le mot-clé doit
+        *démarrer* une commande de la chaîne : `git commit -m "fix uvicorn"` n'est plus détaché
+        comme un serveur, sortie perdue) ; les **2,5 premières secondes de sortie** sont
+        renvoyées au modèle, et un serveur qui meurt au démarrage est rapporté
+        (`Server exited immediately (exit code N)` + sa sortie) au lieu d'un faux succès.
+      - Garde Next.js portée (`BLOCKED:` tant que `page.tsx` garde le contenu du starter), avec
+        chemin relatif et `cd` confiné au projet.
+      **Non porté volontairement** : `_normalize_paths` (réécrit les chemins absolus hors
+        projet en les collant dans le projet : best-effort et trompeur) ; `agent_actions.log`.
+      **Politique** (`agent.mts::policy`) : `shell_ask === false` → autorisé, sinon demande.
+      Le toggle « Exécution shell » des réglages, jusqu'ici **sans aucun effet**, en a un ; ne
+      peut jamais élargir plan/ask/strict ni débloquer les extensions (test à 8 cas).
+      Attention : `git_push`/`git_pull` sont aussi de catégorie `shell`, donc `shell_ask=false`
+      les autorise sans demande — à documenter dans l'UI des réglages.
+      Reste pour la Tâche 26 : appeler `stopAllServers()` quand l'app se ferme (le worker est
+      simplement terminé aujourd'hui, ses serveurs survivraient).
+      Tests : `tests/shell-tool.test.mts` (21) + politique (1) + garde étendue. RED prouvé
+      (module absent + politique), un test corrigé car **mon** jeu de données était sous le
+      seuil de troncature (Python n'aurait pas tronqué non plus). `npm test` 144/144, 0
+      ignoré, aucun processus orphelin après les tests.
 - [ ] Tâche 25 — `fetch_url` (SSRF, redirections, plafonds) puis `internet_search`
       (Tavily si clé, sinon DuckDuckGo).
 - [ ] Tâche 26 — Branchement : `worker.mjs` enregistre tous les outils, prompt système

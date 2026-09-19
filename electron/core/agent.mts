@@ -34,7 +34,10 @@ function policy(tool: AgentTool, settings: AgentSettings): 'allow' | 'ask' | 'de
   if (settings.permission_mode === 'auto' || tool.category === 'read') return 'allow';
   if (tool.category === 'write' && settings.files_ask === false) return 'allow';
   if (tool.category === 'network' && settings.search_ask === false) return 'allow';
-  // Shell and arbitrary extensions always ask unless the user enabled auto mode.
+  // The "Exécution shell" setting: only an explicit false skips the prompt (unset asks). Plan,
+  // ask and strict were already denied above, so this can never widen them.
+  if (tool.category === 'shell' && settings.shell_ask === false) return 'allow';
+  // Arbitrary extensions always ask unless the user enabled auto mode.
   return 'ask';
 }
 

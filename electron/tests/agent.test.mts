@@ -107,6 +107,35 @@ test('cancellation while waiting for approval exits without executing the tool',
   assert.equal(effects, 0);
 });
 
+test('shell_ask decides whether a shell tool asks; it never widens plan/strict or other categories', async () => {
+  const { runAgent } = await import('../core/agent.mts');
+  const { ChatProvider } = await import('../core/provider.mts');
+  const cases: Array<{ name: string; category: 'shell' | 'extension'; settings: any; approve: boolean; expectAsk: boolean; expectRun: boolean }> = [
+    { name: 'shell_ask=false runs without asking', category: 'shell', settings: { mode: 'auto', permission_mode: 'demander', shell_ask: false }, approve: true, expectAsk: false, expectRun: true },
+    { name: 'shell_ask=true asks (approved)', category: 'shell', settings: { mode: 'auto', permission_mode: 'demander', shell_ask: true }, approve: true, expectAsk: true, expectRun: true },
+    { name: 'shell_ask=true asks (refused)', category: 'shell', settings: { mode: 'auto', permission_mode: 'demander', shell_ask: true }, approve: false, expectAsk: true, expectRun: false },
+    { name: 'unset shell_ask asks by default', category: 'shell', settings: { mode: 'auto', permission_mode: 'demander' }, approve: false, expectAsk: true, expectRun: false },
+    { name: 'plan mode still denies', category: 'shell', settings: { mode: 'plan', permission_mode: 'demander', shell_ask: false }, approve: true, expectAsk: false, expectRun: false },
+    { name: 'ask mode still denies', category: 'shell', settings: { mode: 'ask', permission_mode: 'demander', shell_ask: false }, approve: true, expectAsk: false, expectRun: false },
+    { name: 'strict still denies', category: 'shell', settings: { mode: 'auto', permission_mode: 'strict', shell_ask: false }, approve: true, expectAsk: false, expectRun: false },
+    { name: 'shell_ask=false does not unlock extensions', category: 'extension', settings: { mode: 'auto', permission_mode: 'demander', shell_ask: false }, approve: false, expectAsk: true, expectRun: false },
+  ];
+  for (const c of cases) {
+    let asked = 0; let ran = 0; let requests = 0;
+    const provider = new ChatProvider(async () => {
+      requests++;
+      return new Response(JSON.stringify({ choices: [{ message: requests === 1
+        ? { content: '', tool_calls: [{ id: 'c', type: 'function', function: { name: 'run', arguments: '{}' } }] } : { content: 'ok' }, finish_reason: requests === 1 ? 'tool_calls' : 'stop' }] }), { headers: { 'content-type': 'application/json' } });
+    });
+    await runAgent({ provider, connection, instructions: '', messages: [], settings: c.settings,
+      tools: [{ name: 'run', description: '', category: c.category, parameters: { type: 'object' }, validate: () => {}, execute: async () => { ran++; return 'done'; } }],
+      confirm: async () => { asked++; return c.approve; },
+    });
+    assert.equal(asked > 0, c.expectAsk, `${c.name}: asked`);
+    assert.equal(ran > 0, c.expectRun, `${c.name}: ran`);
+  }
+});
+
 test('agent refuses invalid arguments, duplicate call IDs and bounds repeated tool requests', async () => {
   const { runAgent } = await import('../core/agent.mts');
   const { ChatProvider } = await import('../core/provider.mts');

@@ -7,6 +7,9 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 // capturePage() throws "UnknownVizError" on a hidden BrowserWindow in this environment
 // unless hardware acceleration is disabled first.
 app.disableHardwareAcceleration();
+// Destroying the window in `finally` would otherwise quit the app before a failing run gets to
+// print its error — keep the process alive until the test exits explicitly.
+app.on('window-all-closed', () => {});
 const { Worker } = require('node:worker_threads');
 const path = require('node:path');
 const { mkdtemp, rm, mkdir, writeFile, readFile } = require('node:fs/promises');
@@ -14,6 +17,9 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { createServer } = require('node:http');
 const assert = require('node:assert/strict');
+
+// Long on purpose, and its END is what a truncated banner would hide from the user.
+const LONG_COMMAND = `node -e "require('fs').writeFileSync('shell-ran.txt','x')" && echo ligne-tres-longue-pour-depasser-soixante-caracteres && echo FIN-COMMANDE-VISIBLE`;
 
 async function waitFor(fn, { timeout = 8000, interval = 50 } = {}) {
   const start = Date.now();
@@ -68,6 +74,14 @@ app.whenReady().then(async () => {
           response.end(JSON.stringify({
             choices: [{
               message: { content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'create_file', arguments: JSON.stringify({ path: 'notes.md', content: 'contenu confirme' }) } }] },
+              finish_reason: 'tool_calls',
+            }],
+          }));
+        } else if (requestCount === 3) {
+          // Second message: a shell command well past the 60 characters the banner used to keep.
+          response.end(JSON.stringify({
+            choices: [{
+              message: { content: '', tool_calls: [{ id: 'call-2', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: LONG_COMMAND }) } }] },
               finish_reason: 'tool_calls',
             }],
           }));
@@ -162,6 +176,36 @@ app.whenReady().then(async () => {
 
     const created = await readFile(targetFile, 'utf8');
     assert.equal(created, 'contenu confirme', 'the file was actually written, with the real content, only after Autoriser was clicked');
+
+    // ── A shell command must be shown IN FULL: approving what you cannot read is not consent ──
+    await win.webContents.executeJavaScript(`
+      (() => {
+        const el = document.getElementById('oa-input-ta');
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(el, 'lance la commande');
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      })();
+    `);
+    await waitFor(() => win.webContents.executeJavaScript("!!document.querySelector('[data-testid=\"oa-permission-banner\"]')"));
+    const shellBanner = await win.webContents.executeJavaScript(
+      "document.querySelector('[data-testid=\"oa-permission-banner\"]')?.textContent",
+    );
+    assert.match(shellBanner, /run_command/, 'the banner names the shell tool');
+    assert.ok(shellBanner.includes('FIN-COMMANDE-VISIBLE'), `the END of the command is visible before approving (got: ${shellBanner})`);
+    assert.equal(await fileExists(join(project, 'shell-ran.txt')), false, 'nothing ran before the decision');
+    const refused = await win.webContents.executeJavaScript(`
+      (() => {
+        const btn = Array.from(document.querySelectorAll('[data-testid="oa-permission-banner"] button')).find(b => b.textContent === 'Refuser');
+        if (!btn) return false;
+        btn.click();
+        return true;
+      })();
+    `);
+    assert.ok(refused, 'the Refuser button was found and clicked');
+    await waitFor(() => win.webContents.executeJavaScript("!document.querySelector('[data-testid=\"oa-permission-banner\"]')"));
+    await new Promise(resolve => setTimeout(resolve, 500));
+    assert.equal(await fileExists(join(project, 'shell-ran.txt')), false, 'a refused command never runs');
 
     process.stdout.write(`PASS permission banner blocks the write until Autoriser is clicked, then it happens for real (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshots: ${screenshotDir}\n`);

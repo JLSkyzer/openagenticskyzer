@@ -917,9 +917,60 @@ d'équivalent Node : décision d'architecture à part), plugins Python et MCP,
       run, un autre car j'avais utilisé une syntaxe TypeScript non supportée par `strip-types`.
       `npm test` 176/176, `tsc` propre, 12 tests Electron PASS.
       Non vérifié ici (Tâche 27) : le cycle `before-quit` réel d'Electron sur l'app packagée.
-- [ ] Tâche 27 — Vérification finale sur l'app packagée (Python absent) : l'agent appelle
+- [x] Tâche 27 — Vérification finale sur l'app packagée (Python absent) : l'agent appelle
       git et le shell avec la bannière de permission, Stop tue réellement la commande
       longue, une URL privée est refusée ; preuves consignées ici.
+      Repackage (`npm run package:win`) puis nouveau `tests/final-e2e-lot3.cjs`
+      (`npm run test:final-e2e-lot3`) : pilote l'**exécutable packagé réel** (vrai `main.cjs`,
+      vrai `safeStorage`, vrai worker) par CDP, PATH sans Python ; un serveur HTTP local
+      scripté joue le modèle (à chaque message il répond par la suite d'appels d'outils
+      préparée). Modèle branché par le vrai dialogue (coffre chiffré). 10 preuves, PASS,
+      captures relues à l'œil :
+      1. Python absent : `where python` échoue sous le PATH assaini.
+      2. Lancement direct de `openagent.exe`, `OPENAGENT_HOME` isolé.
+      3. `git_status` sur un vrai dépôt → carte **READ** avec « Working tree clean. », aucune
+         demande de permission.
+      4. Travail réel : `create_file` + `git_add` + `git_commit` par l'agent → le fichier et le
+         **commit existent dans le vrai dépôt** (`git log`), arbre propre ; cartes WRITE.
+      5. `run_command` : bannière de permission, **rien exécuté avant le clic**, sortie réelle
+         après « Autoriser » (carte **RUN**).
+      6. « Toujours » : 3e commande de la session sans bannière ; **rien écrit** dans
+         `config.json` (ni `shell_ask` ni `override_permissions`).
+      7. `fetch_url` vers un service interne local et vers `file://` → « Adresse réseau interne
+         ou privée refusée » / « Protocole non autorisé » (cartes SEARCH) ; le serveur interne
+         a reçu **0 requête**.
+      8. `git_push` avec un remote `ext::sh -c "touch pwned.txt"` et `git_checkout -f` : refusés
+         (« … invalide ») **même après approbation**, aucune commande exécutée.
+      9. **Stop** pendant `node grand.js` : le petit-enfant n'écrit jamais son marqueur → tout
+         l'arbre est tué, pas seulement la commande.
+      10. **Fermeture réelle de l'app** (`Browser.close`, code de sortie 0) : le serveur de dev
+          lancé en arrière-plan **s'arrête** (plus aucune écriture). Vérifié non creux : avec un
+          simple `worker.terminate()` (comportement d'avant), le même serveur survit
+          (17 → 23 battements) ; il fallait bien l'arrêt propre de la Tâche 26.
+      **Défaut de sécurité trouvé par les captures et corrigé** : la bannière de permission
+      tronquait tout à 60 caractères, y compris une commande shell — l'utilisateur cliquait
+      « Autoriser » sans pouvoir lire la fin (`… && rm -rf …`). Acceptable pour un chemin de
+      fichier, pas pour du shell. `PermissionBanner` affiche maintenant la commande **en
+      entier** (bloc défilable, plafonné à 4000 car. avec mention), les autres outils gardent
+      l'affichage tronqué. Test d'abord (`permission-visual.cjs`, second scénario : commande de
+      plus de 60 caractères dont la FIN est vérifiée, puis « Refuser » → jamais exécutée), RED
+      puis GREEN ; le script final le revérifie sur le package.
+      Scripts de test : mes premiers essais avaient deux bugs **de test** (attente de
+      démarrage toujours vraie ; file du faux modèle non vidée après un Stop) — corrigés, code
+      de production inchangé ; `permission-visual.cjs` masquait ses échecs (fenêtre détruite →
+      Electron quitte avant d'écrire l'erreur), même correctif que les tests de réglages.
+      Suite complète revérifiée sur ce package : `npm test` 176/176, `tsc` propre, 12 tests
+      Electron + `test:package` + `test:bridge-real` PASS, `final-e2e` (lot 1) et
+      `final-e2e-lot2` PASS, `npm audit` 0 vulnérabilité, aucun processus résiduel.
+
+      **Bilan du lot « outils du moteur » : livré** pour son périmètre (Tâches 20-27) — 30 outils
+      (fichiers, mémoire, git, shell, web) avec catégories de permission testées, socle de
+      processus qui tue les arbres, SSRF fermé, Stop réel, arrêt propre des serveurs. Reste hors
+      lot, explicitement reporté : `semantic_search`/`knowledge_search` (ChromaDB + embeddings :
+      décision d'architecture), plugins Python et MCP, `analyze_project_and_init`, clé Tavily
+      configurable dans l'UI, détection/téléchargement des modèles locaux. **La migration
+      NiceGUI → Electron n'est pas terminée** : branches, artifacts, palette de commandes,
+      bibliothèque de prompts, jauge de contexte, téléchargements et onboarding restent à faire.
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

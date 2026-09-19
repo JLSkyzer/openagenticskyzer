@@ -1,4 +1,11 @@
-import type { AgentEvent, ChatMessage, FolderListItem } from './types';
+import type {
+  AgentEvent,
+  ChatMessage,
+  ConnectionPatch,
+  ConnectionSnapshot,
+  FolderListItem,
+  ProjectSettings,
+} from './types';
 
 // The only place in the renderer allowed to touch window.openagent directly — every
 // component goes through these typed functions instead.
@@ -61,4 +68,36 @@ export function getMessages(folder: string, branchId = 'main'): Promise<ChatMess
   return request('messages', { folder, branchId });
 }
 
-export type { AgentEvent, ChatMessage, FolderListItem } from './types';
+// The connection vault lives in main.cjs (safeStorage) — these ops are answered there,
+// never by the worker. The snapshot carries no secret; api_key only ever flows inward.
+export function getConnection(folder: string | null): Promise<ConnectionSnapshot> {
+  return request('connection-snapshot', { folder });
+}
+
+// confirmEndpoint must only be true after the user explicitly agreed to re-bind an
+// existing key to a different URL (Connections.save refuses otherwise).
+export function saveConnection(
+  folder: string | null,
+  patch: ConnectionPatch,
+  confirmEndpoint = false,
+): Promise<ConnectionSnapshot> {
+  return request('save-connection', { folder, patch, authorization: { confirmEndpoint } });
+}
+
+export function getProjectSettings(folder: string): Promise<ProjectSettings> {
+  return request('project-settings', { folder });
+}
+
+export function saveProjectSettings(folder: string, patch: Partial<ProjectSettings>): Promise<ProjectSettings> {
+  return request('save-project-settings', { folder, patch });
+}
+
+export type {
+  AgentEvent,
+  ChatMessage,
+  ConnectionPatch,
+  ConnectionSnapshot,
+  FolderListItem,
+  ProjectSettings,
+  ProviderName,
+} from './types';

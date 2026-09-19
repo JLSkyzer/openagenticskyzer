@@ -12,6 +12,43 @@ export interface FolderListItem {
   last_used: string;
 }
 
+export type ProviderName =
+  | 'openrouter' | 'together' | 'groq' | 'mistral' | 'gemini' | 'ollama' | 'lmstudio' | 'llamacpp';
+
+// Mirrors core/connections.mts::Connections.snapshot() — deliberately has no api_key and
+// no key_endpoint: the secret never reaches the renderer, only whether one is configured.
+export interface ConnectionSnapshot {
+  provider: ProviderName;
+  model: string;
+  base_url: string;
+  key_source: string;
+  legacy_plaintext: boolean;
+  model_source: string;
+  key_configured: boolean;
+}
+
+// Mirrors core/connections.mts::ConnectionPatch. api_key is write-only: a string sets it,
+// null clears it, undefined leaves it untouched.
+export interface ConnectionPatch {
+  provider: ProviderName;
+  model?: string;
+  base_url?: string;
+  api_key?: string | null;
+}
+
+// Mirrors core/settings.mts::projectDefaults plus the optional per-project permission
+// overrides that projectRules also accepts.
+export interface ProjectSettings {
+  agent_mode: 'inherit' | 'ask' | 'auto' | 'plan';
+  ignored_patterns: string;
+  custom_prompt: string;
+  override_permissions: boolean;
+  permission_mode?: 'demander' | 'auto' | 'strict';
+  shell_ask?: boolean;
+  files_ask?: boolean;
+  search_ask?: boolean;
+}
+
 // Mirrors the events worker.mjs posts on the existing `backend-message` channel for an
 // agent run (agent.mts::runAgent's `emit` option, enriched with runId/category) — see
 // the "Canal IPC streaming" section of the socle plan.

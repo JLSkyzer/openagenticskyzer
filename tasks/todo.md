@@ -440,6 +440,62 @@ de `workspace.mts` existent côté Node à ce stade).
       propres consécutives, captures confirmées à l'œil par l'utilisateur en direct sur
       la fenêtre réelle pendant l'exécution).
 
+### Lot actif suivant — réglages (7 onglets) + sélecteur de modèle/connexion
+
+Inventaire NiceGUI relevé le 2026-09-19 (`settings.py`, `model_modal.py`). Le moteur Node
+valide déjà toutes les clés globales/projet (`settings.mts`) et gère le coffre de
+connexions (`connections.mts`) ; il manque surtout l'UI React et les ponts renderer
+(`bridge.ts` n'expose ni `connection-snapshot`/`save-connection` ni les réglages projet).
+Clé API : jamais renvoyée au renderer (write-only, `key_configured` seulement).
+
+Périmètre de ce lot : dialogue Réglages plein écran (rail 200px + 7 onglets + pied
+Enregistrer/Fermer, styles copiés de `settings.py`), onglets Général/Apparence/
+Contexte/Permissions/Dossier/Danger, modale « Sélectionner un modèle » (fournisseur,
+modèle, URL de base, clé API write-only, confirmation de changement d'URL) et bouton
+modèle de la barre de saisie. **Reporté et documenté** (hors lot) : migration du
+répertoire de données (`data_dir`), test du token HuggingFace, onglet Outils
+(plugins/MCP), détection/téléchargement Ollama/LM Studio/llama.cpp, catalogue HF,
+réglages LM Studio (contexte/VRAM/`lms`), lanceur de serveur llama.cpp.
+
+- [x] Tâche 14 — Ponts renderer typés : `getConnection`/`saveConnection` (avec
+      `confirmEndpoint`), `getProjectSettings`/`saveProjectSettings`, `ChatProvider`
+      inchangé ; vérifié par test Electron réel (clé jamais dans la réponse).
+      Ajouts dans `renderer-src/src/ipc/{bridge,types}.ts` (types `ConnectionSnapshot`
+      sans `api_key`/`key_endpoint`, `ConnectionPatch` write-only, `ProjectSettings`).
+      TDD : `tests/bridge-connection.test.mts` (3 tests, RED sur « fonction absente »
+      puis GREEN) fige les noms d'ops et formes de payload ; `tsc --noEmit` propre.
+      Preuve réelle `tests/bridge-real.cjs` (`npm run test:bridge-real`) : pilote
+      l'exécutable packagé non mocké par CDP — `save-connection`/`connection-snapshot`
+      ne renvoient jamais la clé (`sk-SECRET-XYZ` absente, pas de champ
+      `api_key`/`key_endpoint`), `connections.v1.json` chiffré (clé absente du fichier),
+      changement d'URL d'une connexion à clé refusé sans confirmation puis accepté avec
+      `confirmEndpoint`, réglages projet écrits dans `<projet>/.openagent/config.json`,
+      valeur invalide rejetée. Client CDP extrait dans `tests/cdp-helper.cjs`, partagé
+      avec `final-e2e.cjs` (revérifié PASS). `npm test` : 48/48.
+      Constats à traiter, non masqués :
+      - `electron .` sur l'arbre non packagé n'ouvre aucune fenêtre ici (le renderer se
+        charge pourtant dans une `BrowserWindow` de test ; `createConnections` OK) —
+        cause non élucidée, hors périmètre ; les tests réels passent donc par le
+        packagé.
+      - **Fuite de secret à corriger en Tâche 16** : `SettingsService.saveGlobal()`
+        retourne `global()` complet, donc `save-global-settings` renverrait `hf_token`
+        en clair au renderer. Invisible aujourd'hui car la règle `hf_token`/`data_dir`
+        n'est pas dans `HEAD` (ligne de `settings.mts` non commitée, issue d'une autre
+        session, dont l'onglet Général a besoin) ; à corriger avec elle (réponse via
+        `publicGlobal()`), test RED d'abord.
+- [ ] Tâche 15 — Coque du dialogue Réglages (rail vertical, 7 onglets, pied
+      Enregistrer/Fermer) ouverte par le vrai bouton ⚙️ de la TopBar ; thème/accent
+      déplacés dans l'onglet Apparence (retirés de la TopBar) ; capture à 1080×680.
+- [ ] Tâche 16 — Onglets Général/Apparence/Contexte/Permissions : Enregistrer écrit
+      réellement `config.json` ; preuve clic → relecture disque → rechargement.
+- [ ] Tâche 17 — Onglet Dossier (mode, patterns ignorés, prompt custom) + Danger
+      (effacer l'historique, retirer de la sidebar, réinitialiser) ; nouveaux ops
+      worker en TDD (RED d'abord).
+- [ ] Tâche 18 — Modale sélecteur de modèle + bouton de la barre de saisie ; preuve :
+      changer de fournisseur/modèle/URL/clé via l'UI, coffre chiffré relu, le message
+      suivant part réellement vers le nouveau serveur simulé.
+- [ ] Tâche 19 — Vérification finale packagée (pas de Python), preuves consignées ici.
+
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 
 - [x] Task 1 — Module d'embedding lazy et singleton

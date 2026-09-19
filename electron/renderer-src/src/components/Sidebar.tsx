@@ -7,6 +7,9 @@ interface SidebarProps {
   // re-fetch it separately: a second async round trip can resolve after a send has
   // already started and wipe it out.
   onActivated(folder: string, history: ChatMessage[]): void;
+  // Bumped by the parent when the history list changed behind the sidebar's back (e.g. a
+  // folder removed from the settings' danger zone) so it re-reads it.
+  refreshToken?: number;
 }
 
 // Mirrors sidebar.py's truncation of the path shown under each folder name.
@@ -19,7 +22,7 @@ function formatDate(iso: string): string {
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString();
 }
 
-export function Sidebar({ activeFolder, onActivated }: SidebarProps) {
+export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: SidebarProps) {
   const [folders, setFolders] = useState<FolderListItem[]>([]);
   const [opening, setOpening] = useState(false);
 
@@ -27,7 +30,7 @@ export function Sidebar({ activeFolder, onActivated }: SidebarProps) {
     listFolders()
       .then(setFolders)
       .catch(() => {});
-  }, []);
+  }, [refreshToken]);
 
   const activate = useCallback(
     async (folder: string) => {

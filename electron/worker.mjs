@@ -20,7 +20,7 @@ const active = new Map();
 // requestId -> { resolve(allow), folder, category } — filled by the confirm() callback
 // passed to runAgent, drained by the 'permission-decision' op below.
 const pendingPermissions = new Map();
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings']);
 
 const BASE_SYSTEM_PROMPT = 'Tu es openagent, un assistant de développement qui lit et modifie les fichiers du projet actif via les outils fournis. Explique brièvement ce que tu fais avant d’appeler un outil.';
 
@@ -138,6 +138,10 @@ async function handle(message) {
     // never travel back to the renderer (only hf_token_configured does).
     if (op === 'save-global-settings') { await settings.saveGlobal(payload.patch); result = await settings.publicGlobal(); }
     if (op === 'save-project-settings') result = await settings.saveProject(payload.folder, payload.patch);
+    // Zone Danger: none of these delete project files — history and sidebar entries only.
+    if (op === 'clear-history') result = await conversations.clear(payload.folder);
+    if (op === 'remove-folder') result = await folders.remove(payload.folder);
+    if (op === 'reset-global-settings') result = await settings.resetGlobal();
     if (op === 'list-branches') result = await conversations.list(payload.folder);
     if (op === 'messages') result = await conversations.messages(payload.folder, payload.branchId || 'main');
     if (op === 'save-messages') result = await conversations.save(payload.folder, payload.branchId || 'main', payload.messages);

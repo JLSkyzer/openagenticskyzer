@@ -14,6 +14,7 @@ const { mkdtemp, rm, mkdir, writeFile, readFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
+const { capturePng } = require('./capture-helper.cjs');
 
 function flush() {
   return Promise.all([
@@ -154,8 +155,7 @@ app.whenReady().then(async () => {
     assert.equal((await config()).max_tokens, 32000, 'the rejected save changed nothing on disk');
 
     // Real paint check, then keep the screenshot for a human look.
-    await pause(300);
-    await writeFile(join(screenshotDir, 'settings-context.png'), (await win.webContents.capturePage()).toPNG());
+    await writeFile(join(screenshotDir, 'settings-context.png'), await capturePng(win));
 
     process.stdout.write(`PASS settings tabs: real edits persist exactly, token never returns, invalid save rejected (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshot: ${join(screenshotDir, 'settings-context.png')}\n`);

@@ -1,6 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { useTheme } from '../../theme/ThemeProvider';
 import { AppearanceTab } from './AppearanceTab';
 import { ContextTab } from './ContextTab';
+import { DangerTab } from './DangerTab';
+import { FolderTab } from './FolderTab';
 import { GeneralTab } from './GeneralTab';
 import { PermissionsTab } from './PermissionsTab';
 import { Placeholder, Section } from './parts';
@@ -15,9 +18,22 @@ function basename(path: string): string {
 // Layout copied from settings.py: maximized dialog, 200px left rail (#111) with a
 // "Paramètres" header and 7 vertical tabs, scrollable content on the right with the
 // Enregistrer / Fermer footer at its end.
-export function SettingsDialog({ activeFolder, onClose }: { activeFolder: string | null; onClose(): void }) {
+interface SettingsDialogProps {
+  activeFolder: string | null;
+  onClose(): void;
+  onHistoryCleared(): void;
+  onFolderRemoved(): void;
+}
+
+export function SettingsDialog({ activeFolder, onClose, onHistoryCleared, onFolderRemoved }: SettingsDialogProps) {
   const [tab, setTab] = useState<TabId>('general');
   const draft = useSettingsDraft();
+  const theme = useTheme();
+  // After a global reset the live theme and the open form must show the defaults again.
+  const globalReset = () => {
+    void theme.reload();
+    draft.reload();
+  };
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -44,8 +60,15 @@ export function SettingsDialog({ activeFolder, onClose }: { activeFolder: string
     context: <ContextTab draft={draft} activeFolder={activeFolder} />,
     permissions: <PermissionsTab draft={draft} />,
     tools: <TabStub title="Outils" badge="EXTENSIONS" />,
-    folder: <TabStub title="Dossier" badge="DOSSIER" />,
-    danger: <TabStub title="Zone Danger" />,
+    folder: <FolderTab activeFolder={activeFolder} />,
+    danger: (
+      <DangerTab
+        activeFolder={activeFolder}
+        onHistoryCleared={onHistoryCleared}
+        onFolderRemoved={onFolderRemoved}
+        onGlobalReset={globalReset}
+      />
+    ),
   };
 
   return (

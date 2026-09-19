@@ -35,6 +35,16 @@ test('saveConnection forwards the patch and only sets confirmEndpoint when asked
   assert.deepEqual(calls[1].payload?.authorization, { confirmEndpoint: true });
 });
 
+test('danger zone bridges call their dedicated ops with the folder', async () => {
+  calls.length = 0;
+  await bridge.clearHistory('D:\\proj');
+  assert.deepEqual(calls[0], { op: 'clear-history', payload: { folder: 'D:\\proj' } });
+  await bridge.removeFolder('D:\\proj');
+  assert.deepEqual(calls[1], { op: 'remove-folder', payload: { folder: 'D:\\proj' } });
+  await bridge.resetGlobalSettings();
+  assert.equal(calls[2].op, 'reset-global-settings');
+});
+
 test('project settings go through project-settings / save-project-settings', async () => {
   calls.length = 0;
   await bridge.getProjectSettings('D:\\proj');

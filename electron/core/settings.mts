@@ -88,6 +88,11 @@ export class SettingsService {
     });
     return this.global();
   }
+  /** Drops every custom global value (secrets included) so all defaults apply again. */
+  async resetGlobal() {
+    await this.store.update<Config>(join(this.home, 'config.json'), {}, () => ({}));
+    return this.publicGlobal();
+  }
   async saveProject(folder: string, patch: Config) {
     validatePatch(patch, projectRules);
     await this.store.update<Config>(join(await metadataDirectory(folder), 'config.json'), {}, saved => {

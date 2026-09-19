@@ -540,9 +540,46 @@ réglages LM Studio (contexte/VRAM/`lms`), lanceur de serveur llama.cpp.
       du moteur Node ; le slider Python partait de 2000) ; vider le champ token ne
       l'efface pas (pas de bouton d'effacement encore) ; Enregistrer ne recharge pas
       `state.permission_mode` (pas d'état équivalent côté React).
-- [ ] Tâche 17 — Onglet Dossier (mode, patterns ignorés, prompt custom) + Danger
+- [x] Tâche 17 — Onglet Dossier (mode, patterns ignorés, prompt custom) + Danger
       (effacer l'historique, retirer de la sidebar, réinitialiser) ; nouveaux ops
       worker en TDD (RED d'abord).
+      **Moteur (TDD)** : `tests/worker-danger.test.mts` (5 tests, RED = « opération
+      inconnue » ×5, puis GREEN) — `Conversations.clear` (supprime les forks, vide
+      `main`, renvoie `removed_messages`), `FoldersService.remove` (retire l'entrée de
+      l'historique sans toucher aux fichiers, no-op si inconnu, tolère un chemin saisi
+      vs canonique), `SettingsService.resetGlobal` (config vidée en `{}`, secrets
+      compris, réponse via `publicGlobal`) ; ops `clear-history`/`remove-folder`/
+      `reset-global-settings` dans `worker.mjs` **et** dans la liste blanche de
+      `main.cjs`. Ponts `clearHistory`/`removeFolder`/`resetGlobalSettings` (test unitaire
+      ajouté à `bridge-connection.test.mts`).
+      **UI** : `FolderTab` (Paramètres de <dossier>, chemin, mode agent inherit/ask/auto/
+      plan, patterns ignorés, éditeur de prompt 600px dont Enregistrer écrit tout de
+      suite, bouton « Enregistrer les paramètres du dossier ») ; `DangerTab` (zone rouge,
+      3 actions, confirmation avant effacement) ; `Modal` (Échap ne ferme que la modale) ;
+      brouillon généralisé (`useProjectDraft`, `commit`, `reload`) ; `ThemeProvider.reload`
+      ; `Sidebar` relit l'historique sur `refreshToken` ; `App` remonte le chat (`key`)
+      après effacement/retrait.
+      Preuve : `tests/settings-folder-danger-visual.cjs` (`npm run test:settings-folder`),
+      vrai worker + vrais clics, RED puis GREEN : réglages projet écrits dans
+      `<projet>/.openagent/config.json` (clés non touchées absentes) et rechargés ;
+      éditeur de prompt (Échap = modale seule, Annuler = rien écrit, Enregistrer = sur
+      disque) ; Effacer : Annuler ne change rien, Supprimer → disque vidé (1 branche,
+      `main` vide, « 4 message(s) ») **et** chat visible vidé ; Retirer → entrée sidebar
+      et nom en barre du haut disparus, `folders.json` vide, dossier projet intact ;
+      Réinitialiser : Annuler ne change rien, confirmer → thème vivant repassé à sombre,
+      `config.json` = `{}`. Capture de la confirmation relue à l'œil.
+      `npm test` 57/57, `tsc` propre, tous les tests réels PASS.
+      Écarts assumés vs `settings.py` : **confirmation ajoutée avant « Réinitialiser »**
+      (l'original efface token/thème/répertoire sans demander) ; « Effacer » parle en
+      messages (le moteur Node stocke des branches, pas des fichiers de session) ; le
+      message de succès du prompt est celui du dossier.
+      Limite connue, non traitée : effacer l'historique pendant qu'une réponse de l'agent
+      est en cours ne l'interrompt pas — le tour peut se terminer et réécrire la
+      conversation ; à traiter si le cas se présente (stopper les runs du dossier dans
+      `clear-history`).
+      Robustesse des tests : `capturePage()` a échoué 1 fois sur 7 avec `UnknownVizError`
+      (service GPU d'Electron 44, sans rapport avec la page) → `tests/capture-helper.cjs`
+      réessaie la capture, utilisé par les 3 tests de réglages (6 exécutions PASS).
 - [ ] Tâche 18 — Modale sélecteur de modèle + bouton de la barre de saisie ; preuve :
       changer de fournisseur/modèle/URL/clé via l'UI, coffre chiffré relu, le message
       suivant part réellement vers le nouveau serveur simulé.

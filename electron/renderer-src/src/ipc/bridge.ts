@@ -84,6 +84,19 @@ export function saveConnection(
   return request('save-connection', { folder, patch, authorization: { confirmEndpoint } });
 }
 
+// Zone Danger: none of these delete project files, only history / sidebar entries / settings.
+export function clearHistory(folder: string): Promise<{ removed_messages: number }> {
+  return request('clear-history', { folder });
+}
+
+export function removeFolder(folder: string): Promise<FolderListItem[]> {
+  return request('remove-folder', { folder });
+}
+
+export function resetGlobalSettings(): Promise<GlobalSettings> {
+  return request('reset-global-settings');
+}
+
 export function getProjectSettings(folder: string): Promise<ProjectSettings> {
   return request('project-settings', { folder });
 }

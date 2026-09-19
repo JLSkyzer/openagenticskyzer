@@ -72,6 +72,16 @@ export class Conversations {
       branch.messages = snapshot; return doc;
     });
   }
+  /** Empties the folder's history: every fork is dropped and the main branch keeps no message. */
+  async clear(folder: string) {
+    let removed = 0;
+    await this.update(folder, doc => {
+      removed = doc.branches.reduce((sum, b) => sum + b.messages.length, 0);
+      const main = doc.branches.find(b => b.id === 'main')!;
+      return { version: 1, branches: [{ ...main, messages: [] }] };
+    });
+    return { removed_messages: removed };
+  }
   async fork(folder: string, source: string, count: number, label: string) {
     validId(source);
     if (typeof label !== 'string' || !label.trim() || label.length > 100) throw new Error('Nom de branche invalide');

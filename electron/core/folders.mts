@@ -44,6 +44,16 @@ export class FoldersService {
       .sort((a, b) => b.last_used.localeCompare(a.last_used))
       .map(entry => ({ path: entry.path, name: folderName(entry.path), last_used: entry.last_used }));
   }
+  /** Forgets a folder in the sidebar history only — the project's files are never touched. */
+  async remove(folder: string): Promise<FolderListItem[]> {
+    const targets = new Set([folder]);
+    // History entries are stored canonically, but the caller may hold the path as typed.
+    try { targets.add(await realpath(folder)); } catch { /* folder may be gone: match the raw string */ }
+    await this.store.update<unknown>(this.path(), [], current =>
+      (Array.isArray(current) ? current.filter(isValidEntry) : []).filter(entry => !targets.has(entry.path)),
+    );
+    return this.list();
+  }
   async recordOpened(folder: string): Promise<FolderListItem[]> {
     if (!isAbsolute(folder)) throw new Error('Dossier absolu requis');
     let canonical: string;

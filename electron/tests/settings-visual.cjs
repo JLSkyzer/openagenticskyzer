@@ -12,6 +12,7 @@ const { mkdtemp, rm, mkdir, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
+const { capturePng } = require('./capture-helper.cjs');
 
 function flush() {
   return Promise.all([
@@ -118,11 +119,7 @@ app.whenReady().then(async () => {
 
     // capturePage() on a hidden window can return a stale frame — force two fresh paints
     // and let them settle before trusting the snapshot (same recipe as layout-visual).
-    win.webContents.invalidate();
-    await pause(300);
-    win.webContents.invalidate();
-    await pause(300);
-    await writeFile(join(screenshotDir, 'settings-appearance.png'), (await win.webContents.capturePage()).toPNG());
+    await writeFile(join(screenshotDir, 'settings-appearance.png'), await capturePng(win));
 
     await js("document.getElementById('oa-settings-close-btn').click()");
     await pause(100);

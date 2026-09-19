@@ -11,3 +11,4 @@ import './worker-folders.test.mts';
 import './worker-send.test.mts';
 import './bridge-connection.test.mts';
 import './worker-settings.test.mts';
+import './worker-danger.test.mts';

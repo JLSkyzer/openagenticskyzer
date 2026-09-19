@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { getGlobalSettings, saveGlobalSettings } from '../../ipc/bridge';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { getGlobalSettings, getProjectSettings, saveGlobalSettings, saveProjectSettings } from '../../ipc/bridge';
 
 type Values = Record<string, unknown>;
 
@@ -13,7 +13,18 @@ export interface SettingsDraft {
   // True when the backend already stores a value for a write-only key (e.g. hf_token).
   configured(key: string): boolean;
   set(key: string, value: unknown): void;
+  // Saves the pending edits.
   save(): Promise<void>;
+  // Saves the pending edits together with `patch` right away (e.g. the prompt editor).
+  // Resolves true when the backend accepted the save.
+  commit(patch: Values): Promise<boolean>;
+  // Discards edits and re-reads the stored values (after an external change).
+  reload(): void;
+}
+
+interface DraftSource {
+  load(): Promise<Values>;
+  save(patch: Values): Promise<Values>;
 }
 
 // Electron prefixes rejected IPC calls with "Error invoking remote method '…': Error: " —
@@ -25,20 +36,23 @@ function cleanMessage(error: unknown): string {
 
 // Mirrors settings.py's `cfg` dict, but only the keys the user actually touched are sent on
 // save, so an untouched key is never rewritten (and the write-only token never round-trips).
-export function useSettingsDraft(): SettingsDraft {
+function useDraft(source: DraftSource, savedMessage: string): SettingsDraft {
   const [saved, setSaved] = useState<Values>({});
   const [edits, setEdits] = useState<Values>({});
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    getGlobalSettings()
+    source
+      .load()
       .then(values => {
         if (cancelled) return;
         setSaved(values);
+        setEdits({});
         setLoaded(true);
       })
       .catch(reason => {
@@ -49,7 +63,7 @@ export function useSettingsDraft(): SettingsDraft {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [source, reloadToken]);
 
   const get = useCallback(
     <T,>(key: string, fallback: T): T => {
@@ -77,21 +91,55 @@ export function useSettingsDraft(): SettingsDraft {
     [saved],
   );
 
+  const commit = useCallback(
+    async (patch: Values): Promise<boolean> => {
+      setSaving(true);
+      setStatus(null);
+      setError(null);
+      try {
+        const merged = { ...edits, ...patch };
+        const result = Object.keys(merged).length > 0 ? await source.save(merged) : saved;
+        setSaved(result);
+        setEdits({});
+        setStatus(savedMessage);
+        return true;
+      } catch (reason) {
+        setError(cleanMessage(reason));
+        return false;
+      } finally {
+        setSaving(false);
+      }
+    },
+    [edits, saved, source, savedMessage],
+  );
+
   const save = useCallback(async () => {
-    setSaving(true);
+    await commit({});
+  }, [commit]);
+  const reload = useCallback(() => {
     setStatus(null);
     setError(null);
-    try {
-      const result = Object.keys(edits).length > 0 ? await saveGlobalSettings(edits) : saved;
-      setSaved(result);
-      setEdits({});
-      setStatus('Paramètres sauvegardés.');
-    } catch (reason) {
-      setError(cleanMessage(reason));
-    } finally {
-      setSaving(false);
-    }
-  }, [edits, saved]);
+    setReloadToken(token => token + 1);
+  }, []);
 
-  return { loaded, saving, status, error, get, configured, set, save };
+  return { loaded, saving, status, error, get, configured, set, save, commit, reload };
+}
+
+const GLOBAL_SOURCE: DraftSource = { load: () => getGlobalSettings(), save: patch => saveGlobalSettings(patch) };
+
+export function useSettingsDraft(): SettingsDraft {
+  return useDraft(GLOBAL_SOURCE, 'Paramètres sauvegardés.');
+}
+
+// Per-project settings (agent mode, ignored patterns, custom prompt) live in the
+// project's own .openagent/config.json, not in the global config.
+export function useProjectDraft(folder: string): SettingsDraft {
+  const source = useMemo<DraftSource>(
+    () => ({
+      load: () => getProjectSettings(folder) as unknown as Promise<Values>,
+      save: patch => saveProjectSettings(folder, patch) as unknown as Promise<Values>,
+    }),
+    [folder],
+  );
+  return useDraft(source, 'Paramètres dossier sauvegardés.');
 }

@@ -18,3 +18,4 @@ import './memory-tools.test.mts';
 import './process.test.mts';
 import './git-tools.test.mts';
 import './shell-tool.test.mts';
+import './web-tools.test.mts';

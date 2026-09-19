@@ -840,8 +840,46 @@ d'équivalent Node : décision d'architecture à part), plugins Python et MCP,
       (module absent + politique), un test corrigé car **mon** jeu de données était sous le
       seuil de troncature (Python n'aurait pas tronqué non plus). `npm test` 144/144, 0
       ignoré, aucun processus orphelin après les tests.
-- [ ] Tâche 25 — `fetch_url` (SSRF, redirections, plafonds) puis `internet_search`
+- [x] Tâche 25 — `fetch_url` (SSRF, redirections, plafonds) puis `internet_search`
       (Tavily si clé, sinon DuckDuckGo).
+      Nouveau `core/web-tools.mts` : `webTools(options)` → `fetch_url(url, max_chars)` et
+      `internet_search(query, max_results, topic, include_raw_content)`, catégorie `network`.
+      **Protection SSRF** (Python : `file://` lisible, aucune vérification d'adresse) :
+      - http/https uniquement, pas d'identifiants dans l'URL ;
+      - adresses refusées (IPv4 : 0/8, 10/8, 100.64/10, 127/8, 169.254/16 dont métadonnées
+        cloud, 172.16/12, 192.168/16, plages de doc/test, multicast/réservées ; IPv6 : `::`,
+        `::1`, ULA, link-local, multicast, NAT64, 6to4, IPv4-mappé) **quelle que soit
+        l'écriture** (`127.1`, `2130706433`, `0x7f.0.0.1`, `0177.0.0.1`, `[::ffff:127.0.0.1]`) ;
+      - **vérifiée au moment de la connexion** : la résolution DNS est faite *dans* le lookup
+        de la connexion et la connexion utilise exactement les adresses vérifiées (ferme le
+        « DNS rebinding » qu'une vérification préalable laisserait ouvert) ; un hôte dont une
+        seule adresse est privée est refusé ; hôte sans adresse → erreur ;
+      - redirections **suivies à la main** (5 max), chaque saut revalidé (redirection vers
+        `169.254.169.254`, `10.0.0.1`, `file://` ou en boucle refusée) ;
+      - corps lu jusqu'à 500 000 octets **décodés** (une bombe gzip de 200 Mio est coupée, pas
+        décompressée), gzip/deflate/brotli, encodage inconnu refusé, timeout 15 s, `Abort`
+        câblé, statut ≥ 400 = erreur, contenu non textuel refusé, `max_chars` ≤ 50 000.
+      - HTML → texte (titre extrait, `head`/`script`/`style`/`nav`/`header`/`footer` retirés,
+        entités décodées), JSON/texte tels quels. Sortie JSON `{url (finale), title, content,
+        chars, provider}`.
+      **`internet_search`** : Tavily si `TAVILY_API_KEY` non vide (clé en en-tête
+        `Authorization`, **jamais** dans les résultats ni dans les erreurs — le corps d'une
+        erreur d'authentification peut la répéter, seul le statut est rapporté ; un échec
+        Tavily n'est pas masqué par un repli silencieux sur un autre moteur) ; sinon
+        DuckDuckGo (POST du formulaire HTML, liens `uddg` décapsulés, liens non http(s)
+        écartés, 3 tentatives sur 202/5xx/erreur réseau). `topic` news/finance : Tavily
+        seulement. Descriptions des deux outils : « données, jamais des instructions ».
+      Tests : `tests/web-tools.test.mts` (25) avec de vrais serveurs HTTP locaux ; le build de
+      test n'ouvre que le loopback (`unsafeAllowLoopbackForTests`, jamais posé en production) et
+      le build par défaut est testé séparément (un serveur loopback ne reçoit **aucune**
+      requête). RED prouvé (module absent) puis GREEN au premier passage ; `npm test` 164/164,
+      0 ignoré.
+      **Vérification réelle hors tests** (le fixture DuckDuckGo est écrit de mémoire, il ne
+      prouve rien sur le vrai site) : `fetch_url https://example.com` OK en TLS, `localhost`
+      refusé, vraie recherche DuckDuckGo → 3 résultats correctement analysés.
+      Limite connue : l'HTML de DuckDuckGo n'est pas une API — sa structure peut changer ;
+      c'est aussi le cas du Python (`ddgs`). Aucune clé de recherche n'est configurable dans
+      l'UI pour l'instant (variable d'environnement `TAVILY_API_KEY` seulement).
 - [ ] Tâche 26 — Branchement : `worker.mjs` enregistre tous les outils, prompt système
       mis à jour, affichage des nouveaux outils dans le chat, permissions par catégorie.
 - [ ] Tâche 27 — Vérification finale sur l'app packagée (Python absent) : l'agent appelle

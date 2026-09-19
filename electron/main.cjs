@@ -63,8 +63,42 @@ function createWindow() {
 
 function startBackend() {
   backend = new Worker(path.join(__dirname, 'worker.mjs'), { type: 'module' });
-  backend.on('message', message => { const done = pending.get(message.id); if (done) { pending.delete(message.id); message.ok ? done.resolve(message.result) : done.reject(new Error(message.error)); } mainWindow?.webContents.send('backend-message', message); });
+  backend.on('message', message => {
+    const done = pending.get(message.id);
+    if (done) { pending.delete(message.id); message.ok ? done.resolve(message.result) : done.reject(new Error(message.error)); }
+    // The window may already be gone while the worker is still shutting down.
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('backend-message', message);
+  });
   backend.on('error', error => { for (const item of pending.values()) item.reject(error); pending.clear(); });
+}
+
+/**
+ * Asks the worker to shut down (it aborts running work and stops the dev servers that
+ * run_command started, whole process trees included), waits for its answer for a short grace
+ * period, then terminates the thread. Terminating alone would leave those servers running.
+ */
+async function stopWorker(worker, timeoutMs = 3000) {
+  if (!worker) return;
+  const id = `shutdown-${Date.now()}`;
+  let listener;
+  const answered = new Promise(resolve => {
+    listener = message => { if (message && message.id === id) resolve(); };
+    worker.on('message', listener);
+  });
+  try {
+    worker.postMessage({ op: 'shutdown', id });
+    let timer;
+    await Promise.race([answered, new Promise(resolve => { timer = setTimeout(resolve, timeoutMs); })]);
+    clearTimeout(timer);
+  } finally {
+    worker.off?.('message', listener);
+    await worker.terminate();
+  }
+}
+async function stopBackend() {
+  const worker = backend;
+  backend = undefined;
+  await stopWorker(worker);
 }
 
 // Mirrors worker.mjs's OPENAGENT_HOME override — lets integration tests point the whole
@@ -118,7 +152,15 @@ if (require.main === module) {
     createWindow();
     startBackend();
   });
-  app.on('window-all-closed', () => { backend?.terminate(); if (process.platform !== 'darwin') app.quit(); });
+  // Whatever way the app quits, the worker is shut down properly first so no dev server outlives it.
+  let quitting = false;
+  app.on('before-quit', event => {
+    if (quitting || !backend) return;
+    event.preventDefault();
+    quitting = true;
+    stopBackend().finally(() => app.quit());
+  });
+  app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }
 
-module.exports = { resolveSendPayload, createConnections, buildCsp, chooseLoadTarget, handleBackendRequest };
+module.exports = { resolveSendPayload, createConnections, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker };

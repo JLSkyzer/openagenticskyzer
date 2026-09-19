@@ -153,6 +153,20 @@ test('agent refuses invalid arguments, duplicate call IDs and bounds repeated to
   assert.equal(effects, 3);
 });
 
+test('the repeat guard counts consecutive identical calls, so checking state between edits is allowed', async () => {
+  const { runAgent } = await import('../core/agent.mts');
+  const { ChatProvider } = await import('../core/provider.mts');
+  const script = ['check', 'edit', 'check', 'edit', 'check', 'edit', 'check', 'edit', 'check'];
+  let requests = 0; const ran: string[] = [];
+  const provider = new ChatProvider(async () => {
+    const name = script[requests++];
+    return new Response(JSON.stringify({ choices: [{ message: name ? { content: '', tool_calls: [{ id: `call-${requests}`, type: 'function', function: { name, arguments: '{}' } }] } : { content: 'fin' }, finish_reason: name ? 'tool_calls' : 'stop' }] }), { headers: { 'content-type': 'application/json' } });
+  });
+  const tool = (name: string) => ({ name, category: 'read' as const, description: '', parameters: {}, validate: () => {}, execute: async () => { ran.push(name); return 'ok'; } });
+  await runAgent({ provider, connection, instructions: '', messages: [], maxSteps: 12, settings: { mode: 'auto', permission_mode: 'auto' }, confirm: async () => true, tools: [tool('check'), tool('edit')] });
+  assert.deepEqual(ran, script.filter(Boolean), 'the same check before and after each edit is legitimate, not a loop');
+});
+
 test('provider preserves a Gemini tool signature through the next agent request', async () => {
   const { runAgent } = await import('../core/agent.mts');
   const { ChatProvider } = await import('../core/provider.mts');

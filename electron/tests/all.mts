@@ -19,3 +19,5 @@ import './process.test.mts';
 import './git-tools.test.mts';
 import './shell-tool.test.mts';
 import './web-tools.test.mts';
+import './worker-tools.test.mts';
+import './main-shutdown.test.mts';

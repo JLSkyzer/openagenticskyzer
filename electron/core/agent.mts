@@ -58,7 +58,11 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
     type: 'function' as const, function: { name: tool.name, description: tool.description, parameters: tool.parameters },
   }));
   const executed = new Set<string>();
-  const repeated = new Map<string, number>();
+  // A loop is the SAME call repeated back to back. Counting identical calls over the whole run
+  // (as before) refused a legitimate git_status before and after every edit; alternating
+  // between calls is bounded by maxSteps instead.
+  let lastSignature = '';
+  let streak = 0;
   for (let step = 0; step < maxSteps; step++) {
     signal.throwIfAborted();
     emit?.({ type: 'turn', step });
@@ -77,8 +81,8 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
         if (executed.has(call.id)) throw new Error('Appel outil dupliqué : exécution refusée');
         executed.add(call.id);
         const signature = call.function.name + ':' + call.function.arguments;
-        const count = (repeated.get(signature) ?? 0) + 1; repeated.set(signature, count);
-        if (count > 3) throw new Error('Boucle d’outils détectée : exécution refusée');
+        streak = signature === lastSignature ? streak + 1 : 1; lastSignature = signature;
+        if (streak > 3) throw new Error('Boucle d’outils détectée : exécution refusée');
         let args: Record<string, unknown>;
         try { args = JSON.parse(call.function.arguments); object(args); tool.validate(args); }
         catch { throw new Error('Arguments outil invalides : exécution refusée'); }

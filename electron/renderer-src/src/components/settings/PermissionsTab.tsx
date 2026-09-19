@@ -21,7 +21,10 @@ export function PermissionsTab({ draft }: { draft: SettingsDraft }) {
               <option value="strict">Strict (lecture)</option>
             </select>
           </Row>
-          <Row label="Exécution shell (run_command)">
+          <Row
+            label="Exécution shell (run_command)"
+            hint="Décocher supprime aussi la confirmation des commandes git push / git pull"
+          >
             <Toggle setting="shell_ask" checked={draft.get('shell_ask', true)} onChange={value => draft.set('shell_ask', value)} />
           </Row>
           <Row label="Écriture / suppression de fichiers">

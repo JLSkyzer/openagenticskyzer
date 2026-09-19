@@ -81,12 +81,14 @@ const EXPECTED_CATEGORIES: Record<string, string> = {
   read_file: 'read', view_file: 'read', list_dir: 'read',
   create_file: 'write', edit_file: 'write', create_dir: 'write', delete_file: 'write',
   grep_file: 'read', glob_files: 'read', grep_codebase: 'read', delete_dir: 'write',
+  save_memory: 'write', read_memory: 'read', forget_memory: 'write',
 };
 
 test('every registered workspace tool has a valid, expected permission category', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-toolkit-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const tools = await workspaceTools(root, '');
+  const { memoryTools } = await import('../core/memory-tools.mts');
+  const tools = [...await workspaceTools(root, ''), ...await memoryTools(root, join(root, 'home'))];
   const valid = ['read', 'write', 'shell', 'network', 'extension'];
   for (const entry of tools) {
     assert.ok(valid.includes(entry.category), `${entry.name} has an unknown category`);

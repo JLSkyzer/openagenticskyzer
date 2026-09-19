@@ -732,8 +732,38 @@ d'équivalent Node : décision d'architecture à part), plugins Python et MCP,
       jamais comme un refus (sinon les `assert.rejects` passaient sans que l'outil existe).
       Table de garde `EXPECTED_CATEGORIES` étendue (grep_file/glob_files/grep_codebase =
       read, delete_dir = write). GREEN au premier passage, `npm test` 83/83.
-- [ ] Tâche 22 — Mémoire : `save_memory`, `read_memory`, `forget_memory` (garde mot-clé
+- [x] Tâche 22 — Mémoire : `save_memory`, `read_memory`, `forget_memory` (garde mot-clé
       vide, blocs horodatés supprimés en entier, atomique).
+      Nouveau `core/memory-tools.mts` : `memoryTools(folder, home)` (pas dans
+      `workspaceTools`, il lui faut `dataHome` ; branchement dans `worker.mjs` à la Tâche 26).
+      Écrit exactement où `context.mts` relit (`<home>/memory.md`, `<projet>/.openagent/
+      memory.md`) et dans le même format (`<!-- AAAA-MM-JJ HH:MM -->` + texte, entrées
+      séparées par une ligne vide, sans ligne vide en tête).
+      - `save_memory(facts, scope=project|global)` (write) : faits ≤ 20 000 car., `scope`
+        validé (enum), texte vide → message « Rien à mémoriser » et **aucune écriture**
+        (Python répondait « ✓ Mémorisé » sans rien écrire), mémoire limitée à 1 Mio.
+      - `read_memory()` (read) : globale puis projet, ou « La mémoire est vide. ».
+      - `forget_memory(keyword, scope=project|global)` (write) : supprime les **entrées
+        entières** contenant le mot-clé (insensible à la casse) — aucun fragment ni en-tête
+        orphelin ; **mot-clé vide refusé** (Python : `"" in entry` effaçait toute la
+        mémoire) ; dit honnêtement « Aucune entrée » quand rien ne correspond (Python
+        annonçait toujours un succès) et laisse alors le fichier identique octet pour
+        octet ; le seul élément supprimé retire le fichier ; `scope` ajouté (Python ne
+        pouvait oublier que la mémoire projet).
+      - Écriture atomique (fichier temporaire + renommage), **sérialisée par fichier**
+        (12 sauvegardes simultanées : aucune perdue, aucun `.tmp` résiduel), `.openagent`
+        redirigé par jonction refusé (`metadataDirectory`), `memory.md` non régulier/lien
+        refusé en lecture comme en écriture.
+      Tests : `tests/memory-tools.test.mts` (15) + garde de catégories étendue (save/forget
+      = write, read = read), RED prouvé (module absent), puis GREEN. Un test **de bout en
+      bout** prouve que ce qui est sauvegardé arrive dans les instructions données au
+      modèle (`[MÉMOIRE PROJET]`/`[MÉMOIRE GLOBALE]`) et qu'un fait oublié n'y est plus.
+      Le test du lien symbolique de fichier était ignoré (privilège Windows absent) : remplacé
+      par une jonction nommée `memory.md`, qui couvre la même branche. `npm test` 98/98,
+      0 ignoré.
+      Rappel de risque (inchangé vs Python) : un texte récupéré sur le web peut être mémorisé
+      puis réinjecté à chaque session ; `save_memory` reste donc derrière la permission
+      `write` et refusé en modes ask/plan/strict.
 - [ ] Tâche 23 — Outils git (13) sur un vrai dépôt temporaire, dont les tests
       d'injection (`--upload-pack=` pull/push, valeur `-f`, fichier `-weird.txt`).
 - [ ] Tâche 24 — `run_command` : timeout + arbre tué, Stop réel, env épuré, mise en forme

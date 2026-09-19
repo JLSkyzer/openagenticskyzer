@@ -14,3 +14,4 @@ import './worker-settings.test.mts';
 import './worker-danger.test.mts';
 import './tool-kit.test.mts';
 import './workspace-search.test.mts';
+import './memory-tools.test.mts';

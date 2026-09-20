@@ -66,6 +66,12 @@ export function shouldCompact(pct: number, threshold: number): boolean {
   return pct >= threshold;
 }
 
+// input_bar.py: the automatic compaction needs the setting AND the threshold; the manual button
+// (shouldCompact alone) does not depend on the setting.
+export function shouldAutoCompact(settings: { auto_compact: boolean; compact_threshold: number }, pct: number): boolean {
+  return settings.auto_compact && shouldCompact(pct, settings.compact_threshold);
+}
+
 export function formatContextLabel(usage: ContextUsage): string {
   return `${Math.round(usage.pct)}% · ~${usage.tokens.toLocaleString('en-US')} tokens`;
 }

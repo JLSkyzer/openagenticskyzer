@@ -35,6 +35,9 @@ export interface ChatState {
   // closing event will carry. It rewrites the branch on screen, so branch operations wait for it.
   compacting: boolean;
   compactionId: string | null;
+  // Turns that ended normally since the folder was opened (not Stop, not error): what the automatic
+  // compaction reacts to, as input_bar.py only checks the gauge after a successful turn.
+  completedTurns: number;
 }
 
 export const initialChatState: ChatState = {
@@ -50,6 +53,7 @@ export const initialChatState: ChatState = {
   notice: null,
   compacting: false,
   compactionId: null,
+  completedTurns: 0,
 };
 
 export type ChatAction =
@@ -186,6 +190,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             },
           };
         case 'done':
+          return {
+            ...state, agentRunning: false, runId: null, streamingText: '', liveToolStarts: {}, pendingPermission: null,
+            completedTurns: state.completedTurns + 1,
+          };
         case 'stopped':
           // Also clear liveToolStarts and any pendingPermission: a Stop while waiting
           // on a decision (or mid tool-execute) leaves no further event for that call

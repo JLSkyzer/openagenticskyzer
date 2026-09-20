@@ -7,6 +7,7 @@ import {
   contextLimit,
   estimateTokens,
   formatContextLabel,
+  shouldAutoCompact,
   shouldCompact,
 } from '../renderer-src/src/state/context.ts';
 
@@ -74,6 +75,12 @@ test('shouldCompact: from the threshold included', () => {
   assert.equal(shouldCompact(69.9, 70), false);
   assert.equal(shouldCompact(70, 70), true);
   assert.equal(shouldCompact(100, 95), true);
+});
+
+test('shouldAutoCompact needs BOTH the setting on and the threshold reached (input_bar.py:484)', () => {
+  assert.equal(shouldAutoCompact({ auto_compact: true, compact_threshold: 70 }, 70), true);
+  assert.equal(shouldAutoCompact({ auto_compact: true, compact_threshold: 70 }, 69.9), false);
+  assert.equal(shouldAutoCompact({ auto_compact: false, compact_threshold: 70 }, 100), false, 'switched off: never, even when full');
 });
 
 test('formatContextLabel: rounded percentage, comma as thousands separator (as the f"{tokens:,}" of context_bar.py)', () => {

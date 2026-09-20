@@ -15,7 +15,7 @@ import {
   type ChatMessage,
 } from '../ipc/bridge';
 import { canForkAt, nextBranchLabel } from './branches';
-import { computeContext, type ContextUsage } from './context';
+import { computeContext, shouldAutoCompact, type ContextUsage } from './context';
 import { chatReducer, initialChatState, type ChatState } from './reducer';
 
 // What the gauge needs from the settings (all global) and from the active connection (its provider
@@ -50,8 +50,9 @@ interface ChatContextValue {
   activeFolder: string | null;
   // The gauge: usage of the messages on screen, derived on every render, never stored.
   context: { usage: ContextUsage; settings: ContextSettings };
-  // Summarise the conversation on screen (context_bar.py::trigger_compact).
-  compact(): Promise<void>;
+  // Summarise the conversation on screen (context_bar.py::trigger_compact). `auto` is the attempt
+  // made by the app itself after a turn: it stays silent when there is simply nothing to summarise.
+  compact(options?: { auto?: boolean }): Promise<void>;
   send(text: string): Promise<void>;
   stopRun(): Promise<void>;
   decide(allow: boolean, always: boolean): Promise<void>;
@@ -135,7 +136,7 @@ export function ChatProvider({ activeFolder, initialMessages, children }: ChatPr
     [state.messages, contextSettings],
   );
 
-  const compact = useCallback(async () => {
+  const compact = useCallback(async (options?: { auto?: boolean }) => {
     const folder = activeFolderRef.current;
     const before = stateRef.current;
     if (!folder || before.agentRunning || before.compacting) return;
@@ -147,9 +148,23 @@ export function ChatProvider({ activeFolder, initialMessages, children }: ChatPr
       if (early) dispatch({ type: 'agent-event', event: early });
       endedCompactions.current.delete(compactionId);
     } catch (error) {
-      dispatch({ type: 'show-error', error: error instanceof Error ? error.message : 'Compression impossible' });
+      const message = error instanceof Error ? error.message : 'Compression impossible';
+      // Automatic attempts run after every turn: "nothing to summarise yet" is not worth an error each time.
+      if (options?.auto && /Pas assez de messages/.test(message)) return;
+      dispatch({ type: 'show-error', error: message });
     }
   }, []);
+
+  // input_bar.py: after a turn that ended normally, compact when the setting is on and the gauge is at
+  // the threshold. One attempt per finished turn — never a loop: if the summary still leaves the gauge
+  // high (a huge last exchange), the next attempt waits for the next turn.
+  useEffect(() => {
+    if (state.completedTurns === 0) return;
+    if (shouldAutoCompact(contextSettings, usage.pct)) void compact({ auto: true });
+    // Keyed on the turn counter alone on purpose: the values read here are those of the render that
+    // followed the turn's last message, which is exactly the moment the gauge must be judged.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.completedTurns]);
 
   const forkFrom = useCallback(async (index: number) => {
     const folder = activeFolderRef.current;

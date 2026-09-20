@@ -74,6 +74,22 @@ test('show-error displays a refusal (e.g. "Pas assez de messages à compresser."
   assert.equal(next.compacting, false, 'a refused request never starts a compaction');
 });
 
+const runEnds = (kind: string, extra: object = {}) => ({ type: 'agent-event' as const, event: { type: 'event', event: 'agent', runId: 'run-1', kind, ...extra } as any });
+const running = () => chatReducer(initialChatState, { type: 'send-started', runId: 'run-1', text: 'salut' });
+
+test('only a turn that finished normally counts as completed (auto-compact must not fire after a Stop or an error)', () => {
+  assert.equal(initialChatState.completedTurns, 0);
+  assert.equal(chatReducer(running(), runEnds('done')).completedTurns, 1);
+  assert.equal(chatReducer(running(), runEnds('stopped')).completedTurns, 0);
+  assert.equal(chatReducer(running(), runEnds('error', { message: 'boom' })).completedTurns, 0);
+});
+
+test('completed turns keep counting, and a new folder starts again from zero', () => {
+  const twice = chatReducer(chatReducer(chatReducer(running(), runEnds('done')), { type: 'send-started', runId: 'run-1', text: 'encore' }), runEnds('done'));
+  assert.equal(twice.completedTurns, 2);
+  assert.equal(chatReducer(twice, { type: 'folder-loaded', messages: [] }).completedTurns, 0);
+});
+
 test('a compaction does not disturb an agent run identifier', () => {
   const running = chatReducer(initialChatState, { type: 'send-started', runId: 'run-1', text: 'salut' });
   const next = chatReducer(running, { type: 'compaction-started', id: 'c1' });

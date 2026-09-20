@@ -1218,7 +1218,15 @@ Comportement NiceGUI à reproduire :
       sans verdict affiché juste après une reconstruction (Tâches 30 et 35), 0 sur 11 relances
       (dont 3 juste après reconstruction) — **inexpliqué, non reproduit**. Mutation du test de
       routage encore à faire (voir Tâche 34) : `bridge.ts` appelle maintenant `compact`.
-- [ ] Tâche 36 — Auto-compact en fin de tour (une tentative par tour).
+- [x] Tâche 36 — Auto-compact en fin de tour (une tentative par tour).
+      Décision pure `shouldAutoCompact` (réglage `auto_compact` **et** seuil ; le bouton manuel,
+      lui, ne dépend pas du réglage) et compteur `completedTurns` du réducteur : incrémenté par
+      `done` **seulement** (ni Stop ni erreur, comme `input_bar.py` qui ne juge la jauge qu'après
+      un tour réussi), remis à 0 par un changement de dossier. `ChatProvider` : un effet lié à ce
+      compteur — une tentative par tour terminé, jamais de boucle ; un refus « pas assez de
+      messages » reste silencieux en mode automatique. Tests d'abord : RED (3 échecs : export
+      absent + 2 tests du réducteur), puis `npm test` 231/231, `tsc` propre. **Non prouvé ici** :
+      le déclenchement réel de bout en bout l'est en Tâche 37.
 - [ ] Tâche 37 — Preuve dans Electron réel (`context-visual.cjs`) : chiffres relus contre le
       disque, couleurs, masquage via le vrai dialogue de réglages, bouton au seuil, compaction
       réelle (disque relu : résumé + fin, `memory.md` absent), échec modèle → inchangé.

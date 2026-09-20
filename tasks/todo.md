@@ -1039,8 +1039,21 @@ Comportement NiceGUI à reproduire :
       apparaît quand même dans le sélecteur sans arracher la vue au run. **Non prouvé ici** :
       ces effets React (course, changement de dossier) le seront dans Electron réel (Tâche 31).
       `npm test` 191/191, `tsc` propre.
-- [ ] Tâche 30 — Interface : bouton `⑂` (survol, absent pendant un run), sélecteur `🌿`
+- [x] Tâche 30 — Interface : bouton `⑂` (survol, absent pendant un run), sélecteur `🌿`
       (masqué sans bifurcation), notification « Branche '…' créée. ».
+      `UserBubble` (`onFork` optionnel : passé seulement hors run, donc bouton **absent** et non
+      grisé comme `chat.py`, classes `bg-gray-800 text-gray-400 hover:text-purple-400`,
+      `opacity-0 group-hover:opacity-100`, infobulle « Créer une branche depuis ici »),
+      `BranchSelector` (`🌿` + `<select>` « 🌿 Main » / libellés, masqué sans bifurcation,
+      désactivé pendant un run), notice verte auto-effacée après 3,5 s dans `ChatView`, qui
+      enveloppe désormais son contenu pour porter le sélecteur. Au passage : une erreur sur
+      une vue vide n'est plus cachée derrière l'écran d'accueil (`hasContent` tient compte de
+      `state.error`). Le bouton ✏️ d'édition n'est pas migré (hors lot).
+      Vérifié à ce stade : `tsc` propre, `vite build` OK, `chat`/`permission`/`layout`/`sidebar`/
+      `stop` PASS sur la nouvelle mise en page (`chat` : une exécution sans verdict affiché,
+      non reproduite en 4 relances). **Preuve visuelle et interactive : Tâche 31.** Le harnais
+      de `chat-visual.cjs` transmet `connection-snapshot` au worker (« Opération IPC inconnue »
+      dans sa sortie) : bruit préexistant du lot 2, sans effet sur le verdict.
 - [ ] Tâche 31 — Preuve dans Electron réel (`branches-visual.cjs`, vrai worker, faux modèle) :
       2 tours → clic réel sur `⑂` → sélecteur visible, vue tronquée → envoi sur la branche →
       `conversations.json` relu sur disque (branche mise à jour, `main` intact) → retour sur

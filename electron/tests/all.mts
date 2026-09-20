@@ -21,3 +21,4 @@ import './shell-tool.test.mts';
 import './web-tools.test.mts';
 import './worker-tools.test.mts';
 import './main-shutdown.test.mts';
+import './worker-branches.test.mts';

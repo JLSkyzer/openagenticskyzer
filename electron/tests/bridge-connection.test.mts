@@ -45,6 +45,14 @@ test('danger zone bridges call their dedicated ops with the folder', async () =>
   assert.equal(calls[2].op, 'reset-global-settings');
 });
 
+test('branch bridges call list-branches and fork with the exact payloads the worker expects', async () => {
+  calls.length = 0;
+  await bridge.listBranches('D:\\proj');
+  assert.deepEqual(calls[0], { op: 'list-branches', payload: { folder: 'D:\\proj' } });
+  await bridge.forkBranch('D:\\proj', 'main', 3, 'Branche 1');
+  assert.deepEqual(calls[1], { op: 'fork', payload: { folder: 'D:\\proj', source: 'main', count: 3, label: 'Branche 1' } });
+});
+
 test('project settings go through project-settings / save-project-settings', async () => {
   calls.length = 0;
   await bridge.getProjectSettings('D:\\proj');

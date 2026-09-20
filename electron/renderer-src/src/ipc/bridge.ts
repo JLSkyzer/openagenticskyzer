@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  BranchInfo,
   ChatMessage,
   ConnectionPatch,
   ConnectionSnapshot,
@@ -68,6 +69,15 @@ export function getMessages(folder: string, branchId = 'main'): Promise<ChatMess
   return request('messages', { folder, branchId });
 }
 
+export function listBranches(folder: string): Promise<BranchInfo[]> {
+  return request('list-branches', { folder });
+}
+
+// `count` is how many messages of `source` the new branch keeps: index of the clicked message + 1.
+export function forkBranch(folder: string, source: string, count: number, label: string): Promise<{ id: string; label: string }> {
+  return request('fork', { folder, source, count, label });
+}
+
 // The connection vault lives in main.cjs (safeStorage) — these ops are answered there,
 // never by the worker. The snapshot carries no secret; api_key only ever flows inward.
 export function getConnection(folder: string | null): Promise<ConnectionSnapshot> {
@@ -107,6 +117,7 @@ export function saveProjectSettings(folder: string, patch: Partial<ProjectSettin
 
 export type {
   AgentEvent,
+  BranchInfo,
   ChatMessage,
   ConnectionPatch,
   ConnectionSnapshot,

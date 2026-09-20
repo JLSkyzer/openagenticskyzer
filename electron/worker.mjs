@@ -1,6 +1,6 @@
 import { parentPort } from 'node:worker_threads';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
@@ -42,6 +42,11 @@ const BASE_SYSTEM_PROMPT = [
   'Ne mémorise (save_memory) que ce que l’utilisateur demande de retenir ou des conventions durables du projet.',
 ].join(' ');
 
+function runningIn(folder) {
+  const target = resolve(String(folder));
+  return [...active.values()].some(run => resolve(String(run.folder)) === target);
+}
+
 function normalizeRole(role) {
   if (role === 'ai') return 'assistant';
   if (role === 'human') return 'user';
@@ -54,7 +59,7 @@ const PERMISSION_FIELD = { write: 'files_ask', network: 'search_ask', shell: 'sh
 async function runSend(runId, folder, branchId, text, connection) {
   const controller = new AbortController();
   const accumulated = [];
-  active.set(runId, { controller });
+  active.set(runId, { controller, folder });
   const post = message => parentPort.postMessage({ type: 'event', event: 'agent', runId, ...message });
   let collected = [];
   // Tracks the assistant text currently streaming in, so a Stop mid-delta (before
@@ -179,7 +184,12 @@ async function handle(message) {
     if (op === 'list-branches') result = await conversations.list(payload.folder);
     if (op === 'messages') result = await conversations.messages(payload.folder, payload.branchId || 'main');
     if (op === 'save-messages') result = await conversations.save(payload.folder, payload.branchId || 'main', payload.messages);
-    if (op === 'fork') result = await conversations.fork(payload.folder, payload.source || 'main', payload.count, payload.label);
+    if (op === 'fork') {
+      // The transcript on disk is only complete once the run ended: forking mid-run would cut
+      // at an index the renderer computed from a longer, not yet saved, view.
+      if (runningIn(payload.folder)) throw new Error('Un message est en cours dans ce dossier : attends la fin avant de créer une branche.');
+      result = await conversations.fork(payload.folder, payload.source || 'main', payload.count, payload.label);
+    }
     reply(id, true, result);
   } catch (error) { reply(id, false, null, error instanceof Error ? error.message : 'Erreur interne'); }
 }

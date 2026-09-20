@@ -1007,11 +1007,20 @@ Comportement NiceGUI à reproduire :
   suppression devient un vrai manque (Python n'accumulait rien entre deux lancements).
 - **Hors lot** : le libellé « Depuis : … » des exports (il n'y a pas encore d'export en Electron).
 
-- [ ] Tâche 28 — Moteur + pont : garde du worker (`fork` refusé pendant un run du dossier, le
+- [x] Tâche 28 — Moteur + pont : garde du worker (`fork` refusé pendant un run du dossier, le
       `active` du worker retient désormais le dossier), wrappers `listBranches` / `forkBranch`
       dans `bridge.ts`, type `BranchInfo`. Tests d'abord (RED prouvé) : `worker-branches.test.mts`
       (fork refusé pendant un vrai run bloqué, accepté après, `count` inclusif, imbrication,
       envoi sur une branche n'écrit pas dans `main`) et bridge.
+      **Preuve** : 4 tests du worker contre un vrai `worker.mjs` et un faux modèle HTTP dont on
+      retient la réponse pour simuler un run en cours. RED : seul « fork refusé pendant un run »
+      échouait (`Missing expected rejection`) — les trois autres passaient déjà, le moteur
+      (`Conversations.fork`, `send` sur `branchId`) faisait déjà juste : copie **incluant** le
+      message cliqué (`count = index + 1`), imbrication, et un tour sur une branche ne modifie
+      pas `main` (relu après coup, égal octet pour octet). GREEN après la garde
+      (`runningIn(folder)`, comparaison sur chemins résolus, un dossier voisin n'est pas bloqué).
+      Pont : RED `bridge.listBranches is not a function`, puis GREEN. `npm test` 181/181, `tsc`
+      propre. Le `clear-history` pendant un run garde la limite déjà notée (non traitée ici).
 - [ ] Tâche 29 — État React : `branches` / `currentBranchId` dans le réducteur, actions
       `branches-loaded` (ignorée si le dossier a changé entre-temps) et `branch-switched`,
       `send` visant la branche courante, `forkFrom(index)` avec la vérification de cohérence,

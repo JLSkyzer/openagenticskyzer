@@ -5,6 +5,14 @@ export interface ChatMessage {
   [key: string]: unknown;
 }
 
+// Mirrors core/conversations.mts::Conversations.list() — 'main' is always the first entry.
+export interface BranchInfo {
+  id: string;
+  label: string;
+  created_at: string;
+  message_count: number;
+}
+
 // Mirrors core/folders.mts::FolderListItem exactly.
 export interface FolderListItem {
   path: string;

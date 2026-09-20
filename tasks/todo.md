@@ -1156,8 +1156,13 @@ Comportement NiceGUI à reproduire :
   ensuite** : le moteur Node envoie tout l'historique au fournisseur sans fenêtrage (Python
   tronquait via `max_tokens`) ; la jauge et la compaction sont donc la seule parade.
 
-- [ ] Tâche 33 — Logique pure `state/context.ts` : `estimateTokens`, table des fenêtres,
+- [x] Tâche 33 — Logique pure `state/context.ts` : `estimateTokens`, table des fenêtres,
       `computeContext`, niveau de couleur, `shouldCompact`, libellé. Tests d'abord (RED).
+      **Preuve** : `context-usage.test.mts` (11 tests), RED = module absent
+      (`ERR_MODULE_NOT_FOUND`), puis GREEN ; `tsc` propre. Table des fenêtres identique à
+      `_DEFAULT_CTX_LIMITS` (test d'égalité stricte, rien d'inventé). Un détail de parité
+      trouvé en écrivant les tests : Python `len()` compte des caractères, JS `.length` des
+      unités UTF-16 — un emoji pesait double ; `characters()` corrige et un test le fige.
 - [ ] Tâche 34 — Moteur : `core/compact.mts` + opération worker `compact` (connexion injectée par
       `main.cjs` comme pour `send`), sans outil, coupe au dernier message utilisateur, refus
       < 6 / pendant un run / réentrance, aucune écriture dans `memory.md`, échec du modèle →

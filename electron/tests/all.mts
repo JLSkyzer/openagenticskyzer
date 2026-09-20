@@ -23,3 +23,4 @@ import './worker-tools.test.mts';
 import './main-shutdown.test.mts';
 import './worker-branches.test.mts';
 import './chat-branches.test.mts';
+import './context-usage.test.mts';

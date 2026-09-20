@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { activateFolder, listFolders, openFolderDialog, type ChatMessage, type FolderListItem } from '../ipc/bridge';
+import { useRegisterAction } from '../state/ActionRegistry';
 
 interface SidebarProps {
   activeFolder: string | null;
@@ -53,6 +54,9 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
       setOpening(false);
     }
   }, [activate]);
+
+  // "📂 Ouvrir un dossier" of the command palette does exactly what the button does.
+  useRegisterAction('open-folder', () => void handleOpenFolder());
 
   return (
     <div

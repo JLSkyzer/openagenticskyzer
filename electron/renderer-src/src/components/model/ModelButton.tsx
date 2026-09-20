@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getConnection, type ConnectionSnapshot } from '../../ipc/bridge';
+import { useRegisterAction } from '../../state/ActionRegistry';
 import { ModelDialog } from './ModelDialog';
 
 // input_bar.py::model_button — "● name (20 chars max…) ▾", full name as a tooltip. It opens
@@ -19,6 +20,9 @@ export function ModelButton({ activeFolder }: { activeFolder: string | null }) {
       cancelled = true;
     };
   }, [activeFolder]);
+
+  // "🔄 Changer de modèle" of the command palette opens the same selector as the button.
+  useRegisterAction('switch-model', () => setOpen(true));
 
   const fullName = snapshot?.model || 'Aucun modèle';
   const label = `● ${fullName.slice(0, 20)}${fullName.length > 20 ? '…' : ''} ▾`;

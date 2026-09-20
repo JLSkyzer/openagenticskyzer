@@ -2,6 +2,7 @@ import { useCallback, useRef, useState, type KeyboardEvent } from 'react';
 import { useChat } from '../state/ChatProvider';
 import { ModelButton } from './model/ModelButton';
 import { PromptPicker } from './PromptPicker';
+import { useRegisterAction } from '../state/ActionRegistry';
 
 // Uncontrolled textarea (ref, not useState) — matches input_bar.py's intent (plain text
 // box, no per-keystroke React state) and avoids re-rendering the whole bar on every key.
@@ -31,6 +32,9 @@ export function InputBar() {
     el.focus();
     el.setSelectionRange(text.length, text.length);
   }, []);
+
+  // "📋 Bibliothèque de prompts" of the command palette opens the same window as the ✦ button.
+  useRegisterAction('open-prompts', () => setPickerOpen(true));
 
   const closePicker = useCallback(() => {
     setPickerOpen(false);
@@ -94,7 +98,7 @@ export function InputBar() {
         </button>
       </div>
       <span className="text-[11px]" style={{ color: 'var(--text-muted, #6b7280)' }}>
-        Entrée → envoyer · Shift+Entrée → nouvelle ligne
+        Entrée → envoyer · Shift+Entrée → nouvelle ligne · Ctrl+K → commandes
       </span>
       {pickerOpen && <PromptPicker activeFolder={activeFolder} onApply={applyPrompt} onClose={closePicker} />}
     </div>

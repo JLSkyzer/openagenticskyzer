@@ -31,3 +31,4 @@ import './prompts.test.mts';
 import './prompt-logic.test.mts';
 import './project-memory.test.mts';
 import './command-logic.test.mts';
+import './ui-plumbing.test.mts';

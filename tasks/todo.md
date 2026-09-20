@@ -1504,8 +1504,22 @@ Comportement NiceGUI à reproduire :
       (jeu de 12 → les 8 premiers dans l'ordre), rien → liste vide ; sélection au clavier avec
       rebouclage aux deux bouts et « aucune » sans résultat ; raccourci Ctrl+K / Cmd+K, casse
       ignorée (verrouillage majuscule), mais pas `K` seul, ni Ctrl+Maj+K, ni Ctrl+Alt (AltGr).
-- [ ] Tâche 45 — Socle d'interface : toasts d'application, registre d'actions (ouvrir un dossier,
+- [x] Tâche 45 — Socle d'interface : toasts d'application, registre d'actions (ouvrir un dossier,
       le sélecteur de modèle, la bibliothèque de prompts s'y déclarent depuis leurs composants).
+      **Preuve** (unitaire ; l'effet visible est prouvé avec la palette, Tâche 47) :
+      `ui-plumbing.test.mts` (7 tests), RED = module absent, puis GREEN. Registre : une action
+      enregistrée s'exécute et `run()` dit qu'elle l'a été ; une action que personne n'a
+      enregistrée est **signalée** (`false`), jamais ignorée ; se désinscrire la retire ; **la
+      dernière inscription gagne et la désinscription d'une ancienne ne retire pas la nouvelle**
+      (un composant qui se remonte s'inscrit avant que le nettoyage précédent ne passe) ; une
+      action qui lève une erreur ne casse pas le registre. Toasts : empilés, les 3 derniers
+      seulement, retrait par identifiant. React : `ActionRegistryProvider` / `useRegisterAction`
+      (le gestionnaire est lu par référence : toujours le dernier, sans se réinscrire à chaque
+      rendu) et `ToastProvider` (vert / jaune / rouge, disparaît seul après 3,5 s, **au niveau
+      de l'application** pour survivre au chat remonté par « Vider l'historique »). Déclarations :
+      `Sidebar` (`open-folder`), `ModelButton` (`switch-model`), `InputBar` (`open-prompts`) ;
+      pied de la barre de saisie « … · Ctrl+K → commandes ». `npm test` 276/276, `tsc` propre,
+      build OK, `chat` / `layout` / `sidebar` / `model` / `prompts` / `branches` / `context` PASS.
 - [ ] Tâche 46 — Composant `CommandPalette` (Ctrl+K partout, clavier, clic), fenêtres « mémoire
       projet » et « confirmer l'effacement », pied de la barre de saisie.
 - [ ] Tâche 47 — Preuve dans Electron réel (`palette-visual.cjs`) : vrai Ctrl+K depuis la zone de

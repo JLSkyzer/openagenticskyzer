@@ -1494,8 +1494,16 @@ Comportement NiceGUI à reproduire :
       (créer un lien de fichier demande un privilège que la machine n'accorde pas) — un test qui
       s'ignore ne prouve rien, je l'ai supprimé ; la même branche (`!isFile()`) est prouvée par le
       cas du dossier, le lien lui-même **n'est pas exercé**.
-- [ ] Tâche 44 — Logique pure `state/commands.ts` : la liste des commandes, `matchCommands`
+- [x] Tâche 44 — Logique pure `state/commands.ts` : la liste des commandes, `matchCommands`
       (libellé ou description, 8 au plus), déplacement de la sélection. Tests d'abord (RED).
+      **Preuve** : `command-logic.test.mts` (9 tests), RED = module absent, puis GREEN, `tsc`
+      propre. Les libellés, descriptions et l'ordre des 7 commandes ont été **comparés par script
+      au fichier `command_palette.py`** (regex sur `_COMMANDS`) : identiques, l'export mis à part.
+      Vérifié : filtre sur libellé **ou** description, casse ignorée (`DOSSIER` → « Ouvrir un
+      dossier » par son libellé et « Vider l'historique » par sa description), 8 résultats au plus
+      (jeu de 12 → les 8 premiers dans l'ordre), rien → liste vide ; sélection au clavier avec
+      rebouclage aux deux bouts et « aucune » sans résultat ; raccourci Ctrl+K / Cmd+K, casse
+      ignorée (verrouillage majuscule), mais pas `K` seul, ni Ctrl+Maj+K, ni Ctrl+Alt (AltGr).
 - [ ] Tâche 45 — Socle d'interface : toasts d'application, registre d'actions (ouvrir un dossier,
       le sélecteur de modèle, la bibliothèque de prompts s'y déclarent depuis leurs composants).
 - [ ] Tâche 46 — Composant `CommandPalette` (Ctrl+K partout, clavier, clic), fenêtres « mémoire

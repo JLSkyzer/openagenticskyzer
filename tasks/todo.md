@@ -1397,8 +1397,36 @@ Comportement NiceGUI à reproduire :
       `sidebar` / `branches` / `context` / `settings` / `settings-tabs` / `model` PASS, `npm test`
       249/249. Observation sans lien avec le lot : les barres de défilement (liste, chat) restent
       claires sur le thème sombre.
-- [ ] Tâche 42 — Vérification finale sur l'app **packagée** (`final-e2e-lot6.cjs`) + suite
+- [x] Tâche 42 — Vérification finale sur l'app **packagée** (`final-e2e-lot6.cjs`) + suite
       complète, bilan ici, leçons.
+      **Preuve** (`npm run test:final-e2e-lot6`, exe packagé lancé directement juste après le
+      packaging — exécution à froid —, Python absent du PATH, coffre chiffré réel, CDP avec
+      **clavier et souris réels** `Input.dispatchKeyEvent` / `dispatchMouseEvent`) : ✦ ouvre la
+      bibliothèque servie par le **worker packagé**, les 10 défauts dans l'ordre ; filtre `SÉCURITÉ`
+      (casse et accent ignorés) → `security` ; le choisir remplit la zone avec `mon-projet` à la
+      place de `{filename}` ; **Entrée l'envoie et le modèle reçoit exactement ce texte** (avec la
+      clé du coffre sur la requête), rien d'ajouté ni de perdu ; touche `/` réelle dans une zone
+      vide → fenêtre ouverte, zone et filtre vides, Échap ferme et rend le focus, dans une zone
+      non vide `/` s'écrit (`abc/`) ; clic dans la carte ne ferme pas, clic sur le fond ferme ;
+      `prompts.json` écrit à la main pendant que l'app tourne : vu tout de suite (icône `📝`
+      par défaut), puis **encore servi après un arrêt et une relance réels** ; fichier de forme
+      invalide → 10 défauts, la fenêtre continue de marcher. Suite complète sur ce package :
+      `npm test` 249/249, `tsc` propre, 16 tests Electron (dont `prompts`) + `test:package` +
+      `test:bridge-real` PASS, `final-e2e` lots 1 à 6 PASS, `npm audit` 0 vulnérabilité, aucun
+      `openagent.exe` résiduel.
+
+      **Bilan du lot « bibliothèque de prompts » : livré** pour son périmètre (Tâches 39-42) — les
+      10 défauts **copiés mécaniquement** du code Python (identiques champ par champ),
+      `prompts.json` validé plus strictement et relu à chaud, bouton ✦, `/`, filtre, fenêtre.
+      Écarts assumés : pas de `/` parasite dans la zone de saisie, validation des types (une
+      `name` numérique plantait le filtre NiceGUI), fichier de plus de 1 Mo ignoré, message
+      « Aucun prompt … » quand rien ne s'affiche. **Reste, à traiter** : l'entrée « 📋
+      Bibliothèque de prompts » de la palette de commandes (palette non migrée) ; un **éditeur**
+      de prompts (n'existe pas en Python : le fichier se modifie à la main) ; les barres de
+      défilement restent claires sur le thème sombre (liste, chat). **La migration NiceGUI →
+      Electron n'est pas terminée** : édition / régénération de message, artifacts, palette de
+      commandes, téléchargements, onboarding, suppression / renommage de branche, fenêtrage de
+      l'historique, ainsi que les points listés à la fin du lot 3.
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

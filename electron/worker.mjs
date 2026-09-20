@@ -14,6 +14,7 @@ import { shellTools, stopAllServers } from './core/shell-tool.mts';
 import { webTools } from './core/web-tools.mts';
 import { buildInstructions } from './core/context.mts';
 import { compactMessages, planCompaction } from './core/compact.mts';
+import { PromptLibrary } from './core/prompts.mts';
 
 // OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
 // instead of the real user's ~/.openagent — never rely on the default outside tests.
@@ -21,6 +22,7 @@ const dataHome = process.env.OPENAGENT_HOME || join(homedir(), '.openagent');
 const settings = new SettingsService(dataHome);
 const conversations = new Conversations();
 const folders = new FoldersService(dataHome);
+const promptLibrary = new PromptLibrary(dataHome);
 const active = new Map();
 // requestId -> { resolve(allow), folder, category } — filled by the confirm() callback
 // passed to runAgent, drained by the 'permission-decision' op below.
@@ -32,7 +34,7 @@ const sessionAllowed = new Set();
 const allowKey = (folder, tool) => `${folder}\0${tool}`;
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'shutdown']);
 
 const BASE_SYSTEM_PROMPT = [
   'Tu es openagent, un assistant de développement qui travaille dans le dossier du projet actif avec les outils fournis :',
@@ -230,6 +232,7 @@ async function handle(message) {
     if (op === 'clear-history') result = await conversations.clear(payload.folder);
     if (op === 'remove-folder') result = await folders.remove(payload.folder);
     if (op === 'reset-global-settings') result = await settings.resetGlobal();
+    if (op === 'list-prompts') result = await promptLibrary.list();
     if (op === 'list-branches') result = await conversations.list(payload.folder);
     if (op === 'messages') result = await conversations.messages(payload.folder, payload.branchId || 'main');
     if (op === 'save-messages') result = await conversations.save(payload.folder, payload.branchId || 'main', payload.messages);

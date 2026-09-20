@@ -5,6 +5,15 @@ export interface ChatMessage {
   [key: string]: unknown;
 }
 
+// Mirrors core/prompts.mts::Prompt — the prompt library entries, icon and description always filled in.
+export interface PromptEntry {
+  id: string;
+  name: string;
+  icon: string;
+  description: string;
+  template: string;
+}
+
 // Mirrors core/conversations.mts::Conversations.list() — 'main' is always the first entry.
 export interface BranchInfo {
   id: string;

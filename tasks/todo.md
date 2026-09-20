@@ -1295,6 +1295,72 @@ Comportement NiceGUI à reproduire :
       message, artifacts, palette de commandes, téléchargements, onboarding, suppression / renommage
       de branche, ainsi que les points listés à la fin du lot 3.
 
+### Lot actif suivant — bibliothèque de prompts (2026-09-22)
+
+Inventaire NiceGUI relevé le 2026-09-22 (`prompt_library.py`, `storage.py:134-192`,
+`input_bar.py:599 et 724-734`, `command_palette.py:99`, `tests/test_artifacts.py:85-118`).
+Rien n'existe côté Node.
+
+Comportement NiceGUI à reproduire :
+- Bouton `✦` dans la barre de saisie (entre le sélecteur de modèle et l'envoi), violet sur fond
+  sombre ; il ouvre la fenêtre « Bibliothèque de prompts » (carte de 384 px, bouton ✕, champ
+  « Filtrer… », liste de 320 px max avec défilement).
+- Une ligne par prompt : icône (`📝` par défaut), nom, description. Le filtre est insensible à
+  la casse et cherche dans le **nom et la description** (pas dans le gabarit).
+- Cliquer une ligne ferme la fenêtre, **remplace** le contenu de la zone de saisie par le gabarit
+  et lui rend le focus. `{filename}` est remplacé par le **nom du dossier actif** (dernier
+  segment, séparateur final toléré), ou `projet` si le dossier est absent ou est une racine de
+  lecteur.
+- Taper `/` dans une zone de saisie **vide** ouvre la fenêtre.
+- Échap et clic sur le fond ferment la fenêtre.
+- Données : 10 prompts par défaut (`refactor`, `tests`, `explain`, `pr_desc`, `debug`,
+  `optimize`, `security`, `review`, `document`, `translate`) ; `prompts.json` du dossier de
+  données les remplace **en bloc** s'il est une liste d'objets ayant `id`, `name`, `template` ;
+  JSON invalide, mauvaise forme ou fichier absent → les 10 par défaut. Il n'y a **aucun
+  éditeur** dans l'app Python (le fichier se modifie à la main).
+
+Écarts / décisions :
+- **Le `/` qui ouvre la fenêtre n'est pas inséré dans la zone de saisie** (`preventDefault`) :
+  côté NiceGUI le `keydown` ne l'empêche pas et un `/` parasite restait si on fermait la fenêtre.
+- **Validation plus stricte** : `name`, `template`, `id` doivent être des chaînes, `icon` et
+  `description` des chaînes si présents (Python ne validait que la présence des clés : un
+  `name` numérique faisait planter le filtre). Toute entrée invalide → défauts, comme Python.
+- **Le fichier est relu à chaque ouverture** de la fenêtre : une modification à la main est
+  prise en compte sans redémarrer.
+- **Gardé tel quel** : choisir un prompt remplace un brouillon déjà tapé (action explicite de
+  l'utilisateur, comportement d'origine).
+- **Hors lot** : l'entrée « 📋 Bibliothèque de prompts » de la palette de commandes (la palette
+  n'est pas migrée) ; un éditeur de prompts (n'existe pas en Python, à proposer ensuite).
+
+- [x] Tâche 39 — Moteur + pont : `core/prompts.mts` (défauts, lecture validée, repli), opération
+      `list-prompts` (worker, liste autorisée de `main.cjs`), `listPrompts` dans `bridge.ts`.
+      Tests d'abord (RED) ; les 10 défauts comparés à ceux de `storage.py` par un script
+      ponctuel (rien d'inventé).
+      **Preuve** : `prompts.test.mts` (9 tests, dont un aller-retour avec le vrai `worker.mjs`),
+      RED = module absent (`ERR_MODULE_NOT_FOUND`), puis GREEN. **Les 10 défauts n'ont pas été
+      retapés** : le littéral de `storage.py` a été lu par `ast` de Python et écrit par script
+      dans `core/prompt-defaults.mts`, puis comparé champ par champ au JSON extrait (`IDENTICAL
+      to Python DEFAULT_PROMPTS: 10 prompts, every field`). Vérifié : sans fichier → défauts ;
+      fichier valide → il remplace les défauts **en bloc**, icône `📝` et description vide
+      complétées ; liste vide `[]` → bibliothèque vide (valide, comme Python) ; 11 formes
+      invalides (JSON cassé, pas une liste, chaînes dans la liste — le cas exact qui faisait
+      planter le filtre NiceGUI —, `name` numérique, `description`/`icon` non-chaînes, entrée
+      `null`, une seule mauvaise entrée qui invalide tout) → défauts, jamais d'exception ;
+      fichier de 2 Mo ignoré ; relu à chaque appel (modification à la main vue sans
+      redémarrage, retour aux défauts si supprimé) ; modifier ce que `list()` renvoie ne touche
+      pas les défauts. Pont : `listPrompts()` → `{op:'list-prompts'}` ; **le test de routage a
+      échoué comme prévu** tant que `main.cjs` ignorait l'opération (« opération appelée par le
+      renderer mais refusée »), puis GREEN après l'ajout à la liste autorisée. `npm test`
+      241/241, `tsc` propre.
+- [ ] Tâche 40 — Renderer : logique pure `state/prompts.ts` (`filterPrompts`, `folderLabel`,
+      `applyTemplate`), composant `PromptPicker` (fenêtre, ✦, `/`), Échap / ✕ / fond.
+- [ ] Tâche 41 — Preuve dans Electron réel (`prompts-visual.cjs`) : clic réel sur ✦, filtre,
+      choix → zone de saisie remplie avec le nom du dossier, `/` sans caractère parasite, fermeture
+      par Échap / ✕ / fond, `prompts.json` personnalisé pris en compte à chaud, fichier corrompu →
+      défauts.
+- [ ] Tâche 42 — Vérification finale sur l'app **packagée** (`final-e2e-lot6.cjs`) + suite
+      complète, bilan ici, leçons.
+
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 
 - [x] Task 1 — Module d'embedding lazy et singleton

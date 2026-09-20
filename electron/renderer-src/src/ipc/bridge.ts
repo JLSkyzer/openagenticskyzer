@@ -6,6 +6,7 @@ import type {
   ConnectionSnapshot,
   FolderListItem,
   ProjectSettings,
+  PromptEntry,
 } from './types';
 
 // The only place in the renderer allowed to touch window.openagent directly — every
@@ -97,6 +98,12 @@ export function forkBranch(folder: string, source: string, count: number, label:
   return request('fork', { folder, source, count, label });
 }
 
+// The prompt library (✦): the defaults or the user's prompts.json, read again on every call so a hand
+// edit is seen without restarting.
+export function listPrompts(): Promise<PromptEntry[]> {
+  return request('list-prompts');
+}
+
 // Summarises the branch in the background: the answer is only the id to wait for, the result arrives
 // as a 'compacted' / 'compact-failed' agent event. The API key is added by main.cjs, not by the page.
 export function compactConversation(folder: string, branchId: string): Promise<{ compactionId: string }> {
@@ -148,5 +155,6 @@ export type {
   ConnectionSnapshot,
   FolderListItem,
   ProjectSettings,
+  PromptEntry,
   ProviderName,
 } from './types';

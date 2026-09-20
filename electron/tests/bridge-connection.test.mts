@@ -79,6 +79,12 @@ test('onSettingsChanged fires after a successful save of settings or connection,
   assert.equal(fired, 4, 'unsubscribing stops the notifications');
 });
 
+test('listPrompts asks the worker for the prompt library, with no payload', async () => {
+  calls.length = 0;
+  await bridge.listPrompts();
+  assert.deepEqual(calls[0], { op: 'list-prompts', payload: undefined });
+});
+
 test('project settings go through project-settings / save-project-settings', async () => {
   calls.length = 0;
   await bridge.getProjectSettings('D:\\proj');

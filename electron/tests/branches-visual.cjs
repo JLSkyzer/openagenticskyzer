@@ -152,9 +152,15 @@ app.whenReady().then(async () => {
     assert.equal(restingOpacity, '0', 'the action row is invisible until the message is hovered');
     assert.equal(await js(`document.querySelector('[data-testid="oa-fork-btn"]').title`), 'Créer une branche depuis ici');
 
-    const bubble = await rectCenter('[data-testid="oa-user-bubble"]');
-    win.webContents.sendInputEvent({ type: 'mouseMove', x: bubble.x, y: bubble.y });
-    await waitFor(async () => (await js(`getComputedStyle(document.querySelector('[data-testid="oa-fork-btn"]').parentElement).opacity`)) === '1', { what: 'hover reveals ⑂' });
+    // A user keeps the mouse over the message until the button shows: the move is sent again until it does.
+    // The machine's REAL cursor can rest over the window and take :hover away from a single synthetic move
+    // (seen on the packaged app, see tasks/lessons.md), so one attempt is not a fair test of the feature.
+    await waitFor(async () => {
+      const bubble = await rectCenter('[data-testid="oa-user-bubble"]');
+      win.webContents.sendInputEvent({ type: 'mouseMove', x: bubble.x, y: bubble.y });
+      await pause(200);
+      return (await js(`getComputedStyle(document.querySelector('[data-testid="oa-fork-btn"]').parentElement).opacity`)) === '1';
+    }, { timeout: 10000, interval: 100, what: 'hover reveals ⑂' });
     await writeFile(join(screenshotDir, 'branches-1-hover.png'), await capturePng(win));
 
     // ── 3. A real click on ⑂ forks after the FIRST user message ──────────────────

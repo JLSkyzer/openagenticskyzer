@@ -4,7 +4,7 @@ import { cleanIpcError } from '../ipc/errors';
 import { Markdown } from '../markdown/Markdown';
 import { useActionRegistry } from '../state/ActionRegistry';
 import { useChat } from '../state/ChatProvider';
-import { COMMANDS, isPaletteShortcut, matchCommands, moveSelection, type Command } from '../state/commands';
+import { COMMANDS, displayMemory, isPaletteShortcut, matchCommands, moveSelection, type Command } from '../state/commands';
 import { useToast } from '../state/ToastProvider';
 import { Modal } from './settings/Modal';
 
@@ -176,6 +176,9 @@ function MemoryDialog({ folder, onClose }: { folder: string; onClose(): void }) 
     return () => { cancelled = true; };
   }, [folder]);
 
+  // Judged after the dated comments are removed: a memory made only of them is an empty memory.
+  const shown = memory ? displayMemory(memory.content) : '';
+
   return (
     <Modal width={600} onClose={onClose} dismissOnBackdrop>
       <div data-testid="oa-memory-dialog">
@@ -186,12 +189,12 @@ function MemoryDialog({ folder, onClose }: { folder: string; onClose(): void }) 
             … début omis : seule la fin de la mémoire est affichée.
           </div>
         )}
-        {memory && memory.content.trim() === '' && (
+        {memory && shown.trim() === '' && (
           <div data-testid="oa-memory-empty" className="text-xs text-gray-500">Aucune mémoire enregistrée pour ce projet.</div>
         )}
-        {memory && memory.content.trim() !== '' && (
+        {memory && shown.trim() !== '' && (
           <div data-testid="oa-memory-content" className="text-xs">
-            <Markdown>{memory.content}</Markdown>
+            <Markdown>{shown}</Markdown>
           </div>
         )}
         <button id="oa-memory-close-btn" type="button" onClick={onClose} className="mt-2 rounded bg-gray-800 px-3 py-1 text-xs text-gray-300">

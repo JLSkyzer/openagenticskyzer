@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { COMMANDS, isPaletteShortcut, matchCommands, moveSelection, MAX_RESULTS } from '../renderer-src/src/state/commands.ts';
+import { COMMANDS, displayMemory, isPaletteShortcut, matchCommands, moveSelection, MAX_RESULTS } from '../renderer-src/src/state/commands.ts';
 
 const many = Array.from({ length: 12 }, (_, i) => ({ id: `c${i}`, label: `Commande ${i}`, description: `Fait le travail ${i}` }));
 
@@ -53,6 +53,24 @@ test('moveSelection moves by one and wraps around the ends', () => {
 test('moveSelection with nothing to select stays on "none"', () => {
   assert.equal(moveSelection(0, 1, 0), -1);
   assert.equal(moveSelection(-1, -1, 0), -1);
+});
+
+test('memory display hides the HTML comments (the dated markers of memory.md), as a browser does', () => {
+  assert.equal(displayMemory('<!-- 2026-09-23 10:00 -->\n# Faits\n- utilise pnpm\n'), '# Faits\n- utilise pnpm\n');
+  assert.equal(displayMemory('avant <!-- caché --> après'), 'avant  après', 'inline too');
+  assert.equal(displayMemory('<!-- a\nsur deux lignes -->\nfait'), 'fait', 'a comment over several lines');
+  assert.equal(displayMemory('<!-- un --> x <!-- deux -->'), ' x ', 'several comments, none greedy');
+});
+
+test('memory display keeps everything that is not a closed comment', () => {
+  assert.equal(displayMemory('rien de spécial\n- a\n'), 'rien de spécial\n- a\n');
+  assert.equal(displayMemory('un <b>gras</b> reste'), 'un <b>gras</b> reste', 'other HTML is left to the renderer');
+  assert.equal(displayMemory('début <!-- jamais fermé'), 'début <!-- jamais fermé', 'an unclosed comment is text, nothing is swallowed');
+  assert.equal(displayMemory(''), '');
+});
+
+test('a memory made only of comments displays as empty', () => {
+  assert.equal(displayMemory('<!-- 2026-09-23 10:00 -->\n\n<!-- 2026-09-23 11:00 -->\n').trim(), '');
 });
 
 test('isPaletteShortcut: Ctrl+K or Cmd+K only, whatever the case of the key', () => {

@@ -27,6 +27,13 @@ export function matchCommands(commands: readonly Command[], query: string): Comm
     .slice(0, MAX_RESULTS);
 }
 
+// memory.md marks each batch of facts with a dated HTML comment ("<!-- 2026-09-23 10:00 -->"). The NiceGUI
+// window rendered the file as HTML, where a comment is invisible; the Markdown renderer here would print it
+// as text. Only CLOSED comments go: an unclosed one is ordinary text and swallowing the rest would hide facts.
+export function displayMemory(content: string): string {
+  return content.replace(/<!--[\s\S]*?-->/g, '').replace(/^\s*\n/, '');
+}
+
 // Keyboard selection (an addition: the original palette only answers to the mouse). Wraps at both ends;
 // -1 means "nothing to select".
 export function moveSelection(current: number, delta: number, count: number): number {

@@ -1536,9 +1536,42 @@ Comportement NiceGUI à reproduire :
       `tsc` propre, build OK, `npm test` 276/276 ; `chat` / `layout` / `permission` / `stop` /
       `sidebar` / `model` / `prompts` / `settings` PASS. **Non prouvé ici** : les effets réels de
       chaque commande le seront en Tâche 47.
-- [ ] Tâche 47 — Preuve dans Electron réel (`palette-visual.cjs`) : vrai Ctrl+K depuis la zone de
+- [x] Tâche 47 — Preuve dans Electron réel (`palette-visual.cjs`) : vrai Ctrl+K depuis la zone de
       saisie, filtre, clavier, chacune des 7 commandes exécutée pour de bon (effets relus sur disque
       ou à l'écran), refus sans dossier, effacement confirmé / annulé.
+      **Preuve** (`npm run test:palette`, 4/4 PASS, Electron 44.4.2, vrai `worker.mjs`, faux
+      modèle) : **Ctrl+K réel** (`sendInputEvent` avec modificateur) **depuis la zone de saisie** →
+      palette ouverte, le `k` n'est pas tapé dans la zone, focus dans « Rechercher une
+      commande… », les 7 commandes dans l'ordre ; filtre `DOSSIER` → `open-folder` (libellé) et
+      `clear-history` (description), `zzzz` → « Aucune commande trouvée. » ; ↓↓ → 3e ligne, ↑↑↑ →
+      rebouclage sur la dernière ; Ctrl+K à nouveau remet la recherche à zéro ; Échap ferme ;
+      **Ctrl+Maj+K n'ouvre pas** ; clic dans la carte la garde, clic sur le fond (souris réelle)
+      la ferme. **Sans dossier** : toasts jaunes « Aucun dossier actif. » (mémoire) et « Pas assez
+      de messages à compresser. » (compacter), aucune fenêtre de mémoire ni de confirmation.
+      **Les 7 commandes pour de bon** : Ouvrir un dossier → `alpha` actif (`▸ alpha`) ; Changer de
+      modèle → le sélecteur s'ouvre ; Bibliothèque de prompts → la fenêtre s'ouvre ; Paramètres
+      → tapé au clavier puis **Entrée** sur l'unique ligne → les réglages s'ouvrent ; Mémoire projet
+      → `memory.md` rendu en Markdown (`pnpm` réellement en gras) ; sur un dossier sans mémoire →
+      « Aucune mémoire enregistrée pour ce projet. » ; Compacter → **disque relu** : résumé + dernière
+      paire identique, une requête de résumé au modèle ; Vider l'historique → confirmation qui nomme
+      le dossier, **Annuler ne supprime rien** (disque et écran), **Effacer** → toast vert
+      « Historique effacé. » (visible malgré le remontage du chat), disque vide, écran vide ;
+      **effacement refusé pendant un run** (toast rouge « Un message est en cours… », disque
+      inchangé). Captures relues.
+      **Écart d'affichage trouvé par le test, corrigé test d'abord** : le marqueur daté
+      `<!-- 2026-09-23 10:00 -->` de `memory.md` s'affichait en texte brut (le rendu Markdown
+      échappe le HTML, alors que celui de NiceGUI, un navigateur, le cachait). `displayMemory`
+      retire les commentaires **fermés** (un commentaire non fermé reste du texte, rien n'est
+      avalé) et l'état « vide » est jugé après ce retrait (3 tests, RED = export absent).
+      **Mutations** : Ctrl+K ignoré quand la cible est une zone de texte → échec à « Ctrl+K from the
+      input box » ; garde `clear-history` retirée du worker → échec à « refused while a run is in
+      flight » ; code restauré. 3 relances PASS ; les 15 autres tests Electron PASS, `npm test`
+      279/279.
+      **Instabilité du test `branches`** : il a échoué une fois dans une série (message coupé), 0
+      échec sur 13 relances ensuite, **cause non établie**. L'étape qui dépend de la vraie souris
+      (survol, un seul `mouseMove`) est la seule candidate connue (voir lot 4) : elle renvoie
+      maintenant le déplacement jusqu'à ce que `⑂` apparaisse — durcissement, **pas une cause
+      prouvée**.
 - [ ] Tâche 48 — Vérification finale sur l'app **packagée** (`final-e2e-lot7.cjs`) + suite
       complète, bilan ici, leçons.
 

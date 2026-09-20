@@ -972,6 +972,63 @@ d'équivalent Node : décision d'architecture à part), plugins Python et MCP,
       NiceGUI → Electron n'est pas terminée** : branches, artifacts, palette de commandes,
       bibliothèque de prompts, jauge de contexte, téléchargements et onboarding restent à faire.
 
+### Lot actif suivant — branches de conversation (2026-09-20)
+
+Inventaire NiceGUI relevé le 2026-09-20 (`chat.py`, `input_bar.py`, `state.py`, `tests/test_artifacts.py`)
+et état du moteur Node. Constat central : les branches NiceGUI sont **purement en mémoire**
+(perdues au redémarrage, seul `main` est écrit sur disque) ; le moteur Node
+(`conversations.mts`) les **persiste déjà** dans `.openagent/conversations.json`. On garde la
+persistance : c'est une amélioration assumée, pas un écart à corriger.
+
+Comportement NiceGUI à reproduire :
+- Bouton `⑂` sur les messages **utilisateur** uniquement, visible au survol
+  (`opacity-0 group-hover:opacity-100`), style `bg-gray-800 text-gray-400 hover:text-purple-400`,
+  infobulle « Créer une branche depuis ici », **absent** (pas grisé) pendant qu'un agent tourne.
+- Bifurquer copie la vue courante **jusqu'au message cliqué inclus**, bascule sur la nouvelle
+  branche et notifie « Branche '<nom>' créée. ». Les bifurcations peuvent s'imbriquer.
+- Nom par défaut `Branche N` avec N = nombre de bifurcations + 1 (compteur global, comme Python).
+- Sélecteur `🌿` au-dessus des messages, **masqué tant qu'aucune bifurcation n'existe**,
+  options `🌿 Main` + libellés ; changer de branche est bloqué pendant un run et ne touche ni
+  l'entrée ni le panneau d'artifact ; pas de notification au changement.
+- Envoyer sur une branche écrit dans cette branche, **jamais** dans `main` (bug critique déjà
+  corrigé côté Python, leçon du 2026-08-07) ; effacer l'historique ou changer de dossier
+  ramène sur `main` et fait disparaître le sélecteur.
+
+Écarts / décisions :
+- **Persistance conservée** (branches rechargées à l'ouverture du dossier via `list-branches`).
+  Au démarrage on retombe toujours sur `main`, comme Python.
+- **Bifurquer côté moteur, pas côté vue** : le renderer envoie `count = index + 1` mais vérifie
+  d'abord que le message persisté à cet index est bien celui affiché (rôle + contenu) ; sinon
+  il refuse et recharge, plutôt que de bifurquer au mauvais endroit.
+- **Le worker refuse `fork` pendant un run du même dossier** (défense en profondeur : le
+  renderer masque déjà le bouton, mais la donnée sur disque n'est à jour qu'à la fin du run).
+- **Hors lot, sans précédent NiceGUI** : renommer, supprimer, fusionner une branche, boîte de
+  nom, limite du nombre de branches. À proposer ensuite : avec la persistance, l'absence de
+  suppression devient un vrai manque (Python n'accumulait rien entre deux lancements).
+- **Hors lot** : le libellé « Depuis : … » des exports (il n'y a pas encore d'export en Electron).
+
+- [ ] Tâche 28 — Moteur + pont : garde du worker (`fork` refusé pendant un run du dossier, le
+      `active` du worker retient désormais le dossier), wrappers `listBranches` / `forkBranch`
+      dans `bridge.ts`, type `BranchInfo`. Tests d'abord (RED prouvé) : `worker-branches.test.mts`
+      (fork refusé pendant un vrai run bloqué, accepté après, `count` inclusif, imbrication,
+      envoi sur une branche n'écrit pas dans `main`) et bridge.
+- [ ] Tâche 29 — État React : `branches` / `currentBranchId` dans le réducteur, actions
+      `branches-loaded` (ignorée si le dossier a changé entre-temps) et `branch-switched`,
+      `send` visant la branche courante, `forkFrom(index)` avec la vérification de cohérence,
+      `switchBranch(id)` ; tout est refusé pendant un run. Test unitaire du réducteur et de la
+      logique de nom par défaut (RED d'abord).
+- [ ] Tâche 30 — Interface : bouton `⑂` (survol, absent pendant un run), sélecteur `🌿`
+      (masqué sans bifurcation), notification « Branche '…' créée. ».
+- [ ] Tâche 31 — Preuve dans Electron réel (`branches-visual.cjs`, vrai worker, faux modèle) :
+      2 tours → clic réel sur `⑂` → sélecteur visible, vue tronquée → envoi sur la branche →
+      `conversations.json` relu sur disque (branche mise à jour, `main` intact) → retour sur
+      `main` (vue complète) → bouton absent pendant un run → « Effacer l'historique » fait
+      disparaître le sélecteur ; captures.
+- [ ] Tâche 32 — Vérification finale sur l'app **packagée** (`final-e2e-lot4.cjs`, CDP, Python
+      absent du PATH) + suite complète (`npm test`, `tsc`, tests Electron, `npm audit`), bilan
+      dans ce fichier, leçons dans `tasks/lessons.md` et `D:\BDC` si une forme générale s'en
+      dégage.
+
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 
 - [x] Task 1 — Module d'embedding lazy et singleton

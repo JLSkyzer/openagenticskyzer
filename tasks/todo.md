@@ -1054,11 +1054,29 @@ Comportement NiceGUI à reproduire :
       non reproduite en 4 relances). **Preuve visuelle et interactive : Tâche 31.** Le harnais
       de `chat-visual.cjs` transmet `connection-snapshot` au worker (« Opération IPC inconnue »
       dans sa sortie) : bruit préexistant du lot 2, sans effet sur le verdict.
-- [ ] Tâche 31 — Preuve dans Electron réel (`branches-visual.cjs`, vrai worker, faux modèle) :
+- [x] Tâche 31 — Preuve dans Electron réel (`branches-visual.cjs`, vrai worker, faux modèle) :
       2 tours → clic réel sur `⑂` → sélecteur visible, vue tronquée → envoi sur la branche →
       `conversations.json` relu sur disque (branche mise à jour, `main` intact) → retour sur
       `main` (vue complète) → bouton absent pendant un run → « Effacer l'historique » fait
       disparaître le sélecteur ; captures.
+      **Preuve** (`npm run test:branches`, 3/3 PASS, Electron 44.4.2) : vraie souris
+      (`sendInputEvent` mouseMove puis mouseDown/Up, pas de `.click()`) — rangée `⑂` à opacité 0
+      au repos puis 1 au survol, 2 boutons pour 2 messages utilisateur et aucun sur les
+      messages IA ; clic → sélecteur `🌿 Main / Branche 1`, notice « Branche 'Branche 1' créée. »,
+      vue coupée **après** `premier` (inclus), rien de ce qui suit copié. Disque relu :
+      `main` inchangé octet pour octet après un tour sur la branche (`premier`, `autre piste`,
+      `réponse 3` dans la branche) ; retour sur `main` sans notice ; un envoi après le retour
+      va dans `main` et la branche reste intacte ; pendant un run tenu ouvert : **0** bouton
+      `⑂` et sélecteur `disabled`, puis 4 boutons à la fin ; page rechargée : le sélecteur
+      retrouve la branche depuis le disque et le dossier s'ouvre sur `main` ; un autre dossier
+      n'affiche aucun sélecteur (pas de reste de l'autre) ; « Effacer l'historique » → sélecteur
+      disparu, une seule branche vide sur disque. Captures relues (hover, bifurcation, retour,
+      run en cours, effacé).
+      **Test de mutation** : en remettant `send` sur `'main'` en dur (l'ancien défaut), le
+      test échoue exactement à « the fork got the exchange » ; code restauré, `git diff` vide.
+      Un premier essai a échoué par ma faute (attente sur le *nombre* de bulles alors que la
+      branche en avait déjà autant) : corrigé en attendant le *contenu*, code de production
+      inchangé.
 - [ ] Tâche 32 — Vérification finale sur l'app **packagée** (`final-e2e-lot4.cjs`, CDP, Python
       absent du PATH) + suite complète (`npm test`, `tsc`, tests Electron, `npm audit`), bilan
       dans ce fichier, leçons dans `tasks/lessons.md` et `D:\BDC` si une forme générale s'en

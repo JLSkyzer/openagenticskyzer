@@ -22,6 +22,7 @@
     "test:settings-tabs": "node tests/run-settings-tabs-visual.cjs",
     "test:settings-folder": "node tests/run-settings-folder-danger-visual.cjs",
     "test:model": "node tests/run-model-selector-visual.cjs",
+    "test:branches": "node tests/run-branches-visual.cjs",
     "package:win": "npm run renderer:build && electron-builder --win dir",
     "test:package": "node tests/package-smoke.cjs",
     "test:final-e2e": "node tests/final-e2e.cjs",

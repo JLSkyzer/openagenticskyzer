@@ -1077,10 +1077,44 @@ Comportement NiceGUI à reproduire :
       Un premier essai a échoué par ma faute (attente sur le *nombre* de bulles alors que la
       branche en avait déjà autant) : corrigé en attendant le *contenu*, code de production
       inchangé.
-- [ ] Tâche 32 — Vérification finale sur l'app **packagée** (`final-e2e-lot4.cjs`, CDP, Python
+- [x] Tâche 32 — Vérification finale sur l'app **packagée** (`final-e2e-lot4.cjs`, CDP, Python
       absent du PATH) + suite complète (`npm test`, `tsc`, tests Electron, `npm audit`), bilan
       dans ce fichier, leçons dans `tasks/lessons.md` et `D:\BDC` si une forme générale s'en
       dégage.
+      **Preuve** (`npm run test:final-e2e-lot4`, exe packagé lancé directement, Python absent
+      du PATH, vraie souris via `Input.dispatchMouseEvent`, coffre chiffré réel) : survol
+      révélant `⑂` ; clic → branche créée, `main` intact ; envoi sur la branche ; **Stop sur la
+      branche** (partiel gardé dans la branche, `main` octet pour octet identique) ; **arrêt
+      réel de l'application puis relance** : le sélecteur liste la branche, le dossier s'ouvre
+      sur `main`, la branche restitue ses messages exacts et continue d'écrire dans la branche ;
+      « Effacer l'historique » → sélecteur disparu ; la clé API n'est ni dans `folders.json` ni
+      dans `conversations.json`. Suite complète sur ce package : `npm test` 191/191, `tsc`
+      propre, 13 tests Electron (dont `branches`) + `test:package` + `test:bridge-real` PASS,
+      `final-e2e` (lots 1, 2, 3) PASS, `npm audit` 0 vulnérabilité, aucun `openagent.exe`
+      résiduel.
+      **Instabilité rencontrée, comprise en partie** : la 1re exécution après chaque
+      packaging (4 fois sur 4) échouait à l'étape « survol » ; les suivantes passaient. La page
+      était visible et focalisée, l'élément sous mon point visé était bien la bulle, mais le
+      survol restait sur un autre élément — y compris avant tout événement synthétique de ma
+      part. Explication retenue, **déduite mais non prouvée** : la vraie souris de la machine,
+      posée sur la fenêtre, reprend `:hover` au `mouseMoved` CDP (un relevé du curseur réel
+      dans la page, sur un `SPAN`, correspond à ce qu'on voyait survolé). Ce n'est pas un défaut
+      du produit (le test Electron `branches` le prouve avec l'entrée native). Correctif du
+      **test** : l'étape de survol renvoie le déplacement jusqu'à ce que le bouton apparaisse
+      (un utilisateur garde la souris dessus) et la position du curseur réel est consignée à
+      chaque exécution (`INFO`), avec capture + état de la page à l'échec. Après ce correctif :
+      3 exécutions consécutives PASS, mais **aucune n'était une exécution à froid** (juste après
+      un packaging) : le correctif n'a donc pas été vérifié dans la condition qui échouait — à
+      surveiller au prochain packaging.
+      Limites connues du lot : pas de renommage / suppression / fusion de branche (hors lot,
+      aucun précédent NiceGUI, mais la persistance rend la suppression souhaitable) ; pas
+      d'export « Depuis : … » (aucun export en Electron) ; le bouton ✏️ d'édition n'est pas
+      migré ; `clear-history` pendant un run garde sa limite déjà notée.
+
+      **Bilan du lot « branches » : livré** pour son périmètre (Tâches 28-32). **La migration
+      NiceGUI → Electron n'est pas terminée** : jauge de contexte, bibliothèque de prompts,
+      édition/régénération de message, artifacts, palette de commandes, téléchargements et
+      onboarding restent à faire, ainsi que les points déjà listés à la fin du lot 3.
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

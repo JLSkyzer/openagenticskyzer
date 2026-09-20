@@ -1116,6 +1116,61 @@ Comportement NiceGUI à reproduire :
       édition/régénération de message, artifacts, palette de commandes, téléchargements et
       onboarding restent à faire, ainsi que les points déjà listés à la fin du lot 3.
 
+### Lot actif suivant — jauge de contexte + compaction (2026-09-21)
+
+Inventaire NiceGUI relevé le 2026-09-21 (`context_bar.py`, `input_bar.py:477-488`,
+`storage.py::compute_context_pct`, `utils.py::_DEFAULT_CTX_LIMITS`). Côté Node les réglages
+existent déjà (`show_context_bar`, `auto_compact`, `compact_threshold`, `max_tokens`,
+`reserved_tokens`, onglet Contexte) mais **rien ne les lit** : ni jauge, ni compaction.
+
+Comportement NiceGUI à reproduire :
+- Barre entre le chat et la saisie : « 🧠 Contexte », piste de 120 px max, `{pct}% · ~{tokens} tokens`
+  (séparateur de milliers virgule), violet < 70 %, jaune < 90 %, rouge au-delà ; masquée si
+  `show_context_bar` est faux.
+- Calcul : `tokens = somme(len(contenu) des messages user + ai) // 4` ; limite = `max_tokens` réglé,
+  sinon fenêtre du fournisseur (`together/groq/openrouter` 128 000, `gemini` 1 000 000,
+  `mistral/ollama/lmstudio/llamacpp` 32 000), **moins** `reserved_tokens`, plancher 1 ; `pct` plafonné à 100.
+  Les messages d'outils ne comptent pas (sous-estimation reprise telle quelle).
+- Bouton « ⚡ Auto-compact » dès que `pct ≥ compact_threshold`.
+- Compaction : refus sous 6 messages, garde de réentrance, résumé demandé au modèle **sans
+  outil** (le contenu résumé peut porter une injection), prompt et gabarit repris à
+  l'identique, l'historique devient `[résumé] + fin de conversation`.
+- Auto-compact : en fin de tour si `auto_compact` et seuil atteint.
+
+Écarts / décisions (à relire, ils changent le comportement Python) :
+- **Le résumé n'est PAS écrit dans `memory.md`** (Python l'ajoutait à la mémoire du projet).
+  `memory.md` est réinjecté dans le prompt de toutes les conversations futures : y écrire
+  automatiquement un résumé de contenu web/fichier non relu ferait d'une injection ponctuelle
+  une instruction **persistante**. Le résumé vit dans la conversation, en premier message.
+- **Pas de « compaction rapide » destructrice** : quand le modèle est indisponible Python gardait
+  les 6 derniers messages et jetait le reste (sauvegardé ensuite). Ici : erreur affichée,
+  conversation **inchangée**.
+- **On garde à partir du dernier message utilisateur**, pas « les 2 derniers messages » : le
+  transcript Node contient des paires `assistant(tool_calls)` / `tool`, et couper entre les deux
+  ferait rejeter la requête par le fournisseur. Refus aussi si ce point de coupe est au début
+  (une seule conversation : rien à résumer).
+- La jauge est **dérivée de la vue affichée** (jamais stockée) : elle est juste après un
+  changement de branche, de dossier, un effacement ou une compaction, sans état à réinitialiser.
+- La compaction est refusée pendant un run du même dossier (même défense que `fork`).
+- **Hors lot** : `index_status` (indexation sémantique, non migrée). **Limite connue, à traiter
+  ensuite** : le moteur Node envoie tout l'historique au fournisseur sans fenêtrage (Python
+  tronquait via `max_tokens`) ; la jauge et la compaction sont donc la seule parade.
+
+- [ ] Tâche 33 — Logique pure `state/context.ts` : `estimateTokens`, table des fenêtres,
+      `computeContext`, niveau de couleur, `shouldCompact`, libellé. Tests d'abord (RED).
+- [ ] Tâche 34 — Moteur : `core/compact.mts` + opération worker `compact` (connexion injectée par
+      `main.cjs` comme pour `send`), sans outil, coupe au dernier message utilisateur, refus
+      < 6 / pendant un run / réentrance, aucune écriture dans `memory.md`, échec du modèle →
+      conversation inchangée. Tests worker contre un faux modèle HTTP (RED d'abord).
+- [ ] Tâche 35 — Renderer : pont `compactConversation`, réducteur, `ChatProvider.compact()`,
+      lecture des réglages de contexte, composant `ContextBar` entre `ChatView` et `InputBar`.
+- [ ] Tâche 36 — Auto-compact en fin de tour (une tentative par tour).
+- [ ] Tâche 37 — Preuve dans Electron réel (`context-visual.cjs`) : chiffres relus contre le
+      disque, couleurs, masquage via le vrai dialogue de réglages, bouton au seuil, compaction
+      réelle (disque relu : résumé + fin, `memory.md` absent), échec modèle → inchangé.
+- [ ] Tâche 38 — Vérification finale sur l'app **packagée** (`final-e2e-lot5.cjs`) + suite
+      complète, bilan ici, leçons.
+
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 
 - [x] Task 1 — Module d'embedding lazy et singleton

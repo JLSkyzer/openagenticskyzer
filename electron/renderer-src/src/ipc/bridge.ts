@@ -104,6 +104,12 @@ export function listPrompts(): Promise<PromptEntry[]> {
   return request('list-prompts');
 }
 
+// The project's persistent memory, read-only, for the "🧠 Mémoire projet" window. `truncated` means the
+// beginning was left out (only the end is kept, where the recent facts are).
+export function readProjectMemory(folder: string): Promise<{ content: string; truncated: boolean }> {
+  return request('read-project-memory', { folder });
+}
+
 // Summarises the branch in the background: the answer is only the id to wait for, the result arrives
 // as a 'compacted' / 'compact-failed' agent event. The API key is added by main.cjs, not by the page.
 export function compactConversation(folder: string, branchId: string): Promise<{ compactionId: string }> {

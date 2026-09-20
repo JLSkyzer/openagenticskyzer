@@ -85,6 +85,12 @@ test('listPrompts asks the worker for the prompt library, with no payload', asyn
   assert.deepEqual(calls[0], { op: 'list-prompts', payload: undefined });
 });
 
+test('readProjectMemory asks the worker for the memory of the given folder', async () => {
+  calls.length = 0;
+  await bridge.readProjectMemory('D:\\proj');
+  assert.deepEqual(calls[0], { op: 'read-project-memory', payload: { folder: 'D:\\proj' } });
+});
+
 test('project settings go through project-settings / save-project-settings', async () => {
   calls.length = 0;
   await bridge.getProjectSettings('D:\\proj');

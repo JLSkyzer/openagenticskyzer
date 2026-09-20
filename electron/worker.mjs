@@ -15,6 +15,7 @@ import { webTools } from './core/web-tools.mts';
 import { buildInstructions } from './core/context.mts';
 import { compactMessages, planCompaction } from './core/compact.mts';
 import { PromptLibrary } from './core/prompts.mts';
+import { readProjectMemory } from './core/project-memory.mts';
 
 // OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
 // instead of the real user's ~/.openagent — never rely on the default outside tests.
@@ -34,7 +35,7 @@ const sessionAllowed = new Set();
 const allowKey = (folder, tool) => `${folder}\0${tool}`;
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'shutdown']);
 
 const BASE_SYSTEM_PROMPT = [
   'Tu es openagent, un assistant de développement qui travaille dans le dossier du projet actif avec les outils fournis :',
@@ -229,10 +230,16 @@ async function handle(message) {
     if (op === 'save-global-settings') { await settings.saveGlobal(payload.patch); result = await settings.publicGlobal(); }
     if (op === 'save-project-settings') result = await settings.saveProject(payload.folder, payload.patch);
     // Zone Danger: none of these delete project files — history and sidebar entries only.
-    if (op === 'clear-history') result = await conversations.clear(payload.folder);
+    if (op === 'clear-history') {
+      // An agent run or a compaction is about to write its transcript into this history: clearing it now
+      // would be undone (or corrupted) a moment later. Same defence as `fork`.
+      if (runningIn(payload.folder)) throw new Error('Un message est en cours dans ce dossier : attends la fin avant d’effacer l’historique.');
+      result = await conversations.clear(payload.folder);
+    }
     if (op === 'remove-folder') result = await folders.remove(payload.folder);
     if (op === 'reset-global-settings') result = await settings.resetGlobal();
     if (op === 'list-prompts') result = await promptLibrary.list();
+    if (op === 'read-project-memory') result = await readProjectMemory(payload.folder);
     if (op === 'list-branches') result = await conversations.list(payload.folder);
     if (op === 'messages') result = await conversations.messages(payload.folder, payload.branchId || 'main');
     if (op === 'save-messages') result = await conversations.save(payload.folder, payload.branchId || 'main', payload.messages);

@@ -29,3 +29,4 @@ import './main-routing.test.mts';
 import './chat-compaction.test.mts';
 import './prompts.test.mts';
 import './prompt-logic.test.mts';
+import './project-memory.test.mts';

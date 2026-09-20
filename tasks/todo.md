@@ -1428,6 +1428,84 @@ Comportement NiceGUI à reproduire :
       commandes, téléchargements, onboarding, suppression / renommage de branche, fenêtrage de
       l'historique, ainsi que les points listés à la fin du lot 3.
 
+### Lot actif suivant — palette de commandes (2026-09-23)
+
+Inventaire NiceGUI relevé le 2026-09-23 (`command_palette.py` en entier, `main.py:328`,
+`input_bar.py:712`, `tests/test_artifacts.py`). Rien n'existe côté Electron.
+
+Comportement NiceGUI à reproduire :
+- **Ctrl+K** ouvre la palette **où que soit le focus, zone de saisie comprise** (le code Python
+  le précise : sans `ignore=[]` le raccourci ne marchait jamais pendant l'usage normal).
+  À l'ouverture la recherche est vidée et toutes les commandes sont réaffichées.
+- Fenêtre de 480 px : champ « Rechercher une commande… » avec focus, puis une ligne par commande
+  (libellé, description en dessous). Filtre insensible à la casse sur le **libellé ou la
+  description**, **8 résultats au plus** ; rien → « Aucune commande trouvée. ».
+- Cliquer une commande ferme la palette puis l'exécute.
+- Les 8 commandes : 📂 Ouvrir un dossier · 🔄 Changer de modèle · 🗑️ Vider l'historique ·
+  ⚙️ Paramètres · 🧠 Voir la mémoire projet · 📋 Bibliothèque de prompts · ⬇ Exporter la
+  conversation · ⚡ Compacter le contexte.
+- « Vider l'historique » : sans dossier actif → avertissement « Aucun dossier actif. » ; sinon
+  confirmation « Confirmer l'effacement » / « Tous les messages de « <dossier> » seront
+  effacés. » (Effacer / Annuler), puis « Historique effacé. ». « Voir la mémoire projet » : sans
+  dossier → même avertissement ; sinon fenêtre « 🧠 Mémoire projet » (600 px, contenu rendu en
+  Markdown, « Aucune mémoire enregistrée pour ce projet. » si vide, bouton Fermer).
+- Le pied de la barre de saisie annonce « … · Ctrl+K → commandes ».
+
+Écarts / décisions :
+- **« ⬇ Exporter la conversation » n'est pas dans cette palette** : l'export n'existe pas encore en
+  Electron (ni le menu ⬇ de la barre du haut ni les 3 formats). Convention du projet, écrite dans
+  le code Python lui-même : ne jamais exposer une entrée qui ne ferait rien. Elle arrivera avec le
+  lot « export », avec « Depuis : <branche> ».
+- **Navigation au clavier ajoutée** (↑ ↓ pour choisir, Entrée pour exécuter, la première ligne est
+  choisie d'office) : l'original n'obéit qu'à la souris, mais une palette sans clavier ne sert à
+  rien quand on l'ouvre au clavier. Ajout, pas écart.
+- **Le worker refuse `clear-history` pendant un run ou une compaction du dossier** (même défense que
+  `fork`) : c'était une limite connue depuis le lot 1, la palette l'exposerait en un raccourci.
+  Vaut aussi pour l'onglet Danger des réglages.
+- **Mémoire projet en lecture seule, plafonnée à 200 Ko** (on garde la **fin** : les faits récents
+  sont ajoutés en bas, et le moteur n'injecte lui aussi que la fin), avec la mention « début
+  omis ». Lecture refusée si `memory.md` est un lien symbolique. Rendu Markdown sans HTML brut.
+- **Avertissements et succès en « toasts » d'application** (jaune / vert / rouge), indépendants du
+  chat : « Historique effacé. » doit rester visible alors que l'effacement remonte le chat.
+- Ctrl+K rouvre et remet à zéro une palette déjà ouverte (comme l'original) ; Échap la ferme.
+- **Hors lot** : l'export ; un éditeur / une écriture de la mémoire projet (Python ne fait que lire
+  ici).
+
+- [x] Tâche 43 — Moteur + pont : `core/project-memory.mts` (lecture seule, plafond, refus lien
+      symbolique), opération `read-project-memory`, garde de `clear-history` pendant un run / une
+      compaction, `readProjectMemory` dans `bridge.ts`. Tests d'abord (RED).
+      **Preuve** : `project-memory.test.mts` (10 tests, 0 ignoré), RED = module absent, puis —
+      module présent mais worker inchangé — les 3 tests du worker échouaient bien (opération
+      inconnue, pas de garde), puis GREEN. Vérifié : pas de `memory.md` (ni de `.openagent`) →
+      mémoire vide sans erreur ; contenu rendu tel quel ; mémoire de 360 Ko → **la fin** est gardée
+      (200 000 caractères, le dernier fait est présent) avec `truncated: true` ; fichier de 7 Mo
+      **non lu en entier** (queue de 1 Mo) ; `memory.md` qui est un dossier → refusé ; `.openagent`
+      redirigé par une jonction → refusé ; chemin relatif / dossier absent → refusé. **Garde
+      `clear-history`** : refusé tant qu'un run tient le dossier (rien n'est effacé), accepté
+      après l'arrêt du run ; refusé pendant une compaction, accepté une fois le résumé sauvé
+      (`removed_messages: 3`). Pont : `readProjectMemory(folder)` ; **le test de routage a échoué
+      comme prévu** avant l'ajout à la liste autorisée de `main.cjs`. `npm test` 260/260,
+      `tsc` propre.
+      **Effet de bord voulu** : le test de la Tâche 34 (« un résumé tardif n'écrase pas une
+      conversation modifiée ») simulait l'écrivain concurrent avec `clear-history`, désormais
+      refusé pendant une compaction — c'est le but de la garde. Il utilise `save-messages` :
+      la comparaison à l'écriture est toujours prouvée, contre n'importe quel écrivain.
+      **Honnêteté sur un test retiré** : « `memory.md` est un lien symbolique » s'ignorait
+      (créer un lien de fichier demande un privilège que la machine n'accorde pas) — un test qui
+      s'ignore ne prouve rien, je l'ai supprimé ; la même branche (`!isFile()`) est prouvée par le
+      cas du dossier, le lien lui-même **n'est pas exercé**.
+- [ ] Tâche 44 — Logique pure `state/commands.ts` : la liste des commandes, `matchCommands`
+      (libellé ou description, 8 au plus), déplacement de la sélection. Tests d'abord (RED).
+- [ ] Tâche 45 — Socle d'interface : toasts d'application, registre d'actions (ouvrir un dossier,
+      le sélecteur de modèle, la bibliothèque de prompts s'y déclarent depuis leurs composants).
+- [ ] Tâche 46 — Composant `CommandPalette` (Ctrl+K partout, clavier, clic), fenêtres « mémoire
+      projet » et « confirmer l'effacement », pied de la barre de saisie.
+- [ ] Tâche 47 — Preuve dans Electron réel (`palette-visual.cjs`) : vrai Ctrl+K depuis la zone de
+      saisie, filtre, clavier, chacune des 7 commandes exécutée pour de bon (effets relus sur disque
+      ou à l'écran), refus sans dossier, effacement confirmé / annulé.
+- [ ] Tâche 48 — Vérification finale sur l'app **packagée** (`final-e2e-lot7.cjs`) + suite
+      complète, bilan ici, leçons.
+
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 
 - [x] Task 1 — Module d'embedding lazy et singleton

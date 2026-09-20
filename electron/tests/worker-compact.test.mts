@@ -207,12 +207,15 @@ test('worker::compact does not overwrite a conversation that changed while the m
   const held = model.nextHeld();
   const { outcome } = await compact();
   await held;
-  await callWorker(worker, 'clear-history', { folder: project });
+  // "clear-history" is now refused during a compaction (see project-memory.test.mts): another writer is used,
+  // `save-messages`, to prove the compare-and-set itself — it protects against ANY concurrent write.
+  const rewritten = [{ role: 'user', content: 'réécrit ailleurs' }];
+  await callWorker(worker, 'save-messages', { folder: project, branchId: 'main', messages: rewritten });
   model.release();
   const done = await outcome;
   assert.equal(done.kind, 'compact-failed');
   assert.match(done.message, /a changé pendant la compaction/);
-  assert.deepEqual(await stored(), [], 'the cleared history stays cleared: the late summary was NOT written back');
+  assert.deepEqual(await stored(), rewritten, 'what was written meanwhile stays: the late summary was NOT written back');
 });
 
 test('worker::compact is refused while another compaction runs on the folder, and blocks send and fork meanwhile', async t => {

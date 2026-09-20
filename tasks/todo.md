@@ -1520,8 +1520,22 @@ Comportement NiceGUI à reproduire :
       `Sidebar` (`open-folder`), `ModelButton` (`switch-model`), `InputBar` (`open-prompts`) ;
       pied de la barre de saisie « … · Ctrl+K → commandes ». `npm test` 276/276, `tsc` propre,
       build OK, `chat` / `layout` / `sidebar` / `model` / `prompts` / `branches` / `context` PASS.
-- [ ] Tâche 46 — Composant `CommandPalette` (Ctrl+K partout, clavier, clic), fenêtres « mémoire
+- [x] Tâche 46 — Composant `CommandPalette` (Ctrl+K partout, clavier, clic), fenêtres « mémoire
       projet » et « confirmer l'effacement », pied de la barre de saisie.
+      `CommandPalette` (dans le `ChatProvider` : elle lit l'état du chat) : Ctrl+K en **phase de
+      capture sur la fenêtre**, donc quel que soit le focus, zone de saisie comprise ; rouvrir
+      remet la recherche à zéro et redonne le focus ; carte de 480 px (fond cliquable, Échap),
+      champ « Rechercher une commande… », lignes libellé / description, « Aucune commande
+      trouvée. », ↑ ↓ Entrée. Les 7 commandes : trois passent par le registre (`open-folder`,
+      `switch-model`, `open-prompts`), `open-settings` par le parent, `clear-history` →
+      confirmation (« Confirmer l'effacement » / « Tous les messages de « <dossier> » seront
+      effacés. » / Effacer / Annuler, toast **avant** le remontage du chat), `show-memory` → fenêtre
+      « 🧠 Mémoire projet » (Markdown, « Aucune mémoire enregistrée pour ce projet. », mention
+      « début omis » si plafonnée, Fermer), `compact` → `compact()`. Sans dossier actif :
+      « Aucun dossier actif. » (jaune) ; pour `compact`, « Pas assez de messages à compresser. ».
+      `tsc` propre, build OK, `npm test` 276/276 ; `chat` / `layout` / `permission` / `stop` /
+      `sidebar` / `model` / `prompts` / `settings` PASS. **Non prouvé ici** : les effets réels de
+      chaque commande le seront en Tâche 47.
 - [ ] Tâche 47 — Preuve dans Electron réel (`palette-visual.cjs`) : vrai Ctrl+K depuis la zone de
       saisie, filtre, clavier, chacune des 7 commandes exécutée pour de bon (effets relus sur disque
       ou à l'écran), refus sans dossier, effacement confirmé / annulé.

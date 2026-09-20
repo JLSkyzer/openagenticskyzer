@@ -72,6 +72,23 @@ export class Conversations {
       branch.messages = snapshot; return doc;
     });
   }
+  /**
+   * Replaces a branch's messages only if they are still exactly `expected`. The check and the write
+   * happen inside the same atomic update, so a slow job (a summary) can never overwrite what the user
+   * did in the meantime — clearing the history, for instance.
+   */
+  async replaceIfUnchanged(folder: string, id: string, expected: Message[], next: Message[]) {
+    validId(id); validMessages(next);
+    const snapshot = structuredClone(next);
+    await this.update(folder, doc => {
+      const branch = doc.branches.find(b => b.id === id);
+      if (!branch) throw new Error('Branche introuvable');
+      if (JSON.stringify(branch.messages) !== JSON.stringify(expected)) {
+        throw new Error('La conversation a changé pendant la compaction : rien n’a été modifié.');
+      }
+      branch.messages = snapshot; return doc;
+    });
+  }
   /** Empties the folder's history: every fork is dropped and the main branch keeps no message. */
   async clear(folder: string) {
     let removed = 0;

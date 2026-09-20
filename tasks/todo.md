@@ -1163,10 +1163,37 @@ Comportement NiceGUI à reproduire :
       `_DEFAULT_CTX_LIMITS` (test d'égalité stricte, rien d'inventé). Un détail de parité
       trouvé en écrivant les tests : Python `len()` compte des caractères, JS `.length` des
       unités UTF-16 — un emoji pesait double ; `characters()` corrige et un test le fige.
-- [ ] Tâche 34 — Moteur : `core/compact.mts` + opération worker `compact` (connexion injectée par
+- [x] Tâche 34 — Moteur : `core/compact.mts` + opération worker `compact` (connexion injectée par
       `main.cjs` comme pour `send`), sans outil, coupe au dernier message utilisateur, refus
       < 6 / pendant un run / réentrance, aucune écriture dans `memory.md`, échec du modèle →
       conversation inchangée. Tests worker contre un faux modèle HTTP (RED d'abord).
+      **Preuve** : `worker-compact.test.mts` (12 tests, vrai `worker.mjs`, faux modèle HTTP qui
+      enregistre les corps de requête), RED = 11/11 « Opération IPC inconnue », puis GREEN.
+      Vérifié : résumé + fin de conversation écrits dans la branche (et l'événement porte
+      exactement ce qui est sauvé) ; **le corps de la requête ne contient aucun `tools`**, un
+      seul message `user`, texte utilisateur/IA seulement, coupé à 800 car. (800 passe, 801
+      non) ; la fin gardée démarre au dernier message utilisateur, donc **aucun `tool`
+      orphelin** et la sortie d'outil n'est jamais envoyée au résumeur ; refus sous 6 messages
+      et pour un seul échange long (6 messages mais rien à résumer), modèle jamais appelé ;
+      aucun `memory.md` ni dans le projet ni dans `OPENAGENT_HOME` ; échec HTTP 500 ou réponse
+      vide → historique **identique** ; **un « Effacer l'historique » pendant le résumé n'est
+      pas écrasé** par le résumé tardif (`Conversations.replaceIfUnchanged`, comparaison et
+      écriture dans la même mise à jour atomique) ; deuxième compaction, `send` et `fork`
+      refusés pendant qu'une compaction tient le dossier, libérés ensuite ; compaction refusée
+      pendant un run ; une branche se compacte sans toucher `main`.
+      `main.cjs` : `compact` autorisé et reçoit la connexion (clé) comme `send` via
+      `needsConnection` — le nouveau `main-routing.test.mts` (3 tests) vérifie aussi que **toute
+      opération appelée par `bridge.ts` est connue de `main.cjs`**, garde contre l'oubli qui
+      aurait donné « Opération IPC inconnue » à l'exécution. La compaction répond tout de suite
+      (`compactionId`) et rend son résultat par événement (`compacted` / `compact-failed`) : le
+      délai IPC de `main.cjs` est de 30 s, un résumé peut durer bien plus.
+      Deux erreurs de **test** de ma part, corrigées sans toucher au code : j'attendais mon
+      message d'erreur alors que le fournisseur rejette lui-même une réponse vide (et aussi
+      blanche) avec `Réponse vide du provider` — ma garde « aucun résumé » n'est donc atteignable
+      que par un autre fournisseur, elle est testée directement ; et un seuil arbitraire (`>= 20`
+      opérations) dans le test de routage, remplacé par la vérification que la lecture retrouve
+      des opérations connues. `npm test` 217/217, `tsc` propre. **Limite** : la mutation du test
+      de routage (retirer `compact` de la liste) sera faite quand `bridge.ts` l'appellera (T35).
 - [ ] Tâche 35 — Renderer : pont `compactConversation`, réducteur, `ChatProvider.compact()`,
       lecture des réglages de contexte, composant `ContextBar` entre `ChatView` et `InputBar`.
 - [ ] Tâche 36 — Auto-compact en fin de tour (une tentative par tour).

@@ -7,7 +7,13 @@ let mainWindow;
 let backend;
 let connections;
 const pending = new Map();
-const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings']);
+const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact']);
+
+// Operations that call the model: main.cjs folds the resolved connection (including the API key,
+// which the page never sees) into their payload. Everything else must never receive it.
+const CONNECTION_OPS = new Set(['send', 'compact']);
+const isBackendOp = op => allowed.has(op);
+const needsConnection = op => CONNECTION_OPS.has(op);
 
 /**
  * Content-Security-Policy for the renderer. Strict in a packaged build (no eval, no
@@ -131,7 +137,7 @@ async function handleBackendRequest(event, request) {
   if (request.op === 'save-connection') return connections.save(request.payload?.folder ?? null, request.payload?.patch, request.payload?.authorization);
   if (!allowed.has(request.op)) throw new Error('Opération IPC inconnue');
   if (!backend) throw new Error('Moteur Node indisponible');
-  if (request.op === 'send') request = await resolveSendPayload(connections, request);
+  if (needsConnection(request.op)) request = await resolveSendPayload(connections, request);
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { pending.delete(id); reject(new Error('Délai IPC dépassé')); }, 30000);
@@ -163,4 +169,4 @@ if (require.main === module) {
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }
 
-module.exports = { resolveSendPayload, createConnections, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker };
+module.exports = { resolveSendPayload, createConnections, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection };

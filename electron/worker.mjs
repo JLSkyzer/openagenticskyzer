@@ -13,6 +13,7 @@ import { gitTools } from './core/git-tools.mts';
 import { shellTools, stopAllServers } from './core/shell-tool.mts';
 import { webTools } from './core/web-tools.mts';
 import { buildInstructions } from './core/context.mts';
+import { compactMessages, planCompaction } from './core/compact.mts';
 
 // OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
 // instead of the real user's ~/.openagent — never rely on the default outside tests.
@@ -31,7 +32,7 @@ const sessionAllowed = new Set();
 const allowKey = (folder, tool) => `${folder}\0${tool}`;
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'shutdown']);
 
 const BASE_SYSTEM_PROMPT = [
   'Tu es openagent, un assistant de développement qui travaille dans le dossier du projet actif avec les outils fournis :',
@@ -42,9 +43,35 @@ const BASE_SYSTEM_PROMPT = [
   'Ne mémorise (save_memory) que ce que l’utilisateur demande de retenir ou des conventions durables du projet.',
 ].join(' ');
 
+// Anything in `active` on this folder — an agent run or a compaction — is writing its transcript.
 function runningIn(folder) {
   const target = resolve(String(folder));
   return [...active.values()].some(run => resolve(String(run.folder)) === target);
+}
+function compactingIn(folder) {
+  const target = resolve(String(folder));
+  return [...active.values()].some(run => run.kind === 'compact' && resolve(String(run.folder)) === target);
+}
+
+/**
+ * Summarises a branch in the background and reports through events (like `send`: the IPC round trip
+ * is capped at 30 s, a summary is not). Nothing is written unless the model answered AND the branch
+ * is still exactly what it was when the summary was requested.
+ */
+async function runCompaction(compactionId, folder, branchId, before, connection) {
+  const post = message => parentPort.postMessage({ type: 'event', event: 'agent', runId: compactionId, ...message });
+  let outcome;
+  try {
+    const after = await compactMessages({ provider: new ChatProvider(), connection, messages: before, signal: active.get(compactionId).controller.signal });
+    await conversations.replaceIfUnchanged(folder, branchId, before, after);
+    outcome = { kind: 'compacted', messages: after };
+  } catch (error) {
+    const aborted = error?.name === 'AbortError';
+    outcome = { kind: 'compact-failed', message: aborted ? 'Compaction interrompue.' : error instanceof Error ? error.message : 'Erreur interne' };
+  }
+  // Release the folder BEFORE announcing the end, so whoever reacts to the event finds it free.
+  active.delete(compactionId);
+  post(outcome);
 }
 
 function normalizeRole(role) {
@@ -140,7 +167,29 @@ async function handle(message) {
       if (!payload.folder) { await settings.saveGlobal(payload.settings || {}); result = await settings.publicGlobal(); }
       else result = await settings.saveProject(payload.folder, { agent_mode: payload.settings?.agent_mode || 'inherit', custom_prompt: payload.settings?.custom_prompt || '' });
     }
+    if (op === 'compact') {
+      const folder = payload.folder;
+      const branchId = payload.branchId || 'main';
+      if (compactingIn(folder)) throw new Error('Une compaction est déjà en cours dans ce dossier.');
+      if (runningIn(folder)) throw new Error('Un message est en cours dans ce dossier : attends la fin avant de compresser.');
+      // Reserve the folder BEFORE the first await: two requests must not both pass the checks above.
+      const compactionId = randomUUID();
+      active.set(compactionId, { controller: new AbortController(), folder, kind: 'compact' });
+      let before;
+      try {
+        before = await conversations.messages(folder, branchId);
+        planCompaction(before); // too short → refused right away, model never called
+      } catch (error) {
+        active.delete(compactionId);
+        throw error;
+      }
+      reply(id, true, { compactionId });
+      void runCompaction(compactionId, folder, branchId, before, payload.connection);
+      return;
+    }
     if (op === 'send') {
+      // A run appends to the same transcript the summary is about to replace.
+      if (compactingIn(payload.folder)) throw new Error('Une compaction est en cours dans ce dossier : attends la fin avant d’envoyer un message.');
       const runId = randomUUID();
       reply(id, true, { runId });
       // Fire-and-forget: the turn's real result streams back as 'event' messages, not

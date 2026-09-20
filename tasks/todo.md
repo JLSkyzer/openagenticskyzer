@@ -1261,8 +1261,39 @@ Comportement NiceGUI à reproduire :
       Constat sans lien avec le code : dans la capture les longues suites de `x` du jeu d'essai
       débordent horizontalement (aucune coupure possible dans un mot de 800 caractères) — à
       surveiller sur de vraies longues URLs.
-- [ ] Tâche 38 — Vérification finale sur l'app **packagée** (`final-e2e-lot5.cjs`) + suite
+- [x] Tâche 38 — Vérification finale sur l'app **packagée** (`final-e2e-lot5.cjs`) + suite
       complète, bilan ici, leçons.
+      **Preuve** (`npm run test:final-e2e-lot5`, exe packagé lancé directement, Python absent du
+      PATH, coffre chiffré réel, CDP) : un `chat_history.json` hérité est importé et la jauge suit
+      le **fournisseur de la vraie connexion** (openrouter : `1% · ~1,200 tokens`, recalculé depuis
+      le fichier) ; le vrai dialogue de réglages passe la jauge à 61 % et fait apparaître ⚡ sans
+      redémarrage ; un clic réel compacte : résumé + dernière paire sur disque, écran = disque,
+      **la clé du coffre est sur la requête de résumé (`Authorization: Bearer …`) — injectée par
+      `main.cjs`, jamais par la page** —, aucun outil, aucun `memory.md` ; **arrêt réel puis
+      relance** : la conversation compactée et la jauge reviennent exactement comme sauvées ;
+      modèle en 500 → historique identique octet pour octet et bandeau d'erreur **dans la zone
+      visible** ; `auto_compact` activé : un tour → exactement un résumé, sans clic, message et
+      réponse conservés ; la clé n'est dans aucun JSON du dossier de données. Suite complète sur
+      ce package : `npm test` 231/231, `tsc` propre, 14 tests Electron (dont `context`) +
+      `test:package` + `test:bridge-real` PASS, `final-e2e` lots 1 à 5 PASS, `npm audit` 0
+      vulnérabilité, aucun `openagent.exe` résiduel.
+      **Erreur de test de ma part, corrigée** : j'avais demandé `max_tokens = 4096` alors que le
+      curseur a un pas de 1000 à partir de 2000 — il enregistre 4000 (61 % au lieu de 59 %). L'app
+      était cohérente ; le test passe maintenant par une valeur que la vraie commande peut produire.
+      **Démarrage à froid** : cette fois la 1re exécution juste après le packaging a passé les
+      preuves 1 à 3 (aucun survol souris dans ce test), sans rapport avec l'instabilité du lot 4.
+
+      **Bilan du lot « jauge de contexte » : livré** pour son périmètre (Tâches 33-38) — jauge
+      dérivée de la vue affichée, réglages suivis en direct, compaction manuelle et automatique,
+      écarts de sécurité assumés (pas de `memory.md`, pas de brute-cut, pas d'outil, refus pendant
+      un run, résumé jamais écrit sur une conversation modifiée entre-temps). Défaut d'interface
+      trouvé au passage et corrigé : les erreurs restaient hors de vue. **Reste, à traiter** :
+      le moteur Node envoie tout l'historique sans fenêtrage (la compaction est la seule parade,
+      Python tronquait via `max_tokens`) ; `index_status` (indexation sémantique) ; les messages
+      d'outils ne comptent pas dans la jauge (parité Python, sous-estimation). **La migration
+      NiceGUI → Electron n'est pas terminée** : bibliothèque de prompts, édition / régénération de
+      message, artifacts, palette de commandes, téléchargements, onboarding, suppression / renommage
+      de branche, ainsi que les points listés à la fin du lot 3.
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

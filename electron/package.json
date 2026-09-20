@@ -30,6 +30,7 @@
     "test:final-e2e-lot2": "node tests/final-e2e-lot2.cjs",
     "test:final-e2e-lot3": "node tests/final-e2e-lot3.cjs",
     "test:final-e2e-lot4": "node tests/final-e2e-lot4.cjs",
+    "test:final-e2e-lot5": "node tests/final-e2e-lot5.cjs",
     "test:bridge-real": "node tests/bridge-real.cjs"
   },
   "devDependencies": {

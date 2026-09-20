@@ -1572,8 +1572,42 @@ Comportement NiceGUI à reproduire :
       (survol, un seul `mouseMove`) est la seule candidate connue (voir lot 4) : elle renvoie
       maintenant le déplacement jusqu'à ce que `⑂` apparaisse — durcissement, **pas une cause
       prouvée**.
-- [ ] Tâche 48 — Vérification finale sur l'app **packagée** (`final-e2e-lot7.cjs`) + suite
+- [x] Tâche 48 — Vérification finale sur l'app **packagée** (`final-e2e-lot7.cjs`) + suite
       complète, bilan ici, leçons.
+      **Preuve** (`npm run test:final-e2e-lot7`, exe packagé lancé directement juste après le
+      packaging — exécution à froid, réussie —, Python absent du PATH, coffre chiffré réel, CDP
+      avec **clavier réel** `Input.dispatchKeyEvent`) : **Ctrl+K depuis la zone de saisie** avant
+      tout dossier → palette ouverte, pas de `k` tapé, les 7 commandes dans l'ordre ; la saisie
+      `mémoire` puis **Entrée réelle** lance la commande, refusée sans dossier (toast jaune) ;
+      « Changer de modèle » ouvre le vrai sélecteur (le modèle est enregistré dans le coffre
+      chiffré) et l'historique hérité (3 échanges) est importé ; « Voir la mémoire projet » : le
+      worker **packagé** sert `memory.md`, rendu en gras, marqueur daté caché ; « Paramètres » et
+      « Bibliothèque de prompts » ouvrent leurs fenêtres ; **« Compacter le contexte » : résumé +
+      dernière paire sur disque, la clé du coffre est sur la requête (`Authorization`), aucun
+      outil** ; **« Vider l'historique » pendant un tour : refusé** (toast rouge), disque inchangé ;
+      Annuler ne supprime rien, Effacer vide le disque et l'écran (toast vert) ; **arrêt et relance
+      réels** : l'historique reste vide et Ctrl+K rouvre la palette ; la clé n'est dans aucun JSON
+      du dossier de données ni dans la conversation. Suite complète sur ce package : `npm test`
+      279/279, `tsc` propre, 17 tests Electron (dont `palette`) + `test:package` +
+      `test:bridge-real` PASS, `final-e2e` lots 1 à 7 PASS, `npm audit` 0 vulnérabilité, aucun
+      `openagent.exe` résiduel.
+      Deux lignes de bruit sans valeur que j'avais laissées dans le brouillon du script (un
+      `querySelector` sans effet, un clic sur un sélecteur inventé) ont été retirées **avant** la
+      première exécution.
+
+      **Bilan du lot « palette de commandes » : livré** pour son périmètre (Tâches 43-48) — Ctrl+K
+      partout, filtre, clavier (ajout), 7 commandes exécutées pour de vrai, toasts d'application,
+      registre d'actions, lecture seule de la mémoire projet. Écarts assumés : pas d'entrée
+      « Exporter » tant que l'export n'existe pas, navigation au clavier ajoutée, `clear-history`
+      refusé pendant un run ou une compaction (limite connue depuis le lot 1 **levée**, aussi pour
+      l'onglet Danger), mémoire plafonnée à 200 Ko en gardant la fin, commentaires HTML datés
+      cachés comme le faisait le rendu NiceGUI. **Reste, à traiter** : l'**export** de la
+      conversation (menu ⬇ et palette, 3 formats, « Depuis : branche ») ; édition / régénération
+      de message ; artifacts ; téléchargements ; onboarding ; suppression / renommage de branche ;
+      fenêtrage de l'historique ; un lien symbolique de `memory.md` **n'est pas exercé** (la
+      machine n'accorde pas le privilège, la même branche est prouvée par un dossier) ; test
+      `branches` : une instabilité isolée, cause non établie (voir Tâche 47). **La migration
+      NiceGUI → Electron n'est pas terminée.**
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

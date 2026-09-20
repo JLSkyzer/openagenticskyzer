@@ -13,7 +13,7 @@ export function BranchSelector() {
         data-testid="oa-branch-select"
         aria-label="Branche de la conversation"
         value={state.currentBranchId}
-        disabled={state.agentRunning}
+        disabled={state.agentRunning || state.compacting}
         onChange={event => void switchBranch(event.target.value)}
         className="max-w-36 rounded border border-gray-700 bg-gray-900 px-1 py-0.5 text-xs text-gray-300 outline-none disabled:opacity-50"
       >

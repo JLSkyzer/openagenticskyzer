@@ -53,6 +53,32 @@ test('branch bridges call list-branches and fork with the exact payloads the wor
   assert.deepEqual(calls[1], { op: 'fork', payload: { folder: 'D:\\proj', source: 'main', count: 3, label: 'Branche 1' } });
 });
 
+test('compactConversation asks the worker to compact the given branch of the given folder', async () => {
+  calls.length = 0;
+  await bridge.compactConversation('D:\\proj', 'abc');
+  assert.deepEqual(calls[0], { op: 'compact', payload: { folder: 'D:\\proj', branchId: 'abc' } });
+});
+
+test('onSettingsChanged fires after a successful save of settings or connection, never after a failure', async () => {
+  let fired = 0;
+  const stop = bridge.onSettingsChanged(() => { fired++; });
+  await bridge.saveGlobalSettings({ show_context_bar: false });
+  await bridge.saveProjectSettings('D:\\proj', { agent_mode: 'plan' });
+  await bridge.saveConnection(null, { provider: 'groq' });
+  await bridge.resetGlobalSettings();
+  assert.equal(fired, 4, 'each successful save announces itself once');
+
+  const original = (globalThis as any).window.openagent.request;
+  (globalThis as any).window.openagent.request = async () => { throw new Error('refusé'); };
+  await assert.rejects(bridge.saveGlobalSettings({ show_context_bar: true }), /refusé/);
+  (globalThis as any).window.openagent.request = original;
+  assert.equal(fired, 4, 'a refused save changed nothing, so nothing is announced');
+
+  stop();
+  await bridge.saveGlobalSettings({ show_context_bar: true });
+  assert.equal(fired, 4, 'unsubscribing stops the notifications');
+});
+
 test('project settings go through project-settings / save-project-settings', async () => {
   calls.length = 0;
   await bridge.getProjectSettings('D:\\proj');

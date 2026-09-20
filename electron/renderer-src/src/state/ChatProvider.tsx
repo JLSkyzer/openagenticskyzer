@@ -1,20 +1,57 @@
-import { createContext, useCallback, useContext, useEffect, useReducer, useRef, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import {
+  compactConversation,
   decidePermission,
   forkBranch,
+  getConnection,
+  getGlobalSettings,
   getMessages,
   listBranches,
   onAgentEvent,
+  onSettingsChanged,
   sendMessage,
   stop,
+  type AgentEvent,
   type ChatMessage,
 } from '../ipc/bridge';
 import { canForkAt, nextBranchLabel } from './branches';
+import { computeContext, type ContextUsage } from './context';
 import { chatReducer, initialChatState, type ChatState } from './reducer';
+
+// What the gauge needs from the settings (all global) and from the active connection (its provider
+// decides the default context window).
+export interface ContextSettings {
+  show_context_bar: boolean;
+  auto_compact: boolean;
+  compact_threshold: number;
+  max_tokens: number | null;
+  reserved_tokens: number;
+  provider: string | null;
+}
+// Same defaults as the settings service, used until the first read answers.
+const DEFAULT_CONTEXT_SETTINGS: ContextSettings = {
+  show_context_bar: true, auto_compact: true, compact_threshold: 70, max_tokens: null, reserved_tokens: 2048, provider: null,
+};
+
+function readContextSettings(global: Record<string, unknown>, provider: string | null): ContextSettings {
+  const number = (value: unknown, fallback: number) => (typeof value === 'number' && Number.isFinite(value) ? value : fallback);
+  return {
+    show_context_bar: typeof global.show_context_bar === 'boolean' ? global.show_context_bar : DEFAULT_CONTEXT_SETTINGS.show_context_bar,
+    auto_compact: typeof global.auto_compact === 'boolean' ? global.auto_compact : DEFAULT_CONTEXT_SETTINGS.auto_compact,
+    compact_threshold: number(global.compact_threshold, DEFAULT_CONTEXT_SETTINGS.compact_threshold),
+    max_tokens: typeof global.max_tokens === 'number' && Number.isFinite(global.max_tokens) ? global.max_tokens : null,
+    reserved_tokens: number(global.reserved_tokens, DEFAULT_CONTEXT_SETTINGS.reserved_tokens),
+    provider,
+  };
+}
 
 interface ChatContextValue {
   state: ChatState;
   activeFolder: string | null;
+  // The gauge: usage of the messages on screen, derived on every render, never stored.
+  context: { usage: ContextUsage; settings: ContextSettings };
+  // Summarise the conversation on screen (context_bar.py::trigger_compact).
+  compact(): Promise<void>;
   send(text: string): Promise<void>;
   stopRun(): Promise<void>;
   decide(allow: boolean, always: boolean): Promise<void>;
@@ -67,7 +104,52 @@ export function ChatProvider({ activeFolder, initialMessages, children }: ChatPr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeFolder]);
 
-  useEffect(() => onAgentEvent(event => dispatch({ type: 'agent-event', event })), []);
+  // The end of a compaction can be delivered before compact() has seen the answer that names it:
+  // keep it, compact() replays it right after registering the compaction, so the chat is never left
+  // waiting for an event that already went by.
+  const endedCompactions = useRef(new Map<string, AgentEvent>());
+  useEffect(
+    () =>
+      onAgentEvent(event => {
+        if (event.kind === 'compacted' || event.kind === 'compact-failed') endedCompactions.current.set(event.runId, event);
+        dispatch({ type: 'agent-event', event });
+      }),
+    [],
+  );
+
+  // Settings and provider of the gauge: read again for each folder and after any save made elsewhere
+  // (settings dialog, model dialog) — the bridge announces those.
+  const [contextSettings, setContextSettings] = useState<ContextSettings>(DEFAULT_CONTEXT_SETTINGS);
+  const [settingsVersion, setSettingsVersion] = useState(0);
+  useEffect(() => onSettingsChanged(() => setSettingsVersion(version => version + 1)), []);
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([getGlobalSettings(), getConnection(activeFolder)])
+      .then(([global, connection]) => { if (!cancelled) setContextSettings(readContextSettings(global, connection.provider)); })
+      .catch(() => { /* keep what is shown: a gauge that cannot read its settings must not break the chat */ });
+    return () => { cancelled = true; };
+  }, [activeFolder, settingsVersion]);
+
+  const usage = useMemo(
+    () => computeContext(state.messages, { provider: contextSettings.provider, max_tokens: contextSettings.max_tokens, reserved_tokens: contextSettings.reserved_tokens }),
+    [state.messages, contextSettings],
+  );
+
+  const compact = useCallback(async () => {
+    const folder = activeFolderRef.current;
+    const before = stateRef.current;
+    if (!folder || before.agentRunning || before.compacting) return;
+    try {
+      const { compactionId } = await compactConversation(folder, before.currentBranchId);
+      if (activeFolderRef.current !== folder) return;
+      dispatch({ type: 'compaction-started', id: compactionId });
+      const early = endedCompactions.current.get(compactionId);
+      if (early) dispatch({ type: 'agent-event', event: early });
+      endedCompactions.current.delete(compactionId);
+    } catch (error) {
+      dispatch({ type: 'show-error', error: error instanceof Error ? error.message : 'Compression impossible' });
+    }
+  }, []);
 
   const forkFrom = useCallback(async (index: number) => {
     const folder = activeFolderRef.current;
@@ -141,7 +223,9 @@ export function ChatProvider({ activeFolder, initialMessages, children }: ChatPr
   );
 
   return (
-    <ChatContext.Provider value={{ state, activeFolder, send, stopRun, decide, forkFrom, switchBranch, dismissNotice }}>
+    <ChatContext.Provider
+      value={{ state, activeFolder, context: { usage, settings: contextSettings }, compact, send, stopRun, decide, forkFrom, switchBranch, dismissNotice }}
+    >
       {children}
     </ChatContext.Provider>
   );

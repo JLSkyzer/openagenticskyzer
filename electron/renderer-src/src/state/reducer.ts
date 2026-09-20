@@ -31,6 +31,10 @@ export interface ChatState {
   currentBranchId: string;
   // A short positive message ("Branche 'X' créée.") shown once, like ui.notify(type="positive").
   notice: string | null;
+  // A summary of the conversation is being made in the background: `compactionId` is the id its
+  // closing event will carry. It rewrites the branch on screen, so branch operations wait for it.
+  compacting: boolean;
+  compactionId: string | null;
 }
 
 export const initialChatState: ChatState = {
@@ -44,6 +48,8 @@ export const initialChatState: ChatState = {
   branches: [],
   currentBranchId: 'main',
   notice: null,
+  compacting: false,
+  compactionId: null,
 };
 
 export type ChatAction =
@@ -52,6 +58,8 @@ export type ChatAction =
   | { type: 'branch-created'; id: string; label: string; branches: BranchInfo[]; messages: ChatMessage[] }
   | { type: 'branch-switched'; id: string; messages: ChatMessage[] }
   | { type: 'branch-failed'; error: string }
+  | { type: 'compaction-started'; id: string }
+  | { type: 'show-error'; error: string }
   | { type: 'clear-notice' }
   | { type: 'send-started'; runId: string; text: string }
   | { type: 'send-failed'; error: string }
@@ -71,7 +79,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     // Fork and switch replace the messages on screen, so they are ignored while a run is in
     // flight: a late answer must never swap the view out from under the agent that is writing to it.
     case 'branch-created':
-      if (state.agentRunning) return state;
+      if (state.agentRunning || state.compacting) return state;
       return {
         ...state,
         branches: action.branches,
@@ -82,7 +90,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       };
 
     case 'branch-switched':
-      if (state.agentRunning) return state;
+      if (state.agentRunning || state.compacting) return state;
       return {
         ...state,
         currentBranchId: action.id,
@@ -99,6 +107,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     case 'clear-notice':
       return { ...state, notice: null };
+
+    case 'compaction-started':
+      return { ...state, compacting: true, compactionId: action.id, error: null };
+
+    case 'show-error':
+      return { ...state, error: action.error };
 
     case 'send-started':
       return {
@@ -124,6 +138,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     case 'agent-event': {
       const event = action.event;
+      // The end of a compaction carries the compaction's id, not the run's: a stale one (another
+      // folder, an older request) matches nothing we wait for and changes nothing.
+      if (event.kind === 'compacted' || event.kind === 'compact-failed') {
+        if (!state.compacting || event.runId !== state.compactionId) return state;
+        if (event.kind === 'compact-failed') return { ...state, compacting: false, compactionId: null, error: event.message };
+        return { ...state, compacting: false, compactionId: null, messages: event.messages, error: null, notice: 'Contexte compressé avec résumé IA.' };
+      }
       // A stale event from a run that Stop already superseded — ignore it rather than
       // corrupting the view of the (now different) active run.
       if (event.runId !== state.runId) return state;

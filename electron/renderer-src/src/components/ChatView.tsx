@@ -56,7 +56,7 @@ export function ChatView() {
                 <UserBubble
                   key={index}
                   content={message.content}
-                  onFork={state.agentRunning ? undefined : () => void forkFrom(index)}
+                  onFork={state.agentRunning || state.compacting ? undefined : () => void forkFrom(index)}
                 />
               );
             }

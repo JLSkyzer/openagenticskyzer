@@ -88,7 +88,11 @@ export type AgentEvent =
     }
   | { type: 'event'; event: 'agent'; runId: string; kind: 'done' }
   | { type: 'event'; event: 'agent'; runId: string; kind: 'stopped' }
-  | { type: 'event'; event: 'agent'; runId: string; kind: 'error'; message: string };
+  | { type: 'event'; event: 'agent'; runId: string; kind: 'error'; message: string }
+  // A compaction reuses the agent event channel with its own id in `runId`: `messages` is the whole
+  // conversation as saved, summary first.
+  | { type: 'event'; event: 'agent'; runId: string; kind: 'compacted'; messages: ChatMessage[] }
+  | { type: 'event'; event: 'agent'; runId: string; kind: 'compact-failed'; message: string };
 
 export interface OpenAgentBridge {
   request(request: { op: string; payload?: Record<string, unknown> }): Promise<unknown>;

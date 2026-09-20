@@ -1194,8 +1194,30 @@ Comportement NiceGUI à reproduire :
       opérations) dans le test de routage, remplacé par la vérification que la lecture retrouve
       des opérations connues. `npm test` 217/217, `tsc` propre. **Limite** : la mutation du test
       de routage (retirer `compact` de la liste) sera faite quand `bridge.ts` l'appellera (T35).
-- [ ] Tâche 35 — Renderer : pont `compactConversation`, réducteur, `ChatProvider.compact()`,
+- [x] Tâche 35 — Renderer : pont `compactConversation`, réducteur, `ChatProvider.compact()`,
       lecture des réglages de contexte, composant `ContextBar` entre `ChatView` et `InputBar`.
+      **Preuve** (unitaire ; la preuve visuelle et interactive est la Tâche 37) :
+      `chat-compaction.test.mts` (9 tests) + 2 tests de `bridge-connection.test.mts`, RED
+      d'abord (8 échecs : `compactConversation` / `onSettingsChanged` absents, état de compaction
+      absent), puis GREEN. Réducteur : `compacted` remplace la vue et annonce « Contexte compressé
+      avec résumé IA. », `compact-failed` garde tous les messages et affiche la raison, un
+      événement de fin d'une compaction qu'on n'attend plus (autre dossier, autre demande) est
+      ignoré, changer de dossier oublie une compaction en cours, fork / changement de branche
+      ignorés pendant la compaction. Pont : `compactConversation(folder, branchId)` ; **la
+      jauge suit les réglages et le fournisseur sans câblage** — `saveGlobalSettings`,
+      `saveProjectSettings`, `saveConnection` et `resetGlobalSettings` annoncent leur succès via
+      `onSettingsChanged` (jamais après un échec, désabonnement testé). `ChatProvider` :
+      réglages lus par dossier et à chaque annonce, jauge **dérivée** de `state.messages`
+      (`useMemo`, jamais stockée) ; si l'événement de fin d'une compaction arrive avant que la
+      réponse qui la nomme soit traitée, il est rejoué (sinon « Compression en cours… » resterait
+      affiché pour toujours). `ContextBar` reprend la mise en page de `context_bar.py` (🧠, piste
+      120 px, couleurs 70 / 90, bouton ⚡ au seuil, masquée si `show_context_bar` est faux) ; la
+      saisie, `⑂` et le sélecteur de branche sont verrouillés pendant une compaction (la saisie
+      n'est pas vidée : le texte tapé reste). `npm test` 228/228, `tsc` propre, build OK,
+      `layout` / `permission` / `stop` / `sidebar` / `branches` PASS. **`chat`** : 2 exécutions
+      sans verdict affiché juste après une reconstruction (Tâches 30 et 35), 0 sur 11 relances
+      (dont 3 juste après reconstruction) — **inexpliqué, non reproduit**. Mutation du test de
+      routage encore à faire (voir Tâche 34) : `bridge.ts` appelle maintenant `compact`.
 - [ ] Tâche 36 — Auto-compact en fin de tour (une tentative par tour).
 - [ ] Tâche 37 — Preuve dans Electron réel (`context-visual.cjs`) : chiffres relus contre le
       disque, couleurs, masquage via le vrai dialogue de réglages, bouton au seuil, compaction

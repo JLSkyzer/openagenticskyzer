@@ -49,8 +49,27 @@ export function getGlobalSettings(): Promise<GlobalSettings> {
   return request('global-settings');
 }
 
+// Whatever reads settings or the active connection (the context gauge) must follow a change made
+// elsewhere, in the settings dialog or the model dialog. The bridge is the one place every save goes
+// through, so it announces them — after success only: a refused save changed nothing.
+const settingsListeners = new Set<() => void>();
+
+export function onSettingsChanged(listener: () => void): () => void {
+  settingsListeners.add(listener);
+  return () => { settingsListeners.delete(listener); };
+}
+
+function announcing<T>(saved: Promise<T>): Promise<T> {
+  return saved.then(value => {
+    for (const listener of [...settingsListeners]) {
+      try { listener(); } catch { /* one faulty listener must not hide the saved result from the caller */ }
+    }
+    return value;
+  });
+}
+
 export function saveGlobalSettings(patch: Partial<GlobalSettings>): Promise<GlobalSettings> {
-  return request('save-global-settings', { patch });
+  return announcing(request<GlobalSettings>('save-global-settings', { patch }));
 }
 
 export function openFolderDialog(): Promise<string | null> {
@@ -78,6 +97,12 @@ export function forkBranch(folder: string, source: string, count: number, label:
   return request('fork', { folder, source, count, label });
 }
 
+// Summarises the branch in the background: the answer is only the id to wait for, the result arrives
+// as a 'compacted' / 'compact-failed' agent event. The API key is added by main.cjs, not by the page.
+export function compactConversation(folder: string, branchId: string): Promise<{ compactionId: string }> {
+  return request('compact', { folder, branchId });
+}
+
 // The connection vault lives in main.cjs (safeStorage) — these ops are answered there,
 // never by the worker. The snapshot carries no secret; api_key only ever flows inward.
 export function getConnection(folder: string | null): Promise<ConnectionSnapshot> {
@@ -91,7 +116,7 @@ export function saveConnection(
   patch: ConnectionPatch,
   confirmEndpoint = false,
 ): Promise<ConnectionSnapshot> {
-  return request('save-connection', { folder, patch, authorization: { confirmEndpoint } });
+  return announcing(request<ConnectionSnapshot>('save-connection', { folder, patch, authorization: { confirmEndpoint } }));
 }
 
 // Zone Danger: none of these delete project files, only history / sidebar entries / settings.
@@ -104,7 +129,7 @@ export function removeFolder(folder: string): Promise<FolderListItem[]> {
 }
 
 export function resetGlobalSettings(): Promise<GlobalSettings> {
-  return request('reset-global-settings');
+  return announcing(request<GlobalSettings>('reset-global-settings'));
 }
 
 export function getProjectSettings(folder: string): Promise<ProjectSettings> {
@@ -112,7 +137,7 @@ export function getProjectSettings(folder: string): Promise<ProjectSettings> {
 }
 
 export function saveProjectSettings(folder: string, patch: Partial<ProjectSettings>): Promise<ProjectSettings> {
-  return request('save-project-settings', { folder, patch });
+  return announcing(request<ProjectSettings>('save-project-settings', { folder, patch }));
 }
 
 export type {

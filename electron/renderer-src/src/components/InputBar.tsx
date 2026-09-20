@@ -10,11 +10,13 @@ export function InputBar() {
 
   const handleSend = useCallback(async () => {
     const el = textRef.current;
-    if (!el || !el.value.trim() || state.agentRunning) return;
+    // While a summary is being made the transcript is rewritten: a message sent now would be lost in it.
+    // Checked BEFORE the box is emptied, so the typed text stays for when the compaction is over.
+    if (!el || !el.value.trim() || state.agentRunning || state.compacting) return;
     const text = el.value;
     el.value = '';
     await send(text);
-  }, [send, state.agentRunning]);
+  }, [send, state.agentRunning, state.compacting]);
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {

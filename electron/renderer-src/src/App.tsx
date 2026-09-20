@@ -3,6 +3,7 @@ import { TopBar } from './components/TopBar';
 import { SettingsDialog } from './components/settings/SettingsDialog';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
+import { ContextBar } from './components/ContextBar';
 import { InputBar } from './components/InputBar';
 import { ChatProvider } from './state/ChatProvider';
 import type { ChatMessage } from './ipc/bridge';
@@ -52,6 +53,7 @@ export default function App() {
         <ChatProvider key={chatEpoch} activeFolder={activeFolder} initialMessages={initialMessages}>
           <div style={{ display: 'flex', flex: 1, flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
             <ChatView />
+            <ContextBar />
             <InputBar />
           </div>
         </ChatProvider>

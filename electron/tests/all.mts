@@ -28,3 +28,4 @@ import './worker-compact.test.mts';
 import './main-routing.test.mts';
 import './chat-compaction.test.mts';
 import './prompts.test.mts';
+import './prompt-logic.test.mts';

@@ -12,11 +12,15 @@ export function Modal({
   onClose,
   width = 420,
   tone = 'default',
+  dismissOnBackdrop = false,
 }: {
   children: ReactNode;
   onClose(): void;
   width?: number;
   tone?: 'default' | 'danger';
+  // A click on the dark backdrop closes it (NiceGUI's ui.dialog does). Off by default: confirmations
+  // stacked on the settings dialog must not vanish on a stray click.
+  dismissOnBackdrop?: boolean;
 }) {
   const identity = useRef({});
 
@@ -36,7 +40,14 @@ export function Modal({
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.6)' }}>
+    <div
+      data-testid="oa-modal-backdrop"
+      className="fixed inset-0 z-[60] flex items-center justify-center"
+      style={{ background: 'rgba(0,0,0,0.6)' }}
+      // Only a press on the backdrop itself: one that starts inside the card and ends outside (a text
+      // selection) must not close it.
+      onMouseDown={dismissOnBackdrop ? event => { if (event.target === event.currentTarget) onClose(); } : undefined}
+    >
       <div
         data-testid="oa-modal"
         className="rounded-xl p-4"

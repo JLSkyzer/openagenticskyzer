@@ -1352,8 +1352,25 @@ Comportement NiceGUI à reproduire :
       échoué comme prévu** tant que `main.cjs` ignorait l'opération (« opération appelée par le
       renderer mais refusée »), puis GREEN après l'ajout à la liste autorisée. `npm test`
       241/241, `tsc` propre.
-- [ ] Tâche 40 — Renderer : logique pure `state/prompts.ts` (`filterPrompts`, `folderLabel`,
+- [x] Tâche 40 — Renderer : logique pure `state/prompts.ts` (`filterPrompts`, `folderLabel`,
       `applyTemplate`), composant `PromptPicker` (fenêtre, ✦, `/`), Échap / ✕ / fond.
+      **Preuve** (unitaire ; interaction réelle = Tâche 41) : `prompt-logic.test.mts` (8 tests),
+      RED = module absent, puis GREEN. Filtre : insensible à la casse, **nom et description
+      seulement** (un mot présent seulement dans le gabarit ne correspond pas), requête non
+      rognée comme en Python ; `folderLabel` : dernier segment, séparateur final toléré, racine de
+      lecteur / vide / `/` → `projet` ; `applyTemplate` : toutes les occurrences, et un nom de
+      dossier contenant `$&`, `$1` ou `` $` `` est inséré **littéralement** (`split/join`, pas
+      `replace`). Une erreur de **jeu d'essai** de ma part (mon test croyait qu'aucune
+      description ne contenait « tests ») corrigée sans toucher au code. Interface :
+      `PromptPicker` (carte de 384 px, ✕, « Filtrer… », liste de 320 px défilante, icône / nom /
+      description, message si rien ne correspond), bouton ✦ dans la barre de saisie après le
+      sélecteur de modèle, `/` dans une zone vide ouvre la fenêtre **sans insérer le `/`**
+      (Shift accepté : sur AZERTY `/` est Maj+`:`), le prompt choisi remplace la saisie, redonne le
+      focus et place le curseur à la fin. `Modal` reçoit `dismissOnBackdrop` (faux par défaut :
+      les autres fenêtres ne changent pas ; l'appui doit commencer **sur** le fond, une sélection
+      de texte qui déborde ne ferme pas). `npm test` 249/249, `tsc` propre, build OK ; `chat` /
+      `layout` / `permission` / `stop` / `model` / `settings` PASS (ils passent par `Modal` et
+      `InputBar`).
 - [ ] Tâche 41 — Preuve dans Electron réel (`prompts-visual.cjs`) : clic réel sur ✦, filtre,
       choix → zone de saisie remplie avec le nom du dossier, `/` sans caractère parasite, fermeture
       par Échap / ✕ / fond, `prompts.json` personnalisé pris en compte à chaud, fichier corrompu →

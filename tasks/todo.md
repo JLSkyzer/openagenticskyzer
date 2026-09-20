@@ -1227,9 +1227,40 @@ Comportement NiceGUI à reproduire :
       messages » reste silencieux en mode automatique. Tests d'abord : RED (3 échecs : export
       absent + 2 tests du réducteur), puis `npm test` 231/231, `tsc` propre. **Non prouvé ici** :
       le déclenchement réel de bout en bout l'est en Tâche 37.
-- [ ] Tâche 37 — Preuve dans Electron réel (`context-visual.cjs`) : chiffres relus contre le
+- [x] Tâche 37 — Preuve dans Electron réel (`context-visual.cjs`) : chiffres relus contre le
       disque, couleurs, masquage via le vrai dialogue de réglages, bouton au seuil, compaction
       réelle (disque relu : résumé + fin, `memory.md` absent), échec modèle → inchangé.
+      **Preuve** (`npm run test:context`, 4/4 PASS, Electron 44.4.2, vrai `worker.mjs`, faux
+      modèle HTTP qui distingue une requête de résumé — sans `tools`, un seul message « Résume
+      cette conversation » — d'un tour normal) : le libellé affiché est **recalculé par le test
+      depuis `conversations.json`** (jamais lu de l'UI) — 59 % · ~1,200 tokens, 78 % (jaune),
+      93 % · ~1,900 (rouge), plafond `100% · ~4,000 tokens` et largeur 100 % ; abaisser le seuil à
+      50 dans le **vrai dialogue de réglages** fait apparaître ⚡ tout de suite, sans redémarrage ;
+      « Afficher la jauge » décoché la masque, recoché la rend ; `auto_compact` désactivé : un tour
+      au-dessus du seuil ne demande aucun résumé ; **clic réel** sur ⚡ : « Compression en cours… »,
+      bouton désactivé, le texte tapé pendant ce temps **reste dans la zone** et rien n'est
+      envoyé, plus de `⑂` ; puis disque relu = `[résumé, dernier message utilisateur, sa
+      réponse]` (la fin est identique octet pour octet), écran = disque, jauge recalculée,
+      notice « Contexte compressé avec résumé IA. », requête de résumé **sans outil**, aucun
+      `memory.md` ni dans le projet ni dans `OPENAGENT_HOME` ; modèle en 500 → « Erreur du
+      provider (500). », **rien** perdu sur disque ni à l'écran, bouton de nouveau utilisable ;
+      `auto_compact` activé : un tour terminé déclenche **exactement un** résumé sans clic, la fin
+      est conservée avec sa réponse ; la jauge suit la branche affichée (59 % sur `main`, 20 % ·
+      ~400 sur une branche de 2 messages, puis retour). Captures relues.
+      **Défaut d'interface trouvé par la capture, corrigé test d'abord** : après l'échec d'une
+      compaction le bandeau d'erreur restait **sous la ligne de flottaison** (le texte était dans
+      le DOM, l'utilisateur ne voyait rien) — `ChatView` ne faisait défiler que sur les
+      messages / flux / permission. Le test exige désormais que le bandeau soit dans la zone
+      visible (RED : identifiant absent, puis GREEN après `state.error` ajouté aux dépendances du
+      défilement). Cela valait déjà pour tout autre message d'erreur (envoi refusé, etc.).
+      **Mutations** : `/ 3` au lieu de `/ 4` → échec à « label recomputed from conversations.json » ;
+      compaction automatique neutralisée → échec à « automatic compaction » ; code restauré
+      (`git diff` vide). Régressions : `chat` / `layout` / `permission` / `stop` / `sidebar` /
+      `branches` / `settings-tabs` PASS, `npm test` 231/231. Non couvert ici : le fournisseur par
+      défaut de la jauge est testé en unitaire seulement (le test fixe `max_tokens`).
+      Constat sans lien avec le code : dans la capture les longues suites de `x` du jeu d'essai
+      débordent horizontalement (aucune coupure possible dans un mot de 800 caractères) — à
+      surveiller sur de vraies longues URLs.
 - [ ] Tâche 38 — Vérification finale sur l'app **packagée** (`final-e2e-lot5.cjs`) + suite
       complète, bilan ici, leçons.
 

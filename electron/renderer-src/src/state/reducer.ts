@@ -1,4 +1,4 @@
-import type { AgentEvent, ChatMessage } from '../ipc/bridge';
+import type { AgentEvent, BranchInfo, ChatMessage } from '../ipc/bridge';
 
 export interface ToolMeta {
   tool: string;
@@ -25,6 +25,12 @@ export interface ChatState {
   runId: string | null;
   error: string | null;
   pendingPermission: PendingPermission | null;
+  // The folder's saved branches (main first) and the one whose messages are on screen. Empty /
+  // 'main' until a folder is opened; the selector only shows once a fork exists.
+  branches: BranchInfo[];
+  currentBranchId: string;
+  // A short positive message ("Branche 'X' créée.") shown once, like ui.notify(type="positive").
+  notice: string | null;
 }
 
 export const initialChatState: ChatState = {
@@ -35,10 +41,18 @@ export const initialChatState: ChatState = {
   runId: null,
   error: null,
   pendingPermission: null,
+  branches: [],
+  currentBranchId: 'main',
+  notice: null,
 };
 
 export type ChatAction =
   | { type: 'folder-loaded'; messages: ChatMessage[] }
+  | { type: 'branches-loaded'; branches: BranchInfo[] }
+  | { type: 'branch-created'; id: string; label: string; branches: BranchInfo[]; messages: ChatMessage[] }
+  | { type: 'branch-switched'; id: string; messages: ChatMessage[] }
+  | { type: 'branch-failed'; error: string }
+  | { type: 'clear-notice' }
   | { type: 'send-started'; runId: string; text: string }
   | { type: 'send-failed'; error: string }
   | { type: 'agent-event'; event: AgentEvent }
@@ -48,7 +62,43 @@ export type ChatAction =
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case 'folder-loaded':
+      // A new folder always opens on main: its fork list arrives separately ('branches-loaded').
       return { ...initialChatState, messages: action.messages };
+
+    case 'branches-loaded':
+      return { ...state, branches: action.branches };
+
+    // Fork and switch replace the messages on screen, so they are ignored while a run is in
+    // flight: a late answer must never swap the view out from under the agent that is writing to it.
+    case 'branch-created':
+      if (state.agentRunning) return state;
+      return {
+        ...state,
+        branches: action.branches,
+        currentBranchId: action.id,
+        messages: action.messages,
+        error: null,
+        notice: `Branche '${action.label}' créée.`,
+      };
+
+    case 'branch-switched':
+      if (state.agentRunning) return state;
+      return {
+        ...state,
+        currentBranchId: action.id,
+        messages: action.messages,
+        streamingText: '',
+        liveToolStarts: {},
+        pendingPermission: null,
+        error: null,
+        notice: null,
+      };
+
+    case 'branch-failed':
+      return { ...state, error: action.error };
+
+    case 'clear-notice':
+      return { ...state, notice: null };
 
     case 'send-started':
       return {

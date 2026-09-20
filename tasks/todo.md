@@ -1021,11 +1021,24 @@ Comportement NiceGUI à reproduire :
       (`runningIn(folder)`, comparaison sur chemins résolus, un dossier voisin n'est pas bloqué).
       Pont : RED `bridge.listBranches is not a function`, puis GREEN. `npm test` 181/181, `tsc`
       propre. Le `clear-history` pendant un run garde la limite déjà notée (non traitée ici).
-- [ ] Tâche 29 — État React : `branches` / `currentBranchId` dans le réducteur, actions
+- [x] Tâche 29 — État React : `branches` / `currentBranchId` dans le réducteur, actions
       `branches-loaded` (ignorée si le dossier a changé entre-temps) et `branch-switched`,
       `send` visant la branche courante, `forkFrom(index)` avec la vérification de cohérence,
       `switchBranch(id)` ; tout est refusé pendant un run. Test unitaire du réducteur et de la
       logique de nom par défaut (RED d'abord).
+      **Preuve** : `chat-branches.test.mts` (10 tests) — RED = module `state/branches.ts`
+      absent (`ERR_MODULE_NOT_FOUND`), GREEN après. Logique pure dans `state/branches.ts`
+      (`nextBranchLabel` : forks seulement, `main` exclu ; `canForkAt` : le message enregistré
+      à cet index doit être le même message utilisateur que celui affiché, rôles hérités
+      `human`/`ai` compris). Réducteur : `branch-created` / `branch-switched` ignorés pendant un
+      run, `folder-loaded` ramène toujours sur `main` et vide la liste, changer de branche ne
+      notifie pas. `ChatProvider` : `send` vise `currentBranchId` (plus de `'main'` en dur),
+      la liste est rechargée à chaque dossier (réponse jetée si l'utilisateur a changé de
+      dossier entre-temps), `forkFrom` recharge la vue enregistrée et refuse de bifurquer si
+      elle diffère de l'affichage, et si un message part pendant la création la branche
+      apparaît quand même dans le sélecteur sans arracher la vue au run. **Non prouvé ici** :
+      ces effets React (course, changement de dossier) le seront dans Electron réel (Tâche 31).
+      `npm test` 191/191, `tsc` propre.
 - [ ] Tâche 30 — Interface : bouton `⑂` (survol, absent pendant un run), sélecteur `🌿`
       (masqué sans bifurcation), notification « Branche '…' créée. ».
 - [ ] Tâche 31 — Preuve dans Electron réel (`branches-visual.cjs`, vrai worker, faux modèle) :

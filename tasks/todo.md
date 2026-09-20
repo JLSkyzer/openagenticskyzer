@@ -1371,10 +1371,32 @@ Comportement NiceGUI à reproduire :
       de texte qui déborde ne ferme pas). `npm test` 249/249, `tsc` propre, build OK ; `chat` /
       `layout` / `permission` / `stop` / `model` / `settings` PASS (ils passent par `Modal` et
       `InputBar`).
-- [ ] Tâche 41 — Preuve dans Electron réel (`prompts-visual.cjs`) : clic réel sur ✦, filtre,
+- [x] Tâche 41 — Preuve dans Electron réel (`prompts-visual.cjs`) : clic réel sur ✦, filtre,
       choix → zone de saisie remplie avec le nom du dossier, `/` sans caractère parasite, fermeture
       par Échap / ✕ / fond, `prompts.json` personnalisé pris en compte à chaud, fichier corrompu →
       défauts.
+      **Preuve** (`npm run test:prompts`, 4/4 PASS, Electron 44.4.2, vrai `worker.mjs`) : le
+      bouton ✦ (infobulle « Bibliothèque de prompts ») ouvre la fenêtre, les **10 défauts dans
+      l'ordre**, première ligne 🔧 / Refactoriser / sa description, focus dans « Filtrer… » ;
+      filtre `test` → `tests`, `PERFORMANCES` → `optimize` (casse ignorée, description), `pytest`
+      (présent seulement dans un gabarit) → rien + « Aucun prompt ne correspond. » ; choisir
+      `review` → zone de saisie = le gabarit avec **`mon-projet`** (nom du dossier actif), focus
+      rendu, curseur en fin ; un **brouillon est remplacé** (comportement d'origine) et un gabarit
+      qui finit ouvert (`debug`) laisse le curseur à la fin ; **touche `/` réelle** (`keyDown` +
+      `char` par le clavier de Chromium) dans une zone vide → fenêtre ouverte, **zone et filtre
+      vides (pas de `/` parasite)** ; Échap ferme et redonne le focus ; dans une zone non vide
+      `/` s'écrit normalement (`chemin/`), pas de fenêtre ; ✕ ferme, un clic **dans** la carte
+      ne ferme pas, un appui sur le **fond** (souris réelle) ferme ; `prompts.json` écrit à la
+      main pendant que l'app tourne : 2 prompts personnalisés vus tout de suite (icône `📝` par
+      défaut, chaque `{filename}` remplacé), fichier corrompu → 10 défauts, `["not","a","dict"]`
+      (la forme qui faisait planter le filtre NiceGUI) → 10 défauts, `[]` → « Aucun prompt
+      disponible. », fichier supprimé → défauts. Captures relues. **Mutations** : retirer le
+      `preventDefault` du `/` → échec à « nor in the filter » (le caractère atterrissait dans le
+      champ de filtre) ; retirer `dismissOnBackdrop` → échec à « the backdrop closes » ; code
+      restauré (`git diff` vide). 3 relances PASS ; `chat` / `layout` / `permission` / `stop` /
+      `sidebar` / `branches` / `context` / `settings` / `settings-tabs` / `model` PASS, `npm test`
+      249/249. Observation sans lien avec le lot : les barres de défilement (liste, chat) restent
+      claires sur le thème sombre.
 - [ ] Tâche 42 — Vérification finale sur l'app **packagée** (`final-e2e-lot6.cjs`) + suite
       complète, bilan ici, leçons.
 

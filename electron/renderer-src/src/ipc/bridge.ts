@@ -98,6 +98,26 @@ export function forkBranch(folder: string, source: string, count: number, label:
   return request('fork', { folder, source, count, label });
 }
 
+// exporter.py, ported: writes a Markdown/HTML/JSON export of the branch to the project folder. Never
+// carries the connection's API key (export.mts doesn't call the model) — model/provider are the
+// already-redacted strings the model button shows, not a resolved connection.
+export function exportConversation(
+  folder: string,
+  branchId: string,
+  format: 'md' | 'html' | 'json',
+  provider: string,
+  model: string,
+): Promise<{ filename: string }> {
+  return request('export-conversation', { folder, branchId, format, provider, model });
+}
+
+// Opens the just-exported file with the OS's associated application (os.startfile on Windows,
+// shell.openPath cross-platform here). Only main.cjs may do this, and only for a folder + filename
+// matching exactly what exportConversation itself just generated.
+export function openExportedFile(folder: string, filename: string): Promise<{ opened: boolean }> {
+  return request('open-export', { folder, filename });
+}
+
 // The prompt library (✦): the defaults or the user's prompts.json, read again on every call so a hand
 // edit is seen without restarting.
 export function listPrompts(): Promise<PromptEntry[]> {

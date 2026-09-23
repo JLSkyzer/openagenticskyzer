@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 const main = require('../main.cjs');
 
 // Answered by main.cjs itself (dialog + encrypted vault), before the allow-list.
-const HANDLED_BY_MAIN = ['open-folder', 'connection-snapshot', 'save-connection'];
+const HANDLED_BY_MAIN = ['open-folder', 'connection-snapshot', 'save-connection', 'open-export'];
 
 test('every operation the renderer bridge calls is known to main.cjs', async () => {
   // A new bridge function whose op was forgotten in main.cjs only fails at runtime, with "Opération IPC
@@ -27,6 +27,18 @@ test('compact and send carry the resolved connection; nothing else does', () => 
   for (const op of ['messages', 'fork', 'list-branches', 'stop', 'clear-history', 'save-global-settings']) {
     assert.equal(main.needsConnection(op), false, `${op} must not receive the API key`);
   }
+});
+
+test('isExportFilename accepts exactly the pattern the exporter itself generates, nothing else', () => {
+  assert.equal(main.isExportFilename('conversation_20260923_090503.md'), true);
+  assert.equal(main.isExportFilename('conversation_20260923_090503.html'), true);
+  assert.equal(main.isExportFilename('conversation_20260923_090503.json'), true);
+  assert.equal(main.isExportFilename('conversation_20260923_090503.exe'), false, 'wrong extension');
+  assert.equal(main.isExportFilename('../../etc/passwd'), false);
+  assert.equal(main.isExportFilename('conversation_2026923_090503.md'), false, 'wrong digit count');
+  assert.equal(main.isExportFilename('other.md'), false);
+  assert.equal(main.isExportFilename(''), false);
+  assert.equal(main.isExportFilename('conversation_20260923_090503.md/../secret'), false, 'no trailing garbage after the extension');
 });
 
 test('internal and unknown operations are not reachable from the page', () => {

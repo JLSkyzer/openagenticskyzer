@@ -7,7 +7,12 @@ let mainWindow;
 let backend;
 let connections;
 const pending = new Map();
-const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory']);
+const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation']);
+
+// Exactly the pattern core/export.mts::exportFilename generates — never a filename supplied as-is
+// by the renderer. Constrains what "open-export" (below) is allowed to open, whatever the folder.
+const EXPORT_FILENAME = /^conversation_\d{8}_\d{6}\.(md|html|json)$/;
+const isExportFilename = name => typeof name === 'string' && EXPORT_FILENAME.test(name);
 
 // Operations that call the model: main.cjs folds the resolved connection (including the API key,
 // which the page never sees) into their payload. Everything else must never receive it.
@@ -135,6 +140,14 @@ async function handleBackendRequest(event, request) {
   if (request.op === 'open-folder') { const picked = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] }); return picked.canceled ? null : picked.filePaths[0]; }
   if (request.op === 'connection-snapshot') return connections.snapshot(request.payload?.folder ?? null);
   if (request.op === 'save-connection') return connections.save(request.payload?.folder ?? null, request.payload?.patch, request.payload?.authorization);
+  if (request.op === 'open-export') {
+    const { folder, filename } = request.payload || {};
+    if (!isExportFilename(filename)) throw new Error('Nom de fichier d’export invalide');
+    if (typeof folder !== 'string' || !folder) throw new Error('Dossier invalide');
+    const error = await shell.openPath(path.join(folder, filename));
+    if (error) throw new Error(error);
+    return { opened: true };
+  }
   if (!allowed.has(request.op)) throw new Error('Opération IPC inconnue');
   if (!backend) throw new Error('Moteur Node indisponible');
   if (needsConnection(request.op)) request = await resolveSendPayload(connections, request);
@@ -169,4 +182,4 @@ if (require.main === module) {
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }
 
-module.exports = { resolveSendPayload, createConnections, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection };
+module.exports = { resolveSendPayload, createConnections, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection, isExportFilename };

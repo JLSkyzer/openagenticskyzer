@@ -1692,9 +1692,21 @@ Comportement NiceGUI à reproduire :
       s'exporte aussi fidèlement — preuve que la résolution nom/catégorie d'outil ne dépend pas
       des événements `tool-start` d'une session en cours ; une branche s'exporte indépendamment
       de `main`. `npm test` 298/298, `tsc` propre.
-- [ ] Tâche 50 — `main.cjs` : opération `open-export` traitée directement (comme `open-folder`),
+- [x] Tâche 50 — `main.cjs` : opération `open-export` traitée directement (comme `open-folder`),
       validation stricte du nom de fichier par motif, `shell.openPath`. Pont `bridge.ts` :
       `exportConversation` (écrit puis ouvre, gère l'échec de chacune des deux étapes séparément).
+      **Preuve** : 3 tests RED (`exportConversation`/`openExportedFile` absents,
+      `main.isExportFilename` absent), puis GREEN. `isExportFilename` extraite en fonction pure
+      exportée et testée directement (motif exact, traversée de chemin `../../etc/passwd` refusée,
+      extension incorrecte, nombre de chiffres incorrect, texte après l'extension refusé) — le
+      module `main.cjs` ne peut pas être piloté hors d'une vraie fenêtre Electron (`mainWindow`
+      reste `undefined` hors application réelle), donc `shell.openPath` lui-même n'est pas exercé
+      ici : ce sera la Tâche 52, comme pour `open-folder` dans les lots précédents. `open-export`
+      traité **avant** la liste autorisée (même emplacement que `open-folder`/`connection-snapshot`),
+      `export-conversation` ajouté à `allowed` pour atteindre le worker. Pont : deux fonctions
+      séparées (`exportConversation` écrit, `openExportedFile` ouvre) — pas fusionnées, pour que le
+      composant de la Tâche 51 distingue un échec d'écriture (négatif, rien créé) d'un échec
+      d'ouverture (le fichier existe quand même). `npm test` 301/301, `tsc` propre.
 - [ ] Tâche 51 — Interface : menu ⬇ de `TopBar` (« Depuis : <branche> », 3 formats), entrée
       « ⬇ Exporter la conversation » réintégrée à `CommandPalette` (fenêtre de choix de format),
       toasts succès/échec.

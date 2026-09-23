@@ -91,6 +91,18 @@ test('readProjectMemory asks the worker for the memory of the given folder', asy
   assert.deepEqual(calls[0], { op: 'read-project-memory', payload: { folder: 'D:\\proj' } });
 });
 
+test('exportConversation asks the worker to write the file, with no connection folded in', async () => {
+  calls.length = 0;
+  await bridge.exportConversation('D:\\proj', 'abc', 'md', 'openrouter', 'gpt-4o');
+  assert.deepEqual(calls[0], { op: 'export-conversation', payload: { folder: 'D:\\proj', branchId: 'abc', format: 'md', provider: 'openrouter', model: 'gpt-4o' } });
+});
+
+test('openExportedFile asks main.cjs to open exactly the folder + filename it was given', async () => {
+  calls.length = 0;
+  await bridge.openExportedFile('D:\\proj', 'conversation_20260923_090503.md');
+  assert.deepEqual(calls[0], { op: 'open-export', payload: { folder: 'D:\\proj', filename: 'conversation_20260923_090503.md' } });
+});
+
 test('project settings go through project-settings / save-project-settings', async () => {
   calls.length = 0;
   await bridge.getProjectSettings('D:\\proj');

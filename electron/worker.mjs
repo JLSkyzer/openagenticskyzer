@@ -1,6 +1,7 @@
 import { parentPort } from 'node:worker_threads';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, isAbsolute } from 'node:path';
+import { writeFile, realpath, lstat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
@@ -16,6 +17,7 @@ import { buildInstructions } from './core/context.mts';
 import { compactMessages, planCompaction } from './core/compact.mts';
 import { PromptLibrary } from './core/prompts.mts';
 import { readProjectMemory } from './core/project-memory.mts';
+import { buildHtml, buildJson, buildMarkdown, exportFilename, renderEntries } from './core/export.mts';
 
 // OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
 // instead of the real user's ~/.openagent — never rely on the default outside tests.
@@ -35,7 +37,7 @@ const sessionAllowed = new Set();
 const allowKey = (folder, tool) => `${folder}\0${tool}`;
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'shutdown']);
 
 const BASE_SYSTEM_PROMPT = [
   'Tu es openagent, un assistant de développement qui travaille dans le dossier du projet actif avec les outils fournis :',
@@ -77,6 +79,45 @@ async function runCompaction(compactionId, folder, branchId, before, connection)
   post(outcome);
 }
 
+/** Every registered tool for this folder's settings, plus its effective settings — the single source
+ * of truth `runSend`'s permission checks AND the exporter's tool tags both read from, so the two can
+ * never drift apart. */
+async function registerTools(folder) {
+  const effective = await settings.effective(folder);
+  const tools = [
+    ...await workspaceTools(folder, effective.ignored_patterns),
+    ...await memoryTools(folder, dataHome),
+    ...await gitTools(folder),
+    ...await shellTools(folder),
+    ...await webTools(),
+  ];
+  return { effective, tools };
+}
+
+const EXPORT_FORMATS = new Set(['md', 'html', 'json']);
+
+/** Writes the conversation to `<folder>/conversation_<timestamp>.<ext>` and returns its filename —
+ * never a full path: main.cjs is the only one allowed to open a file, and only by folder + a
+ * filename matching exactly what this function itself generates. */
+async function exportConversation(folder, branchId, format, provider, model) {
+  if (!EXPORT_FORMATS.has(format)) throw new Error('Format d’export invalide');
+  if (!isAbsolute(folder)) throw new Error('Dossier absolu requis');
+  const root = await realpath(folder);
+  if (!(await lstat(root)).isDirectory()) throw new Error('Dossier introuvable');
+  const messages = await conversations.messages(folder, branchId);
+  const { tools } = await registerTools(folder);
+  const toolCategory = new Map(tools.map(tool => [tool.name, tool.category]));
+  const entries = renderEntries(messages, name => toolCategory.get(name));
+  const date = new Date();
+  const filename = exportFilename(format, date);
+  const content =
+    format === 'md' ? buildMarkdown(entries, { folder: root, model, provider, date }) :
+    format === 'html' ? buildHtml(entries, { model, date }) :
+    buildJson(entries);
+  await writeFile(join(root, filename), content, 'utf8');
+  return { filename };
+}
+
 function normalizeRole(role) {
   if (role === 'ai') return 'assistant';
   if (role === 'human') return 'user';
@@ -98,14 +139,7 @@ async function runSend(runId, folder, branchId, text, connection) {
   // inside the try block) so the catch block below can actually see it.
   let partialText = '';
   try {
-    const effective = await settings.effective(folder);
-    const tools = [
-      ...await workspaceTools(folder, effective.ignored_patterns),
-      ...await memoryTools(folder, dataHome),
-      ...await gitTools(folder),
-      ...await shellTools(folder),
-      ...await webTools(),
-    ];
+    const { effective, tools } = await registerTools(folder);
     const toolCategory = new Map(tools.map(tool => [tool.name, tool.category]));
     const { instructions } = await buildInstructions({ folder, home: dataHome, base: BASE_SYSTEM_PROMPT });
     const history = (await conversations.messages(folder, branchId)).map(m => ({ ...m, role: normalizeRole(m.role) }));
@@ -240,6 +274,7 @@ async function handle(message) {
     if (op === 'reset-global-settings') result = await settings.resetGlobal();
     if (op === 'list-prompts') result = await promptLibrary.list();
     if (op === 'read-project-memory') result = await readProjectMemory(payload.folder);
+    if (op === 'export-conversation') result = await exportConversation(payload.folder, payload.branchId || 'main', payload.format, payload.provider || '', payload.model || '');
     if (op === 'list-branches') result = await conversations.list(payload.folder);
     if (op === 'messages') result = await conversations.messages(payload.folder, payload.branchId || 'main');
     if (op === 'save-messages') result = await conversations.save(payload.folder, payload.branchId || 'main', payload.messages);

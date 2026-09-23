@@ -1664,13 +1664,34 @@ Comportement NiceGUI à reproduire :
   un sélecteur de dossier de destination (Python écrit toujours dans le dossier actif, on garde ce
   comportement).
 
-- [ ] Tâche 49 — Moteur : `core/export.mts` (fonctions pures `buildMarkdown`/`buildHtml`/`buildJson`
+- [x] Tâche 49 — Moteur : `core/export.mts` (fonctions pures `buildMarkdown`/`buildHtml`/`buildJson`
       à partir de messages + table de catégories, sans I/O — testables sans fichier), extraction
       partagée de la construction de la table de catégories d'outils (déjà dupliquée dans `runSend`),
       écriture du fichier dans le dossier (validation racine absolue/réelle, nom de fichier généré,
       jamais fourni par l'appelant). Opération worker `export-conversation` (folder, branchId, format,
       provider, model) → `{filename}`. Tests d'abord (RED), y compris les deux régressions déjà
       couvertes côté Python (citation multi-lignes, double-échappement).
+      **Preuve** : `export.test.mts` (13 tests purs), RED = module absent, puis GREEN — **et les
+      deux régressions Python ont été vérifiées octet pour octet contre le vrai `exporter.py`**
+      (script Python exécuté, sortie comparée à la sortie JS : `MATCH_MARKDOWN: true`,
+      `MATCH_HTML: true`), pas seulement contre mes propres suppositions de test. Le premier
+      brouillon de `runSend`/`buildToolCategoryMap` avait un bogue réel trouvé avant tout test :
+      la factorisation ne renvoyait que la table de catégories, alors que `runAgent` a besoin du
+      tableau `tools` complet — corrigé en factorisant `registerTools(folder)` (outils + réglages
+      effectifs), utilisé par `runSend` **et** par l'export, prouvé par la suite complète repassée
+      au vert (292/292) juste après.
+      **Écart de discipline assumé** : contrairement aux lots précédents, l'opération worker
+      `export-conversation` a été codée **avant** ses propres tests (`worker-export.test.mts`),
+      faute d'avoir anticipé la correction du bogue `tools`/catégories en cours de route — les 6
+      tests sont donc passés du premier coup, sans preuve RED. Compensé par **3 mutations** :
+      catégorie ignorée (toujours `read`) → 2 échecs corrects ; `branchId` ignoré (toujours
+      `main`) → l'échec attendu sur l'export de branche ; garde de format retirée → l'échec
+      attendu sur le refus de format invalide. Code restauré (`git diff` vide, contenu identique).
+      Vérifié en plus : le fichier est écrit **à la racine du projet**, jamais dans `.openagent` ;
+      une conversation **jamais rejouée en direct dans ce worker** (seulement `save-messages`)
+      s'exporte aussi fidèlement — preuve que la résolution nom/catégorie d'outil ne dépend pas
+      des événements `tool-start` d'une session en cours ; une branche s'exporte indépendamment
+      de `main`. `npm test` 298/298, `tsc` propre.
 - [ ] Tâche 50 — `main.cjs` : opération `open-export` traitée directement (comme `open-folder`),
       validation stricte du nom de fichier par motif, `shell.openPath`. Pont `bridge.ts` :
       `exportConversation` (écrit puis ouvre, gère l'échec de chacune des deux étapes séparément).

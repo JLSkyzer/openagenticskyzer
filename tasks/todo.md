@@ -1609,6 +1609,81 @@ Comportement NiceGUI à reproduire :
       `branches` : une instabilité isolée, cause non établie (voir Tâche 47). **La migration
       NiceGUI → Electron n'est pas terminée.**
 
+### Lot actif suivant — export de conversation (2026-09-23)
+
+Inventaire NiceGUI relevé le 2026-09-23 (`exporter.py` en entier, `main.py:164-176,296-308`,
+`gui_callback.py:11-52`, `tests/test_artifacts.py:122-213`). Côté Electron, `TopBar.tsx` a déjà un
+bouton ⬇ **désactivé** avec le commentaire « hors scope de ce lot » : c'est cette tâche.
+`CommandPalette` n'a pas non plus l'entrée « ⬇ Exporter la conversation » (retirée explicitement au
+lot précédent avec la même justification).
+
+Comportement NiceGUI à reproduire :
+- Menu ⬇ de la barre du haut : « Depuis : <branche> » (muet), puis Markdown (.md) / HTML (.html) /
+  JSON (.json). Palette de commandes : même action, choix du format via une seconde fenêtre.
+- Écrit `<dossier>/conversation_AAAAMMJJ_HHMMSS.<ext>` puis **ouvre le fichier** avec l'application
+  associée du système ; notifie « Exporté : <nom> » (positif) ou « Échec de l'export : <erreur> »
+  (négatif).
+- **Markdown** : en-tête (date, dossier, modèle/fournisseur), puis par message : `## 👤 Utilisateur`,
+  `## 🤖 Assistant`, ou un bloc `> **[TAG]** \`nom_outil\` —` où **chaque ligne** du contenu porte le
+  préfixe `> ` (une ligne blanche ferme sinon la citation Markdown avant la fin du bloc — bug déjà
+  corrigé et couvert par un test Python).
+- **HTML** : page autonome avec coloration syntaxique (highlight.js CDN), bulles utilisateur/IA/outil ;
+  le contenu IA est découpé en segments code/hors-code **avant** tout échappement, chaque segment
+  échappé **une seule fois** (double-échappement déjà corrigé et couvert par un test Python).
+- **JSON** : liste de `{role, content, tool_name, tool_tag, tool_detail}`.
+- Étiquette d'outil (`tool_tag`, `TAG` affiché) : `run_command`→run, les outils d'écriture→write, les
+  outils de lecture→read, `internet_search`/`fetch_url`→search, tout le reste→read par défaut
+  (`_TOOL_TAGS` de `gui_callback.py`).
+
+Écarts / décisions :
+- **Correspondance directe avec les badges déjà affichés** (`ToolMessage.tsx` :
+  `write`→WRITE, `shell`→RUN, `read`→READ, `network`→SEARCH) : l'étiquette exportée est donc la
+  **catégorie réelle de l'outil** (`AgentTool.category`), jamais une seconde table figée qui
+  pourrait diverger — leçon déjà tirée sur ce projet (parité entre deux sources de vérité).
+- **Le nom et la catégorie d'un outil sont retrouvés depuis la conversation persistée elle-même**
+  (corrélation `tool_call_id` → `tool_calls[].function.name` du message assistant précédent), pas
+  depuis les événements `tool-start` de la session en cours : contrairement à Python (qui stocke
+  `tool_name`/`tool_tag` sur chaque `ChatMessage` persisté), le format Node ne les duplique pas. Une
+  conversation rechargée depuis le disque doit s'exporter aussi fidèlement qu'une conversation tout
+  juste produite. Fait **côté moteur** (le worker connaît déjà la vraie catégorie de chaque outil
+  enregistré) — factorisation de la construction de cette table, déjà dupliquée par `runSend`.
+- **Le fichier n'est écrit qu'après confirmation implicite du clic** (comme Python) ; **l'ouverture
+  automatique du fichier fonctionne sur toutes les plateformes** (`shell.openPath`), pas seulement
+  Windows (`os.startfile` de Python est Windows uniquement) — modernisation assumée.
+- **Ouvrir le fichier exporté est un privilège du processus principal** (`shell` n'existe pas dans un
+  `worker_threads.Worker`), et strictement borné : `main.cjs` ne construit le chemin ouvert que depuis
+  un dossier + un nom de fichier correspondant **exactement** au patron `conversation_AAAAMMJJ_HHMMSS.
+  (md|html|json)` qu'il génère lui-même côté moteur — jamais un chemin opaque fourni tel quel par le
+  renderer, même si celui-ci n'est normalement pas compromettable (défense en profondeur, cohérent
+  avec la discipline déjà appliquée aux arguments git/shell).
+- **Aucune clé n'est nécessaire** : contrairement à `send`/`compact`, l'export n'appelle pas le
+  modèle. Le provider/modèle affichés dans l'en-tête viennent de l'instantané déjà **expurgé**
+  (`connection-snapshot`, sans clé) que le renderer lit déjà pour le bouton de modèle — pas d'ajout
+  à `CONNECTION_OPS`.
+- **Hors lot** : le bouton 📥 Téléchargements (reste un bouton désactivé, fonctionnalité distincte) ;
+  un sélecteur de dossier de destination (Python écrit toujours dans le dossier actif, on garde ce
+  comportement).
+
+- [ ] Tâche 49 — Moteur : `core/export.mts` (fonctions pures `buildMarkdown`/`buildHtml`/`buildJson`
+      à partir de messages + table de catégories, sans I/O — testables sans fichier), extraction
+      partagée de la construction de la table de catégories d'outils (déjà dupliquée dans `runSend`),
+      écriture du fichier dans le dossier (validation racine absolue/réelle, nom de fichier généré,
+      jamais fourni par l'appelant). Opération worker `export-conversation` (folder, branchId, format,
+      provider, model) → `{filename}`. Tests d'abord (RED), y compris les deux régressions déjà
+      couvertes côté Python (citation multi-lignes, double-échappement).
+- [ ] Tâche 50 — `main.cjs` : opération `open-export` traitée directement (comme `open-folder`),
+      validation stricte du nom de fichier par motif, `shell.openPath`. Pont `bridge.ts` :
+      `exportConversation` (écrit puis ouvre, gère l'échec de chacune des deux étapes séparément).
+- [ ] Tâche 51 — Interface : menu ⬇ de `TopBar` (« Depuis : <branche> », 3 formats), entrée
+      « ⬇ Exporter la conversation » réintégrée à `CommandPalette` (fenêtre de choix de format),
+      toasts succès/échec.
+- [ ] Tâche 52 — Preuve dans Electron réel (`export-visual.cjs`) : export réel des 3 formats depuis le
+      menu ⬇ **et** depuis la palette, fichier relu sur disque (contenu exact, citation multi-lignes,
+      pas de double-échappement), ouverture du fichier vérifiable, échec (dossier retiré entre-temps)
+      → toast négatif, nom de fichier horodaté.
+- [ ] Tâche 53 — Vérification finale sur l'app **packagée** (`final-e2e-lot8.cjs`) + suite complète,
+      bilan ici, leçons.
+
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 
 - [x] Task 1 — Module d'embedding lazy et singleton

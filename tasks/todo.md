@@ -1735,10 +1735,44 @@ Comportement NiceGUI à reproduire :
       8 avec `export` à sa place, revérifié PASS (2/2). `npm test` 308/308, `tsc` propre, build
       OK ; `chat` / `layout` / `permission` / `stop` / `sidebar` / `branches` / `context` /
       `prompts` / `settings` / `settings-tabs` / `settings-folder` / `model` PASS.
-- [ ] Tâche 52 — Preuve dans Electron réel (`export-visual.cjs`) : export réel des 3 formats depuis le
+- [x] Tâche 52 — Preuve dans Electron réel (`export-visual.cjs`) : export réel des 3 formats depuis le
       menu ⬇ **et** depuis la palette, fichier relu sur disque (contenu exact, citation multi-lignes,
       pas de double-échappement), ouverture du fichier vérifiable, échec (dossier retiré entre-temps)
       → toast négatif, nom de fichier horodaté.
+      **Décision de portée** : `open-export` (le vrai `shell.openPath` de `main.cjs`) reste
+      simulé dans ce test de composant, exactement comme `open-folder`/`connection-snapshot` le
+      sont déjà dans tous les tests de composant précédents — la vraie fenêtre principale
+      (`mainWindow`) n'existe que dans l'app réelle, et lancer pour de vrai une application OS
+      associée à chaque exécution serait un effet de bord indésirable sur la machine du
+      développeur. Le vrai `shell.openPath` sera exercé sur l'exe packagé, Tâche 53.
+      **Preuve** (`npm run test:export`, 3/3 PASS, Electron 44.4.2, vrai `worker.mjs`, conversation
+      avec un **vrai** appel `list_dir` (lecture) et un **vrai** appel `create_file` (écriture)) :
+      clic réel sur ⬇ → « Depuis : 🌿 Main » + 3 formats ; Markdown écrit sur disque avec l'en-tête
+      exact, `**[READ]** \`list_dir\` —`, et **chaque ligne** du contenu multi-lignes citée, ligne
+      blanche comprise ; HTML valide, code échappé une seule fois ; JSON avec les **deux** étiquettes
+      réelles (`read` et `write`, pas une valeur figée) ; même flux depuis la palette (Ctrl+K →
+      filtre → clic) → fenêtre « Depuis : 🌿 Main » → fichier distinct ; le worker refuse un dossier
+      inexistant ; un clic hors du menu le ferme sans rien écrire. `main.cjs` a bien reçu exactement
+      le dossier et le nom de fichier générés.
+      **Deux bogues de test trouvés et corrigés, pas dans le produit** :
+      (1) `pageErrors` était déclarée avec `const` **à l'intérieur** du bloc `try`, invisible depuis
+      le `catch` frère (portée de bloc) — y référencer levait une `ReferenceError` **masquée** par un
+      `catch {}` sans paramètre, qui avalait aussi le vrai diagnostic. Cette combinaison a fait perdre
+      un temps réel avant que le vrai message d'échec (« Uncaught NotFoundError: Failed to execute
+      'removeChild' ») ne soit visible — la variable a été déplacée avant le `try`.
+      (2) Cette vraie erreur venait de mon propre `clearToasts()` qui retirait des nœuds du DOM
+      **géré par React** à la main : à la reconciliation suivante, React essayait de retirer un nœud
+      déjà absent et l'app plantait (page blanche). Corrigé en lisant le **dernier** toast (les
+      toasts sont ajoutés en fin de liste) plutôt qu'en les effaçant — aucune manipulation du DOM de
+      React depuis le test.
+      Une collision de nom attendue (granularité à la seconde du nom de fichier, comme en Python)
+      s'est produite entre deux exports automatisés trop rapprochés : corrigé par une pause avant le
+      second, pas en affaiblissant l'assertion. **Mutations** : citation cassée (une seule ligne) →
+      détectée ; étiquette toujours `read` → **non détectée au premier essai** (le seul appel testé,
+      `list_dir`, est justement de catégorie `read` — la mutation ne changeait rien d'observable) ;
+      corrigé en ajoutant un second appel d'une autre catégorie (`create_file`/`write`) et en
+      vérifiant les deux étiquettes, puis la mutation a été détectée. Code restauré (`git diff` vide).
+      `npm test` 308/308, `tsc` propre.
 - [ ] Tâche 53 — Vérification finale sur l'app **packagée** (`final-e2e-lot8.cjs`) + suite complète,
       bilan ici, leçons.
 

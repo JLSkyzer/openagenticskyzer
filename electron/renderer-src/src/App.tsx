@@ -13,6 +13,9 @@ import type { ChatMessage } from './ipc/bridge';
 // (sidebar 230px + flexible chat column) filling the rest of the window.
 export default function App() {
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
+  // Lifted from ChatProvider via onBranchChange so TopBar's export menu can show "Depuis : <branche>"
+  // without living inside the provider (see TopBar.tsx and ChatProvider.tsx).
+  const [branch, setBranch] = useState<{ id: string; label: string }>({ id: 'main', label: '🌿 Main' });
   const [initialMessages, setInitialMessages] = useState<ChatMessage[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
@@ -33,7 +36,7 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', background: 'var(--bg)' }}>
-      <TopBar activeFolder={activeFolder} onOpenSettings={() => setSettingsOpen(true)} />
+      <TopBar activeFolder={activeFolder} branch={branch} onOpenSettings={() => setSettingsOpen(true)} />
       {settingsOpen && (
         <SettingsDialog
           activeFolder={activeFolder}
@@ -51,7 +54,7 @@ export default function App() {
             setInitialMessages(history);
           }}
         />
-        <ChatProvider key={chatEpoch} activeFolder={activeFolder} initialMessages={initialMessages}>
+        <ChatProvider key={chatEpoch} activeFolder={activeFolder} initialMessages={initialMessages} onBranchChange={setBranch}>
           <CommandPalette onOpenSettings={() => setSettingsOpen(true)} onHistoryCleared={historyCleared} />
           <div style={{ display: 'flex', flex: 1, flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
             <ChatView />

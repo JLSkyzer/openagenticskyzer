@@ -1707,9 +1707,34 @@ Comportement NiceGUI à reproduire :
       séparées (`exportConversation` écrit, `openExportedFile` ouvre) — pas fusionnées, pour que le
       composant de la Tâche 51 distingue un échec d'écriture (négatif, rien créé) d'un échec
       d'ouverture (le fichier existe quand même). `npm test` 301/301, `tsc` propre.
-- [ ] Tâche 51 — Interface : menu ⬇ de `TopBar` (« Depuis : <branche> », 3 formats), entrée
+- [x] Tâche 51 — Interface : menu ⬇ de `TopBar` (« Depuis : <branche> », 3 formats), entrée
       « ⬇ Exporter la conversation » réintégrée à `CommandPalette` (fenêtre de choix de format),
       toasts succès/échec.
+      **Constat de structure avant d'écrire du code** : `TopBar` est un **frère**, pas un
+      descendant, de `ChatProvider` dans `App.tsx` — `useChat()` y est donc inatteignable. Faire
+      passer `TopBar` (et `SettingsDialog`, ouvert pendant le clic « Effacer » de l'onglet Danger)
+      sous `ChatProvider` aurait fait remonter `SettingsDialog` **au milieu de son propre clic**
+      dès que `chatEpoch` change (l'effacement bascule justement `chatEpoch`), cassant l'affichage
+      déjà testé du statut « Historique effacé (4 message(s)). » dans le panneau resté ouvert
+      (`settings-folder-danger-visual.cjs`). Choix retenu : **`ChatProvider` remonte
+      `{id, label}` de la branche active à `App` via une prop `onBranchChange`** (même idiome que
+      `onActivated`/`onHistoryCleared` déjà existants), `App` la redescend en prop à `TopBar` —
+      aucune restructuration de l'arbre, aucun risque sur le comportement déjà prouvé.
+      `state/branches.ts::currentBranchLabel` extrait (même règle « 🌿 Main » que
+      `BranchSelector`, un seul endroit). `state/export.ts::performExport` teste par
+      **dépendances injectées** (`getConnection`/`exportConversation`/`openExportedFile` en
+      paramètre, pas importées en dur) — écrit, ouvre, notifie « Exporté : <nom> » ; **écart
+      assumé et testé** : contrairement à `os.startfile` en Python (jamais protégé — un fichier
+      que l'OS refuse d'ouvrir y avalait silencieusement le message de succès), un échec
+      d'ouverture ici **ne défait pas** le succès de l'écriture (5 tests RED d'abord, 1 corrigé
+      — mon propre test oubliait de vérifier les bons appels). `ExportMenu.tsx` (menu ancré dans
+      `TopBar`, fond cliquable) et une fenêtre `ExportDialog` dans `CommandPalette` (entrée
+      `export` réintégrée dans `state/commands.ts`, à la place exacte de `_COMMANDS`) partagent
+      la même logique `performExport`. **Régression trouvée et corrigée** : `palette-visual.cjs`
+      (lot précédent) avait la liste figée des 7 commandes et un compte `7` en dur — mis à jour à
+      8 avec `export` à sa place, revérifié PASS (2/2). `npm test` 308/308, `tsc` propre, build
+      OK ; `chat` / `layout` / `permission` / `stop` / `sidebar` / `branches` / `context` /
+      `prompts` / `settings` / `settings-tabs` / `settings-folder` / `model` PASS.
 - [ ] Tâche 52 — Preuve dans Electron réel (`export-visual.cjs`) : export réel des 3 formats depuis le
       menu ⬇ **et** depuis la palette, fichier relu sur disque (contenu exact, citation multi-lignes,
       pas de double-échappement), ouverture du fichier vérifiable, échec (dossier retiré entre-temps)

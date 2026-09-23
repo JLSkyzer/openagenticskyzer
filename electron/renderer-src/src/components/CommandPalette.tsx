@@ -1,20 +1,23 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import * as bridge from '../ipc/bridge';
 import { clearHistory, readProjectMemory } from '../ipc/bridge';
 import { cleanIpcError } from '../ipc/errors';
 import { Markdown } from '../markdown/Markdown';
 import { useActionRegistry } from '../state/ActionRegistry';
+import { currentBranchLabel } from '../state/branches';
 import { useChat } from '../state/ChatProvider';
 import { COMMANDS, displayMemory, isPaletteShortcut, matchCommands, moveSelection, type Command } from '../state/commands';
+import { performExport, type ExportFormat } from '../state/export';
 import { useToast } from '../state/ToastProvider';
 import { Modal } from './settings/Modal';
 
-type Dialog = 'memory' | 'confirm-clear' | null;
+type Dialog = 'memory' | 'confirm-clear' | 'export' | null;
 
 // command_palette.py: Ctrl+K anywhere — even from the input box, which is exactly what the Python code has to
 // take care of with `ignore=[]` — opens a 480 px window with a search field and one row per command. Clicking
 // a row closes the palette, then runs the command. Keyboard selection (↑ ↓ Enter) is an addition.
 export function CommandPalette({ onOpenSettings, onHistoryCleared }: { onOpenSettings(): void; onHistoryCleared(): void }) {
-  const { activeFolder, compact } = useChat();
+  const { state, activeFolder, compact } = useChat();
   const registry = useActionRegistry();
   const { notify } = useToast();
   const [open, setOpen] = useState(false);
@@ -66,6 +69,10 @@ export function CommandPalette({ onOpenSettings, onHistoryCleared }: { onOpenSet
           break;
         case 'show-memory':
           if (activeFolder) setDialog('memory');
+          else needFolder();
+          break;
+        case 'export':
+          if (activeFolder) setDialog('export');
           else needFolder();
           break;
         case 'compact':
@@ -159,7 +166,57 @@ export function CommandPalette({ onOpenSettings, onHistoryCleared }: { onOpenSet
         </Modal>
       )}
       {dialog === 'memory' && activeFolder && <MemoryDialog folder={activeFolder} onClose={() => setDialog(null)} />}
+      {dialog === 'export' && activeFolder && (
+        <ExportDialog
+          folder={activeFolder}
+          branchId={state.currentBranchId}
+          branchLabel={currentBranchLabel(state.branches, state.currentBranchId)}
+          notify={notify}
+          onClose={() => setDialog(null)}
+        />
+      )}
     </>
+  );
+}
+
+// "⬇ Exporter la conversation" from the palette: the same 3 formats and "Depuis : <branche>" line as
+// TopBar's ExportMenu, in a Modal instead of an anchored dropdown — the palette itself is already a
+// Modal, so this is a second dialog on top of it, matching how "Vider l'historique" confirms.
+function ExportDialog({
+  folder,
+  branchId,
+  branchLabel,
+  notify,
+  onClose,
+}: {
+  folder: string;
+  branchId: string;
+  branchLabel: string;
+  notify: ReturnType<typeof useToast>['notify'];
+  onClose(): void;
+}) {
+  const run = (format: ExportFormat) => {
+    onClose();
+    void performExport(bridge, folder, branchId, format, notify);
+  };
+  return (
+    <Modal width={360} onClose={onClose} dismissOnBackdrop>
+      <div data-testid="oa-export-dialog">
+        <div className="mb-1 text-sm font-bold text-gray-200">Exporter la conversation</div>
+        <div className="mb-3 text-xs text-gray-500">Depuis : {branchLabel}</div>
+        <div className="flex flex-col gap-2">
+          <button id="oa-export-dialog-md" type="button" onClick={() => run('md')} className="w-full rounded bg-gray-800 px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-gray-700">
+            Markdown (.md)
+          </button>
+          <button id="oa-export-dialog-html" type="button" onClick={() => run('html')} className="w-full rounded bg-gray-800 px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-gray-700">
+            HTML (.html)
+          </button>
+          <button id="oa-export-dialog-json" type="button" onClick={() => run('json')} className="w-full rounded bg-gray-800 px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-gray-700">
+            JSON (.json)
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

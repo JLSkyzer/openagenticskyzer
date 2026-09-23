@@ -1,12 +1,14 @@
+import { ExportMenu } from './ExportMenu';
+
 // Styles copied from main.py's top bar: 38px, bg var(--surface,#161616), border-bottom
 // var(--border,#2a2a2a), logo text-sm font-bold text-purple-500.
 function basename(path: string): string {
   return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
 }
 
-// Downloads/export are explicitly out of scope for this lot (téléchargements — see the
-// plans) but the real top bar shows them as stubs rather than omitting them, matching
-// main.py's layout exactly.
+// Downloads are explicitly out of scope for this lot (téléchargements — see the plans) but the real
+// top bar shows it as a stub rather than omitting it, matching main.py's layout exactly. Export was
+// a stub too, until this lot.
 function StubButton({ label, title }: { label: string; title: string }) {
   return (
     <button
@@ -22,10 +24,13 @@ function StubButton({ label, title }: { label: string; title: string }) {
 
 interface TopBarProps {
   activeFolder: string | null;
+  // Lifted up from ChatProvider by App (see its own comment): TopBar sits outside the provider on
+  // purpose, so it cannot call useChat() itself.
+  branch: { id: string; label: string };
   onOpenSettings(): void;
 }
 
-export function TopBar({ activeFolder, onOpenSettings }: TopBarProps) {
+export function TopBar({ activeFolder, branch, onOpenSettings }: TopBarProps) {
   return (
     <div
       className="flex shrink-0 items-center gap-2 px-3"
@@ -35,7 +40,7 @@ export function TopBar({ activeFolder, onOpenSettings }: TopBarProps) {
       {activeFolder && <span className="truncate text-xs text-gray-600">▸ {basename(activeFolder)}</span>}
       <div className="flex-1" />
       <StubButton label="📥" title="Téléchargements" />
-      <StubButton label="⬇" title="Exporter" />
+      <ExportMenu activeFolder={activeFolder} branchId={branch.id} branchLabel={branch.label} />
       <button
         id="oa-settings-btn"
         onClick={onOpenSettings}

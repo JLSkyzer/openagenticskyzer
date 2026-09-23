@@ -4,7 +4,7 @@ import { COMMANDS, displayMemory, isPaletteShortcut, matchCommands, moveSelectio
 
 const many = Array.from({ length: 12 }, (_, i) => ({ id: `c${i}`, label: `Commande ${i}`, description: `Fait le travail ${i}` }));
 
-test('the palette offers the commands of the NiceGUI palette, in the same order (export left out until it exists)', () => {
+test('the palette offers the commands of the NiceGUI palette, in the same order — export is back now that it exists', () => {
   assert.deepEqual(COMMANDS.map(c => c.label), [
     '📂 Ouvrir un dossier',
     '🔄 Changer de modèle',
@@ -12,9 +12,11 @@ test('the palette offers the commands of the NiceGUI palette, in the same order 
     '⚙️ Paramètres',
     '🧠 Voir la mémoire projet',
     '📋 Bibliothèque de prompts',
+    '⬇ Exporter la conversation',
     '⚡ Compacter le contexte',
   ]);
-  assert.equal(COMMANDS.some(c => /Exporter/.test(c.label)), false, 'no entry whose action would do nothing');
+  const exportCommand = COMMANDS.find(c => c.id === 'export')!;
+  assert.equal(exportCommand.description, 'Exporter la conversation (.md/.html/.json)');
 });
 
 test('every command has a unique id, a label and a description', () => {

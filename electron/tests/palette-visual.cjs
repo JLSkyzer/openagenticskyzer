@@ -32,7 +32,7 @@ function flush() {
 }
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-const ALL_IDS = ['open-folder', 'switch-model', 'clear-history', 'open-settings', 'show-memory', 'open-prompts', 'compact'];
+const ALL_IDS = ['open-folder', 'switch-model', 'clear-history', 'open-settings', 'show-memory', 'open-prompts', 'export', 'compact'];
 
 app.whenReady().then(async () => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-palette-'));
@@ -157,7 +157,7 @@ app.whenReady().then(async () => {
     assert.equal(await js(`document.getElementById('oa-input-ta').value`), '', 'the "k" was not typed into the box');
     assert.equal(await activeId(), 'oa-palette-input', 'the search field has the focus');
     assert.equal(await js(`document.getElementById('oa-palette-input').placeholder`), 'Rechercher une commande…');
-    assert.deepEqual(await paletteIds(), ALL_IDS, 'the seven commands, in order');
+    assert.deepEqual(await paletteIds(), ALL_IDS, 'the eight commands, in order');
     const first = (await texts('[data-testid="oa-palette-item"]'))[0];
     assert.match(first, /📂 Ouvrir un dossier/);
     assert.match(first, /Sélectionner un nouveau dossier de projet/);
@@ -178,7 +178,7 @@ app.whenReady().then(async () => {
     await setValue('#oa-palette-input', 'abc');
     ctrlK();
     await waitFor(async () => (await js(`document.getElementById('oa-palette-input').value`)) === '', { what: 'Ctrl+K again resets the search' });
-    assert.equal((await paletteIds()).length, 7);
+    assert.equal((await paletteIds()).length, 8);
     // Ctrl+Shift+K is not the shortcut.
     key('Escape');
     await waitFor(async () => !(await exists('[data-testid="oa-palette"]')), { what: 'Escape closes' });

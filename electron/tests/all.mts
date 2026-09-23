@@ -33,4 +33,5 @@ import './project-memory.test.mts';
 import './command-logic.test.mts';
 import './export.test.mts';
 import './worker-export.test.mts';
+import './export-ui.test.mts';
 import './ui-plumbing.test.mts';

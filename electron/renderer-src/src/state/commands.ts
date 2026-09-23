@@ -4,9 +4,7 @@ export interface Command {
   description: string;
 }
 
-// command_palette.py::_COMMANDS — same labels, descriptions and order. "⬇ Exporter la conversation" is not
-// here yet: the export does not exist in this app, and the original's own rule is to never show an entry
-// whose action would do nothing. It comes back with the export.
+// command_palette.py::_COMMANDS — same labels, descriptions and order.
 export const COMMANDS: readonly Command[] = [
   { id: 'open-folder', label: '📂 Ouvrir un dossier', description: 'Sélectionner un nouveau dossier de projet' },
   { id: 'switch-model', label: '🔄 Changer de modèle', description: 'Ouvrir le sélecteur de modèle' },
@@ -14,6 +12,7 @@ export const COMMANDS: readonly Command[] = [
   { id: 'open-settings', label: '⚙️ Paramètres', description: "Ouvrir les paramètres de l'application" },
   { id: 'show-memory', label: '🧠 Voir la mémoire projet', description: 'Afficher la mémoire persistante de ce projet' },
   { id: 'open-prompts', label: '📋 Bibliothèque de prompts', description: 'Ouvrir la bibliothèque de prompts' },
+  { id: 'export', label: '⬇ Exporter la conversation', description: 'Exporter la conversation (.md/.html/.json)' },
   { id: 'compact', label: '⚡ Compacter le contexte', description: 'Résumer la conversation pour libérer du contexte' },
 ];
 

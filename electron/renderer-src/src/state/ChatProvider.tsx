@@ -14,7 +14,7 @@ import {
   type AgentEvent,
   type ChatMessage,
 } from '../ipc/bridge';
-import { canForkAt, nextBranchLabel } from './branches';
+import { canForkAt, currentBranchLabel, nextBranchLabel } from './branches';
 import { computeContext, shouldAutoCompact, type ContextUsage } from './context';
 import { chatReducer, initialChatState, type ChatState } from './reducer';
 
@@ -73,10 +73,18 @@ interface ChatProviderProps {
   // in-flight run. Taking it as a prop keeps the dispatch synchronous with the folder
   // change instead.
   initialMessages: ChatMessage[];
+  // Lifts {id, label} of the active branch up to App, for components that live OUTSIDE this
+  // provider (TopBar's export menu) and so cannot call useChat() themselves — see TopBar.tsx.
+  onBranchChange?: (branch: { id: string; label: string }) => void;
   children: ReactNode;
 }
 
-export function ChatProvider({ activeFolder, initialMessages, children }: ChatProviderProps) {
+export function ChatProvider({ activeFolder, initialMessages, onBranchChange: onBranchChangeProp, children }: ChatProviderProps) {
+  // Read through a ref so effects that depend on it (below) don't re-fire just because the parent
+  // passed a new inline function identity on every render.
+  const onBranchChangeRef = useRef(onBranchChangeProp);
+  onBranchChangeRef.current = onBranchChangeProp;
+  const onBranchChange = useCallback((branch: { id: string; label: string }) => onBranchChangeRef.current?.(branch), []);
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const initialMessagesRef = useRef(initialMessages);
   initialMessagesRef.current = initialMessages;
@@ -130,6 +138,12 @@ export function ChatProvider({ activeFolder, initialMessages, children }: ChatPr
       .catch(() => { /* keep what is shown: a gauge that cannot read its settings must not break the chat */ });
     return () => { cancelled = true; };
   }, [activeFolder, settingsVersion]);
+
+  // Notifies App of the active branch's id/label whenever it changes, so TopBar (outside this
+  // provider) can show "Depuis : <branche>" in the export menu without needing useChat() itself.
+  useEffect(() => {
+    onBranchChange?.({ id: state.currentBranchId, label: currentBranchLabel(state.branches, state.currentBranchId) });
+  }, [state.currentBranchId, state.branches, onBranchChange]);
 
   const usage = useMemo(
     () => computeContext(state.messages, { provider: contextSettings.provider, max_tokens: contextSettings.max_tokens, reserved_tokens: contextSettings.reserved_tokens }),

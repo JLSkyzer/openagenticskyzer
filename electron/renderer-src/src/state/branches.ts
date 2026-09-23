@@ -22,6 +22,14 @@ export function canForkAt(persisted: readonly RoleContent[], view: readonly Role
   return roleOf(shown.role) === 'user' && roleOf(saved.role) === 'user' && shown.content === saved.content;
 }
 
+// BranchSelector's own "🌿 Main" / label rule, extracted so the export menu and the palette's
+// "Depuis : <branche>" line read the exact same thing instead of a second copy of the rule. Falls
+// back to "🌿 Main" for an id that cannot be found (defensive: never a blank or wrong label).
+export function currentBranchLabel(branches: readonly BranchInfo[], currentBranchId: string): string {
+  if (currentBranchId === 'main') return '🌿 Main';
+  return branches.find(branch => branch.id === currentBranchId)?.label ?? '🌿 Main';
+}
+
 function roleOf(role: string): string {
   return role === 'human' ? 'user' : role === 'ai' ? 'assistant' : role;
 }

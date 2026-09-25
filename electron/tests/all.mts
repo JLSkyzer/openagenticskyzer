@@ -40,4 +40,6 @@ import './artifacts.test.mts';
 import './artifact-protocol.test.mts';
 import './onboarding.test.mts';
 import './worker-onboarding.test.mts';
+import './attachments.test.mts';
+import './upload.test.mts';
 import './ui-plumbing.test.mts';

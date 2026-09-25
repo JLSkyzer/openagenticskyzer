@@ -2035,6 +2035,51 @@ Décisions :
       fenêtrage de l'historique, éditeur de prompts, `index_status`, images jointes aux messages.
       **La migration NiceGUI → Electron n'est pas terminée.**
 
+### Lot actif suivant — pièces jointes : fichiers et images (2026-09-25)
+
+Vérification de la liste des « restes » contre l'original : le **fenêtrage de l'historique** et l'**éditeur
+de prompts** n'existent **pas** dans NiceGUI (`chat.py`, `prompt_library.py`) — ce n'étaient pas des manques ;
+`index_status` dépend de l'index sémantique ChromaDB (hors périmètre « sans Python »). Le vrai reste :
+📎 / coller / déposer des fichiers (`input_bar.py`, `file_processor.py`).
+
+Original : extensions texte/code (tronqué à 50 000 caractères), CSV (aperçu des 50 premières lignes, une par
+`str(dict)` Python), PDF (texte par page, `pypdf`), images (URI de données) ; autre → « Format non supporté » ;
+puces d'aperçu (miniature 72 px + ✕ pour une image, carte 90×72 avec icône par extension pour le reste) ;
+à l'envoi : images en morceaux `image_url` puis un morceau texte, fichiers en blocs `--- nom ---` avant le
+texte ; la bulle utilisateur affiche les images (max 220×160).
+
+Décisions :
+- **Le transcript enregistré garde `content` = texte tapé + `attachments`** ; la conversion en morceaux
+  multimodaux se fait **à l'appel du fournisseur** (`agent.mts`), jamais dans ce qui est enregistré/affiché/
+  exporté/compacté. Ainsi un tour suivant voit toujours les fichiers, sans les recopier dans la bulle.
+- Le traitement (`processUpload`) vit **dans le renderer** (TypeScript pur, testé) : le worker packagé n'a
+  pas de `node_modules` (`build.files` exclut `node_modules`), donc pas de bibliothèque PDF possible côté worker.
+- Parité vérifiée contre le vrai `process_upload` / `build_message_content` Python (dont la représentation
+  `str(dict)` du CSV). Écarts assumés : PDF extrait par `pdfjs` (mise en forme du texte différente de `pypdf`) ;
+  BOM UTF-8 retiré ; 🔄 renvoie le message **avec ses pièces jointes** (l'original les perdait) ; limite de
+  taille par fichier (l'original n'en avait pas) pour ne pas figer l'IPC/`conversations.json`.
+- Aucun test n'ouvre d'application externe ; les fichiers sont injectés par le protocole DevTools
+  (`DOM.setFileInputFiles`) et des événements `paste`/`drop` réels.
+
+- [x] Tâche 66 — Logique pure RED d'abord : `buildMessageContent` (parité), `processUpload` texte/CSV/image
+      (parité Python), types d'extensions.
+      RED prouvé (module introuvable) puis 371/371 (22 tests). **Parité mesurée** contre le vrai code Python :
+      valeurs de référence générées par `process_upload`/`build_message_content` pour les tests, puis
+      **fuzz de 400 CSV aléatoires** (guillemets, virgules, `\n`, `\r\n`, apostrophes, backslash, tabulations,
+      emoji, lignes courtes/longues) : **0 écart** (`str(dict)` Python, `None`, clé `None: [...]`, échappements
+      `\xNN`/`\uNNNN`). Quirks reproduits : `.env` seul est **non supporté** (`Path('.env').suffix == ''`),
+      `x.tar.gz` non supporté, coupe à 50 000 *points de code* (pas unités UTF-16), MIME par extension.
+      **Écarts assumés** : un `\r` isolé dans un champ CSV fait **planter** Python (`_csv.Error`, affiché
+      « Erreur upload ») — ici c'est un saut de ligne ; BOM UTF-8 retiré (en Python il collait à la 1re clé) ;
+      limite de 10 Mo par fichier (aucune dans l'original). Le transcript garde `content` = texte tapé +
+      `attachments` ; `toWireMessage` ne transmet jamais le champ `attachments` au fournisseur et ne modifie
+      pas le message enregistré.
+- [ ] Tâche 67 — Worker + agent : `send` avec `attachments`, persistance, conversion à l'appel du modèle.
+- [ ] Tâche 68 — PDF (`pdfjs-dist`, audit) avec un vrai fichier PDF.
+- [ ] Tâche 69 — Interface : 📎, sélecteur de fichiers, coller, déposer, puces, bulle, 🔄.
+- [ ] Tâche 70 — Preuve Electron réelle.
+- [ ] Tâche 71 — Vérification finale sur l'app packagée (`final-e2e-lot12.cjs`), bilan, leçons.
+
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 
 - [x] Task 1 — Module d'embedding lazy et singleton

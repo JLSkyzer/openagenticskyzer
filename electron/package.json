@@ -42,14 +42,15 @@
     "test:bridge-real": "node tests/bridge-real.cjs"
   },
   "devDependencies": {
-    "@types/node": "^26.5.1",
     "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.5.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "electron": "^44.4.2",
     "electron-builder": "^26.15.3",
     "highlight.js": "^11.12.0",
+    "mermaid": "^11.17.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-markdown": "^10.1.0",

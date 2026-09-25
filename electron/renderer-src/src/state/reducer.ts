@@ -1,4 +1,8 @@
 import type { AgentEvent, BranchInfo, ChatMessage } from '../ipc/bridge';
+// Explicit `.ts`: the unit tests load this file with Node itself (type stripping), which does not resolve
+// extension-less imports the way Vite does.
+import { extractArtifact, type Artifact } from './artifacts.ts';
+import { lastAssistantIndex } from './editing.ts';
 
 export interface ToolMeta {
   tool: string;
@@ -42,6 +46,9 @@ export interface ChatState {
   // destroy nothing, as in the NiceGUI app). The next send hands it to the worker as `keep`, which cuts
   // the saved history at the same place. null = the view matches what is saved.
   truncatedTo: number | null;
+  // The side preview (artifact_panel.py): the first html/svg/mermaid/markdown block of the last reply that
+  // ended normally. null = panel closed.
+  artifact: Artifact | null;
 }
 
 export const initialChatState: ChatState = {
@@ -59,6 +66,7 @@ export const initialChatState: ChatState = {
   compactionId: null,
   completedTurns: 0,
   truncatedTo: null,
+  artifact: null,
 };
 
 export type ChatAction =
@@ -72,6 +80,7 @@ export type ChatAction =
   | { type: 'clear-notice' }
   | { type: 'send-started'; runId: string; text: string; keep?: number }
   | { type: 'messages-truncated'; keep: number }
+  | { type: 'artifact-closed' }
   | { type: 'send-failed'; error: string }
   | { type: 'agent-event'; event: AgentEvent }
   | { type: 'permission-decided' }
@@ -153,6 +162,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'clear-error':
       return { ...state, error: null };
 
+    case 'artifact-closed':
+      return { ...state, artifact: null };
+
     case 'permission-decided':
       return { ...state, pendingPermission: null };
 
@@ -205,11 +217,17 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
               arguments: event.arguments,
             },
           };
-        case 'done':
+        case 'done': {
+          // input_bar.py: only a turn that ENDED looks for an artifact; one found replaces the open one, none
+          // found leaves it alone.
+          const reply = lastAssistantIndex(state.messages);
+          const found = reply < 0 ? null : extractArtifact(state.messages[reply].content);
           return {
             ...state, agentRunning: false, runId: null, streamingText: '', liveToolStarts: {}, pendingPermission: null,
             completedTurns: state.completedTurns + 1,
+            artifact: found ?? state.artifact,
           };
+        }
         case 'stopped':
           // Also clear liveToolStarts and any pendingPermission: a Stop while waiting
           // on a decision (or mid tool-execute) leaves no further event for that call

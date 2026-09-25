@@ -1862,6 +1862,38 @@ Contrairement au reste, **aucun test de ce lot n'ouvre d'application** (pas de `
       Rappel : la version NiceGUI n'a **pas** de suppression/renommage/fusion de branche — ce
       n'était pas un manque. **La migration NiceGUI → Electron n'est pas terminée.**
 
+### Lot actif suivant — panneau d'aperçu d'artifact (2026-09-25)
+
+Original (`artifact_panel.py`, `input_bar.py` l. 465) : à la fin d'un tour, le **premier** bloc
+```` ```html|svg|mermaid|markdown ```` de la réponse ouvre un panneau latéral de 400 px « Preview — TYPE »
+avec ✕ ; html = iframe `sandbox="allow-scripts"` (sans `allow-same-origin`), svg = HTML brut, mermaid =
+diagramme, markdown = rendu ; « Vider l'historique » le ferme.
+
+Décisions (sécurité d'abord — le contenu vient d'un modèle) :
+- **html, svg et mermaid vont tous dans un iframe sandboxé** : html avec `allow-scripts` seul (comme
+  l'original), svg et mermaid avec `sandbox=""` (aucun script). Écart assumé sur svg : l'original le
+  injectait en HTML brut (nettoyé par DOMPurify côté NiceGUI) ; ici jamais d'`innerHTML`.
+- Mermaid : dépendance `mermaid` chargée à la demande (import dynamique), `securityLevel: 'strict'`,
+  thème sombre ; diagramme invalide → message d'erreur dans le panneau, pas de plantage.
+- Le panneau se ferme au changement de dossier (l'original le laissait, d'un projet à l'autre : écart
+  assumé) et à « Vider l'historique » ; il **n'est pas** fermé par un changement de branche (comme l'original).
+- Aucun test n'ouvre d'application externe.
+
+- [x] Tâche 58 — Logique pure RED d'abord : `extractArtifact` (parité regex Python), reducer (`done` ouvre,
+      fermeture, reset au changement de dossier), dépendance `mermaid` + audit.
+      RED prouvé (module introuvable) puis 329/329 (9 tests). **Parité vérifiée** contre le vrai
+      `_extract_artifact` Python sur 7 cas (premier bloc, casse, autre langage ignoré, pas de saut
+      de ligne, fence non fermée, non-glouton, `htmlx`) : résultats identiques. **Dépendance** :
+      `mermaid@11.17.2` en devDependency (le renderer est empaqueté par Vite) — la v12 installée en
+      premier apportait **5 vulnérabilités hautes** (`lodash-es` via `chevrotain`), la v11.17.2 (celle
+      que l'original chargeait, v11) : `npm audit` 0. Imports internes de `reducer.ts` en `.ts`
+      explicite (`allowImportingTsExtensions`, `noEmit` déjà actif) car les tests chargent ce fichier
+      avec Node directement. `tsc` propre, build OK.
+- [ ] Tâche 59 — Interface : `ArtifactPanel` (iframe sandboxés, mermaid), câblage dans `App`.
+- [ ] Tâche 60 — Preuve Electron réelle : iframe html isolé (un script ne peut pas atteindre la page), svg avec
+      script inerte, mermaid rendu, ✕, clear-history, CSP.
+- [ ] Tâche 61 — Vérification finale sur l'app packagée (`final-e2e-lot10.cjs`), bilan, leçons.
+
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 
 - [x] Task 1 — Module d'embedding lazy et singleton

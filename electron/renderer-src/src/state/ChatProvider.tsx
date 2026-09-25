@@ -67,6 +67,8 @@ interface ChatContextValue {
   draft: { text: string; nonce: number } | null;
   // 🔄 (input_bar.py::regenerate): drop the last user+AI turn and send that user message again.
   regenerate(): Promise<void>;
+  // ✕ of the side preview (artifact_panel.py::_close_artifact).
+  closeArtifact(): void;
   dismissNotice(): void;
 }
 
@@ -279,6 +281,7 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
   }, [viewMatchesSaved]);
 
   const dismissNotice = useCallback(() => dispatch({ type: 'clear-notice' }), []);
+  const closeArtifact = useCallback(() => dispatch({ type: 'artifact-closed' }), []);
 
   const send = useCallback(
     async (text: string) => {
@@ -313,7 +316,7 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
 
   return (
     <ChatContext.Provider
-      value={{ state, activeFolder, context: { usage, settings: contextSettings }, compact, send, stopRun, decide, forkFrom, switchBranch, editMessage, draft, regenerate, dismissNotice }}
+      value={{ state, activeFolder, context: { usage, settings: contextSettings }, compact, send, stopRun, decide, forkFrom, switchBranch, editMessage, draft, regenerate, closeArtifact, dismissNotice }}
     >
       {children}
     </ChatContext.Provider>

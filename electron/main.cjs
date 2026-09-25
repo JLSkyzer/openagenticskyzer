@@ -1,7 +1,11 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, session } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, session, protocol } = require('electron');
 const path = require('node:path');
 const { homedir } = require('node:os');
 const { Worker } = require('node:worker_threads');
+const artifactProtocol = require('./artifact-protocol.cjs');
+
+// What "artifact-put" (below) fills and the oa-artifact: protocol serves — see artifact-protocol.cjs.
+const artifacts = artifactProtocol.createArtifactStore();
 
 let mainWindow;
 let backend;
@@ -29,7 +33,8 @@ const needsConnection = op => CONNECTION_OPS.has(op);
 function buildCsp(isPackaged) {
   const scriptSrc = isPackaged ? "'self'" : "'self' 'unsafe-eval'";
   const connectSrc = isPackaged ? "'self' https:" : "'self' https: ws://localhost:5173 http://localhost:5173";
-  return `default-src 'self'; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ${connectSrc}; object-src 'none'`;
+  // frame-src: only the artifact preview may be framed (its own document carries its own, stricter policy).
+  return `default-src 'self'; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ${connectSrc}; frame-src ${artifactProtocol.SCHEME}:; object-src 'none'`;
 }
 
 /**
@@ -44,6 +49,9 @@ function chooseLoadTarget({ isPackaged, devFlag }) {
 
 function installCsp() {
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    // An artifact document keeps the policy its own protocol handler set: overwriting it with the app's would
+    // silently kill the inline script of an HTML preview (and is the one place a looser rule is intended).
+    if (details.url.startsWith(`${artifactProtocol.SCHEME}:`)) { callback({}); return; }
     callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [buildCsp(app.isPackaged)] } });
   });
 }
@@ -148,6 +156,9 @@ async function handleBackendRequest(event, request) {
     if (error) throw new Error(error);
     return { opened: true };
   }
+  // Hands the page's preview document to the protocol handler and answers the URL to frame. The store checks the
+  // kind, the type and the size; nothing here reads or writes the disk.
+  if (request.op === 'artifact-put') return artifacts.put(request.payload?.kind, request.payload?.html);
   if (!allowed.has(request.op)) throw new Error('Opération IPC inconnue');
   if (!backend) throw new Error('Moteur Node indisponible');
   if (needsConnection(request.op)) request = await resolveSendPayload(connections, request);
@@ -164,8 +175,10 @@ async function handleBackendRequest(event, request) {
 // which would otherwise crash: require('electron') resolves to a path string (not the
 // API object) outside a real Electron process, so ipcMain/app are undefined there.
 if (require.main === module) {
+  artifactProtocol.registerScheme(protocol); // before ready, or the scheme is not privileged
   ipcMain.handle('backend-request', handleBackendRequest);
   app.whenReady().then(async () => {
+    artifactProtocol.installHandler(protocol, artifacts);
     installCsp();
     connections = await createConnections();
     createWindow();

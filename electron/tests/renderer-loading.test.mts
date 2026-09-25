@@ -14,6 +14,14 @@ test('a packaged build never relaxes the CSP for Vite HMR', () => {
   assert.match(prod, /object-src 'none'/);
 });
 
+test('only the artifact preview scheme may be framed, in a packaged build as in dev — and it is not a way to loosen scripts', () => {
+  for (const csp of [buildCsp(true), buildCsp(false)]) {
+    assert.match(csp, /frame-src oa-artifact:(;|$)/);
+    assert.doesNotMatch(csp, /frame-src[^;]*(https?:|\*|'self')/, 'no web page, no same-origin frame');
+  }
+  assert.doesNotMatch(buildCsp(true), /script-src[^;]*unsafe-inline/, 'the app itself still forbids inline script');
+});
+
 test('the unpackaged dev CSP allows the Vite dev server, still scoped otherwise', () => {
   const dev = buildCsp(false);
   assert.ok(dev.includes('unsafe-eval'));

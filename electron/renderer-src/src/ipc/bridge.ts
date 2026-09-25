@@ -121,6 +121,13 @@ export function openExportedFile(folder: string, filename: string): Promise<{ op
   return request('open-export', { folder, filename });
 }
 
+// The side preview of what the model wrote (artifact panel): the document is handed to the main process, which
+// serves it on the `oa-artifact:` protocol with its own Content-Security-Policy and answers the URL to frame.
+// `kind` 'html' may run its inline script (still with no network at all); 'static' (svg, mermaid) runs nothing.
+export function putArtifact(kind: 'html' | 'static', html: string): Promise<{ url: string }> {
+  return request('artifact-put', { kind, html });
+}
+
 // The prompt library (✦): the defaults or the user's prompts.json, read again on every call so a hand
 // edit is seen without restarting.
 export function listPrompts(): Promise<PromptEntry[]> {

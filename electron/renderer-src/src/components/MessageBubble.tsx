@@ -57,7 +57,7 @@ export function AssistantBubble({ content, streaming = false, onRegenerate }: { 
           AI
         </div>
         <div
-          className="max-w-3xl flex-1 bg-[#1a1a1a] px-3 py-2 text-xs text-gray-200"
+          className="min-w-0 max-w-3xl flex-1 bg-[#1a1a1a] px-3 py-2 text-xs text-gray-200"
           style={{ borderRadius: '2px 10px 10px 10px' }}
           data-testid="oa-assistant-bubble"
         >

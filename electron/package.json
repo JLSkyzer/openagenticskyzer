@@ -28,6 +28,7 @@
     "test:palette": "node tests/run-palette-visual.cjs",
     "test:export": "node tests/run-export-visual.cjs",
     "test:edit": "node tests/run-edit-regenerate-visual.cjs",
+    "test:artifact": "node tests/run-artifact-visual.cjs",
     "package:win": "npm run renderer:build && electron-builder --win dir",
     "test:package": "node tests/package-smoke.cjs",
     "test:final-e2e": "node tests/final-e2e.cjs",
@@ -69,6 +70,7 @@
     "files": [
       "main.cjs",
       "preload.cjs",
+      "artifact-protocol.cjs",
       "worker.mjs",
       "core/**/*",
       "renderer-dist/**/*",

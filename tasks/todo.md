@@ -1878,6 +1878,15 @@ Décisions (sécurité d'abord — le contenu vient d'un modèle) :
 - Le panneau se ferme au changement de dossier (l'original le laissait, d'un projet à l'autre : écart
   assumé) et à « Vider l'historique » ; il **n'est pas** fermé par un changement de branche (comme l'original).
 - Aucun test n'ouvre d'application externe.
+- **Découverte (avant d'écrire l'interface)** : un iframe `srcdoc` (comme `blob:` et `data:`) **hérite de la
+  CSP de la page** — en app packagée (`script-src 'self'`) les scripts inline d'un artifact HTML seraient
+  bloqués, alors que NiceGUI (sans CSP) les exécutait ; et les tests de composant, qui n'ont pas la CSP de
+  `main.cjs`, ne le verraient pas. Assouplir la CSP de l'app pour ça est exclu. Décision : un **protocole
+  `oa-artifact:`** servi par le process principal avec **sa propre CSP** (`script-src 'unsafe-inline'`,
+  aucun accès réseau : `default-src 'none'`), contenu déposé par l'op `artifact-put` (traitée dans
+  `main.cjs`, taille bornée, magasin en mémoire borné). Plus strict que l'original (qui laissait le
+  script joindre Internet). svg/mermaid : même protocole, CSP sans script + `sandbox=""`. Le code du
+  protocole vit dans `electron/artifact-protocol.cjs`, partagé par `main.cjs` et par les tests.
 
 - [x] Tâche 58 — Logique pure RED d'abord : `extractArtifact` (parité regex Python), reducer (`done` ouvre,
       fermeture, reset au changement de dossier), dépendance `mermaid` + audit.
@@ -1889,9 +1898,37 @@ Décisions (sécurité d'abord — le contenu vient d'un modèle) :
       que l'original chargeait, v11) : `npm audit` 0. Imports internes de `reducer.ts` en `.ts`
       explicite (`allowImportingTsExtensions`, `noEmit` déjà actif) car les tests chargent ce fichier
       avec Node directement. `tsc` propre, build OK.
-- [ ] Tâche 59 — Interface : `ArtifactPanel` (iframe sandboxés, mermaid), câblage dans `App`.
-- [ ] Tâche 60 — Preuve Electron réelle : iframe html isolé (un script ne peut pas atteindre la page), svg avec
+- [x] Tâche 59 — Interface : `ArtifactPanel` (iframe sandboxés, mermaid), câblage dans `App`.
+      Protocole `oa-artifact:` (`artifact-protocol.cjs`, 8 tests RED d'abord : CSP par type, magasin
+      borné en nombre et en **octets**, GET seul, refus muet des URL inconnues/mal formées), op
+      `artifact-put` traitée dans `main.cjs`, `frame-src oa-artifact:` seul ajouté à la CSP de l'app
+      (testé : l'app elle-même interdit toujours le script inline). **Piège évité** : le hook
+      `onHeadersReceived` de `main.cjs` aurait **écrasé** la CSP propre à l'artifact par celle de l'app —
+      exempté. **Piège évité** : `artifact-protocol.cjs` n'était pas dans la liste `files` du packaging
+      (l'exe aurait planté au démarrage) — ajouté. Mermaid en import dynamique (chunk séparé),
+      `securityLevel: 'strict'`, élément temporaire retiré en cas d'erreur.
+- [x] Tâche 60 — Preuve Electron réelle : iframe html isolé (un script ne peut pas atteindre la page), svg avec
       script inerte, mermaid rendu, ✕, clear-history, CSP.
+      `npm run test:artifact` PASS, avec **la vraie CSP de l'app dans le harnais** (sans elle le test
+      n'aurait pas vu le problème d'héritage de CSP des `srcdoc`) : le script inline de l'artifact HTML
+      **s'exécute** ; il ne peut pas lire `parent.document` (SecurityError), ne peut pas naviguer la
+      fenêtre (bloqué par le sandbox, vu dans la console), son `fetch` vers le serveur local est
+      **bloqué** (`default-src 'none'`) et le serveur n'a reçu aucune requête parasite ; le titre et
+      l'URL de la page sont inchangés. SVG : `<script>` et `onload` n'ont pas tourné (le `<body>` n'a
+      jamais reçu leurs attributs) ET Electron lui-même refuse d'y injecter un script. Mermaid : diagramme
+      rendu (« Début → Fin ») sous la CSP stricte ; syntaxe cassée → « Diagramme Mermaid invalide » sans
+      casser le chat ni laisser d'élément temporaire ; Markdown rendu dans le panneau ; un tour sans bloc
+      laisse le panneau ; ✕ ferme ; un autre dossier ne l'hérite pas. Panneau 400 px.
+      **Défaut visuel trouvé et corrigé** : le panneau réduit la colonne de chat et le bloc de code
+      imposait sa largeur à la bulle → barre de défilement horizontale sous tout le chat (`min-w-0`).
+      **Deux erreurs de test corrigées en route** : `executeJavaScript` refuse (à juste titre) d'entrer
+      dans un iframe sans permission de script → lecture du DOM par le débogueur attaché à chaque iframe ;
+      mes `data-script`/`data-onload` apparaissaient dans le *source* du script, pas comme attributs.
+      **Mutations** : CSP autorisant le réseau → détectée ; SVG servi avec la politique « html » → **non
+      détectée**, par défense en profondeur (le `sandbox=""` bloque déjà seul le script) — chaque couche
+      est vérifiée séparément (test de `cspFor('static')`, assertion sur l'attribut `sandbox`).
+      Régression : `npm test` 338/338, `tsc`, chat / layout / branches / edit / export / palette /
+      context / stop / permission PASS.
 - [ ] Tâche 61 — Vérification finale sur l'app packagée (`final-e2e-lot10.cjs`), bilan, leçons.
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)

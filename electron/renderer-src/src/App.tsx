@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { TopBar } from './components/TopBar';
 import { SettingsDialog } from './components/settings/SettingsDialog';
 import { Sidebar } from './components/Sidebar';
+import { ArtifactPanel } from './components/ArtifactPanel';
 import { ChatView } from './components/ChatView';
 import { ContextBar } from './components/ContextBar';
 import { CommandPalette } from './components/CommandPalette';
@@ -61,6 +62,7 @@ export default function App() {
             <ContextBar />
             <InputBar />
           </div>
+          <ArtifactPanel />
         </ChatProvider>
       </div>
     </div>

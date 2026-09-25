@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 const main = require('../main.cjs');
 
 // Answered by main.cjs itself (dialog + encrypted vault), before the allow-list.
-const HANDLED_BY_MAIN = ['open-folder', 'connection-snapshot', 'save-connection', 'open-export'];
+const HANDLED_BY_MAIN = ['open-folder', 'connection-snapshot', 'save-connection', 'open-export', 'artifact-put'];
 
 test('every operation the renderer bridge calls is known to main.cjs', async () => {
   // A new bridge function whose op was forgotten in main.cjs only fails at runtime, with "Opération IPC

@@ -1,6 +1,7 @@
 // Shared helpers for tests that drive a real, separately-launched Electron process over
 // the Chrome DevTools Protocol (Node's built-in WebSocket, no extra dependency).
 const http = require('node:http');
+require('./no-onboarding.cjs'); // side effect: see that file
 const { spawn } = require('node:child_process');
 const { delimiter } = require('node:path');
 const { writeFile } = require('node:fs/promises');

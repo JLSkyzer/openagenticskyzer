@@ -11,6 +11,7 @@ app.disableHardwareAcceleration();
 // print its error — keep the process alive until the test exits explicitly.
 app.on('window-all-closed', () => {});
 const { Worker } = require('node:worker_threads');
+require('./no-onboarding.cjs'); // side effect: see that file
 const path = require('node:path');
 const { mkdtemp, rm, mkdir, writeFile, readFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
@@ -103,7 +104,7 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('backend-request', async (_event, request) => {
       if (request.op === 'open-folder') return project;
-      if (request.op === 'global-settings') return { theme: 'dark', accent_color: '#3b82f6' };
+      if (request.op === 'global-settings') return { theme: 'dark', accent_color: '#3b82f6', onboarding_done: true };
       if (request.op === 'save-global-settings') return {};
       let outgoing = request;
       if (request.op === 'send') outgoing = { ...request, payload: { ...request.payload, connection } };

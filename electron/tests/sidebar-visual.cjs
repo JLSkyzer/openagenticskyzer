@@ -7,6 +7,7 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 // capturePage() throws "UnknownVizError" on a hidden BrowserWindow in this environment
 // unless hardware acceleration is disabled first.
 app.disableHardwareAcceleration();
+require('./no-onboarding.cjs'); // side effect: see that file
 const path = require('node:path');
 const { mkdtemp, rm, mkdir, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');

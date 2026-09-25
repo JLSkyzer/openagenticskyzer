@@ -76,6 +76,11 @@ export class SettingsService {
     const result: Config = {};
     for (const key of Object.keys(globalDefaults)) result[key] = saved[key];
     result.hf_token_configured = typeof saved.hf_token === 'string' && saved.hf_token.length > 0;
+    // OPENAGENT_SKIP_ONBOARDING=1 reports the first-launch wizard as already done WITHOUT writing anything: the
+    // tests (which all start on an empty data directory) set it so the wizard does not cover the interface they
+    // drive. Here, in the one place every reader of the global settings goes through — the worker AND the tests
+    // that use this service directly. Only the exact value "1" counts, and it can only ever mean "done".
+    if (process.env.OPENAGENT_SKIP_ONBOARDING === '1') result.onboarding_done = true;
     return result;
   }
   async saveGlobal(patch: Config) {

@@ -1983,7 +1983,22 @@ Décisions :
       exacte « 1 » compte (`0`, `false`, vide, `yes` ignorés). **Erreur de test corrigée** : le payload de
       `save-global-settings` est `{ patch }`, pas le patch nu. Mutation « toute valeur de la variable
       compte » → détectée (1 échec), code restauré.
-- [ ] Tâche 63 — Interface `Onboarding` + neutralisation dans les tests existants (non-régression).
+- [x] Tâche 63 — Interface `Onboarding` + neutralisation dans les tests existants (non-régression).
+      `Onboarding.tsx` (4 étapes, `Modal` persistant : ni Échap ni clic sur le fond, montée AVANT le reste
+      pour que le sélecteur de modèle qu'elle ouvre s'empile au-dessus ; fin → `onboarding_done` ; un
+      enregistrement refusé garde la fenêtre ouverte avec son message). `tsc` propre, build OK, 349/349.
+      **Découverte grâce à un échec** : `settings-visual` a échoué (« le dialogue est au-dessus… » faux aux 4
+      coins) — l'assistant recouvrait l'interface. Cause : ce test (comme `layout`, `sidebar`, `theme`)
+      utilise `SettingsService` **directement** dans le process principal, sans passer par le worker où
+      j'avais mis la neutralisation ; `chat`, `permission`, `stop` **simulent** la réponse de
+      `global-settings`. **Ces tests passaient donc en silence avec l'assistant affiché** (leurs
+      assertions n'utilisent pas de test de position) — moins fiables sans que rien ne le dise.
+      Correction : la neutralisation vit maintenant dans `SettingsService.publicGlobal()` (le point de
+      passage commun du worker ET de ces tests) et les 3 réponses simulées déclarent
+      `onboarding_done: true`. Après correction : chat, layout, permission, sidebar, stop, theme,
+      settings, settings-tabs PASS ; `branches` a échoué une fois au survol (`hover reveals ⑂`, l'instabilité
+      déjà connue du curseur réel) puis PASS à la relance. **Helpers** : `tests/no-onboarding.cjs` requis
+      par `capture-helper`, `cdp-helper` et 6 tests.
 - [ ] Tâche 64 — Preuve Electron réelle : vraie souris, 4 étapes, fenêtres ouvertes par l'assistant,
       persistance sur disque, ne revient pas après rechargement.
 - [ ] Tâche 65 — Vérification finale sur l'app packagée (`final-e2e-lot11.cjs`) avec redémarrage, bilan, leçons.

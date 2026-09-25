@@ -15,7 +15,7 @@ export const SHORTCUTS: readonly { keys: string; label: string }[] = [
  * `should_show_onboarding`: not shown once `onboarding_done` is truthy (Python's `bool(...)`). No answer at all —
  * the settings could not be read — means NO wizard: an unreadable file must never lock the app behind a dialog.
  */
-export function shouldShowOnboarding(settings: { onboarding_done?: unknown } | null): boolean {
+export function shouldShowOnboarding(settings: Record<string, unknown> | null): boolean {
   if (settings === null) return false;
   return !settings.onboarding_done;
 }

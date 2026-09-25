@@ -5,6 +5,7 @@
 // real user home directory.
 const { app, BrowserWindow, ipcMain } = require('electron');
 app.disableHardwareAcceleration();
+require('./no-onboarding.cjs'); // side effect: see that file
 const path = require('node:path');
 const { mkdtemp, rm, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');

@@ -7,6 +7,7 @@ import { ChatView } from './components/ChatView';
 import { ContextBar } from './components/ContextBar';
 import { CommandPalette } from './components/CommandPalette';
 import { InputBar } from './components/InputBar';
+import { Onboarding } from './components/Onboarding';
 import { ChatProvider } from './state/ChatProvider';
 import type { ChatMessage } from './ipc/bridge';
 
@@ -46,6 +47,9 @@ export default function App() {
           onFolderRemoved={folderRemoved}
         />
       )}
+      {/* Before the sidebar and the chat in the tree: the model selector it opens (in the input bar) then sits
+          above it, both being equal-z-index fixed dialogs stacked in document order. */}
+      <Onboarding activeFolder={activeFolder} />
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <Sidebar
           activeFolder={activeFolder}

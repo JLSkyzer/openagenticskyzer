@@ -60,6 +60,7 @@ export function ChatView() {
                 <UserBubble
                   key={index}
                   content={message.content}
+                  attachments={message.attachments}
                   onFork={state.agentRunning || state.compacting ? undefined : () => void forkFrom(index)}
                   onEdit={state.agentRunning || state.compacting ? undefined : () => void editMessage(index)}
                 />

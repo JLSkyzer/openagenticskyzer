@@ -23,6 +23,13 @@ const MAX_CSV_ROWS = 50;
 // freeze the IPC round trip.
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 
+const EXTENSION_ICONS: Record<string, string> = { '.pdf': '📕', '.csv': '📊', '.py': '🐍', '.js': '🟨', '.ts': '🟦', '.json': '📋', '.md': '📝' };
+/** The emoji on a file card (input_bar.py::_EXT_ICONS). Note: like the original, it keys on the text after the LAST dot. */
+export function attachmentIcon(name: string): string {
+  const dot = name.lastIndexOf('.');
+  return EXTENSION_ICONS[dot >= 0 ? name.slice(dot).toLowerCase() : ''] ?? '📄';
+}
+
 /** pathlib's `Path(name).suffix`: the last dot of the file name, unless it is the first character or the last. */
 function suffixOf(name: string): string {
   const base = name.slice(Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\')) + 1);

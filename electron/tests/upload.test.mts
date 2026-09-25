@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ACCEPT_ATTRIBUTE, processUpload } from '../renderer-src/src/state/upload.ts';
+import { ACCEPT_ATTRIBUTE, attachmentIcon, processUpload } from '../renderer-src/src/state/upload.ts';
 
 // Expected values come from the REAL Python `process_upload` (file_processor.py), run on the same bytes.
 const bytes = (text: string) => new TextEncoder().encode(text);
@@ -94,6 +94,13 @@ test('a CSV preview stops at 50 rows', async () => {
 
 test('a UTF-8 BOM is not left glued to the first header (a deliberate improvement on Python, where it became part of the key)', async () => {
   assert.equal((await csv('﻿a,b\n1,2\n')).content, "CSV (1 lignes preview):\n{'a': '1', 'b': '2'}");
+});
+
+test('a file card\'s icon follows the extension like input_bar.py\'s _EXT_ICONS, 📄 for anything else', () => {
+  const expected: Record<string, string> = { 'a.pdf': '📕', 'a.csv': '📊', 'a.py': '🐍', 'a.js': '🟨', 'a.ts': '🟦', 'a.json': '📋', 'a.md': '📝', 'a.txt': '📄', 'a.rs': '📄', 'Makefile': '📄' };
+  for (const [name, icon] of Object.entries(expected)) assert.equal(attachmentIcon(name), icon, name);
+  assert.equal(attachmentIcon('RAPPORT.PDF'), '📕', 'case-insensitive');
+  assert.equal(attachmentIcon('archive.tar.py'), '🐍', 'the last extension counts');
 });
 
 test('the file picker accepts exactly what processUpload supports', () => {

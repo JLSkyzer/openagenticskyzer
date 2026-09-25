@@ -1,4 +1,4 @@
-import type { AgentEvent, BranchInfo, ChatMessage } from '../ipc/bridge';
+import type { AgentEvent, Attachment, BranchInfo, ChatMessage } from '../ipc/bridge';
 // Explicit `.ts`: the unit tests load this file with Node itself (type stripping), which does not resolve
 // extension-less imports the way Vite does.
 import { extractArtifact, type Artifact } from './artifacts.ts';
@@ -78,7 +78,7 @@ export type ChatAction =
   | { type: 'compaction-started'; id: string }
   | { type: 'show-error'; error: string }
   | { type: 'clear-notice' }
-  | { type: 'send-started'; runId: string; text: string; keep?: number }
+  | { type: 'send-started'; runId: string; text: string; keep?: number; attachments?: Attachment[] }
   | { type: 'messages-truncated'; keep: number }
   | { type: 'artifact-closed' }
   | { type: 'send-failed'; error: string }
@@ -145,7 +145,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...state,
         // `keep` (🔄 regenerate) cuts the view before the message is added — in the same step, so a send
         // that the worker refuses never leaves a half-cut view behind.
-        messages: [...(action.keep === undefined ? state.messages : state.messages.slice(0, action.keep)), { role: 'user', content: action.text }],
+        messages: [
+          ...(action.keep === undefined ? state.messages : state.messages.slice(0, action.keep)),
+          { role: 'user', content: action.text, ...(action.attachments?.length ? { attachments: action.attachments } : {}) },
+        ],
         truncatedTo: null,
         agentRunning: true,
         runId: action.runId,

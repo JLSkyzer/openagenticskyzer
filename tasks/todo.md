@@ -2100,7 +2100,18 @@ Décisions :
       parité PDF est donc invérifiable et la version Electron fait mieux. **Pas encore prouvé** : le worker de
       pdf.js sous `file://` dans le vrai navigateur (Tâche 70) et dans l'exe packagé (Tâche 71). `tsc` propre
       (a aussi révélé un cast manquant dans `attachments.mts`, corrigé).
-- [ ] Tâche 69 — Interface : 📎, sélecteur de fichiers, coller, déposer, puces, bulle, 🔄.
+- [x] Tâche 69 — Interface : 📎, sélecteur de fichiers, coller, déposer, puces, bulle, 🔄.
+      `AttachmentChips` (miniature 72×72 + ✕ rond pour une image, carte 90×72 avec icône par extension
+      `attachmentIcon` — test RED d'abord, valeurs de `_EXT_ICONS` — pour le reste), 📎 + `<input type=file
+      multiple accept=…>` caché, **coller** (les fichiers du presse-papiers ; un collage de texte reste normal),
+      **déposer** (contour en pointillés pendant le survol), toasts `📎 nom ajouté` / `Format non supporté` /
+      `Erreur upload`, envoi avec les pièces (vidées ensuite comme `attached_files.clear()`), bulle
+      utilisateur : images (max 220×160) + nom des autres fichiers (l'original n'en montrait aucun).
+      **Améliorations par rapport à l'original** : 🔄 renvoie le message **avec** ses pièces (sinon la question
+      change en silence) ; ✏️ ramène aussi les pièces dans la zone (couper le message les coupait). Garde
+      globale : un fichier lâché **hors** de la zone ferait naviguer Electron vers lui et décharger l'appli →
+      `dragover`/`drop` interceptés au niveau fenêtre. `tsc` propre, build OK, 387/387 ; layout, chat, edit,
+      prompts, model, palette, stop, permission, artifact, onboarding PASS.
 - [ ] Tâche 70 — Preuve Electron réelle.
 - [ ] Tâche 71 — Vérification finale sur l'app packagée (`final-e2e-lot12.cjs`), bilan, leçons.
 

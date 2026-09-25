@@ -12,6 +12,7 @@ import {
   sendMessage,
   stop,
   type AgentEvent,
+  type Attachment,
   type ChatMessage,
 } from '../ipc/bridge';
 import { canForkAt, currentBranchLabel, nextBranchLabel } from './branches';
@@ -54,7 +55,7 @@ interface ChatContextValue {
   // Summarise the conversation on screen (context_bar.py::trigger_compact). `auto` is the attempt
   // made by the app itself after a turn: it stays silent when there is simply nothing to summarise.
   compact(options?: { auto?: boolean }): Promise<void>;
-  send(text: string): Promise<void>;
+  send(text: string, attachments?: Attachment[]): Promise<void>;
   stopRun(): Promise<void>;
   decide(allow: boolean, always: boolean): Promise<void>;
   // Branch off the current view right after the user message at `index` (chat.py::_fork_from).
@@ -64,7 +65,7 @@ interface ChatContextValue {
   // conversation is cut before it. `draft` is what the box must show; `nonce` changes on every edit so
   // editing the same text twice still refills a box the user emptied in between.
   editMessage(index: number): Promise<void>;
-  draft: { text: string; nonce: number } | null;
+  draft: { text: string; attachments: Attachment[]; nonce: number } | null;
   // 🔄 (input_bar.py::regenerate): drop the last user+AI turn and send that user message again.
   regenerate(): Promise<void>;
   // ✕ of the side preview (artifact_panel.py::_close_artifact).
@@ -244,7 +245,7 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
     return false;
   }, []);
 
-  const [draft, setDraft] = useState<{ text: string; nonce: number } | null>(null);
+  const [draft, setDraft] = useState<{ text: string; attachments: Attachment[]; nonce: number } | null>(null);
 
   const editMessage = useCallback(async (index: number) => {
     const folder = activeFolderRef.current;
@@ -255,8 +256,10 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
       const now = stateRef.current;
       if (now.agentRunning || now.compacting) return; // a run started while the saved copy was being read
       const text = now.messages[index].content;
+      // Cutting the message also cuts its files: they come back with the text so nothing has to be attached again.
+      const attachments = now.messages[index].attachments ?? [];
       dispatch({ type: 'messages-truncated', keep: index });
-      setDraft(previous => ({ text, nonce: (previous?.nonce ?? 0) + 1 }));
+      setDraft(previous => ({ text, attachments, nonce: (previous?.nonce ?? 0) + 1 }));
     } catch (error) {
       dispatch({ type: 'show-error', error: error instanceof Error ? error.message : 'Impossible d’éditer ce message' });
     }
@@ -273,8 +276,10 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
       const now = stateRef.current;
       if (now.agentRunning || now.compacting) return;
       const text = now.messages[index].content;
-      const { runId } = await sendMessage(folder, now.currentBranchId, text, index);
-      dispatch({ type: 'send-started', runId, text, keep: index });
+      // The message goes again WITH its files (the original lost them, which silently changed the question).
+      const attachments = now.messages[index].attachments;
+      const { runId } = await sendMessage(folder, now.currentBranchId, text, index, attachments);
+      dispatch({ type: 'send-started', runId, text, keep: index, attachments });
     } catch (error) {
       dispatch({ type: 'show-error', error: error instanceof Error ? error.message : 'Impossible de régénérer la réponse' });
     }
@@ -284,13 +289,13 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
   const closeArtifact = useCallback(() => dispatch({ type: 'artifact-closed' }), []);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, attachments?: Attachment[]) => {
       if (!activeFolder || !text.trim()) return;
       // After ✏️ the view is shorter than what is saved: hand the cut over so the worker applies it.
       const keep = state.truncatedTo ?? undefined;
       try {
-        const { runId } = await sendMessage(activeFolder, state.currentBranchId, text, keep);
-        dispatch({ type: 'send-started', runId, text, keep });
+        const { runId } = await sendMessage(activeFolder, state.currentBranchId, text, keep, attachments);
+        dispatch({ type: 'send-started', runId, text, keep, attachments });
       } catch (error) {
         // Without this, a rejected IPC call (e.g. connections.resolve() refusing an
         // unconfirmed key/endpoint pairing) left the send silently doing nothing — no

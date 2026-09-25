@@ -1,6 +1,11 @@
+import type { Attachment } from '../../../core/attachments.mts';
+export type { Attachment };
+
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
+  // A user message's files (📎 / paste / drop), kept beside what was typed.
+  attachments?: Attachment[];
   tool_call_id?: string;
   [key: string]: unknown;
 }

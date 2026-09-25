@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  Attachment,
   BranchInfo,
   ChatMessage,
   ConnectionPatch,
@@ -22,8 +23,14 @@ export function sendMessage(
   // ✏️ / 🔄: cut the saved history to its first `keep` messages before the turn. Omitted entirely (not
   // sent as undefined/null) for an ordinary send, which the worker reads as "keep everything".
   keep?: number,
+  // The message's files, already processed by processUpload. Omitted when there are none.
+  attachments?: Attachment[],
 ): Promise<{ runId: string }> {
-  return request('send', keep === undefined ? { folder, branchId, text } : { folder, branchId, text, keep });
+  return request('send', {
+    folder, branchId, text,
+    ...(keep === undefined ? {} : { keep }),
+    ...(attachments?.length ? { attachments } : {}),
+  });
 }
 
 export function stop(runId: string): Promise<{ stopped: boolean }> {
@@ -185,6 +192,7 @@ export function saveProjectSettings(folder: string, patch: Partial<ProjectSettin
 
 export type {
   AgentEvent,
+  Attachment,
   BranchInfo,
   ChatMessage,
   ConnectionPatch,

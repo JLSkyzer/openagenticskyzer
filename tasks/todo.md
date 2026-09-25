@@ -1773,8 +1773,27 @@ Comportement NiceGUI à reproduire :
       corrigé en ajoutant un second appel d'une autre catégorie (`create_file`/`write`) et en
       vérifiant les deux étiquettes, puis la mutation a été détectée. Code restauré (`git diff` vide).
       `npm test` 308/308, `tsc` propre.
-- [ ] Tâche 53 — Vérification finale sur l'app **packagée** (`final-e2e-lot8.cjs`) + suite complète,
+- [x] Tâche 53 — Vérification finale sur l'app **packagée** (`final-e2e-lot8.cjs`) + suite complète,
       bilan ici, leçons.
+      **Preuve** (exe packagé `release/win-unpacked/openagent.exe`, Python absent du PATH, vrai
+      `main.cjs`/coffre/worker) : vrai tour avec appel `list_dir` ; export ⬇ des 3 formats relus
+      sur disque (en-tête, ligne `[READ]` réelle, code échappé une fois, JSON user/tool/ai, tag
+      `read`) ; export depuis la palette (Ctrl+K réel) ; vrai `open-export` de `main.cjs` : nom
+      avec chemin et fichier non-export refusés, export absent refusé par `shell.openPath` ;
+      `shell.openPath` réel accepté sur le `.json` exporté (exécuté 1 fois, PASS) ; clé API
+      absente de tout fichier de données et de tous les exports ; sortie propre (code 0).
+      **Limites honnêtes** : un premier lancement a échoué une fois sans cause établie (menu ⬇
+      absent au clic) et ne s'est pas reproduit ; la stabilité n'a pas été mesurée par des
+      relances, car chaque exécution ouvrait le fichier dans l'application par défaut de
+      Killian (il l'a signalé) → l'ouverture réelle est maintenant opt-in
+      (`OPENAGENT_E2E_REAL_OPEN=1`). `final-e2e-lot7` a été mis à jour (8 commandes) mais **pas
+      relancé** après ce lot ; la suite Electron complète et les lots 1–7 n'ont pas été rejoués
+      dans cette session pour ne pas rouvrir d'applications. `npm test` 308/308, `tsc` propre
+      (avant T53).
+      **Bilan du lot export** : moteur + pont + menu ⬇ + palette + preuves Electron et packagée.
+      Reste NON migré : 📥 Téléchargements, édition/régénération de message, artifacts,
+      onboarding, suppression/renommage/fusion de branche, fenêtrage de l'historique, éditeur
+      de prompts, `index_status`. **La migration NiceGUI → Electron n'est pas terminée.**
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

@@ -15,7 +15,7 @@ const { httpGetJson, waitFor, Cdp, checkPythonAbsent } = require('./cdp-helper.c
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const KEY = 'sk-FINAL7-SECRET';
-const ALL_IDS = ['open-folder', 'switch-model', 'clear-history', 'open-settings', 'show-memory', 'open-prompts', 'compact'];
+const ALL_IDS = ['open-folder', 'switch-model', 'clear-history', 'open-settings', 'show-memory', 'open-prompts', 'export', 'compact'];
 
 async function main() {
   const proofDir = process.env.OPENAGENT_E2E_PROOF_DIR;
@@ -147,13 +147,13 @@ async function main() {
     await waitFor(() => exists('[data-testid="oa-palette"]'), { timeout: 5000 });
     assert.equal(await js(`document.getElementById('oa-input-ta').value`), '', 'the k was not typed into the box');
     assert.equal(await js(`document.activeElement?.id`), 'oa-palette-input');
-    assert.deepEqual(await paletteIds(), ALL_IDS, 'the seven commands, in order');
+    assert.deepEqual(await paletteIds(), ALL_IDS, 'the eight commands, in order');
     await app.cdp.screenshot(join(proofDir, 'lot7-1-palette.png'));
     await setValue('#oa-palette-input', 'mémoire');
     assert.deepEqual(await paletteIds(), ['show-memory']);
     await key('Enter', 'Enter', 13, '\r');
     await waitFor(async () => (await toasts()).some(t => t.text === 'Aucun dossier actif.' && t.kind === 'warning'), { timeout: 5000 });
-    record('PROOF 3 — real Ctrl+K from the input box (no "k" typed); seven commands in order; typing + real Enter ran the memory command, which refused without a folder (yellow toast)');
+    record('PROOF 3 — real Ctrl+K from the input box (no "k" typed); eight commands in order; typing + real Enter ran the memory command, which refused without a folder (yellow toast)');
 
     // ── Open the folder, then connect the scripted model through the selector the PALETTE opens ──
     await waitFor(() => exists('[data-testid="oa-folder-entry"]'));

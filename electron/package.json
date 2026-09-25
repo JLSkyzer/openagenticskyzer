@@ -30,6 +30,7 @@
     "test:edit": "node tests/run-edit-regenerate-visual.cjs",
     "test:artifact": "node tests/run-artifact-visual.cjs",
     "test:onboarding": "node tests/run-onboarding-visual.cjs",
+    "test:attach": "node tests/run-attachments-visual.cjs",
     "package:win": "npm run renderer:build && electron-builder --win dir",
     "test:package": "node tests/package-smoke.cjs",
     "test:final-e2e": "node tests/final-e2e.cjs",

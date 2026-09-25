@@ -2112,7 +2112,28 @@ Décisions :
       globale : un fichier lâché **hors** de la zone ferait naviguer Electron vers lui et décharger l'appli →
       `dragover`/`drop` interceptés au niveau fenêtre. `tsc` propre, build OK, 387/387 ; layout, chat, edit,
       prompts, model, palette, stop, permission, artifact, onboarding PASS.
-- [ ] Tâche 70 — Preuve Electron réelle.
+- [x] Tâche 70 — Preuve Electron réelle.
+      `npm run test:attach` PASS (2 exécutions concluantes + 1 avec une capture améliorée), avec **la vraie CSP
+      de l'app** dans le harnais et un faux modèle HTTP qui enregistre ce qu'il reçoit ; aucune application
+      externe. Fichiers **réels** remis au **vrai** `<input type=file>` par `DOM.setFileInputFiles` (le vrai
+      clic sur 📎 ouvrirait une boîte système : son câblage est vérifié par un espion sur `click()` de l'input,
+      multiple + `accept` corrects) : texte, CSV, image, **vrai PDF lu par pdf.js dans la page sous la CSP
+      packagée** (le doute de la Tâche 68 est levé côté navigateur : le worker fonctionne sous `file://`) ;
+      puces 72 px / 90 px, icônes, toast `📎 … ajouté` ; `archive.exe` → avertissement « Format non supporté »
+      sans rien ajouter ; PDF illisible **gardé** ; fichier de 11 Mo → « dépasse la limite de 10 Mo » ; vrai clic
+      ✕ retire exactement ce fichier ; envoi : le modèle reçoit une **liste** (image_url puis un morceau texte
+      avec `--- notes.txt ---`, le CSV en dicts Python, le PDF page par page, la question en dernier), jamais
+      le champ `attachments` ; la bulle montre l'image (max 220 px) et les noms, seulement le texte tapé ; le
+      disque garde texte + 4 pièces ; un tour suivant voit encore les fichiers ; rouvrir le dossier les
+      réaffiche ; 🔄 renvoie la question **avec** le fichier (conversation remplacée, pas allongée) ; ✏️
+      ramène texte **et** fichier ; coller : un fichier est pris, du texte reste au champ ; déposer :
+      surlignage puis fichier joint ; un dépôt hors zone est avalé (l'app reste chargée, rien de joint).
+      **Erreurs de test corrigées** : expression renvoyant une fonction (non clonable), espace entre icône et
+      nom dans mon lecteur de puces, surlignage lu avant le rendu React, bulle masquée par les toasts sur la
+      capture. **Mutation** : garde globale de dépôt retirée → détectée, code restauré. Régression : 387/387,
+      `tsc`, layout / chat / edit / export / artifact / onboarding PASS.
+      **Limite** : le vrai glisser-déposer depuis l'Explorateur n'est pas rejoué (événements `drop`/`paste`
+      construits, pas de vrai geste système) ; l'image de test est 1×1 px (invisible dans la bulle).
 - [ ] Tâche 71 — Vérification finale sur l'app packagée (`final-e2e-lot12.cjs`), bilan, leçons.
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)

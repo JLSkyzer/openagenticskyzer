@@ -2013,7 +2013,27 @@ Décisions :
       `onboarding_done: true` dans `config.json`, l'interface redevient utilisable et il ne revient pas
       après rechargement. **Mutation** : assistant fermable (Échap/clic fond) → détectée, code restauré.
       Captures relues (sélecteur au-dessus, écran final).
-- [ ] Tâche 65 — Vérification finale sur l'app packagée (`final-e2e-lot11.cjs`) avec redémarrage, bilan, leçons.
+- [x] Tâche 65 — Vérification finale sur l'app packagée (`final-e2e-lot11.cjs`) avec redémarrage, bilan, leçons.
+      Exe repackagé, Python absent du PATH, **dossier de données neuf et sans neutralisation**, vraie
+      souris et vrai clavier CDP : un vrai premier lancement affiche l'assistant, qui recouvre l'interface,
+      et un vrai Échap ne le ferme pas ; vrais clics → le vrai sélecteur de modèle s'ouvre **au-dessus**
+      (Échap ne ferme que lui) ; quitter à l'étape 3 n'écrit rien (`onboarding_done` absent) et un **vrai
+      redémarrage** ramène l'assistant à l'étape 1 ; « Passer », 3 raccourcis réels seulement, vrai clic
+      « Commencer à coder » → `config.json` contient `onboarding_done: true` (écrit par le worker
+      packagé) et l'interface est libre ; un **second vrai redémarrage** ne l'affiche plus ; sortie
+      propre. PASS du premier coup (1 exécution), aucune application externe ouverte.
+      **Non cliqué (limite)** : « Ouvrir un dossier » depuis l'assistant sur l'exe — c'est une boîte de
+      dialogue système que rien ne peut piloter ; le clic est prouvé sur le vrai worker dans le test
+      Electron (`open-folder` simulé, activation du dossier réelle).
+      Régression sur le nouvel exe : `final-e2e-lot7`, `lot8`, `lot9`, `lot10` PASS (elles dépendent de
+      la neutralisation), `npm audit` 0, aucun `openagent.exe` résiduel, `npm test` 349/349, `tsc` propre.
+      **Non rejoué** : lots e2e 1 à 6 et tests Electron model / prompts / settings-folder / context.
+      **Limite produit** : un utilisateur de l'ancienne app NiceGUI qui lance l'app Electron sur un dossier
+      de données différent verra l'assistant une fois (la config NiceGUI n'est pas importée).
+      **Bilan du lot** : assistant de premier lancement migré (avec correction des raccourcis inventés de
+      l'original). Reste NON migré : 📥 Téléchargements (dépend du catalogue LM Studio, lui-même non migré),
+      fenêtrage de l'historique, éditeur de prompts, `index_status`, images jointes aux messages.
+      **La migration NiceGUI → Electron n'est pas terminée.**
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

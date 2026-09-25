@@ -127,7 +127,7 @@ function normalizeRole(role) {
 const PERMISSION_FIELD = { write: 'files_ask', network: 'search_ask', shell: 'shell_ask' };
 
 /** Runs one agent turn to completion, streaming events to the renderer via parentPort. */
-async function runSend(runId, folder, branchId, text, connection) {
+async function runSend(runId, folder, branchId, text, connection, keep) {
   const controller = new AbortController();
   const accumulated = [];
   active.set(runId, { controller, folder });
@@ -142,7 +142,8 @@ async function runSend(runId, folder, branchId, text, connection) {
     const { effective, tools } = await registerTools(folder);
     const toolCategory = new Map(tools.map(tool => [tool.name, tool.category]));
     const { instructions } = await buildInstructions({ folder, home: dataHome, base: BASE_SYSTEM_PROMPT });
-    const history = (await conversations.messages(folder, branchId)).map(m => ({ ...m, role: normalizeRole(m.role) }));
+    const saved = await conversations.messages(folder, branchId);
+    const history = (keep === undefined ? saved : saved.slice(0, keep)).map(m => ({ ...m, role: normalizeRole(m.role) }));
     collected = [...history, { role: 'user', content: text }];
     const emit = event => {
       const { type: kind, ...rest } = event;
@@ -227,12 +228,20 @@ async function handle(message) {
     if (op === 'send') {
       // A run appends to the same transcript the summary is about to replace.
       if (compactingIn(payload.folder)) throw new Error('Une compaction est en cours dans ce dossier : attends la fin avant d’envoyer un message.');
+      // `keep` (✏️ edit / 🔄 regenerate): cut the saved history to its first `keep` messages before the turn.
+      // Checked here, before the reply, so a refusal reaches the page and nothing has been touched.
+      const keep = payload.keep;
+      if (keep !== undefined) {
+        if (!Number.isInteger(keep) || keep < 0) throw new Error('Paramètre keep invalide : un entier positif ou nul est attendu.');
+        const saved = await conversations.messages(payload.folder, payload.branchId || 'main');
+        if (keep > saved.length) throw new Error('L’historique enregistré est plus court que la conversation affichée : recharge-la avant de réessayer.');
+      }
       const runId = randomUUID();
       reply(id, true, { runId });
       // Fire-and-forget: the turn's real result streams back as 'event' messages, not
       // as this request's response (main.cjs's 30s IPC timeout could never cover a full
       // multi-step agent run).
-      void runSend(runId, payload.folder, payload.branchId || 'main', payload.text, payload.connection);
+      void runSend(runId, payload.folder, payload.branchId || 'main', payload.text, payload.connection, keep);
       return;
     }
     if (op === 'stop') { active.get(payload.runId)?.controller.abort(); result = { stopped: true }; }

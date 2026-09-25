@@ -38,6 +38,10 @@ export interface ChatState {
   // Turns that ended normally since the folder was opened (not Stop, not error): what the automatic
   // compaction reacts to, as input_bar.py only checks the gauge after a successful turn.
   completedTurns: number;
+  // ✏️: the view was cut to this many messages but the saved history was NOT (abandoning the edit must
+  // destroy nothing, as in the NiceGUI app). The next send hands it to the worker as `keep`, which cuts
+  // the saved history at the same place. null = the view matches what is saved.
+  truncatedTo: number | null;
 }
 
 export const initialChatState: ChatState = {
@@ -54,6 +58,7 @@ export const initialChatState: ChatState = {
   compacting: false,
   compactionId: null,
   completedTurns: 0,
+  truncatedTo: null,
 };
 
 export type ChatAction =
@@ -65,7 +70,8 @@ export type ChatAction =
   | { type: 'compaction-started'; id: string }
   | { type: 'show-error'; error: string }
   | { type: 'clear-notice' }
-  | { type: 'send-started'; runId: string; text: string }
+  | { type: 'send-started'; runId: string; text: string; keep?: number }
+  | { type: 'messages-truncated'; keep: number }
   | { type: 'send-failed'; error: string }
   | { type: 'agent-event'; event: AgentEvent }
   | { type: 'permission-decided' }
@@ -89,6 +95,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         branches: action.branches,
         currentBranchId: action.id,
         messages: action.messages,
+        truncatedTo: null,
         error: null,
         notice: `Branche '${action.label}' créée.`,
       };
@@ -99,6 +106,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...state,
         currentBranchId: action.id,
         messages: action.messages,
+        truncatedTo: null,
         streamingText: '',
         liveToolStarts: {},
         pendingPermission: null,
@@ -113,15 +121,23 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return { ...state, notice: null };
 
     case 'compaction-started':
-      return { ...state, compacting: true, compactionId: action.id, error: null };
+      return { ...state, compacting: true, compactionId: action.id, truncatedTo: null, error: null };
 
     case 'show-error':
       return { ...state, error: action.error };
 
+    // Like fork and switch, a cut replaces what is on screen: ignored while a run or a summary owns it.
+    case 'messages-truncated':
+      if (state.agentRunning || state.compacting) return state;
+      return { ...state, messages: state.messages.slice(0, action.keep), truncatedTo: action.keep, error: null, notice: null };
+
     case 'send-started':
       return {
         ...state,
-        messages: [...state.messages, { role: 'user', content: action.text }],
+        // `keep` (🔄 regenerate) cuts the view before the message is added — in the same step, so a send
+        // that the worker refuses never leaves a half-cut view behind.
+        messages: [...(action.keep === undefined ? state.messages : state.messages.slice(0, action.keep)), { role: 'user', content: action.text }],
+        truncatedTo: null,
         agentRunning: true,
         runId: action.runId,
         streamingText: '',

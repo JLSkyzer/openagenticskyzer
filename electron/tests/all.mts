@@ -34,4 +34,6 @@ import './command-logic.test.mts';
 import './export.test.mts';
 import './worker-export.test.mts';
 import './export-ui.test.mts';
+import './edit-regenerate.test.mts';
+import './worker-keep.test.mts';
 import './ui-plumbing.test.mts';

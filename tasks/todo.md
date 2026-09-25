@@ -1795,6 +1795,35 @@ Comportement NiceGUI à reproduire :
       onboarding, suppression/renommage/fusion de branche, fenêtrage de l'historique, éditeur
       de prompts, `index_status`. **La migration NiceGUI → Electron n'est pas terminée.**
 
+### Lot actif suivant — éditer un message / régénérer la réponse (2026-09-25)
+
+Constat : la version NiceGUI n'a **aucune** suppression/renommage/fusion de branche (seulement
+créer + basculer) — ce n'est donc pas un manque de migration. Le vrai reste utilisateur est
+✏️ / 🔄 (`chat.py::_render_message`, `input_bar.py::edit_message` / `regenerate`).
+
+Comportement d'origine : ✏️ sur un message utilisateur (absent pendant un tour) → son texte revient
+dans la zone de saisie et l'historique est **tronqué avant lui** (en mémoire ; l'ancien reste sur
+disque tant que rien n'est envoyé). 🔄 sous la dernière réponse IA (absent pendant un tour) → retire
+le dernier tour user+IA et renvoie le même message utilisateur.
+
+Décisions : la troncature est **envoyée avec le message** (`send` reçoit `keep`, le worker tronque
+l'historique enregistré juste avant de lancer le tour) plutôt que persistée à part → abandonner une
+édition ne détruit rien (comme l'original). Même garde que le fork (`canForkAt` : la vue doit
+correspondre au message enregistré) ; `keep` plus grand que l'historique enregistré → refus, rien perdu.
+Contrairement au reste, **aucun test de ce lot n'ouvre d'application** (pas de `open-export`).
+
+- [x] Tâche 54 — Logique pure + worker (`keep`), RED d'abord : reducer (`send-started` avec `keep`,
+      `truncatedTo`), `lastUserIndex`, worker `send` avec `keep` (troncature, refus si trop grand).
+      RED prouvé (module `editing.ts` introuvable), puis 320/320 (12 tests ajoutés : 7 logique
+      pure, 5 worker réel avec faux modèle HTTP). Le worker valide `keep` **avant** de répondre
+      (entier ≥ 0, ≤ historique enregistré) : un refus arrive à la page sans rien toucher, et le
+      modèle ne reçoit jamais la partie coupée. Mutation « le worker ignore `keep` » → 2 échecs,
+      code restauré. Aucun test n'ouvre d'application.
+- [ ] Tâche 55 — Interface : ✏️ sur `UserBubble`, 🔄 sous la dernière réponse, brouillon dans la
+      zone de saisie, `ChatProvider.editMessage/regenerate`.
+- [ ] Tâche 56 — Preuve Electron réelle (`edit-regenerate-visual.cjs`) : vraie souris, vrai worker.
+- [ ] Tâche 57 — Vérification finale sur l'app packagée (`final-e2e-lot9.cjs`), bilan, leçons.
+
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 
 - [x] Task 1 — Module d'embedding lazy et singleton

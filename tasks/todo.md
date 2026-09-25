@@ -1950,6 +1950,44 @@ Décisions (sécurité d'abord — le contenu vient d'un modèle) :
       fenêtrage de l'historique, éditeur de prompts, `index_status`, images jointes aux messages.
       **La migration NiceGUI → Electron n'est pas terminée.**
 
+### Lot actif suivant — assistant de premier lancement (2026-09-25)
+
+Écarté après lecture : 📥 Téléchargements (`downloads.py`) n'affiche que les téléchargements lancés par le
+catalogue de modèles LM Studio (`model_modal.py`, non migré) — seul il resterait vide.
+
+Original (`onboarding.py`) : au premier lancement (`onboarding_done` absent/faux dans la config globale) une
+fenêtre persistante en 4 étapes — Bienvenue → 🤖 modèle (« Ouvrir les paramètres du modèle ») → 📁 dossier
+(« Ouvrir un dossier », « Passer ») → 🎉 raccourcis — dont la fin écrit `onboarding_done: true`.
+
+Décisions :
+- **Raccourcis** : l'original en annonce 4 dont 3 **n'existent pas** (Ctrl+L, Ctrl+, ) ou sont faux
+  (« Ctrl+Entrée — Envoyer » : Entrée envoie, Ctrl+Entrée fait un saut de ligne). On n'affiche que les
+  vrais : Ctrl+K, Entrée, Shift+Entrée. Écart assumé.
+- Étape 3 : « Suivant → » à la place de « Passer » une fois un dossier ouvert (amélioration mineure).
+- Une lecture des réglages qui échoue n'affiche **pas** l'assistant (ne jamais bloquer l'appli) ; un
+  enregistrement de fin qui échoue laisse l'assistant ouvert avec le message d'erreur.
+- L'assistant est monté avant le reste de l'arbre : le sélecteur de modèle qu'il ouvre s'empile **au-dessus**.
+- **Piège** : tous les tests existants démarrent sur un dossier neuf → l'assistant masquerait leur interface.
+  `OPENAGENT_SKIP_ONBOARDING=1` (lue par le worker, comme `OPENAGENT_HOME`) le neutralise ; posée par les
+  helpers de test partagés (`capture-helper`, `cdp-helper`) et par les 6 tests qui n'en utilisent aucun.
+  Les tests de l'assistant retirent la variable.
+- Aucun test n'ouvre d'application externe.
+
+- [x] Tâche 62 — Logique pure + worker, RED d'abord : étapes, raccourcis, `shouldShowOnboarding`, variable de
+      neutralisation, persistance de `onboarding_done`.
+      RED prouvé (module introuvable) puis 349/349 (11 tests : 6 logique pure, 5 worker réel).
+      `shouldShowOnboarding` lit comme `bool()` de Python (seul un vrai « fait » masque l'assistant) et
+      **ne montre jamais l'assistant sans réponse** (lecture échouée). Le worker : un dossier neuf →
+      `onboarding_done` faux ; l'enregistrement survit à un **nouveau processus** ; « réinitialiser » le
+      fait revenir ; `OPENAGENT_SKIP_ONBOARDING=1` le rapporte fait **sans rien écrire**, seule la valeur
+      exacte « 1 » compte (`0`, `false`, vide, `yes` ignorés). **Erreur de test corrigée** : le payload de
+      `save-global-settings` est `{ patch }`, pas le patch nu. Mutation « toute valeur de la variable
+      compte » → détectée (1 échec), code restauré.
+- [ ] Tâche 63 — Interface `Onboarding` + neutralisation dans les tests existants (non-régression).
+- [ ] Tâche 64 — Preuve Electron réelle : vraie souris, 4 étapes, fenêtres ouvertes par l'assistant,
+      persistance sur disque, ne revient pas après rechargement.
+- [ ] Tâche 65 — Vérification finale sur l'app packagée (`final-e2e-lot11.cjs`) avec redémarrage, bilan, leçons.
+
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 
 - [x] Task 1 — Module d'embedding lazy et singleton

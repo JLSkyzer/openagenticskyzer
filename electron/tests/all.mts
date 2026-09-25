@@ -38,4 +38,6 @@ import './edit-regenerate.test.mts';
 import './worker-keep.test.mts';
 import './artifacts.test.mts';
 import './artifact-protocol.test.mts';
+import './onboarding.test.mts';
+import './worker-onboarding.test.mts';
 import './ui-plumbing.test.mts';

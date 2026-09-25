@@ -22,6 +22,15 @@ import { buildHtml, buildJson, buildMarkdown, exportFilename, renderEntries } fr
 // OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
 // instead of the real user's ~/.openagent — never rely on the default outside tests.
 const dataHome = process.env.OPENAGENT_HOME || join(homedir(), '.openagent');
+
+// OPENAGENT_SKIP_ONBOARDING=1 reports the first-launch wizard as already done, WITHOUT writing anything: the tests
+// (which all start on an empty data directory) set it so the wizard does not cover the interface they drive. Only
+// the exact value "1" counts, and it can only ever mean "done" — it can never force the wizard to show.
+const skipOnboarding = process.env.OPENAGENT_SKIP_ONBOARDING === '1';
+async function appGlobalSettings() {
+  const global = await settings.publicGlobal();
+  return skipOnboarding ? { ...global, onboarding_done: true } : global;
+}
 const settings = new SettingsService(dataHome);
 const conversations = new Conversations();
 const folders = new FoldersService(dataHome);
@@ -266,11 +275,11 @@ async function handle(message) {
       }
       result = { ok: true };
     }
-    if (op === 'global-settings') result = await settings.publicGlobal();
+    if (op === 'global-settings') result = await appGlobalSettings();
     if (op === 'project-settings') result = await settings.project(payload.folder);
     // Replies go through publicGlobal(): the HuggingFace token is written to disk but must
     // never travel back to the renderer (only hf_token_configured does).
-    if (op === 'save-global-settings') { await settings.saveGlobal(payload.patch); result = await settings.publicGlobal(); }
+    if (op === 'save-global-settings') { await settings.saveGlobal(payload.patch); result = await appGlobalSettings(); }
     if (op === 'save-project-settings') result = await settings.saveProject(payload.folder, payload.patch);
     // Zone Danger: none of these delete project files — history and sidebar entries only.
     if (op === 'clear-history') {

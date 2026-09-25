@@ -70,5 +70,5 @@ interface Wire { role: string; content: unknown; [key: string]: unknown }
 export function toWireMessage<T extends Wire>(message: T): Wire {
   if ((message.role !== 'user' && message.role !== 'human') || !Array.isArray(message.attachments)) return message;
   const { attachments, ...rest } = message;
-  return attachments.length === 0 ? rest : { ...rest, content: buildMessageContent(String(message.content ?? ''), attachments as Attachment[]) };
+  return (attachments.length === 0 ? rest : { ...rest, content: buildMessageContent(String(message.content ?? ''), attachments as Attachment[]) }) as unknown as Wire;
 }

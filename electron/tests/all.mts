@@ -43,4 +43,5 @@ import './worker-onboarding.test.mts';
 import './attachments.test.mts';
 import './upload.test.mts';
 import './worker-attachments.test.mts';
+import './pdf.test.mts';
 import './ui-plumbing.test.mts';

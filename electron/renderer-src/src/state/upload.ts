@@ -1,4 +1,9 @@
 import type { Attachment } from '../../../core/attachments.mts';
+import { extractPdfText } from './pdf-text.ts';
+
+// pdf.js is imported on first use only, and through a dynamic import: it is large, and the unit tests (which run in
+// Node, where Vite's `?url` does not exist) never reach it — they inject their own reader.
+const readPdfInBrowser = async (bytes: Uint8Array) => extractPdfText(bytes, (await import('./pdf-loader.ts')).loadPdfjs);
 
 // file_processor.py::process_upload, in the renderer: the packaged worker has no node_modules (build.files leaves
 // them out), so nothing that needs a library — a PDF reader — could live there. Everything here is checked against
@@ -116,10 +121,19 @@ function csvPreview(text: string): { rows: string[]; count: number } {
  * An attachment from a file's name and bytes, or null when its type is not supported (the caller says so).
  * Throws for a file over the size limit.
  */
-export async function processUpload(name: string, bytes: Uint8Array): Promise<Attachment | null> {
+export async function processUpload(name: string, bytes: Uint8Array, options: { readPdf?: (bytes: Uint8Array) => Promise<string> } = {}): Promise<Attachment | null> {
   if (bytes.length > MAX_UPLOAD_BYTES) throw new Error(`${name} dépasse la limite de 10 Mo`);
   const extension = suffixOf(name);
   const size_kb = Math.max(1, Math.floor(bytes.length / 1024));
+  if (extension === '.pdf') {
+    try {
+      const text = await (options.readPdf ?? readPdfInBrowser)(bytes);
+      return { name, content_type: 'pdf', content: firstChars(text, MAX_TEXT_CHARS), size_kb };
+    } catch (error) {
+      // As in the original: an unreadable PDF is not refused, it becomes a text attachment that says why.
+      return { name, content_type: 'text', content: `[Erreur lecture PDF: ${error instanceof Error ? error.message : String(error)}]`, size_kb };
+    }
+  }
   if (extension === '.csv') {
     const { rows, count } = csvPreview(decode(bytes));
     return { name, content_type: 'csv', content: `CSV (${count} lignes preview):\n${rows.join('\n')}`, size_kb };

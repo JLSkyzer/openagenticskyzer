@@ -2086,7 +2086,20 @@ Décisions :
       plus, 30 M caractères au total, nom/type/taille contrôlés ; un refus n'a rien démarré ni enregistré.
       🔄 (`keep`) peut renvoyer le message **avec** ses pièces. Mutation « messages bruts envoyés » →
       détectée, code restauré.
-- [ ] Tâche 68 — PDF (`pdfjs-dist`, audit) avec un vrai fichier PDF.
+- [x] Tâche 68 — PDF (`pdfjs-dist`, audit) avec un vrai fichier PDF.
+      `pdfjs-dist@6` en devDependency, `npm audit` 0. RED prouvé (module introuvable) puis 386/386 (5 tests)
+      sur un **vrai PDF fabriqué en mémoire** (2 pages, table xref correcte) lu par le build Node de pdf.js :
+      texte par page, pages jointes par une ligne vide, octets de l'appelant intacts (pdf.js détache le tampon
+      qu'on lui donne → copie), pièce « pdf » ; un PDF illisible devient une pièce **texte** `[Erreur lecture
+      PDF: …]` (comme l'original : l'envoi n'est pas perdu) ; coupe à 50 000 caractères. **Correction en route** :
+      dans pdf.js v6 c'est la *tâche de chargement* qu'on détruit, pas le document (`document.destroy is not a
+      function`). `isEvalSupported: false` (la CSP de l'app interdit `eval`). Bibliothèque **injectée**
+      (`pdf-text.ts`) et chargée à la demande côté navigateur (`pdf-loader.ts`, `?url` de Vite).
+      **Constat sur l'original** : `pypdf` n'est **ni installé ni déclaré** dans `pyproject.toml` — la lecture de
+      PDF de NiceGUI renvoie en pratique toujours `[Erreur lecture PDF: No module named 'pypdf']` ; la
+      parité PDF est donc invérifiable et la version Electron fait mieux. **Pas encore prouvé** : le worker de
+      pdf.js sous `file://` dans le vrai navigateur (Tâche 70) et dans l'exe packagé (Tâche 71). `tsc` propre
+      (a aussi révélé un cast manquant dans `attachments.mts`, corrigé).
 - [ ] Tâche 69 — Interface : 📎, sélecteur de fichiers, coller, déposer, puces, bulle, 🔄.
 - [ ] Tâche 70 — Preuve Electron réelle.
 - [ ] Tâche 71 — Vérification finale sur l'app packagée (`final-e2e-lot12.cjs`), bilan, leçons.

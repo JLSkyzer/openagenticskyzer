@@ -1841,7 +1841,26 @@ Contrairement au reste, **aucun test de ce lot n'ouvre d'application** (pas de `
       coupe de la vue, pas seulement le texte. **Mutation** : `send` qui oublie `keep` après ✏️ →
       détectée (« the cut tail was not sent »), code restauré. Régression : chat, branches, stop,
       layout, permission, context, palette, export PASS.
-- [ ] Tâche 57 — Vérification finale sur l'app packagée (`final-e2e-lot9.cjs`), bilan, leçons.
+- [x] Tâche 57 — Vérification finale sur l'app packagée (`final-e2e-lot9.cjs`), bilan, leçons.
+      Exe repackagé (`npm run package:win`), Python absent du PATH, vrai `main.cjs`/coffre/worker,
+      vraie souris CDP : deux tours réels ; vrai clic 🔄 → la clé du coffre est sur la requête,
+      le modèle ne reçoit pas la réponse remplacée, le disque la remplace ; vrai clic ✏️ → texte
+      dans la zone (focus), vue coupée, **disque intact** ; envoi du texte édité → le modèle ne voit
+      ni l'ancienne formulation ni l'ancienne réponse ; **redémarrage réel** → conversation éditée
+      identique ; clé API absente de tout fichier ; sortie propre. PASS du premier coup (1 exécution),
+      aucune application externe ouverte. Régression sur le nouvel exe : `final-e2e-lot7` et
+      `final-e2e-lot8` PASS (lot 8 sans ouverture réelle), `npm audit` 0 vulnérabilité, aucun
+      `openagent.exe` résiduel, `npm test` 320/320, `tsc` propre ; tests Electron chat / branches /
+      stop / layout / permission / context / palette / export / edit PASS.
+      **Non rejoué dans ce lot** : lots e2e 1 à 6 et le reste des tests Electron (settings, model,
+      prompts…), non touchés par ce lot. **Limite** : rouvrir le même dossier déjà actif ne recharge
+      pas la vue (comportement hérité) — après ✏️ abandonné, la vue reste coupée jusqu'à un
+      changement de dossier ; le disque, lui, est intact.
+      **Bilan du lot** : ✏️ éditer + 🔄 régénérer migrés (logique pure, `keep` côté worker, UI,
+      preuves Electron et packagée). Reste NON migré : 📥 Téléchargements, artifacts, onboarding,
+      fenêtrage de l'historique, éditeur de prompts, `index_status`, images jointes aux messages.
+      Rappel : la version NiceGUI n'a **pas** de suppression/renommage/fusion de branche — ce
+      n'était pas un manque. **La migration NiceGUI → Electron n'est pas terminée.**
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

@@ -2134,7 +2134,33 @@ Décisions :
       `tsc`, layout / chat / edit / export / artifact / onboarding PASS.
       **Limite** : le vrai glisser-déposer depuis l'Explorateur n'est pas rejoué (événements `drop`/`paste`
       construits, pas de vrai geste système) ; l'image de test est 1×1 px (invisible dans la bulle).
-- [ ] Tâche 71 — Vérification finale sur l'app packagée (`final-e2e-lot12.cjs`), bilan, leçons.
+- [x] Tâche 71 — Vérification finale sur l'app packagée (`final-e2e-lot12.cjs`), bilan, leçons.
+      Exe repackagé (archive `app.asar` de 5,9 Mo), Python absent du PATH, vrai `main.cjs`/coffre/worker, CSP
+      stricte réelle, CDP : quatre fichiers réels remis au vrai `<input type=file>` (`DOM.setFileInputFiles`)
+      dont un **vrai PDF lu par pdf.js et son worker chargés depuis `app.asar`** (le dernier doute est levé) ;
+      `archive.exe` refusé ; envoi : le modèle reçoit l'image en `image_url` puis un morceau texte (fichier
+      texte, CSV en dicts Python, PDF page par page, question en dernier), **la clé du coffre sur la requête**,
+      jamais le champ `attachments` ; le disque garde le texte tapé + 4 pièces ; un **vrai redémarrage**
+      réaffiche l'image et les 3 noms depuis le disque ; un vrai clic 🔄 renvoie la question **avec** ses
+      fichiers (PDF compris) et **remplace** la réponse ; clé API absente de tout fichier ; sortie propre.
+      PASS du premier coup (1 exécution), aucune application externe ouverte.
+      Régression sur le nouvel exe : `final-e2e-lot7` à `lot11` PASS, `npm audit` 0, aucun `openagent.exe`
+      résiduel, `npm test` 387/387, `tsc` propre ; tests Electron layout / chat / edit / export / artifact /
+      onboarding / attach PASS.
+      **Non rejoué** : lots e2e 1 à 6 et tests Electron model / prompts / settings-folder / context (ceux qui
+      touchent la barre de saisie — model, prompts, palette, layout — ont été rejoués à la Tâche 69).
+      **Non prouvé (limites)** : le vrai glisser-déposer / coller depuis le système (les événements `drop` et
+      `paste` sont construits, pas générés par un vrai geste) ; le vrai clic sur 📎 (boîte système : câblage
+      vérifié par espion) ; la mise en page avec beaucoup de pièces jointes (elles passent à la ligne).
+      **Écarts avec l'original, tous assumés et testés** : PDF lu par pdf.js (`pypdf` n'est ni installé ni
+      déclaré dans l'original, qui échoue donc toujours) ; `\r` isolé dans un CSV toléré (Python plante) ; BOM
+      retiré ; limite 10 Mo par fichier / 20 pièces / 30 M caractères ; images acceptées **uniquement** en URI de
+      données (SSRF) ; 🔄 et ✏️ conservent les pièces ; noms de fichiers non-images affichés dans la bulle.
+      **Bilan du lot** : pièces jointes migrées (📎, coller, déposer ; texte/code, CSV, PDF, images), avec parité
+      Python mesurée (400 CSV aléatoires : 0 écart). Reste NON migré : 📥 Téléchargements (dépend du catalogue
+      LM Studio, non migré) et `index_status` (index sémantique ChromaDB, hors périmètre « sans Python »).
+      Le fenêtrage de l'historique et l'éditeur de prompts **n'existent pas** dans l'original.
+      **La migration NiceGUI → Electron n'est pas terminée.**
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

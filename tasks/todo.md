@@ -1929,7 +1929,26 @@ Décisions (sécurité d'abord — le contenu vient d'un modèle) :
       est vérifiée séparément (test de `cspFor('static')`, assertion sur l'attribut `sandbox`).
       Régression : `npm test` 338/338, `tsc`, chat / layout / branches / edit / export / palette /
       context / stop / permission PASS.
-- [ ] Tâche 61 — Vérification finale sur l'app packagée (`final-e2e-lot10.cjs`), bilan, leçons.
+- [x] Tâche 61 — Vérification finale sur l'app packagée (`final-e2e-lot10.cjs`), bilan, leçons.
+      Exe repackagé, Python absent du PATH, vrai `main.cjs` (schéma `oa-artifact:` enregistré, CSP
+      réelle), vrai worker, CDP (chaque iframe est sa propre cible DevTools) : artifact HTML — son script
+      inline **s'exécute** sous la CSP stricte de l'app packagée (la politique propre du document n'est
+      pas écrasée), ne lit pas la page (SecurityError), son `fetch` est bloqué, fenêtre/titre/URL
+      intacts, le serveur n'a vu que le chat ; SVG dessiné, son `<script>` et son `onload` n'ont pas
+      tourné ; Mermaid : chunks chargés depuis l'archive sous la CSP stricte, diagramme rendu ; vrai
+      clic ✕ ; `artifact-put` refuse un type inconnu et un document > 2 Mo ; clé API absente des
+      fichiers ; sortie propre. PASS du premier coup (1 exécution), aucune application externe.
+      Régression sur le nouvel exe : `final-e2e-lot7`, `lot8` (sans ouverture réelle), `lot9` PASS,
+      `npm audit` 0, aucun `openagent.exe` résiduel, `npm test` 338/338, `tsc` propre ; tests Electron
+      chat / layout / branches / edit / export / palette / context / stop / permission / artifact PASS.
+      **Non rejoué** : lots e2e 1 à 6 et le reste des tests Electron (settings, model, prompts…).
+      **Limites** : le panneau garde 400 px fixes (comme l'original) ; les scripts d'un artifact HTML
+      n'ont **aucun** accès réseau (choix de sécurité, plus strict que NiceGUI) — un artifact qui charge
+      une bibliothèque depuis un CDN ne fonctionnera pas ; un iframe HTML est fixé à 500 px de haut.
+      **Bilan du lot** : aperçu d'artifact migré (extraction à parité vérifiée contre le Python, protocole
+      isolé, mermaid, preuves Electron et packagée). Reste NON migré : 📥 Téléchargements, onboarding,
+      fenêtrage de l'historique, éditeur de prompts, `index_status`, images jointes aux messages.
+      **La migration NiceGUI → Electron n'est pas terminée.**
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

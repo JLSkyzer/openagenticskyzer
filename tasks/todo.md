@@ -1999,8 +1999,20 @@ Décisions :
       settings, settings-tabs PASS ; `branches` a échoué une fois au survol (`hover reveals ⑂`, l'instabilité
       déjà connue du curseur réel) puis PASS à la relance. **Helpers** : `tests/no-onboarding.cjs` requis
       par `capture-helper`, `cdp-helper` et 6 tests.
-- [ ] Tâche 64 — Preuve Electron réelle : vraie souris, 4 étapes, fenêtres ouvertes par l'assistant,
+- [x] Tâche 64 — Preuve Electron réelle : vraie souris, 4 étapes, fenêtres ouvertes par l'assistant,
       persistance sur disque, ne revient pas après rechargement.
+      `npm run test:onboarding` PASS du premier coup (vrai worker, **sans** neutralisation — le test
+      vérifie que la variable est absente) : l'assistant recouvre vraiment l'interface (`elementFromPoint`
+      sur le bouton d'envoi) ; une vraie touche Échap et un vrai clic sur le fond ne le ferment pas ; vrais
+      clics à travers les 4 étapes ; « Ouvrir les paramètres du modèle » ouvre le **vrai** sélecteur
+      **au-dessus** de l'assistant (ce qui est au centre du sélecteur n'appartient pas à l'assistant) et
+      Échap ne ferme que le sélecteur ; « Passer » devient « Suivant → » quand le vrai dossier s'ouvre ;
+      recharger avant la fin ramène l'assistant (rien n'est enregistré plus tôt, `config.json`
+      vérifié) ; l'écran final n'affiche que les 3 raccourcis réels ; un enregistrement refusé
+      (simulé) garde l'assistant ouvert avec « Disque plein » et n'écrit rien ; la vraie fin écrit
+      `onboarding_done: true` dans `config.json`, l'interface redevient utilisable et il ne revient pas
+      après rechargement. **Mutation** : assistant fermable (Échap/clic fond) → détectée, code restauré.
+      Captures relues (sélecteur au-dessus, écran final).
 - [ ] Tâche 65 — Vérification finale sur l'app packagée (`final-e2e-lot11.cjs`) avec redémarrage, bilan, leçons.
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)

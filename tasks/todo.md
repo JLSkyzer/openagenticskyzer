@@ -2074,7 +2074,18 @@ Décisions :
       limite de 10 Mo par fichier (aucune dans l'original). Le transcript garde `content` = texte tapé +
       `attachments` ; `toWireMessage` ne transmet jamais le champ `attachments` au fournisseur et ne modifie
       pas le message enregistré.
-- [ ] Tâche 67 — Worker + agent : `send` avec `attachments`, persistance, conversion à l'appel du modèle.
+- [x] Tâche 67 — Worker + agent : `send` avec `attachments`, persistance, conversion à l'appel du modèle.
+      RED prouvé (export `validateAttachments` absent) puis 381/381 (10 tests : 4 de validation, 6 worker
+      réel avec faux modèle HTTP qui enregistre ce qu'il reçoit). Le fournisseur reçoit le fichier en bloc
+      `--- nom ---` avant la question, ou l'image en morceau `image_url` + un morceau texte, **jamais** le
+      champ `attachments` ; le transcript enregistré garde le texte tapé seul + les pièces à côté ; **un tour
+      suivant voit toujours les fichiers** (reconstruits depuis le transcript) ; sans pièce jointe rien ne
+      change (aucun champ). **Sécurité** : le worker valide avant de répondre — un `image_url` est **téléchargé
+      par le fournisseur**, donc une URL `http://169.254.169.254/…` ou `file://` serait une SSRF ; seuls
+      `data:image/(png|jpeg|webp|gif);base64,…` passent (SVG exclu : il peut porter du script), 20 pièces au
+      plus, 30 M caractères au total, nom/type/taille contrôlés ; un refus n'a rien démarré ni enregistré.
+      🔄 (`keep`) peut renvoyer le message **avec** ses pièces. Mutation « messages bruts envoyés » →
+      détectée, code restauré.
 - [ ] Tâche 68 — PDF (`pdfjs-dist`, audit) avec un vrai fichier PDF.
 - [ ] Tâche 69 — Interface : 📎, sélecteur de fichiers, coller, déposer, puces, bulle, 🔄.
 - [ ] Tâche 70 — Preuve Electron réelle.

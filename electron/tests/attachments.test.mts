@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildMessageContent, toWireMessage, type Attachment } from '../core/attachments.mts';
+import { buildMessageContent, toWireMessage, validateAttachments, type Attachment } from '../core/attachments.mts';
 
 // Expected values below come from the REAL Python `build_message_content` (file_processor.py), run on the same inputs.
 const text: Attachment = { name: 'a.txt', content_type: 'text', content: 'AAA', size_kb: 1 };
@@ -39,6 +39,40 @@ test('toWireMessage leaves every other message exactly as it is', () => {
   assert.deepEqual(toWireMessage(assistant), assistant);
   const tool = { role: 'tool', tool_call_id: 'c', content: 'sortie' };
   assert.deepEqual(toWireMessage(tool), tool);
+});
+
+test('validateAttachments accepts what the renderer produces and returns clean copies', () => {
+  const checked = validateAttachments([text, csv, image, { ...text, extra: 'ignored' } as never]);
+  assert.equal(checked.length, 4);
+  assert.deepEqual(checked[0], text);
+  assert.equal('extra' in checked[3], false, 'only the known fields are kept');
+  assert.deepEqual(validateAttachments([]), []);
+  assert.deepEqual(validateAttachments(undefined), []);
+});
+
+test('validateAttachments refuses what is not a list of well-formed attachments', () => {
+  for (const bad of ['x', 42, {}, [null], [{}], [{ ...text, name: '' }], [{ ...text, name: 'n'.repeat(256) }], [{ ...text, content_type: 'exe' }],
+    [{ ...text, content: 42 }], [{ ...text, size_kb: -1 }], [{ ...text, size_kb: 1.5 }]]) {
+    assert.throws(() => validateAttachments(bad), /Pièce jointe invalide|Pièces jointes invalides/, JSON.stringify(bad).slice(0, 60));
+  }
+});
+
+test('an image must be a DATA URI of a real image type — never a URL the provider would go and fetch', () => {
+  const url = (content: string) => [{ ...image, content }];
+  for (const good of ['data:image/png;base64,QQ==', 'data:image/jpeg;base64,YWI=', 'data:image/webp;base64,Yw==', 'data:image/gif;base64,ZA==']) {
+    assert.doesNotThrow(() => validateAttachments(url(good)), good);
+  }
+  for (const bad of ['http://169.254.169.254/latest/meta-data', 'https://example.com/a.png', 'file:///C:/secret.png', 'data:text/html;base64,PHNjcmlwdD4=',
+    'data:image/svg+xml;base64,PHN2Zy8+', 'data:image/png,QQ==', 'data:image/png;base64,QQ== extra', 'data:image/png;base64,<script>']) {
+    assert.throws(() => validateAttachments(url(bad)), /Pièce jointe invalide/, bad);
+  }
+});
+
+test('validateAttachments bounds the count and the total size', () => {
+  assert.doesNotThrow(() => validateAttachments(Array.from({ length: 20 }, () => text)));
+  assert.throws(() => validateAttachments(Array.from({ length: 21 }, () => text)), /Pièces jointes invalides/);
+  const big = { ...text, content: 'x'.repeat(16 * 1024 * 1024) };
+  assert.throws(() => validateAttachments([big, big]), /Pièces jointes invalides.*volumineuses/);
 });
 
 test('toWireMessage also reads a legacy "human" user message', () => {

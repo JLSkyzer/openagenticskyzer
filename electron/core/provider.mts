@@ -7,6 +7,9 @@ export interface ToolCall {
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'; content: string | unknown[] | null;
   tool_call_id?: string; tool_calls?: ToolCall[]; reasoning_details?: unknown[];
+  // A user message's files, kept beside what was typed (see attachments.mts). Never sent as such: the agent
+  // expands them into `content` (toWireMessage) just before the provider is called.
+  attachments?: unknown[];
 }
 export interface ModelConnection { provider: string; model: string; base_url: string; api_key: string }
 export interface ToolSchema { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }

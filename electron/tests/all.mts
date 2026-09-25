@@ -42,4 +42,5 @@ import './onboarding.test.mts';
 import './worker-onboarding.test.mts';
 import './attachments.test.mts';
 import './upload.test.mts';
+import './worker-attachments.test.mts';
 import './ui-plumbing.test.mts';

@@ -17,6 +17,7 @@ import { buildInstructions } from './core/context.mts';
 import { compactMessages, planCompaction } from './core/compact.mts';
 import { PromptLibrary } from './core/prompts.mts';
 import { readProjectMemory } from './core/project-memory.mts';
+import { validateAttachments } from './core/attachments.mts';
 import { buildHtml, buildJson, buildMarkdown, exportFilename, renderEntries } from './core/export.mts';
 
 // OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
@@ -127,7 +128,7 @@ function normalizeRole(role) {
 const PERMISSION_FIELD = { write: 'files_ask', network: 'search_ask', shell: 'shell_ask' };
 
 /** Runs one agent turn to completion, streaming events to the renderer via parentPort. */
-async function runSend(runId, folder, branchId, text, connection, keep) {
+async function runSend(runId, folder, branchId, text, connection, keep, attachments = []) {
   const controller = new AbortController();
   const accumulated = [];
   active.set(runId, { controller, folder });
@@ -144,7 +145,8 @@ async function runSend(runId, folder, branchId, text, connection, keep) {
     const { instructions } = await buildInstructions({ folder, home: dataHome, base: BASE_SYSTEM_PROMPT });
     const saved = await conversations.messages(folder, branchId);
     const history = (keep === undefined ? saved : saved.slice(0, keep)).map(m => ({ ...m, role: normalizeRole(m.role) }));
-    collected = [...history, { role: 'user', content: text }];
+    // What was typed stays in `content`; the files ride beside it and are expanded only when the model is called.
+    collected = [...history, { role: 'user', content: text, ...(attachments.length ? { attachments } : {}) }];
     const emit = event => {
       const { type: kind, ...rest } = event;
       if (kind === 'delta') partialText += rest.text;
@@ -236,12 +238,15 @@ async function handle(message) {
         const saved = await conversations.messages(payload.folder, payload.branchId || 'main');
         if (keep > saved.length) throw new Error('L’historique enregistré est plus court que la conversation affichée : recharge-la avant de réessayer.');
       }
+      // The files of the message (📎 / paste / drop), checked before anything starts like `keep` above: the page is
+      // not trusted to send only what its own upload code produced.
+      const attachments = validateAttachments(payload.attachments);
       const runId = randomUUID();
       reply(id, true, { runId });
       // Fire-and-forget: the turn's real result streams back as 'event' messages, not
       // as this request's response (main.cjs's 30s IPC timeout could never cover a full
       // multi-step agent run).
-      void runSend(runId, payload.folder, payload.branchId || 'main', payload.text, payload.connection, keep);
+      void runSend(runId, payload.folder, payload.branchId || 'main', payload.text, payload.connection, keep, attachments);
       return;
     }
     if (op === 'stop') { active.get(payload.runId)?.controller.abort(); result = { stopped: true }; }

@@ -1,6 +1,7 @@
 import { ChatProvider } from './provider.mts';
 import type { ChatMessage, ModelConnection } from './provider.mts';
 import { object } from './json-store.mts';
+import { toWireMessage } from './attachments.mts';
 
 export interface AgentTool {
   name: string; description: string; parameters: Record<string, unknown>;
@@ -66,7 +67,8 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
   for (let step = 0; step < maxSteps; step++) {
     signal.throwIfAborted();
     emit?.({ type: 'turn', step });
-    const answer = await provider.complete({ connection, messages, tools: schemas, signal, maxTokens: settings.reserved_tokens,
+    // `messages` keeps the saved shape (files beside the typed text); the model gets the expanded one, built here.
+    const answer = await provider.complete({ connection, messages: messages.map(message => toWireMessage(message as never) as unknown as ChatMessage), tools: schemas, signal, maxTokens: settings.reserved_tokens,
       onDelta: text => emit?.({ type: 'delta', text }),
     });
     signal.throwIfAborted();

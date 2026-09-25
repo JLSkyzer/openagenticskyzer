@@ -1819,9 +1819,28 @@ Contrairement au reste, **aucun test de ce lot n'ouvre d'application** (pas de `
       (entier ≥ 0, ≤ historique enregistré) : un refus arrive à la page sans rien toucher, et le
       modèle ne reçoit jamais la partie coupée. Mutation « le worker ignore `keep` » → 2 échecs,
       code restauré. Aucun test n'ouvre d'application.
-- [ ] Tâche 55 — Interface : ✏️ sur `UserBubble`, 🔄 sous la dernière réponse, brouillon dans la
+- [x] Tâche 55 — Interface : ✏️ sur `UserBubble`, 🔄 sous la dernière réponse, brouillon dans la
       zone de saisie, `ChatProvider.editMessage/regenerate`.
-- [ ] Tâche 56 — Preuve Electron réelle (`edit-regenerate-visual.cjs`) : vraie souris, vrai worker.
+      `viewMatchesSaved` réutilise la garde du fork (`canForkAt`) : si la vue ne correspond plus à
+      l'enregistré, on affiche l'enregistré et on prévient, on ne coupe jamais à un endroit deviné.
+      `draft {text, nonce}` remplit la zone (remplace, focus, curseur à la fin, comme la
+      bibliothèque de prompts) ; le `nonce` permet de rééditer le même texte. Les boutons sont
+      **absents** (pas grisés) pendant un tour ou une compaction. `tsc` propre, build OK, 320/320.
+- [x] Tâche 56 — Preuve Electron réelle (`edit-regenerate-visual.cjs`) : vraie souris, vrai worker.
+      `npm run test:edit` PASS (faux modèle HTTP qui enregistre ce qu'il reçoit ; aucune
+      application externe ouverte) : vrai clic 🔄 → la réponse retirée n'est **jamais** renvoyée au
+      modèle, le disque remplace l'ancienne réponse ; boutons absents pendant le tour ; vrai survol
+      + clic ✏️ → texte dans la zone (focus), vue coupée, **disque intact** ; abandonner ne perd
+      rien (autre dossier puis retour → conversation complète) ; renvoyer le texte édité remplace la
+      fin enregistrée ; éditer le tout premier message repart de zéro ; vue périmée (disque modifié
+      ailleurs) → refus + rechargement de l'enregistré, zone vide, disque intact.
+      **Écarts et bogues de test trouvés** : (1) rouvrir le *même* dossier actif ne recharge pas la
+      vue (comportement hérité, comme NiceGUI) → le test passe par un autre dossier ; (2) course
+      dans mon test : la zone contenait déjà « second » (la sortie de dossier ne la vide pas), l'attente
+      passait avant la fin de l'édition et l'envoi devançait la coupe → j'attends maintenant la
+      coupe de la vue, pas seulement le texte. **Mutation** : `send` qui oublie `keep` après ✏️ →
+      détectée (« the cut tail was not sent »), code restauré. Régression : chat, branches, stop,
+      layout, permission, context, palette, export PASS.
 - [ ] Tâche 57 — Vérification finale sur l'app packagée (`final-e2e-lot9.cjs`), bilan, leçons.
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)

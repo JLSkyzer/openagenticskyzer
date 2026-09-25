@@ -19,8 +19,11 @@ export function sendMessage(
   folder: string | null,
   branchId: string,
   text: string,
+  // ✏️ / 🔄: cut the saved history to its first `keep` messages before the turn. Omitted entirely (not
+  // sent as undefined/null) for an ordinary send, which the worker reads as "keep everything".
+  keep?: number,
 ): Promise<{ runId: string }> {
-  return request('send', { folder, branchId, text });
+  return request('send', keep === undefined ? { folder, branchId, text } : { folder, branchId, text, keep });
 }
 
 export function stop(runId: string): Promise<{ stopped: boolean }> {

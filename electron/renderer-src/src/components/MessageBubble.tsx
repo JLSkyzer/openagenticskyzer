@@ -6,7 +6,7 @@ import { Markdown } from '../markdown/Markdown';
 //
 // `onFork` is only passed while no agent is running (chat.py hides the whole action row then,
 // rather than greying it out): the ⑂ button is absent, not disabled.
-export function UserBubble({ content, onFork }: { content: string; onFork?: () => void }) {
+export function UserBubble({ content, onFork, onEdit }: { content: string; onFork?: () => void; onEdit?: () => void }) {
   return (
     <div className="group flex flex-col items-end gap-1 px-4 py-1">
       <div
@@ -15,8 +15,21 @@ export function UserBubble({ content, onFork }: { content: string; onFork?: () =
       >
         {content}
       </div>
-      {onFork && (
+      {(onEdit || onFork) && (
         <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+          {onEdit && (
+            <button
+              type="button"
+              data-testid="oa-edit-btn"
+              title="Éditer ce message"
+              aria-label="Éditer ce message"
+              onClick={onEdit}
+              className="h-6 w-6 rounded bg-gray-800 text-xs text-gray-400 hover:text-white"
+            >
+              ✏️
+            </button>
+          )}
+          {onFork && (
           <button
             type="button"
             data-testid="oa-fork-btn"
@@ -27,26 +40,43 @@ export function UserBubble({ content, onFork }: { content: string; onFork?: () =
           >
             ⑂
           </button>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-export function AssistantBubble({ content, streaming = false }: { content: string; streaming?: boolean }) {
+// `onRegenerate` is only passed for the last reply while nothing is running (chat.py: `is_last_ai and not
+// state.agent_running`): the 🔄 button is absent, not disabled.
+export function AssistantBubble({ content, streaming = false, onRegenerate }: { content: string; streaming?: boolean; onRegenerate?: () => void }) {
   return (
-    <div className="flex gap-2 px-4 py-1">
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-purple-600 text-[10px] font-bold text-white">
-        AI
+    <div className="flex flex-col gap-1 px-4 py-1">
+      <div className="flex gap-2">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-purple-600 text-[10px] font-bold text-white">
+          AI
+        </div>
+        <div
+          className="max-w-3xl flex-1 bg-[#1a1a1a] px-3 py-2 text-xs text-gray-200"
+          style={{ borderRadius: '2px 10px 10px 10px' }}
+          data-testid="oa-assistant-bubble"
+        >
+          <Markdown>{content}</Markdown>
+          {streaming && <span className="oa-typing-caret" aria-hidden="true" />}
+        </div>
       </div>
-      <div
-        className="max-w-3xl flex-1 bg-[#1a1a1a] px-3 py-2 text-xs text-gray-200"
-        style={{ borderRadius: '2px 10px 10px 10px' }}
-        data-testid="oa-assistant-bubble"
-      >
-        <Markdown>{content}</Markdown>
-        {streaming && <span className="oa-typing-caret" aria-hidden="true" />}
-      </div>
+      {onRegenerate && (
+        <button
+          type="button"
+          data-testid="oa-regenerate-btn"
+          title="Régénérer cette réponse"
+          aria-label="Régénérer cette réponse"
+          onClick={onRegenerate}
+          className="ml-9 w-fit bg-transparent text-xs text-gray-500 hover:text-purple-400"
+        >
+          🔄
+        </button>
+      )}
     </div>
   );
 }

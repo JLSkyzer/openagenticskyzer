@@ -16,6 +16,7 @@ import {
 } from '../ipc/bridge';
 import { canForkAt, currentBranchLabel, nextBranchLabel } from './branches';
 import { computeContext, shouldAutoCompact, type ContextUsage } from './context';
+import { lastUserIndex } from './editing';
 import { chatReducer, initialChatState, type ChatState } from './reducer';
 
 // What the gauge needs from the settings (all global) and from the active connection (its provider
@@ -59,6 +60,13 @@ interface ChatContextValue {
   // Branch off the current view right after the user message at `index` (chat.py::_fork_from).
   forkFrom(index: number): Promise<void>;
   switchBranch(id: string): Promise<void>;
+  // ✏️ (input_bar.py::edit_message): the message at `index` goes back into the input box and the
+  // conversation is cut before it. `draft` is what the box must show; `nonce` changes on every edit so
+  // editing the same text twice still refills a box the user emptied in between.
+  editMessage(index: number): Promise<void>;
+  draft: { text: string; nonce: number } | null;
+  // 🔄 (input_bar.py::regenerate): drop the last user+AI turn and send that user message again.
+  regenerate(): Promise<void>;
   dismissNotice(): void;
 }
 
@@ -220,14 +228,66 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
     }
   }, []);
 
+  // What ✏️ and 🔄 both need before touching the view: the saved conversation must still match what is
+  // shown at `index` (same guard as the fork — cutting at a guessed place would destroy the wrong turn).
+  // When it does not, the saved one is shown instead and the user is told. Returns the saved messages'
+  // verdict: true = safe to cut here.
+  const viewMatchesSaved = useCallback(async (folder: string, index: number): Promise<boolean> => {
+    const before = stateRef.current;
+    const persisted = await getMessages(folder, before.currentBranchId);
+    if (activeFolderRef.current !== folder) return false;
+    if (canForkAt(persisted, before.messages, index)) return true;
+    dispatch({ type: 'branch-switched', id: before.currentBranchId, messages: persisted });
+    dispatch({ type: 'branch-failed', error: 'La conversation affichée ne correspondait plus à celle enregistrée : elle a été rechargée, réessaie.' });
+    return false;
+  }, []);
+
+  const [draft, setDraft] = useState<{ text: string; nonce: number } | null>(null);
+
+  const editMessage = useCallback(async (index: number) => {
+    const folder = activeFolderRef.current;
+    const before = stateRef.current;
+    if (!folder || before.agentRunning || before.compacting) return;
+    try {
+      if (!(await viewMatchesSaved(folder, index))) return;
+      const now = stateRef.current;
+      if (now.agentRunning || now.compacting) return; // a run started while the saved copy was being read
+      const text = now.messages[index].content;
+      dispatch({ type: 'messages-truncated', keep: index });
+      setDraft(previous => ({ text, nonce: (previous?.nonce ?? 0) + 1 }));
+    } catch (error) {
+      dispatch({ type: 'show-error', error: error instanceof Error ? error.message : 'Impossible d’éditer ce message' });
+    }
+  }, [viewMatchesSaved]);
+
+  const regenerate = useCallback(async () => {
+    const folder = activeFolderRef.current;
+    const before = stateRef.current;
+    if (!folder || before.agentRunning || before.compacting) return;
+    const index = lastUserIndex(before.messages);
+    if (index < 0) return;
+    try {
+      if (!(await viewMatchesSaved(folder, index))) return;
+      const now = stateRef.current;
+      if (now.agentRunning || now.compacting) return;
+      const text = now.messages[index].content;
+      const { runId } = await sendMessage(folder, now.currentBranchId, text, index);
+      dispatch({ type: 'send-started', runId, text, keep: index });
+    } catch (error) {
+      dispatch({ type: 'show-error', error: error instanceof Error ? error.message : 'Impossible de régénérer la réponse' });
+    }
+  }, [viewMatchesSaved]);
+
   const dismissNotice = useCallback(() => dispatch({ type: 'clear-notice' }), []);
 
   const send = useCallback(
     async (text: string) => {
       if (!activeFolder || !text.trim()) return;
+      // After ✏️ the view is shorter than what is saved: hand the cut over so the worker applies it.
+      const keep = state.truncatedTo ?? undefined;
       try {
-        const { runId } = await sendMessage(activeFolder, state.currentBranchId, text);
-        dispatch({ type: 'send-started', runId, text });
+        const { runId } = await sendMessage(activeFolder, state.currentBranchId, text, keep);
+        dispatch({ type: 'send-started', runId, text, keep });
       } catch (error) {
         // Without this, a rejected IPC call (e.g. connections.resolve() refusing an
         // unconfirmed key/endpoint pairing) left the send silently doing nothing — no
@@ -235,7 +295,7 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
         dispatch({ type: 'send-failed', error: error instanceof Error ? error.message : 'Échec de l’envoi du message' });
       }
     },
-    [activeFolder, state.currentBranchId],
+    [activeFolder, state.currentBranchId, state.truncatedTo],
   );
 
   const stopRun = useCallback(async () => {
@@ -253,7 +313,7 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
 
   return (
     <ChatContext.Provider
-      value={{ state, activeFolder, context: { usage, settings: contextSettings }, compact, send, stopRun, decide, forkFrom, switchBranch, dismissNotice }}
+      value={{ state, activeFolder, context: { usage, settings: contextSettings }, compact, send, stopRun, decide, forkFrom, switchBranch, editMessage, draft, regenerate, dismissNotice }}
     >
       {children}
     </ChatContext.Provider>

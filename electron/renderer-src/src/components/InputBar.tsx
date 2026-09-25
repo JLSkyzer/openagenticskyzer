@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useChat } from '../state/ChatProvider';
 import { ModelButton } from './model/ModelButton';
 import { PromptPicker } from './PromptPicker';
@@ -7,9 +7,19 @@ import { useRegisterAction } from '../state/ActionRegistry';
 // Uncontrolled textarea (ref, not useState) — matches input_bar.py's intent (plain text
 // box, no per-keystroke React state) and avoids re-rendering the whole bar on every key.
 export function InputBar() {
-  const { state, activeFolder, send, stopRun } = useChat();
+  const { state, activeFolder, send, stopRun, draft } = useChat();
   const textRef = useRef<HTMLTextAreaElement>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+
+  // ✏️ hands a message back: like a prompt from the library it REPLACES what was typed, takes the focus and
+  // puts the caret at the end. Keyed on the nonce, so editing the same message twice refills the box again.
+  useEffect(() => {
+    const el = textRef.current;
+    if (!draft || !el) return;
+    el.value = draft.text;
+    el.focus();
+    el.setSelectionRange(draft.text.length, draft.text.length);
+  }, [draft?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSend = useCallback(async () => {
     const el = textRef.current;

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useChat } from '../state/ChatProvider';
+import { lastAssistantIndex } from '../state/editing';
 import { AssistantBubble, UserBubble } from './MessageBubble';
 import { ToolMessage } from './ToolMessage';
 import { EmptyState } from './EmptyState';
@@ -9,7 +10,7 @@ import { BranchSelector } from './BranchSelector';
 const NOTICE_MS = 3500;
 
 export function ChatView() {
-  const { state, forkFrom, dismissNotice } = useChat();
+  const { state, forkFrom, editMessage, regenerate, dismissNotice } = useChat();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -26,6 +27,7 @@ export function ChatView() {
     return () => clearTimeout(timer);
   }, [state.notice, dismissNotice]);
 
+  const lastAssistant = lastAssistantIndex(state.messages);
   const pendingTools = Object.entries(state.liveToolStarts);
   const waitingForFirstToken =
     state.agentRunning && !state.streamingText && pendingTools.length === 0 && !state.pendingPermission;
@@ -59,13 +61,21 @@ export function ChatView() {
                   key={index}
                   content={message.content}
                   onFork={state.agentRunning || state.compacting ? undefined : () => void forkFrom(index)}
+                  onEdit={state.agentRunning || state.compacting ? undefined : () => void editMessage(index)}
                 />
               );
             }
             // A tool-only turn (the model called a tool without any commentary) has empty
             // content — an empty bubble would just be visual noise before the tool card.
             if (message.role === 'assistant') {
-              return message.content.trim() ? <AssistantBubble key={index} content={message.content} /> : null;
+              if (!message.content.trim()) return null;
+              return (
+                <AssistantBubble
+                  key={index}
+                  content={message.content}
+                  onRegenerate={index === lastAssistant && !state.agentRunning && !state.compacting ? () => void regenerate() : undefined}
+                />
+              );
             }
             if (message.role === 'tool') {
               return <ToolMessage key={index} tool={message._tool} category={message._category} content={message.content} />;

@@ -2295,7 +2295,20 @@ du paquet — la même forme que `ChatProvider.complete()`.
       (de piètre qualité, modèle jouet) est bien sauvegardé sur disque. Le module natif se charge et
       s'exécute pour de vrai depuis `app.asar.unpacked`. `npm audit` 0, `npm test` 419/419 après le
       passage en `dependency`.
-- [ ] Tâche 76 — Interface : section « Modèles locaux » du sélecteur, import, indicateur de chargement.
+- [x] Tâche 76 — Interface : section « Modèles locaux » du sélecteur, import, indicateur de chargement.
+      Nouvelle section `LocalModelsSection` dans `ModelDialog.tsx` : liste de la bibliothèque (nom,
+      taille), clic pour activer, ✕ pour retirer, bouton « 📁 Importer un fichier .gguf » (boîte
+      native → ajout → activation immédiate). **Connexion distante et modèle local mutuellement
+      exclusifs** : activer un local efface la bannière de connexion, enregistrer une connexion
+      distante désactive le modèle local actif (`active_local_model` remis à vide) — un seul concept
+      « modèle actif », jamais les deux en même temps ni une bannière figée sur l'ancien choix. Pas
+      d'indicateur de chargement en temps réel (suivre le vrai état de réveil du worker aurait
+      demandé un nouvel événement, hors scope) : une phrase fixe « Chargé en mémoire au premier
+      message envoyé » à la place — honnête, pas de faux indicateur de progression. `ModelButton`
+      affiche le nom du fichier local à la place du modèle distant quand un modèle local est actif
+      (même bouton, même emplacement). `active_local_model` propagé jusqu'à `send`/`regenerate`/
+      `compact` via `ChatProvider` (lu depuis les réglages globaux, comme la jauge de contexte).
+      `tsc` propre, build OK, 419/419, régression du sélecteur de modèle existant (`test:model`) PASS.
 - [ ] Tâche 77 — Preuve Electron réelle avec le vrai petit modèle.
 - [ ] Tâche 78 — Vérification finale sur l'app packagée (`final-e2e-lot13.cjs`), bilan, leçons.
 

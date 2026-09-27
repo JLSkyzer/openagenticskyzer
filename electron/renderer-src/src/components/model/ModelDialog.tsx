@@ -1,8 +1,120 @@
-import { useState } from 'react';
-import { getConnection, saveConnection, type ConnectionPatch, type ConnectionSnapshot, type ProviderName } from '../../ipc/bridge';
+import { useEffect, useState } from 'react';
+import {
+  addGguf, getConnection, getGlobalSettings, listGguf, pickGguf, removeGguf, saveConnection, saveGlobalSettings,
+  type ConnectionPatch, type ConnectionSnapshot, type GgufEntry, type ProviderName,
+} from '../../ipc/bridge';
 import { cleanIpcError } from '../../ipc/errors';
 import { Modal } from '../settings/Modal';
 import { PROVIDERS, defaultUrl } from './providers';
+
+function formatSize(bytes: number): string {
+  const gb = bytes / (1024 * 1024 * 1024);
+  return gb >= 1 ? `${gb.toFixed(1)} Go` : `${Math.round(bytes / (1024 * 1024))} Mo`;
+}
+
+// "j'importe mes fichiers .gguf dans ma librairie et c'est nous qui alimentons ce fichier pour le
+// réveiller si le modèle est sélectionné" — no URL, no API key, no external tool (Ollama/LM Studio/
+// llama.cpp below are a DIFFERENT, pre-existing thing: a remote HTTP server the user runs themselves).
+function LocalModelsSection({ activeId, onActivate }: { activeId: string; onActivate(id: string): void }) {
+  const [entries, setEntries] = useState<GgufEntry[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = () => listGguf().then(setEntries).catch(error_ => setError(cleanIpcError(error_)));
+  useEffect(() => { void refresh(); }, []);
+
+  const activate = async (id: string) => {
+    setError(null);
+    try {
+      await saveGlobalSettings({ active_local_model: id });
+      onActivate(id);
+    } catch (error_) {
+      setError(cleanIpcError(error_));
+    }
+  };
+
+  const importFile = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      const path = await pickGguf();
+      if (!path) return; // the native dialog was cancelled
+      const entry = await addGguf(path);
+      await refresh();
+      await activate(entry.id);
+    } catch (error_) {
+      setError(cleanIpcError(error_));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id: string) => {
+    setError(null);
+    try {
+      await removeGguf(id);
+      if (id === activeId) await activate('');
+      await refresh();
+    } catch (error_) {
+      setError(cleanIpcError(error_));
+    }
+  };
+
+  return (
+    <div className="mt-4">
+      <div className="mb-2 text-xs uppercase tracking-widest text-gray-500">Modèles locaux (.gguf)</div>
+      <div data-testid="oa-local-models" className="flex flex-col gap-1.5">
+        {entries === null ? (
+          <div className="text-xs text-gray-600">Chargement…</div>
+        ) : entries.length === 0 ? (
+          <div className="text-xs text-gray-600">Aucun modèle importé.</div>
+        ) : (
+          entries.map(entry => (
+            <div
+              key={entry.id}
+              data-testid="oa-local-model-entry"
+              data-active={entry.id === activeId ? 'true' : undefined}
+              className="flex items-center gap-2 rounded-lg px-3 py-2"
+              style={{ background: entry.id === activeId ? '#1a0f2e' : '#1a1a1a', border: entry.id === activeId ? '1px solid #4c1d95' : '1px solid #2a2a2a' }}
+            >
+              <button
+                type="button"
+                data-testid="oa-local-model-select"
+                onClick={() => void activate(entry.id)}
+                className="flex flex-1 items-center gap-2 text-left"
+              >
+                {entry.id === activeId && <span className="text-purple-400">✓</span>}
+                <span className="truncate font-mono text-xs text-gray-200">{entry.name}</span>
+                <span className="ml-auto text-xs text-gray-600">{formatSize(entry.size_bytes)}</span>
+              </button>
+              <button
+                type="button"
+                data-testid="oa-local-model-remove"
+                title="Retirer de la bibliothèque"
+                aria-label="Retirer de la bibliothèque"
+                onClick={() => void remove(entry.id)}
+                className="text-xs text-gray-600 hover:text-red-400"
+              >
+                ✕
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+      {activeId && <div className="mt-1.5 text-xs text-gray-600">Chargé en mémoire au premier message envoyé.</div>}
+      <button
+        type="button"
+        id="oa-local-model-import-btn"
+        disabled={busy}
+        onClick={() => void importFile()}
+        className="mt-2 rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs text-gray-300 hover:border-purple-500 disabled:opacity-60"
+      >
+        📁 Importer un fichier .gguf
+      </button>
+      {error && <div data-testid="oa-local-model-error" className="mt-2 text-xs text-red-400">{error}</div>}
+    </div>
+  );
+}
 
 function basename(path: string): string {
   return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
@@ -55,6 +167,15 @@ export function ModelDialog({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmUrl, setConfirmUrl] = useState<string | null>(null);
+  const [activeLocalModel, setActiveLocalModel] = useState('');
+  useEffect(() => {
+    getGlobalSettings()
+      .then(global => setActiveLocalModel(typeof global.active_local_model === 'string' ? global.active_local_model : ''))
+      .catch(() => {});
+  }, []);
+  const [localEntries, setLocalEntries] = useState<GgufEntry[]>([]);
+  useEffect(() => { listGguf().then(setLocalEntries).catch(() => {}); }, [activeLocalModel]);
+  const activeLocalEntry = localEntries.find(entry => entry.id === activeLocalModel);
 
   const providerEntry = PROVIDERS.find(entry => entry.id === form.provider);
   const keyConfigured = current?.provider === form.provider && current.key_configured;
@@ -86,6 +207,9 @@ export function ModelDialog({
     else if (form.clearKey) patch.api_key = null;
     try {
       await saveConnection(scope === 'project' ? activeFolder : null, patch, confirmEndpoint);
+      // A remote connection and a local model are mutually exclusive: saving one takes over from the
+      // other, exactly like picking a local model below clears whichever connection was active.
+      if (activeLocalModel) { await saveGlobalSettings({ active_local_model: '' }); setActiveLocalModel(''); }
       // The active connection is what the chat will resolve for this folder, whichever
       // scope was just written.
       const fresh = await getConnection(activeFolder);
@@ -109,7 +233,18 @@ export function ModelDialog({
     <Modal width={520} onClose={onClose}>
       <div className="mb-3 text-sm font-bold text-gray-200">Sélectionner un modèle</div>
 
-      {current?.model ? (
+      {activeLocalModel ? (
+        <div
+          data-testid="oa-model-active"
+          className="mb-4 flex items-center gap-2 rounded-lg px-3 py-2"
+          style={{ background: '#1a0f2e', border: '1px solid #4c1d95' }}
+        >
+          <span className="text-purple-400">✓</span>
+          <span className="text-xs text-gray-400">Modèle actif</span>
+          <span className="truncate font-mono text-xs text-purple-200">{activeLocalEntry?.name ?? activeLocalModel}</span>
+          <span className="ml-auto text-xs text-gray-600">local</span>
+        </div>
+      ) : current?.model ? (
         <div
           data-testid="oa-model-active"
           className="mb-4 flex items-center gap-2 rounded-lg px-3 py-2"
@@ -208,6 +343,8 @@ export function ModelDialog({
           </label>
         )}
       </div>
+
+      <LocalModelsSection activeId={activeLocalModel} onActivate={setActiveLocalModel} />
 
       <div className="mt-4 flex items-center gap-2">
         <button

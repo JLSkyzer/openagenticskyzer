@@ -25,11 +25,15 @@ export function sendMessage(
   keep?: number,
   // The message's files, already processed by processUpload. Omitted when there are none.
   attachments?: Attachment[],
+  // The active .gguf ("réveiller le modèle sélectionné"), when a local model — not a remote connection —
+  // is active. main.cjs skips resolving a remote connection entirely when this is present.
+  localModel?: string,
 ): Promise<{ runId: string }> {
   return request('send', {
     folder, branchId, text,
     ...(keep === undefined ? {} : { keep }),
     ...(attachments?.length ? { attachments } : {}),
+    ...(localModel ? { localModel } : {}),
   });
 }
 
@@ -165,8 +169,8 @@ export function readProjectMemory(folder: string): Promise<{ content: string; tr
 
 // Summarises the branch in the background: the answer is only the id to wait for, the result arrives
 // as a 'compacted' / 'compact-failed' agent event. The API key is added by main.cjs, not by the page.
-export function compactConversation(folder: string, branchId: string): Promise<{ compactionId: string }> {
-  return request('compact', { folder, branchId });
+export function compactConversation(folder: string, branchId: string, localModel?: string): Promise<{ compactionId: string }> {
+  return request('compact', { folder, branchId, ...(localModel ? { localModel } : {}) });
 }
 
 // The connection vault lives in main.cjs (safeStorage) — these ops are answered there,

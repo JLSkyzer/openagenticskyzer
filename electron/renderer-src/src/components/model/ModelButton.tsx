@@ -1,13 +1,17 @@
 import { useEffect, useState } from 'react';
-import { getConnection, type ConnectionSnapshot } from '../../ipc/bridge';
+import { getConnection, getGlobalSettings, listGguf, onSettingsChanged, type ConnectionSnapshot } from '../../ipc/bridge';
 import { useRegisterAction } from '../../state/ActionRegistry';
 import { ModelDialog } from './ModelDialog';
 
 // input_bar.py::model_button — "● name (20 chars max…) ▾", full name as a tooltip. It opens
-// the model selector and always shows the connection the chat will actually use.
+// the model selector and always shows the connection the chat will actually use — a local
+// .gguf when one is active, the remote connection otherwise (the two are mutually exclusive).
 export function ModelButton({ activeFolder }: { activeFolder: string | null }) {
   const [snapshot, setSnapshot] = useState<ConnectionSnapshot | null>(null);
+  const [localModelName, setLocalModelName] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  const [version, setVersion] = useState(0);
+  useEffect(() => onSettingsChanged(() => setVersion(v => v + 1)), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -16,15 +20,22 @@ export function ModelButton({ activeFolder }: { activeFolder: string | null }) {
         if (!cancelled) setSnapshot(value);
       })
       .catch(() => {});
+    Promise.all([getGlobalSettings(), listGguf()])
+      .then(([global, entries]) => {
+        if (cancelled) return;
+        const id = typeof global.active_local_model === 'string' ? global.active_local_model : '';
+        setLocalModelName(id ? (entries.find(entry => entry.id === id)?.name ?? null) : null);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [activeFolder]);
+  }, [activeFolder, version]);
 
   // "🔄 Changer de modèle" of the command palette opens the same selector as the button.
   useRegisterAction('switch-model', () => setOpen(true));
 
-  const fullName = snapshot?.model || 'Aucun modèle';
+  const fullName = localModelName ?? (snapshot?.model || 'Aucun modèle');
   const label = `● ${fullName.slice(0, 20)}${fullName.length > 20 ? '…' : ''} ▾`;
 
   return (

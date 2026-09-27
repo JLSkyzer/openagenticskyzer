@@ -87,6 +87,22 @@ export function openFolderDialog(): Promise<string | null> {
   return request('open-folder');
 }
 
+// The user's own .gguf library ("j'importe mes fichiers .gguf dans ma librairie") — pickGguf opens the
+// native file dialog (main.cjs, .gguf filtered), addGguf then records the chosen path in the library.
+export interface GgufEntry { id: string; name: string; path: string; size_bytes: number; added_at: string }
+export function pickGguf(): Promise<string | null> {
+  return request('pick-gguf');
+}
+export function listGguf(): Promise<GgufEntry[]> {
+  return request('gguf-list');
+}
+export function addGguf(path: string): Promise<GgufEntry> {
+  return request('gguf-add', { path });
+}
+export function removeGguf(id: string): Promise<GgufEntry[]> {
+  return request('gguf-remove', { id });
+}
+
 export function activateFolder(folder: string): Promise<{ history: ChatMessage[]; folders: FolderListItem[] }> {
   return request('activate_folder', { folder });
 }

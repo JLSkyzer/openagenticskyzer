@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
 import { FoldersService } from './core/folders.mts';
+import { GgufLibrary } from './core/gguf-library.mts';
 import { runAgent } from './core/agent.mts';
 import { ChatProvider } from './core/provider.mts';
 import { workspaceTools } from './core/workspace.mts';
@@ -26,6 +27,7 @@ const dataHome = process.env.OPENAGENT_HOME || join(homedir(), '.openagent');
 const settings = new SettingsService(dataHome);
 const conversations = new Conversations();
 const folders = new FoldersService(dataHome);
+const ggufLibrary = new GgufLibrary(dataHome);
 const promptLibrary = new PromptLibrary(dataHome);
 const active = new Map();
 // requestId -> { resolve(allow), folder, category } — filled by the confirm() callback
@@ -38,7 +40,7 @@ const sessionAllowed = new Set();
 const allowKey = (folder, tool) => `${folder}\0${tool}`;
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'shutdown']);
 
 const BASE_SYSTEM_PROMPT = [
   'Tu es openagent, un assistant de développement qui travaille dans le dossier du projet actif avec les outils fournis :',
@@ -197,6 +199,9 @@ async function handle(message) {
   if (!id || !ops.has(op)) { reply(id, false, null, 'Opération IPC inconnue'); return; }
   try {
     let result;
+    if (op === 'gguf-list') result = await ggufLibrary.list();
+    if (op === 'gguf-add') result = await ggufLibrary.add(payload.path);
+    if (op === 'gguf-remove') result = await ggufLibrary.remove(payload.id);
     if (op === 'list_folders') result = await folders.list();
     if (op === 'activate_folder') {
       const list = await folders.recordOpened(payload.folder);

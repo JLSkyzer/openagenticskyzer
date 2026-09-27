@@ -2162,6 +2162,76 @@ Décisions :
       Le fenêtrage de l'historique et l'éditeur de prompts **n'existent pas** dans l'original.
       **La migration NiceGUI → Electron n'est pas terminée.**
 
+### Lot actif suivant — fournisseur local intégré (fichiers .gguf) (2026-09-27)
+
+**Décision de l'utilisateur, verbatim** : « j'aime pas la merde qu'est ollama, lm studio etc... je veux
+qu'on soit notre propre provider. C'est à dire l'utilisateur importe les fichiers .gguf dans sa
+librairie et c'est nous qui alimentons ce fichier là pour le réveiller si le modèle est sélectionné. »
+Explicitement écarté : Ollama, LM Studio, llama.cpp en processus externe, tout catalogue HuggingFace
+à télécharger (l'utilisateur apporte déjà ses propres fichiers).
+
+**Reconnaissance technique faite avant tout code produit** (voir ci-dessous) : `node-llama-cpp@3.21.1`
+(module natif Node qui embarque llama.cpp — aucun processus, aucun outil tiers) installé, audité
+(`npm audit` 0), et testé pour de vrai : chargement d'un vrai `.gguf` minuscule (`stories260K.gguf`,
+1,1 Mo, l'actif de test officiel de llama.cpp, téléchargé avec l'accord de l'utilisateur) → vraie
+génération de texte (rétrodétection Vulkan automatique sur cette machine). Streaming (`onTextChunk`),
+appel de fonctions réel (`defineChatSessionFunction`), `AbortSignal` : confirmés dans les types réels
+du paquet — la même forme que `ChatProvider.complete()`.
+
+**Décisions d'architecture** :
+- `core/local-provider.mts` implémente la **même** interface que `ChatProvider.complete()`
+  (`provider.mts`) : `agent.mts` n'est **pas modifié**, zéro risque sur la boucle agent déjà testée.
+  Conversion pure (testable sans modèle) entre nos schémas d'outils OpenAI et
+  `defineChatSessionFunction`, et entre la réponse de node-llama-cpp et notre `ChatMessage`.
+- **La bibliothèque référence les chemins, ne copie pas les fichiers** (comme `folders.mts` pour les
+  dossiers de projet) — un `.gguf` peut faire plusieurs Go, une copie serait lente et doublerait
+  l'espace disque. `core/gguf-library.mts` (même patron que `folders.mts`) : `{id, name, path,
+  size_bytes, added_at}[]` dans `gguf-library.json`.
+- **« Réveiller »** = chargement paresseux au premier message réellement envoyé avec ce modèle
+  sélectionné (pas à la sélection), gardé en mémoire tant que le même fichier reste choisi,
+  déchargé si un autre modèle (local ou distant) est choisi ou à l'arrêt de l'app (même point que
+  `stopAllServers` pour les serveurs de dev).
+- Connexion : `provider: 'local'`, `model: <id de bibliothèque>`, pas de `base_url`/`api_key`.
+  `worker.mjs::runSend` construit le fournisseur local à la place de `ChatProvider` quand
+  `connection.provider === 'local'`.
+- **Empaquetage** : contrainte nouvelle et significative — jusqu'ici le worker packagé n'a **aucun**
+  `node_modules` (`build.files` les exclut tous). `node-llama-cpp` a besoin d'un vrai binaire natif au
+  runtime (`.node`/`.dll`), donc doit être `asarUnpack`, et le paquet complet avec toutes les
+  rétrodétections (Vulkan/CUDA/CPU) pèse **685 Mo** sur cette machine — à réduire explicitement à un
+  sous-ensemble raisonnable (au minimum CPU ; Vulkan si la taille le permet) avant tout empaquetage.
+  Traité comme sa propre tâche, pas improvisé en fin de lot.
+- **Actif de test** : `stories260K.gguf` (1,1 Mo, licence llama.cpp/ggml-org, texte de piètre qualité —
+  sert à prouver que le mécanisme tourne, pas la qualité de génération) committé dans
+  `electron/tests/fixtures/`, jamais régénéré à la volée (contrairement au PDF synthétique : le format
+  GGUF ne se fabrique pas à la main).
+- Aucun appel d'outil réel testé avec ce modèle jouet (260K paramètres, ne suit aucune instruction) —
+  la mise en correspondance des schémas est testée par des scénarios fabriqués (RED d'abord), la
+  génération de texte réelle est testée avec le vrai modèle, l'appel de fonction réel sera vérifié
+  séparément avec un modèle capable si besoin (à revoir si le temps le permet).
+
+- [x] Tâche 72 — `core/gguf-library.mts` (RED d'abord, patron `folders.mts`) + import natif dans
+      `main.cjs` (boîte de fichier, `.gguf` uniquement) + ops worker.
+      RED prouvé (module introuvable) puis 399/399 (12 tests : 11 sur la classe, 1 sur les vraies ops
+      du worker). Référence le chemin choisi, **ne copie jamais** le fichier ; refuse chemin relatif,
+      fichier absent, dossier, extension autre que `.gguf` ; réimporter le même chemin remplace
+      l'entrée (id neuf) plutôt que dupliquer ; `list()` retire silencieusement une entrée dont le
+      fichier a disparu ou bougé. **Écart découvert en testant** : mon hypothèse « JSON corrompu
+      toléré comme vide » était fausse — `JsonStore.read` lève volontairement (« le fichier est
+      conservé »), même contrat que `folders.mts` ; test corrigé, pas le code. `pick-gguf` (boîte de
+      fichier native, filtre `.gguf`) dans `main.cjs`, ops `gguf-list/add/remove` dans `worker.mjs`,
+      pont typé (`pickGguf`/`listGguf`/`addGguf`/`removeGguf`). Mutation (extension non vérifiée) →
+      détectée, code restauré. `tsc` propre.
+- [ ] Tâche 73 — `core/local-provider.mts` : mise en correspondance pure des schémas d'outils et des
+      réponses (RED d'abord, fixtures), puis intégration réelle avec `stories260K.gguf` (chargement,
+      flux, `AbortSignal`, déchargement).
+- [ ] Tâche 74 — Câblage worker (`connection.provider === 'local'`), déchargement au changement de
+      modèle et à l'arrêt.
+- [ ] Tâche 75 — Empaquetage : réduire les rétrodétections embarquées, `asarUnpack`, `build.files`,
+      preuve sur exe packagé que le module natif se charge.
+- [ ] Tâche 76 — Interface : section « Modèles locaux » du sélecteur, import, indicateur de chargement.
+- [ ] Tâche 77 — Preuve Electron réelle avec le vrai petit modèle.
+- [ ] Tâche 78 — Vérification finale sur l'app packagée (`final-e2e-lot13.cjs`), bilan, leçons.
+
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 
 - [x] Task 1 — Module d'embedding lazy et singleton

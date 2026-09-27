@@ -2273,8 +2273,28 @@ du paquet — la même forme que `ChatProvider.complete()`.
       modèle local, ou à l'arrêt de l'app — pas immédiatement en changeant vers un fournisseur distant
       (nécessiterait que `main.cjs` notifie le worker, hors scope de cette tâche ; la RAM/VRAM reste
       occupée jusqu'au prochain modèle local ou à la fermeture, jamais fuité indéfiniment).
-- [ ] Tâche 75 — Empaquetage : réduire les rétrodétections embarquées, `asarUnpack`, `build.files`,
+- [x] Tâche 75 — Empaquetage : réduire les rétrodétections embarquées, `asarUnpack`, `build.files`,
       preuve sur exe packagé que le module natif se charge.
+      **Bogue trouvé au premier essai** : `node-llama-cpp` avait été installé en `devDependency` (comme
+      `mermaid`/`pdfjs-dist`, qui eux sont empaquetés par Vite dans le renderer et n'ont jamais besoin
+      d'exister comme `node_modules` bruts). `electron-builder` **exclut les devDependencies par défaut** —
+      le premier `npm run package:win` produisait un `app.asar` de 5,7 Mo, **sans aucun dossier
+      `app.asar.unpacked`** : le module natif était totalement absent, silencieusement. Corrigé en
+      réinstallant en vraie `dependency`.
+      Rétrodétections retenues : CPU (`win-x64`, 47 Mo) + Vulkan (`win-x64-vulkan`, 99 Mo — accélération
+      GPU large, AMD/Intel/NVIDIA) + `win-arm64` (22 Mo) = 168 Mo. **CUDA exclue** (`win-x64-cuda` +
+      `win-x64-cuda-ext`, 519 Mo à elles deux) : Vulkan couvre déjà l'accélération GPU NVIDIA sur cette
+      machine (confirmé à la Tâche 72, rétrodétection automatique en Vulkan), CUDA aurait été redondant
+      pour un gain de vitesse spécifique NVIDIA non mesuré contre un coût de taille énorme. `asarUnpack`
+      sur `node_modules/node-llama-cpp/**` et `@node-llama-cpp/**` (le code natif ne peut pas s'exécuter
+      depuis l'intérieur d'une archive asar). Résultat : `app.asar` 5,9 Mo, `app.asar.unpacked` 206 Mo,
+      exe total 579 Mo (avant ce lot : ~6 Mo d'archive, runtime Electron seul).
+      **Preuve réelle** (vérification ad hoc via CDP sur l'exe packagé, non committée — la preuve
+      formelle et reproductible est la Tâche 78) : `gguf-add` + `send` avec un `localModel` réel →
+      journaux `node-llama-cpp` réels dans la sortie du processus, le tour se termine, le texte généré
+      (de piètre qualité, modèle jouet) est bien sauvegardé sur disque. Le module natif se charge et
+      s'exécute pour de vrai depuis `app.asar.unpacked`. `npm audit` 0, `npm test` 419/419 après le
+      passage en `dependency`.
 - [ ] Tâche 76 — Interface : section « Modèles locaux » du sélecteur, import, indicateur de chargement.
 - [ ] Tâche 77 — Preuve Electron réelle avec le vrai petit modèle.
 - [ ] Tâche 78 — Vérification finale sur l'app packagée (`final-e2e-lot13.cjs`), bilan, leçons.

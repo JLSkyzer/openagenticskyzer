@@ -2221,9 +2221,31 @@ du paquet — la même forme que `ChatProvider.complete()`.
       fichier native, filtre `.gguf`) dans `main.cjs`, ops `gguf-list/add/remove` dans `worker.mjs`,
       pont typé (`pickGguf`/`listGguf`/`addGguf`/`removeGguf`). Mutation (extension non vérifiée) →
       détectée, code restauré. `tsc` propre.
-- [ ] Tâche 73 — `core/local-provider.mts` : mise en correspondance pure des schémas d'outils et des
+- [x] Tâche 73 — `core/local-provider.mts` : mise en correspondance pure des schémas d'outils et des
       réponses (RED d'abord, fixtures), puis intégration réelle avec `stories260K.gguf` (chargement,
       flux, `AbortSignal`, déchargement).
+      RED prouvé (module introuvable) puis 12/12 (pur) + 4/4 (moteur réel) → 415/415 au total.
+      **Découverte clé en lisant les vrais types** : `LlamaChat.generateResponse(history, options)` prend
+      l'historique **complet** à chaque appel (aucun état de session gardé) — exactement le modèle sans
+      état d'`agent.mts`, qui reconstruit `messages` à chaque tour. Zéro modification d'`agent.mts` : le
+      moteur local implémente le même contrat que `ChatProvider.complete()`. `local-provider.mts` (pur,
+      **aucun** import de node-llama-cpp — testable sans le binaire natif) fait la traduction : nos
+      schémas d'outils → `{nom: {description, params}}` (pas de `handler` à ce niveau : node-llama-cpp
+      **nous rend** l'appel, ne l'exécute jamais lui-même — c'est notre boucle qui garde la main sur les
+      permissions) ; un message `assistant` avec `tool_calls` **fusionne** avec le résultat du message
+      `tool` suivant dans un seul élément d'historique (node-llama-cpp ne connaît pas de tour « outil »
+      séparé) ; un id est fabriqué nous-mêmes (node-llama-cpp n'en génère pas) et sert à faire le lien
+      aller-retour. `local-engine.mts` (le seul fichier qui importe vraiment node-llama-cpp) : cache
+      « réveil » par chemin de fichier, `disposeEngine()` explicite (un modèle peut peser plusieurs Go de
+      RAM/VRAM, jamais laissé au ramasse-miettes). Testé **pour de vrai** avec `stories260K.gguf` : texte
+      réellement généré, flux (`onDelta`) qui se recompose à l'identique, un second tour sur le même
+      modèle reste rapide (chaud) puis `disposeEngine()` le vide vraiment, un vrai `AbortSignal` interrompt
+      et rejette avec **exactement** `name: 'AbortError'` — le même contrat qu'un fournisseur HTTP. Mutation
+      (déchargement désactivé) → détectée (3 échecs), code restauré.
+      **Limite assumée** : le modèle jouet (260K paramètres) ne suit aucune instruction — le passage d'un
+      vrai schéma d'outil au moteur réel est vérifié (ne plante pas), mais un véritable appel de fonction
+      n'est pas déclenché par ce modèle ; la mise en correspondance elle-même (fusion appel/résultat) est
+      vérifiée par les 12 tests purs sur fixtures, pas par ce modèle.
 - [ ] Tâche 74 — Câblage worker (`connection.provider === 'local'`), déchargement au changement de
       modèle et à l'arrêt.
 - [ ] Tâche 75 — Empaquetage : réduire les rétrodétections embarquées, `asarUnpack`, `build.files`,

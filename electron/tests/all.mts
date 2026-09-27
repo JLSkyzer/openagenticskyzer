@@ -48,4 +48,5 @@ import './gguf-library.test.mts';
 import './worker-gguf.test.mts';
 import './local-provider.test.mts';
 import './local-engine.test.mts';
+import './worker-local-model.test.mts';
 import './ui-plumbing.test.mts';

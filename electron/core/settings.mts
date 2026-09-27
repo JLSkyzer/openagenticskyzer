@@ -7,6 +7,9 @@ export const globalDefaults = {
   session_retention_days: 30, animations: true, restore_last_folder: true,
   permission_mode: 'demander', shell_ask: true, files_ask: false, search_ask: false,
   data_dir: '', theme: 'dark', accent_color: '#3b82f6', onboarding_done: false,
+  // Which entry of the .gguf library (gguf-library.mts) is the active model, if any — empty means a
+  // remote connection is active instead. Not a secret (unlike connections.mts's vault): just an id.
+  active_local_model: '',
 };
 export const projectDefaults = {
   agent_mode: 'inherit', ignored_patterns: 'node_modules/, .env, dist/',
@@ -30,6 +33,7 @@ const globalRules: Record<string, Rule> = {
   // Data directory changes have a separate, transactional migration operation.
   theme: choice('dark', 'light'), accent_color: v => typeof v === 'string' && /^#[\da-f]{6}$/i.test(v),
   onboarding_done: bool,
+  active_local_model: text(200),
 };
 const projectRules: Record<string, Rule> = {
   agent_mode: choice('inherit', 'ask', 'auto', 'plan'), ignored_patterns: text(10000),

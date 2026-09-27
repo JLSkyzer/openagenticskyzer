@@ -7,6 +7,7 @@ import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
 import { FoldersService } from './core/folders.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
+import { completeLocal } from './core/local-engine.mts';
 import { runAgent } from './core/agent.mts';
 import { ChatProvider } from './core/provider.mts';
 import { workspaceTools } from './core/workspace.mts';
@@ -66,11 +67,11 @@ function compactingIn(folder) {
  * is capped at 30 s, a summary is not). Nothing is written unless the model answered AND the branch
  * is still exactly what it was when the summary was requested.
  */
-async function runCompaction(compactionId, folder, branchId, before, connection) {
+async function runCompaction(compactionId, folder, branchId, before, connection, provider) {
   const post = message => parentPort.postMessage({ type: 'event', event: 'agent', runId: compactionId, ...message });
   let outcome;
   try {
-    const after = await compactMessages({ provider: new ChatProvider(), connection, messages: before, signal: active.get(compactionId).controller.signal });
+    const after = await compactMessages({ provider, connection, messages: before, signal: active.get(compactionId).controller.signal });
     await conversations.replaceIfUnchanged(folder, branchId, before, after);
     outcome = { kind: 'compacted', messages: after };
   } catch (error) {
@@ -130,7 +131,19 @@ function normalizeRole(role) {
 const PERMISSION_FIELD = { write: 'files_ask', network: 'search_ask', shell: 'shell_ask' };
 
 /** Runs one agent turn to completion, streaming events to the renderer via parentPort. */
-async function runSend(runId, folder, branchId, text, connection, keep, attachments = []) {
+// "réveiller" a .gguf model: `localModel` (a gguf-library id, never a secret — unlike `connection`, which
+// main.cjs never injects when this is set, see main.cjs's resolveSendPayload) resolves to a real file path
+// and gets an object shaped exactly like ChatProvider (a `.complete()` method) — agent.mts/compactMessages
+// never know the difference. An id whose file is gone (removed from the library, or moved) fails clearly,
+// before anything starts.
+async function providerFor(connection, localModel) {
+  if (!localModel) return new ChatProvider();
+  const modelPath = await ggufLibrary.resolve(localModel);
+  if (!modelPath) throw new Error('Modèle local introuvable : il a peut-être été retiré de la bibliothèque. Choisis-en un autre.');
+  return { complete: options => completeLocal({ modelPath, messages: options.messages, tools: options.tools, signal: options.signal, onDelta: options.onDelta, maxTokens: options.maxTokens }) };
+}
+
+async function runSend(runId, folder, branchId, text, connection, keep, attachments = [], provider) {
   const controller = new AbortController();
   const accumulated = [];
   active.set(runId, { controller, folder });
@@ -168,7 +181,7 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
       post({ kind: 'permission-request', requestId, tool: request.tool, category: toolCategory.get(request.tool), arguments: request.arguments });
     });
     const result = await runAgent({
-      provider: new ChatProvider(), connection, messages: collected, instructions, tools,
+      provider, connection, messages: collected, instructions, tools,
       settings: { mode: effective.agent_mode, permission_mode: effective.permission_mode, files_ask: effective.files_ask, shell_ask: effective.shell_ask, search_ask: effective.search_ask, reserved_tokens: effective.reserved_tokens },
       signal: controller.signal, confirm, emit,
     });
@@ -221,15 +234,17 @@ async function handle(message) {
       const compactionId = randomUUID();
       active.set(compactionId, { controller: new AbortController(), folder, kind: 'compact' });
       let before;
+      let provider;
       try {
         before = await conversations.messages(folder, branchId);
         planCompaction(before); // too short → refused right away, model never called
+        provider = await providerFor(payload.connection, payload.localModel);
       } catch (error) {
         active.delete(compactionId);
         throw error;
       }
       reply(id, true, { compactionId });
-      void runCompaction(compactionId, folder, branchId, before, payload.connection);
+      void runCompaction(compactionId, folder, branchId, before, payload.connection, provider);
       return;
     }
     if (op === 'send') {
@@ -246,12 +261,15 @@ async function handle(message) {
       // The files of the message (📎 / paste / drop), checked before anything starts like `keep` above: the page is
       // not trusted to send only what its own upload code produced.
       const attachments = validateAttachments(payload.attachments);
+      // Same principle for a local model: an id whose file is gone must be reported synchronously, not as
+      // a run that starts and immediately errors.
+      const provider = await providerFor(payload.connection, payload.localModel);
       const runId = randomUUID();
       reply(id, true, { runId });
       // Fire-and-forget: the turn's real result streams back as 'event' messages, not
       // as this request's response (main.cjs's 30s IPC timeout could never cover a full
       // multi-step agent run).
-      void runSend(runId, payload.folder, payload.branchId || 'main', payload.text, payload.connection, keep, attachments);
+      void runSend(runId, payload.folder, payload.branchId || 'main', payload.text, payload.connection, keep, attachments, provider);
       return;
     }
     if (op === 'stop') { active.get(payload.runId)?.controller.abort(); result = { stopped: true }; }

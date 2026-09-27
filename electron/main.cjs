@@ -139,6 +139,10 @@ async function createConnections() {
  * can exercise this exact logic without a real BrowserWindow/Worker.
  */
 async function resolveSendPayload(connectionsService, request) {
+  // A local .gguf model needs no secret and no remote connection at all — resolving one here would force
+  // the user to have a working remote provider configured just to use a model they already have on disk,
+  // and `connections.resolve()` would reject a 'local' provider outright (its own fixed provider list).
+  if (request.payload?.localModel) return request;
   const connection = await connectionsService.resolve(request.payload?.folder ?? null);
   return { ...request, payload: { ...request.payload, connection } };
 }

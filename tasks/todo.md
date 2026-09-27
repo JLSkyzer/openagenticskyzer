@@ -2246,8 +2246,33 @@ du paquet — la même forme que `ChatProvider.complete()`.
       vrai schéma d'outil au moteur réel est vérifié (ne plante pas), mais un véritable appel de fonction
       n'est pas déclenché par ce modèle ; la mise en correspondance elle-même (fusion appel/résultat) est
       vérifiée par les 12 tests purs sur fixtures, pas par ce modèle.
-- [ ] Tâche 74 — Câblage worker (`connection.provider === 'local'`), déchargement au changement de
+- [x] Tâche 74 — Câblage worker (`connection.provider === 'local'`), déchargement au changement de
       modèle et à l'arrêt.
+      **Découverte d'architecture en cours de route** : le coffre `connections.mts` valide `provider`
+      contre une liste fixe (`providerValue`) et exige toujours une `base_url` valide — impossible d'y
+      loger « local » sans toucher au code délicat et déjà testé du coffre chiffré. Décision : la
+      sélection locale est **séparée**, jamais dans le coffre. Nouveau champ `active_local_model` (id de
+      bibliothèque, pas un secret) dans les réglages globaux en clair. `send`/`compact` acceptent un
+      `payload.localModel` optionnel ; `main.cjs::resolveSendPayload` **saute** la résolution de connexion
+      distante quand il est présent (pas besoin d'un fournisseur cloud configuré pour utiliser un modèle
+      qu'on a déjà sur disque). `worker.mjs::providerFor` résout l'id → chemin réel via `GgufLibrary` et
+      construit un objet `{complete()}` — **avant** de répondre à la requête (même patron que `keep` :
+      un id disparu doit être signalé tout de suite, jamais comme un tour qui démarre puis échoue).
+      **Deux vrais bogues produit trouvés en testant avec le vrai petit modèle** (pas des artefacts de
+      test) : (1) le vrai prompt système (`buildInstructions()`, tous les outils réels) dépasse la fenêtre
+      de contexte native du modèle (2048) — `node-llama-cpp` autorise de forcer un contexte plus grand
+      (positions au-delà de l'entraînement dégradées, pas d'erreur) : plancher à 8192 dans
+      `local-engine.mts`, documenté, jamais abaissé ni illimité. (2) `compactMessages` ne fixe **jamais**
+      `maxTokens` — avec un vrai fournisseur HTTP, le serveur distant borne quand même la génération ;
+      ici **rien** ne la borne, le tour restait bloqué indéfiniment. Corrigé par une limite par défaut
+      (2048) dans `completeLocal` quand l'appelant n'en fixe aucune. Mutation (limite retirée) → le test
+      a expiré à 60 s, confirmant le blocage réel, code restauré.
+      8 tests réels ajoutés (worker `send`/`compact` avec `localModel`, sans aucune connexion) → 419/419
+      au total.
+      **Limite assumée, documentée** : le modèle local n'est déchargé qu'au changement vers un **autre**
+      modèle local, ou à l'arrêt de l'app — pas immédiatement en changeant vers un fournisseur distant
+      (nécessiterait que `main.cjs` notifie le worker, hors scope de cette tâche ; la RAM/VRAM reste
+      occupée jusqu'au prochain modèle local ou à la fermeture, jamais fuité indéfiniment).
 - [ ] Tâche 75 — Empaquetage : réduire les rétrodétections embarquées, `asarUnpack`, `build.files`,
       preuve sur exe packagé que le module natif se charge.
 - [ ] Tâche 76 — Interface : section « Modèles locaux » du sélecteur, import, indicateur de chargement.

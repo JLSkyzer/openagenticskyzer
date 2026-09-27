@@ -111,6 +111,13 @@ export function activateFolder(folder: string): Promise<{ history: ChatMessage[]
   return request('activate_folder', { folder });
 }
 
+// Best-effort branch + dirty/clean for the sidebar's git widget — null when the active folder
+// isn't a usable git repo right now (not a repo, git missing, timeout).
+export interface GitStatus { branch: string; dirty: boolean }
+export function gitStatus(folder: string): Promise<GitStatus | null> {
+  return request('git-status', { folder });
+}
+
 export function listFolders(): Promise<FolderListItem[]> {
   return request('list_folders');
 }

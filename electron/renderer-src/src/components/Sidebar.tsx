@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { activateFolder, listFolders, openFolderDialog, type ChatMessage, type FolderListItem } from '../ipc/bridge';
+import { activateFolder, gitStatus, listFolders, openFolderDialog, type ChatMessage, type FolderListItem, type GitStatus } from '../ipc/bridge';
 import { useRegisterAction } from '../state/ActionRegistry';
 
 interface SidebarProps {
@@ -26,12 +26,23 @@ function formatDate(iso: string): string {
 export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: SidebarProps) {
   const [folders, setFolders] = useState<FolderListItem[]>([]);
   const [opening, setOpening] = useState(false);
+  const [gitInfo, setGitInfo] = useState<GitStatus | null>(null);
 
   useEffect(() => {
     listFolders()
       .then(setFolders)
       .catch(() => {});
   }, [refreshToken]);
+
+  useEffect(() => {
+    setGitInfo(null);
+    if (!activeFolder) return;
+    let stale = false;
+    gitStatus(activeFolder)
+      .then(status => { if (!stale) setGitInfo(status); })
+      .catch(() => {});
+    return () => { stale = true; };
+  }, [activeFolder]);
 
   const activate = useCallback(
     async (folder: string) => {
@@ -73,6 +84,16 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
           {opening ? '…' : '📂 Ouvrir un dossier'}
         </button>
       </div>
+      {gitInfo && (
+        <div
+          data-testid="oa-git-status"
+          data-dirty={gitInfo.dirty}
+          className={'px-3 py-1 font-mono text-xs ' + (gitInfo.dirty ? 'text-yellow-400' : 'text-green-400')}
+        >
+          ⎇ {gitInfo.branch}
+          {gitInfo.dirty ? ' ●' : ' ✓'}
+        </div>
+      )}
       <div className="px-3 pb-1 pt-3 text-xs uppercase tracking-widest text-gray-600">Historique des dossiers</div>
       <div className="flex-1 overflow-y-auto">
         {folders.map(entry => {

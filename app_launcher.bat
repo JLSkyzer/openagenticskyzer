@@ -1,13 +1,13 @@
 @echo off
-REM Launcher rapide pour openagenticskyzer GUI — évite les imports inutiles
+REM Launcher rapide pour l'app Electron (openagent-desktop) — remplace l'ancienne GUI Python/NiceGUI
 REM À placer à la racine ou dans le PATH
 
 setlocal enabledelayedexpansion
 
-REM Désactiver les warnings TensorFlow
-set TF_CPP_MIN_LOG_LEVEL=3
-
-REM Lancer l'app GUI directement (pas de agent.py)
-python -c "from openagenticskyzer.app.main import main_app; main_app()" %*
+REM npm start (electron .) lance le renderer déjà buildé dans electron\renderer-dist —
+REM si le renderer a changé, lancer d'abord "npm run renderer:build" dans electron\.
+pushd "%~dp0electron"
+call npm start %*
+popd
 
 endlocal

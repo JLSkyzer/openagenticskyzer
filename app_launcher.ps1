@@ -1,4 +1,4 @@
-# Launcher rapide pour openagenticskyzer GUI — PowerShell
+# Launcher rapide pour l'app Electron (openagent-desktop) — remplace l'ancienne GUI Python/NiceGUI
 # À placer à la racine ou dans le PATH
 
 param(
@@ -6,13 +6,16 @@ param(
     [string[]]$Args
 )
 
-$ErrorActionPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Stop'
 
-# Désactiver les warnings
-$env:TF_CPP_MIN_LOG_LEVEL = 3
-[Environment]::SetEnvironmentVariable("PYTHONUNBUFFERED", "1")
-
-# Lancer l'app GUI directement
-python -c "from openagenticskyzer.app.main import main_app; main_app()" @Args
+# npm start (electron .) lance le renderer déjà buildé dans electron\renderer-dist —
+# si le renderer a changé, lancer d'abord "npm run renderer:build" dans electron\.
+$electronDir = Join-Path $PSScriptRoot 'electron'
+Push-Location $electronDir
+try {
+    & npm start @Args
+} finally {
+    Pop-Location
+}
 
 exit $LASTEXITCODE

@@ -2319,7 +2319,35 @@ du paquet — la même forme que `ChatProvider.complete()`.
       dans la barre latérale) — même leçon que les lots précédents, pas un bogue produit. Mutation
       (activation non persistée) → détectée, code restauré. Régression : 419/419, `tsc` propre,
       `test:model`/`test:layout`/`test:chat` PASS.
-- [ ] Tâche 78 — Vérification finale sur l'app packagée (`final-e2e-lot13.cjs`), bilan, leçons.
+- [x] Tâche 78 — Vérification finale sur l'app packagée (`final-e2e-lot13.cjs`), bilan, leçons.
+      Exe repackagé (206 Mo de binaires natifs débarqués, CPU+Vulkan+arm64), Python absent du PATH,
+      CDP réel : une connexion distante non liée est configurée en premier ; le vrai `.gguf` est
+      ajouté par le vrai op worker (pas de clic sur la boîte native — impossible à piloter) ; un
+      vrai clic l'active (bannière + libellé du bouton) ; **vrai tour sur le vrai moteur chargé
+      depuis `app.asar.unpacked`, sans aucun appel au serveur distant** (0 requête reçue, texte
+      différent de la réponse simulée du distant) ; un **vrai redémarrage** garde le modèle local
+      actif ; la clé API de la connexion distante n'apparaît dans aucun fichier. PASS du premier
+      coup après correction du test (voir ci-dessous), aucune application externe ouverte.
+      **Bogue de mon propre test corrigé** : `gguf-add` était appelé **après** l'ouverture du
+      sélecteur — sa section « Modèles locaux » ne se charge qu'au montage, donc l'entrée
+      n'apparaissait jamais. Réordonné : ajouter avant d'ouvrir la fenêtre.
+      Régression sur le nouvel exe : `final-e2e-lot7` à `lot12` PASS, `npm audit` 0, aucun
+      `openagent.exe` résiduel, `npm test` 419/419, `tsc` propre.
+      **Non rejoué** : lots e2e 1 à 6 et tests Electron settings/prompts/context/branches.
+      **Limite** : le vrai clic sur la boîte de dialogue native d'import n'est testé dans aucun des
+      deux niveaux de preuve (Electron réel ni packagé) — c'est une boîte système que rien ne peut
+      piloter ; son câblage est vérifié par un espion (Tâche 77) et sa logique de réception par le
+      vrai op worker (ici).
+      **Bilan du lot** : SkyzerEdition est désormais **son propre fournisseur local** — l'utilisateur
+      importe un fichier `.gguf`, l'app le charge et l'exécute elle-même via `node-llama-cpp` (module
+      natif embarqué, aucun processus externe, ni Ollama, ni LM Studio, ni serveur llama.cpp à lancer
+      à part). Contexte agrandi (8192) et limite de jetons par défaut (2048) pour un moteur qui n'a
+      plus de serveur distant pour le border lui-même. Empaquetage réduit à CPU+Vulkan (168 Mo, CUDA
+      exclue). **Limite assumée et documentée** : le modèle local n'est déchargé qu'au changement
+      vers un autre modèle local ou à l'arrêt de l'app, pas immédiatement en repassant sur une
+      connexion distante. **La migration NiceGUI → Electron n'est pas terminée** : restent
+      Téléchargements (dépendait du catalogue LM Studio — obsolète, remplacé par ce lot) et
+      `index_status` (index sémantique ChromaDB, hors périmètre « sans Python »).
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)
 

@@ -123,6 +123,14 @@ export function testHfToken(token: string): Promise<{ name: string }> {
   return request('test-hf-token', { token });
 }
 
+export function pickDataDir(): Promise<string | null> {
+  return request('pick-data-dir');
+}
+export interface DataDirMigrationResult { moved: number; errors: string[] }
+export function migrateDataDir(newDir: string): Promise<DataDirMigrationResult> {
+  return request('migrate-data-dir', { newDir });
+}
+
 export function listFolders(): Promise<FolderListItem[]> {
   return request('list_folders');
 }

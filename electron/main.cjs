@@ -13,7 +13,7 @@ let tray;
 let backend;
 let connections;
 const pending = new Map();
-const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','git-status','test-hf-token']);
+const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','git-status','test-hf-token','migrate-data-dir']);
 
 // Exactly the pattern core/export.mts::exportFilename generates — never a filename supplied as-is
 // by the renderer. Constrains what "open-export" (below) is allowed to open, whatever the folder.
@@ -187,6 +187,7 @@ async function resolveSendPayload(connectionsService, request) {
 async function handleBackendRequest(event, request) {
   if (event.sender !== mainWindow?.webContents || !request || typeof request.op !== 'string') throw new Error('Requête IPC invalide');
   if (request.op === 'open-folder') { const picked = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] }); return picked.canceled ? null : picked.filePaths[0]; }
+  if (request.op === 'pick-data-dir') { const picked = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'createDirectory'] }); return picked.canceled ? null : picked.filePaths[0]; }
   // The native picker only: adding the chosen path to the library (gguf-add) is a separate worker op,
   // the same two-step shape as open-folder + activate_folder.
   if (request.op === 'pick-gguf') {

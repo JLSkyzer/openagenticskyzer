@@ -58,3 +58,5 @@ import './worker-git-status.test.mts';
 import './tray-icon.test.mts';
 import './hf-token.test.mts';
 import './worker-hf-token.test.mts';
+import './data-dir.test.mts';
+import './worker-data-dir.test.mts';

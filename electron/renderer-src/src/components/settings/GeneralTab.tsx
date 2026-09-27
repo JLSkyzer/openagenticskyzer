@@ -1,18 +1,47 @@
 import { useState } from 'react';
 import type { SettingsDraft } from './useSettingsDraft';
 import { Group, Row, Section, Toggle } from './parts';
-import { testHfToken } from '../../ipc/bridge';
+import { migrateDataDir, pickDataDir, testHfToken } from '../../ipc/bridge';
 import { useToast } from '../../state/ToastProvider';
 
 const button = 'self-start rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs text-gray-300';
 
-// Mirrors settings.py::_tab_general. The data-directory migration is a separate backend
-// operation not part of this lot: its button stays disabled ("à venir") so the layout matches
-// the original's.
+// Mirrors settings.py::_tab_general.
 export function GeneralTab({ draft }: { draft: SettingsDraft }) {
   const [showToken, setShowToken] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [editingDataDir, setEditingDataDir] = useState(false);
+  const [newDataDir, setNewDataDir] = useState('');
+  const [migrating, setMigrating] = useState(false);
   const { notify } = useToast();
+
+  const dataHome = draft.get<string>('data_home', '');
+
+  const startEditingDataDir = () => {
+    setNewDataDir(dataHome);
+    setEditingDataDir(true);
+  };
+  const browseDataDir = async () => {
+    const picked = await pickDataDir();
+    if (picked) setNewDataDir(picked);
+  };
+  const applyDataDir = async () => {
+    const target = newDataDir.trim();
+    if (!target) { notify('Chemin vide.', 'warning'); return; }
+    setMigrating(true);
+    try {
+      const result = await migrateDataDir(target);
+      const summary = result.errors.length
+        ? `⚠️ ${result.moved} fichier(s) migré(s), ${result.errors.length} erreur(s).`
+        : `✅ ${result.moved} fichier(s) migré(s).`;
+      notify(`${summary} Redémarrez l’app pour appliquer.`, result.errors.length ? 'warning' : 'positive');
+      setEditingDataDir(false);
+    } catch (error) {
+      notify(`Impossible de migrer : ${error instanceof Error ? error.message : 'erreur inconnue'}`, 'negative');
+    } finally {
+      setMigrating(false);
+    }
+  };
 
   const handleTestToken = async () => {
     const token = draft.get<string>('hf_token', '').trim();
@@ -28,7 +57,6 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
     }
   };
   const agentMode = draft.get<string>('agent_mode', 'auto');
-  const dataDir = draft.get<string>('data_dir', '');
 
   return (
     <div className="flex flex-col gap-5">
@@ -74,11 +102,46 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
               className="truncate rounded px-2 py-1 font-mono text-xs text-blue-400"
               style={{ background: '#0a0a1a', border: '1px solid #1e1e3a' }}
             >
-              {dataDir || '~/.openagent (répertoire par défaut)'}
+              {dataHome || '~/.openagent'}
             </div>
-            <button disabled title="Migration du répertoire de données — à venir" className={button + ' disabled:cursor-not-allowed disabled:opacity-60'}>
-              📁 Changer le dossier…
-            </button>
+            {!editingDataDir ? (
+              <button id="oa-data-dir-open-btn" onClick={startEditingDataDir} className={button}>
+                📁 Changer le dossier…
+              </button>
+            ) : (
+              <div className="flex flex-col gap-2 rounded border border-gray-700 p-3" style={{ background: '#0d0d0d' }}>
+                <div className="flex gap-2">
+                  <input
+                    data-testid="oa-data-dir-input"
+                    value={newDataDir}
+                    onChange={event => setNewDataDir(event.target.value)}
+                    placeholder="Ex: D:\openagent_data"
+                    className="flex-1 rounded px-2 py-1.5 font-mono text-xs text-gray-200 outline-none"
+                    style={{ background: '#1a1a1a', border: '1px solid #2a2a2a' }}
+                  />
+                  <button id="oa-data-dir-browse-btn" onClick={() => void browseDataDir()} className={button}>
+                    …
+                  </button>
+                </div>
+                <div className="flex items-start gap-2 rounded border border-yellow-900 p-2" style={{ background: '#1a1200' }}>
+                  <span className="text-sm">⚠️</span>
+                  <span className="text-xs text-yellow-600">Redémarrez l’app après le changement pour que tout soit pris en compte.</span>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    id="oa-data-dir-apply-btn"
+                    onClick={() => void applyDataDir()}
+                    disabled={migrating}
+                    className="self-start rounded-lg bg-purple-600 px-3 py-1.5 text-xs text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {migrating ? 'Migration…' : 'Appliquer'}
+                  </button>
+                  <button id="oa-data-dir-cancel-btn" onClick={() => setEditingDataDir(false)} disabled={migrating} className={button}>
+                    Annuler
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </Group>
       </div>

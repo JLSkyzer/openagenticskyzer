@@ -80,6 +80,9 @@ export class SettingsService {
     const result: Config = {};
     for (const key of Object.keys(globalDefaults)) result[key] = saved[key];
     result.hf_token_configured = typeof saved.hf_token === 'string' && saved.hf_token.length > 0;
+    // The real, currently-resolved absolute data directory — distinct from the `data_dir` setting
+    // above (an inert display field the migration operation itself never needs to read or write).
+    result.data_home = this.home;
     // OPENAGENT_SKIP_ONBOARDING=1 reports the first-launch wizard as already done WITHOUT writing anything: the
     // tests (which all start on an empty data directory) set it so the wizard does not cover the interface they
     // drive. Here, in the one place every reader of the global settings goes through — the worker AND the tests

@@ -24,10 +24,13 @@ import { buildHtml, buildJson, buildMarkdown, exportFilename, renderEntries } fr
 import { cleanupOldFolders } from './core/cleanup.mts';
 import { gitStatus } from './core/git-status.mts';
 import { testHfToken } from './core/hf-token.mts';
+import { migrateDataDir, resolveDataHome } from './core/data-dir.mts';
 
 // OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
-// instead of the real user's ~/.openagent — never rely on the default outside tests.
-const dataHome = process.env.OPENAGENT_HOME || join(homedir(), '.openagent');
+// instead of the real user's ~/.openagent — never rely on the default outside tests, and it
+// always bypasses the redirect below so a test never touches the real developer's data home.
+const defaultHome = process.env.OPENAGENT_HOME || join(homedir(), '.openagent');
+const dataHome = process.env.OPENAGENT_HOME ? defaultHome : await resolveDataHome(defaultHome);
 // A send turn finishing at or beyond this duration is flagged 'longRunning' so main.cjs can
 // raise a native OS notification (mirrors the previous NiceGUI app's notifier.py threshold).
 // OPENAGENT_LONG_RUN_MS lets tests use a real (not mocked) but fast agent turn instead of
@@ -53,7 +56,7 @@ const sessionAllowed = new Set();
 const allowKey = (folder, tool) => `${folder}\0${tool}`;
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'migrate-data-dir', 'shutdown']);
 
 const BASE_SYSTEM_PROMPT = [
   'Tu es openagent, un assistant de développement qui travaille dans le dossier du projet actif avec les outils fournis :',
@@ -250,6 +253,7 @@ async function handle(message) {
     // OPENAGENT_HF_ENDPOINT lets tests point this at a local fake server instead of the real
     // HuggingFace API — never set outside tests.
     if (op === 'test-hf-token') result = await testHfToken(payload.token, process.env.OPENAGENT_HF_ENDPOINT ? { baseUrl: process.env.OPENAGENT_HF_ENDPOINT } : undefined);
+    if (op === 'migrate-data-dir') result = await migrateDataDir(dataHome, defaultHome, payload.newDir);
     if (op === 'list_folders') result = await folders.list();
     if (op === 'activate_folder') {
       const list = await folders.recordOpened(payload.folder);

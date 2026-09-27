@@ -46,3 +46,14 @@ test('internal and unknown operations are not reachable from the page', () => {
   assert.equal(main.isBackendOp('nope'), false);
   assert.equal(main.isBackendOp('compact'), true);
 });
+
+test('notificationBodyFor prefers the summary on a real completion, and the error on a failure', () => {
+  assert.equal(main.notificationBodyFor({ kind: 'done', summary: 'Fichier créé.' }), 'Fichier créé.');
+  assert.equal(main.notificationBodyFor({ kind: 'done' }), 'Tâche terminée', 'no summary at all falls back');
+  assert.equal(main.notificationBodyFor({ kind: 'error', message: 'Connexion refusée' }), 'Erreur : Connexion refusée');
+});
+
+test('notificationBodyFor caps the body at 200 characters, like the old notifier.py did', () => {
+  const body = main.notificationBodyFor({ kind: 'done', summary: 'x'.repeat(500) });
+  assert.equal(body.length, 200);
+});

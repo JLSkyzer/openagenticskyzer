@@ -26,6 +26,11 @@ import { cleanupOldFolders } from './core/cleanup.mts';
 // OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
 // instead of the real user's ~/.openagent — never rely on the default outside tests.
 const dataHome = process.env.OPENAGENT_HOME || join(homedir(), '.openagent');
+// A send turn finishing at or beyond this duration is flagged 'longRunning' so main.cjs can
+// raise a native OS notification (mirrors the previous NiceGUI app's notifier.py threshold).
+// OPENAGENT_LONG_RUN_MS lets tests use a real (not mocked) but fast agent turn instead of
+// waiting out a real 10s — never rely on it outside tests.
+const LONG_RUN_MS = Number(process.env.OPENAGENT_LONG_RUN_MS) || 10_000;
 const settings = new SettingsService(dataHome);
 const conversations = new Conversations();
 const folders = new FoldersService(dataHome);
@@ -133,6 +138,15 @@ function normalizeRole(role) {
   return role;
 }
 
+function lastAssistantSummary(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant' && typeof messages[i].content === 'string' && messages[i].content.trim()) {
+      return messages[i].content.slice(0, 100);
+    }
+  }
+  return 'Tâche terminée';
+}
+
 const PERMISSION_FIELD = { write: 'files_ask', network: 'search_ask', shell: 'shell_ask' };
 
 /** Runs one agent turn to completion, streaming events to the renderer via parentPort. */
@@ -153,6 +167,13 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
   const accumulated = [];
   active.set(runId, { controller, folder });
   const post = message => parentPort.postMessage({ type: 'event', event: 'agent', runId, ...message });
+  const startedAt = Date.now();
+  // Wraps a terminal post (done/stopped/error) with a longRunning flag once the turn has taken
+  // at least LONG_RUN_MS — main.cjs raises a native notification only when this is set.
+  const finish = (kind, extra = {}) => {
+    const durationMs = Date.now() - startedAt;
+    post({ kind, ...extra, ...(durationMs >= LONG_RUN_MS ? { longRunning: true, durationMs } : {}) });
+  };
   let collected = [];
   // Tracks the assistant text currently streaming in, so a Stop mid-delta (before
   // agent.mts ever emits the completed 'message') still has something to persist and
@@ -191,7 +212,7 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
       signal: controller.signal, confirm, emit,
     });
     await conversations.save(folder, branchId, result);
-    post({ kind: 'done' });
+    finish('done', { summary: lastAssistantSummary(result) });
   } catch (error) {
     const aborted = error?.name === 'AbortError';
     // A Stop mid-stream (before the turn's 'message' event ever fired) would otherwise
@@ -205,7 +226,10 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
     // Persist whatever the model/tools actually produced even on Stop/error — losing an
     // in-flight tool-call's already-emitted messages would silently discard real work.
     await conversations.save(folder, branchId, [...collected, ...accumulated]).catch(() => {});
-    post(aborted ? { kind: 'stopped' } : { kind: 'error', message: error instanceof Error ? error.message : 'Erreur interne' });
+    // A Stop is the user's own action, taken while they're already looking at the app — never
+    // worth an OS notification, unlike a completion or a failure reached while they stepped away.
+    if (aborted) post({ kind: 'stopped' });
+    else finish('error', { message: error instanceof Error ? error.message : 'Erreur interne' });
   } finally {
     active.delete(runId);
   }

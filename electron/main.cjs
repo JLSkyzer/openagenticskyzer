@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, session, protocol } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, session, protocol, Notification } = require('electron');
 const path = require('node:path');
 const { homedir } = require('node:os');
 const { Worker } = require('node:worker_threads');
@@ -80,11 +80,25 @@ function createWindow() {
   mainWindow.webContents.on('will-navigate', event => event.preventDefault());
 }
 
+// A send turn the worker flagged 'longRunning' (see worker.mjs's LONG_RUN_MS) gets a native OS
+// notification — the user may well have stepped away by the time a slow turn finishes. Split out
+// as a pure function so the body/title logic is unit-testable without ever touching Electron's
+// real Notification API (main-routing.test.mts imports it directly from this file).
+function notificationBodyFor(message) {
+  const body = message.kind === 'error' ? `Erreur : ${message.message}` : (message.summary || 'Tâche terminée');
+  return String(body).slice(0, 200);
+}
+function notifyLongRun(message) {
+  if (!Notification.isSupported()) return;
+  new Notification({ title: 'OpenAgentic Skyzer', body: notificationBodyFor(message) }).show();
+}
+
 function startBackend() {
   backend = new Worker(path.join(__dirname, 'worker.mjs'), { type: 'module' });
   backend.on('message', message => {
     const done = pending.get(message.id);
     if (done) { pending.delete(message.id); message.ok ? done.resolve(message.result) : done.reject(new Error(message.error)); }
+    if (message.type === 'event' && message.event === 'agent' && message.longRunning) notifyLongRun(message);
     // The window may already be gone while the worker is still shutting down.
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('backend-message', message);
   });
@@ -205,4 +219,4 @@ if (require.main === module) {
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 }
 
-module.exports = { resolveSendPayload, createConnections, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection, isExportFilename };
+module.exports = { resolveSendPayload, createConnections, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection, isExportFilename, notificationBodyFor };

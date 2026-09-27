@@ -52,3 +52,4 @@ import './worker-local-model.test.mts';
 import './ui-plumbing.test.mts';
 import './cleanup.test.mts';
 import './worker-cleanup.test.mts';
+import './worker-longrun.test.mts';

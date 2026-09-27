@@ -2309,7 +2309,16 @@ du paquet — la même forme que `ChatProvider.complete()`.
       (même bouton, même emplacement). `active_local_model` propagé jusqu'à `send`/`regenerate`/
       `compact` via `ChatProvider` (lu depuis les réglages globaux, comme la jauge de contexte).
       `tsc` propre, build OK, 419/419, régression du sélecteur de modèle existant (`test:model`) PASS.
-- [ ] Tâche 77 — Preuve Electron réelle avec le vrai petit modèle.
+- [x] Tâche 77 — Preuve Electron réelle avec le vrai petit modèle.
+      `npm run test:localmodel` PASS. `pick-gguf` simulé (boîte native, comme `open-folder` dans tous
+      les tests de composant) ; **tout le reste est réel** : import → apparaît dans la bibliothèque,
+      **activation immédiate** (bannière « Modèle actif » + libellé du bouton `stories260K.gguf ▾`),
+      **vrai tour sur le vrai moteur, sans aucune connexion configurée** (texte réellement généré,
+      capturé), vrai clic ✕ → retiré de la bibliothèque et de la bannière. **Bogue de mon propre test
+      trouvé et corrigé** : j'avais oublié d'amorcer `folders.json` (le dossier n'apparaissait jamais
+      dans la barre latérale) — même leçon que les lots précédents, pas un bogue produit. Mutation
+      (activation non persistée) → détectée, code restauré. Régression : 419/419, `tsc` propre,
+      `test:model`/`test:layout`/`test:chat` PASS.
 - [ ] Tâche 78 — Vérification finale sur l'app packagée (`final-e2e-lot13.cjs`), bilan, leçons.
 
 ## Plan 2026-04-27-semantic-plugins — TERMINÉ (2026-09-13)

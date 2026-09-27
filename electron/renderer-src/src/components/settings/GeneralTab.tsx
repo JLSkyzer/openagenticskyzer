@@ -1,14 +1,32 @@
 import { useState } from 'react';
 import type { SettingsDraft } from './useSettingsDraft';
 import { Group, Row, Section, Toggle } from './parts';
+import { testHfToken } from '../../ipc/bridge';
+import { useToast } from '../../state/ToastProvider';
 
 const button = 'self-start rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs text-gray-300';
 
-// Mirrors settings.py::_tab_general. The data-directory migration and the HuggingFace
-// token test are separate backend operations that are not part of this lot: their buttons
-// are shown disabled ("à venir") rather than omitted, so the layout stays the original's.
+// Mirrors settings.py::_tab_general. The data-directory migration is a separate backend
+// operation not part of this lot: its button stays disabled ("à venir") so the layout matches
+// the original's.
 export function GeneralTab({ draft }: { draft: SettingsDraft }) {
   const [showToken, setShowToken] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const { notify } = useToast();
+
+  const handleTestToken = async () => {
+    const token = draft.get<string>('hf_token', '').trim();
+    if (!token) { notify('Token vide.', 'warning'); return; }
+    setTesting(true);
+    try {
+      const result = await testHfToken(token);
+      notify(`✅ Connecté en tant que ${result.name}`, 'positive');
+    } catch (error) {
+      notify(`❌ ${error instanceof Error ? error.message : 'Token invalide'}`, 'negative');
+    } finally {
+      setTesting(false);
+    }
+  };
   const agentMode = draft.get<string>('agent_mode', 'auto');
   const dataDir = draft.get<string>('data_dir', '');
 
@@ -93,8 +111,13 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
                 👁
               </button>
             </div>
-            <button disabled title="Test du token — à venir" className={button + ' disabled:cursor-not-allowed disabled:opacity-60'}>
-              Tester le token
+            <button
+              id="oa-hf-test-btn"
+              onClick={() => void handleTestToken()}
+              disabled={testing}
+              className={button + ' disabled:cursor-not-allowed disabled:opacity-60'}
+            >
+              {testing ? 'Test…' : 'Tester le token'}
             </button>
           </div>
         </Group>

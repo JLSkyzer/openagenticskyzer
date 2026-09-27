@@ -118,6 +118,11 @@ export function gitStatus(folder: string): Promise<GitStatus | null> {
   return request('git-status', { folder });
 }
 
+// A real GET against HuggingFace's whoami-v2, rejects on an invalid/expired token.
+export function testHfToken(token: string): Promise<{ name: string }> {
+  return request('test-hf-token', { token });
+}
+
 export function listFolders(): Promise<FolderListItem[]> {
   return request('list_folders');
 }

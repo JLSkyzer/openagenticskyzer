@@ -2624,3 +2624,42 @@ Tests : `tests/test_artifacts.py` : 28/28 passed (26 précédents + 2 nouveaux).
 Tests : 5 tests ajoutés à `tests/test_artifacts.py` — 2 sur `_save_main_chat_history` (persiste quand `current_branch_id == "main"`, no-op reproduisant exactement le scénario de perte de données quand on est sur une branche) et 3 sur `active_branch_label` (main, branche connue, id inconnu → repli sur main). `tests/test_artifacts.py` : 33/33 passed (28 précédents + 5 nouveaux). Suite complète : 358 passed / 3 failed — mêmes 3 échecs pré-existants sans rapport (`test_ctx_limits_has_all_providers`, `test_interleaved_tool_resets_file_streak`, `test_email_like_not_captured`), aucune régression (353 + 5 nouveaux = 358).
 
 Fichiers modifiés : `openagenticskyzer/app/components/input_bar.py` (`_save_main_chat_history` + call-site), `openagenticskyzer/app/components/chat.py` (`active_branch_label`), `openagenticskyzer/app/components/command_palette.py`, `openagenticskyzer/app/main.py`, `tests/test_artifacts.py`.
+
+### Lot actif suivant — écarts réels restants NiceGUI → Electron (2026-09-27)
+
+Audit indépendant (sous-agent Explore, lecture systématique de tout `openagenticskyzer/app/**/*.py` vs. tout `electron/`, hors `index_status` et hors catalogue HF/Ollama/LM Studio/llama.cpp déjà écartés) — 9 écarts réels trouvés au-delà des lots déjà livrés. Traités dans cet ordre (du plus petit au plus gros), chacun avec RED-first, preuve Electron réelle, commit/push :
+
+- [x] Tâche 79 — Nettoyage automatique des sessions selon la rétention configurée
+  - Python : `storage.py::cleanup_old_sessions` (sessions plus vieilles que `session_retention_days` supprimées), appelé au démarrage (`main.py:535-540`).
+  - Electron : le setting `session_retention_days` existe (`core/settings.mts`, `ContextTab.tsx`) mais n'a aucun effet — pas de sessions séparées comme en Python, le modèle Electron est un `.openagent/conversations.json` par dossier (`folders.json` donne `last_used` par dossier). Porté le concept : pour chaque dossier de `folders.json` dont `last_used` dépasse la rétention (0 = jamais), effacer son historique de conversation (garder l'entrée dans l'historique des dossiers, vider seulement les données de conversation). Invoqué au démarrage du worker.
+
+  Implémentation : nouveau `electron/core/cleanup.mts::cleanupOldFolders(folders, retentionDays)`, pure fonction — parcourt `folders.list()`, supprime `conversations.json`/`chat_history.json` (legacy) du `.openagent/` de chaque dossier dont `last_used` dépasse la rétention, ignore silencieusement un dossier disparu du disque (`metadataDirectory` qui échoue), ne touche jamais `folders.json` lui-même. `worker.mjs` l'appelle une fois au démarrage, `await`é avant l'attache du handler de messages (les messages postés avant sont mis en file par `worker_threads`, jamais perdus — même garantie que le reste du worker), avec `session_retention_days` lu depuis `settings.global()`, le tout dans un `.catch(() => {})` pour qu'un `config.json`/`folders.json` corrompu ne fasse jamais planter le démarrage.
+
+  RED-first : `tests/cleanup.test.mts` (4 tests : rétention dépassée, `0` = jamais, dossier disparu sans exception, l'entrée d'historique elle-même survit) échouaient tous sur module absent avant création de `cleanup.mts`. Preuve d'intégration réelle : `tests/worker-cleanup.test.mts` — 2 tests qui font tourner le vrai `worker.mjs` via `worker_threads` (pas de mock), seedent un `folders.json`/`.openagent/conversations.json` réels, puis vérifient après un round-trip `list_folders` que le fichier de conversation a bien été supprimé (rétention par défaut 30j dépassée) ou conservé (`session_retention_days: 0` explicite). Suite complète : `tests/all.mts` 425/425 passent (419 précédents + 6 nouveaux), aucune régression. `tsc --noEmit -p tsconfig.core.json` : aucune nouvelle erreur (les 5 déjà présentes sont antérieures à cette tâche, sans rapport).
+
+  Limite assumée : pas de test Electron réel (visual/packagé) pour cette tâche — c'est une tâche de démarrage silencieuse sans UI propre, déjà entièrement prouvée par le worker réel ci-dessus ; ajouter un harnais Electron complet n'aurait rien vérifié de plus.
+- [ ] Tâche 80 — Notifications système OS pour tâches longues (>10s)
+  - Python : `notifier.py` (`task_started`/`task_finished` via `plyer`), déclenché depuis `input_bar.py`.
+  - Electron : aucune trace de l'API `Notification`. Ajouter un timer côté worker/main autour d'un run agent ; notification native si le tour dépasse 10s.
+- [ ] Tâche 81 — Widget branche git + statut dirty/clean dans la sidebar
+  - Python : `sidebar.py::_git_branch_widget` (cache + refresh au changement de dossier).
+  - Electron : `core/git-tools.mts` existe côté outils agent seulement. Ajouter une requête légère (statut + branche) affichée dans `Sidebar.tsx` pour le dossier actif, rafraîchie à l'activation.
+- [ ] Tâche 82 — Icône système (tray) + verrou single-instance
+  - Python : `main.py::_run_tray` (pystray, menu Ouvrir/Quitter) + `_acquire_lock` (socket dédié).
+  - Electron : ni `Tray` ni `app.requestSingleInstanceLock()` dans `main.cjs`. Ajouter les deux.
+- [ ] Tâche 83 — Test du token HuggingFace (validation whoami-v2)
+  - Python : `settings.py:179-199`.
+  - Electron : bouton `disabled` dans `GeneralTab.tsx:96-98` (« not part of this lot »). Câbler un appel réel à l'API whoami-v2.
+- [ ] Tâche 84 — Migration du répertoire de données (changer + déplacer les sessions existantes)
+  - Python : `settings.py::open_data_dir_dialog`/`storage.py::migrate_data_dir`.
+  - Electron : bouton `disabled` dans `GeneralTab.tsx:61-63`. Câbler dialog natif + déplacement réel des fichiers + mise à jour du chemin de données actif.
+- [ ] Tâche 85 — Bouton « ⚡ Init projet » (génère/écrase OPENAGENT.md)
+  - Python : `sidebar.py::_auto_init_project` + `tools/project_analyzer.py::initialize_project`.
+  - Electron : `core/context.mts` ne fait que lire OPENAGENT.md/CLAUDE.md, jamais le générer. Porter l'analyse + génération + confirmation avant écrasement.
+- [ ] Tâche 86 — Nettoyage automatique effectif de la rétention (suite Tâche 79) + onglet « Outils » (config serveurs MCP stdio) — le plus gros morceau
+  - Python : `settings.py::_tab_tools` + `storage.py::load_mcp_config`/`save_mcp_config` (fichier `mcp.json`), et surtout **exécution réelle** : `agent.py:66-68` charge les serveurs MCP et les enregistre comme vrais outils agent (`mcp_client/adapter.py`).
+  - Electron : aucun `ToolsTab.tsx`, aucune trace de « mcp » dans `core/*.mts`/`worker.mjs`. Périmètre : (a) UI de config (liste de serveurs stdio : commande, args, activé/désactivé) + persistance, (b) un vrai client MCP stdio côté worker (spawn du process, handshake JSON-RPC, `tools/list`, `tools/call`) enregistrant les outils du serveur dans la boucle agent au même titre que `workspaceTools`/`gitTools`/etc. La partie « liste des plugins Python » n'est pas portable telle quelle à Node — hors scope, à documenter comme limite assumée.
+- [ ] Tâche 87 — Pré-fetch web automatique par heuristique pour les modèles locaux (mineur, à confirmer utile maintenant qu'un vrai fournisseur local existe)
+  - Python : `input_bar.py:7-46,280-431` — recherche+lecture automatique de sources avant l'appel LLM, pour compenser un modèle peu doué en tool-use.
+  - Electron : `internet_search`/`fetch_url` existent comme outils que l'agent choisit d'appeler, pas de déclenchement proactif. À évaluer après la Tâche 86 : peut avoir plus de valeur maintenant qu'un vrai provider `.gguf` local existe (justement le cas d'usage visé par le code Python d'origine).
+- [ ] Tâche 88 — Vérification finale du lot, mise à jour lessons.md, bilan honnête (ne pas déclarer la migration terminée — limites assumées listées explicitement : `index_status`, catalogue HF/Ollama/LM Studio, éventuel report de la Tâche 87).

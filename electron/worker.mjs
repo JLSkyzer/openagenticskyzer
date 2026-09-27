@@ -21,6 +21,7 @@ import { PromptLibrary } from './core/prompts.mts';
 import { readProjectMemory } from './core/project-memory.mts';
 import { validateAttachments } from './core/attachments.mts';
 import { buildHtml, buildJson, buildMarkdown, exportFilename, renderEntries } from './core/export.mts';
+import { cleanupOldFolders } from './core/cleanup.mts';
 
 // OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
 // instead of the real user's ~/.openagent — never rely on the default outside tests.
@@ -30,6 +31,10 @@ const conversations = new Conversations();
 const folders = new FoldersService(dataHome);
 const ggufLibrary = new GgufLibrary(dataHome);
 const promptLibrary = new PromptLibrary(dataHome);
+// Wipes conversation data of projects unused beyond session_retention_days (0 = keep forever).
+// Run once at startup, before the worker starts taking requests — mirrors the previous NiceGUI
+// app's own synchronous startup cleanup. Never let a corrupt config/folders file crash the worker.
+await cleanupOldFolders(folders, (await settings.global().catch(() => ({ session_retention_days: 0 }))).session_retention_days).catch(() => {});
 const active = new Map();
 // requestId -> { resolve(allow), folder, category } — filled by the confirm() callback
 // passed to runAgent, drained by the 'permission-decision' op below.

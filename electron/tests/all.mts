@@ -50,3 +50,5 @@ import './local-provider.test.mts';
 import './local-engine.test.mts';
 import './worker-local-model.test.mts';
 import './ui-plumbing.test.mts';
+import './cleanup.test.mts';
+import './worker-cleanup.test.mts';

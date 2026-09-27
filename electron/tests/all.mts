@@ -55,3 +55,4 @@ import './worker-cleanup.test.mts';
 import './worker-longrun.test.mts';
 import './git-status.test.mts';
 import './worker-git-status.test.mts';
+import './tray-icon.test.mts';

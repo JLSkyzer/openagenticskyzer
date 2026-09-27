@@ -1,13 +1,15 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, session, protocol, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, session, protocol, Notification, Tray, Menu, nativeImage } = require('electron');
 const path = require('node:path');
 const { homedir } = require('node:os');
 const { Worker } = require('node:worker_threads');
 const artifactProtocol = require('./artifact-protocol.cjs');
+const { buildDiamondIconPng } = require('./tray-icon.cjs');
 
 // What "artifact-put" (below) fills and the oa-artifact: protocol serves — see artifact-protocol.cjs.
 const artifacts = artifactProtocol.createArtifactStore();
 
 let mainWindow;
+let tray;
 let backend;
 let connections;
 const pending = new Map();
@@ -78,6 +80,27 @@ function createWindow() {
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', event => event.preventDefault());
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+// A system-tray icon so the app can keep running in the background after the window is closed,
+// like the previous NiceGUI app's pystray-based tray. Kept alive on the module-level `tray`
+// variable — Electron garbage-collects (and silently hides) a Tray with no other reference.
+function createTray() {
+  tray = new Tray(nativeImage.createFromBuffer(buildDiamondIconPng(32)));
+  tray.setToolTip('◈ openagent');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Ouvrir openagent', click: showMainWindow },
+    { type: 'separator' },
+    { label: 'Quitter', click: () => app.quit() },
+  ]));
+  tray.on('click', showMainWindow);
 }
 
 // A send turn the worker flagged 'longRunning' (see worker.mjs's LONG_RUN_MS) gets a native OS
@@ -199,24 +222,36 @@ async function handleBackendRequest(event, request) {
 // which would otherwise crash: require('electron') resolves to a path string (not the
 // API object) outside a real Electron process, so ipcMain/app are undefined there.
 if (require.main === module) {
-  artifactProtocol.registerScheme(protocol); // before ready, or the scheme is not privileged
-  ipcMain.handle('backend-request', handleBackendRequest);
-  app.whenReady().then(async () => {
-    artifactProtocol.installHandler(protocol, artifacts);
-    installCsp();
-    connections = await createConnections();
-    createWindow();
-    startBackend();
-  });
-  // Whatever way the app quits, the worker is shut down properly first so no dev server outlives it.
-  let quitting = false;
-  app.on('before-quit', event => {
-    if (quitting || !backend) return;
-    event.preventDefault();
-    quitting = true;
-    stopBackend().finally(() => app.quit());
-  });
-  app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+  // Test-only: isolates the single-instance lock (Electron keys it off the app's userData path)
+  // so a test run never conflicts with a real running instance of this app. Never set outside tests.
+  if (process.env.OPENAGENT_USERDATA_DIR) app.setPath('userData', process.env.OPENAGENT_USERDATA_DIR);
+  // A second launch (double-click, a shortcut, "openagent" typed again) must not open a second
+  // window onto the same on-disk data — it hands off to the already-running instance instead,
+  // like the previous NiceGUI app's socket-based _acquire_lock did.
+  if (!app.requestSingleInstanceLock()) {
+    app.quit();
+  } else {
+    app.on('second-instance', showMainWindow);
+    artifactProtocol.registerScheme(protocol); // before ready, or the scheme is not privileged
+    ipcMain.handle('backend-request', handleBackendRequest);
+    app.whenReady().then(async () => {
+      artifactProtocol.installHandler(protocol, artifacts);
+      installCsp();
+      connections = await createConnections();
+      createWindow();
+      startBackend();
+      createTray();
+    });
+    // Whatever way the app quits, the worker is shut down properly first so no dev server outlives it.
+    let quitting = false;
+    app.on('before-quit', event => {
+      if (quitting || !backend) return;
+      event.preventDefault();
+      quitting = true;
+      stopBackend().finally(() => app.quit());
+    });
+    app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+  }
 }
 
 module.exports = { resolveSendPayload, createConnections, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection, isExportFilename, notificationBodyFor };

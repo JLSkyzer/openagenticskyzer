@@ -84,6 +84,7 @@
       "main.cjs",
       "preload.cjs",
       "artifact-protocol.cjs",
+      "tray-icon.cjs",
       "worker.mjs",
       "core/**/*",
       "renderer-dist/**/*",

@@ -2721,4 +2721,32 @@ Audit indépendant (sous-agent Explore, lecture systématique de tout `openagent
   3. **Cohérent avec les principes du projet** (`CLAUDE.md` : « ne pas sur-ingénieriser les choses simples », « simplicité d'abord »). Une regex heuristique de contournement n'est pas le genre de logique qu'on veut maintenir indéfiniment dans les deux langages.
 
   Rien n'est perdu : si un besoin réel apparaît plus tard (ex. un utilisateur avec un modèle local vraiment incapable de tool-calling qui bénéficierait d'un pré-fetch), la porte reste ouverte — les outils `internet_search`/`fetch_url` existent déjà côté Node, seule la logique de déclenchement automatique resterait à écrire.
-- [ ] Tâche 88 — Vérification finale du lot, mise à jour lessons.md, bilan honnête (ne pas déclarer la migration terminée — limites assumées listées explicitement : `index_status`, catalogue HF/Ollama/LM Studio, pré-fetch web heuristique (Tâche 87, évalué et volontairement non porté)).
+- [x] Tâche 88 — Vérification finale du lot, mise à jour lessons.md, bilan honnête (ne pas déclarer la migration terminée — limites assumées listées explicitement : `index_status`, catalogue HF/Ollama/LM Studio, pré-fetch web heuristique (Tâche 87, évalué et volontairement non porté)).
+
+### Bilan du lot — écarts réels restants NiceGUI → Electron (2026-09-27 → 2026-09-30)
+
+**Vérification finale effectuée, pas seulement annoncée :**
+1. Suite complète `tests/all.mts` : **477/477 passent**, aucune régression sur l'ensemble du lot (Tâches 79-86).
+2. `tsc --noEmit` sur `tsconfig.core.json` et `renderer-src/tsconfig.json` : mêmes 5 erreurs préexistantes sans rapport (antérieures à ce lot), aucune nouvelle.
+3. **`npm run package:win` puis `npm run test:package` (l'exe packagé réel, pas `npm start`)** : un vrai bug de packaging a été trouvé ici — `tray-icon.cjs` (Tâche 82) absent de `build.files`, l'app packagée plantait au démarrage avec « Cannot find module './tray-icon.cjs' ». Corrigé (`3f2a9a4`), repackagé, retesté : passe. Sans cette étape, ce bug serait resté invisible indéfiniment — les 477 tests non packagés ne peuvent structurellement pas le voir. Leçon consignée dans `tasks/lessons.md` (récidive d'une leçon déjà écrite le 2026-09-25 sur `artifact-protocol.cjs`, jamais réappliquée au moment d'ajouter le fichier suivant).
+
+**Ce qui a été livré dans ce lot (Tâches 79-86), chacune avec RED-first, preuve worker réelle et preuve Electron réelle) :**
+- Tâche 79 — nettoyage automatique des conversations selon la rétention configurée
+- Tâche 80 — notification OS native pour les tours d'agent longs (>10s)
+- Tâche 81 — widget branche git + statut dirty/clean dans la sidebar
+- Tâche 82 — icône système (tray) + verrou single-instance
+- Tâche 83 — test réel du token HuggingFace (whoami-v2)
+- Tâche 84 — migration du répertoire de données complet (adapté à l'architecture Electron, cf. écart documenté dans la tâche)
+- Tâche 85 — bouton « ⚡ Init projet » (analyse de stack réelle + génération d'OPENAGENT.md)
+- Tâche 86 — client MCP stdio réel (JSON-RPC 2.0) + onglet « Outils »
+- Tâche 87 — évaluée, décision motivée de ne pas porter (pré-fetch web heuristique pour modèles locaux faibles en tool-use)
+
+**Limites assumées, explicitement listées (à ne jamais présenter comme résolues) :**
+- `index_status` (recherche sémantique ChromaDB) — hors scope depuis le début de cette série de lots, jamais tenté.
+- Catalogue de modèles HuggingFace + intégration Ollama/LM Studio/llama.cpp externe — explicitement rejeté par l'utilisateur en cours de session, remplacé par le fournisseur local `.gguf` intégré (lot précédent, Tâches 72-78).
+- Tâche 87 (pré-fetch web heuristique) — évaluée et non portée, raisons détaillées à la Tâche 87 ci-dessus.
+- Tâche 85 — l'outil agent-callable équivalent (`@tool analyze_project_and_init`) n'a pas été porté, seul le bouton sidebar identifié par l'audit l'a été.
+- Tâche 86 — la section « Plugins Python » de l'onglet Outils (chargement dynamique de modules Python) n'est pas portable telle quelle à Node, non tentée.
+- Plusieurs tâches (80 Notification, 82 Tray/verrou single-instance) ont une limite assumée documentée dans leur propre entrée : l'appel final à l'API OS native elle-même n'est pas exercé par un test automatisé (éviterait un effet de bord OS visible/répété), seule la logique métier qui l'entoure l'est à 100%.
+
+**Ce que cette vérification ne couvre PAS** (honnêtement, pas caché) : aucun audit exhaustif au-delà de l'audit indépendant déjà fait avant ce lot (sous-agent Explore, 2026-09-27) n'a été relancé pour confirmer qu'aucun AUTRE écart n'existe — ce lot répond précisément aux 9 écarts que cet audit avait trouvés, pas à un nouvel audit complet. Ne pas annoncer la migration NiceGUI → Electron comme « terminée » : c'est une affirmation plus large que ce que ce lot, ou même la série complète de lots de cette session, a vérifié.

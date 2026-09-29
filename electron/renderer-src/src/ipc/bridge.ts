@@ -131,6 +131,11 @@ export function migrateDataDir(newDir: string): Promise<DataDirMigrationResult> 
   return request('migrate-data-dir', { newDir });
 }
 
+export interface ProjectInitResult { success: boolean; message: string }
+export function initProject(folder: string, overwrite: boolean): Promise<ProjectInitResult> {
+  return request('init-project', { folder, overwrite });
+}
+
 export function listFolders(): Promise<FolderListItem[]> {
   return request('list_folders');
 }

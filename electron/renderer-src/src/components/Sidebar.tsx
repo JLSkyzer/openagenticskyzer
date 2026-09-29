@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { activateFolder, gitStatus, listFolders, openFolderDialog, type ChatMessage, type FolderListItem, type GitStatus } from '../ipc/bridge';
+import { activateFolder, gitStatus, initProject, listFolders, openFolderDialog, type ChatMessage, type FolderListItem, type GitStatus } from '../ipc/bridge';
 import { useRegisterAction } from '../state/ActionRegistry';
+import { Modal } from './settings/Modal';
+import { useToast } from '../state/ToastProvider';
 
 interface SidebarProps {
   activeFolder: string | null;
@@ -27,6 +29,9 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
   const [folders, setFolders] = useState<FolderListItem[]>([]);
   const [opening, setOpening] = useState(false);
   const [gitInfo, setGitInfo] = useState<GitStatus | null>(null);
+  const [initConfirm, setInitConfirm] = useState(false);
+  const [initializing, setInitializing] = useState(false);
+  const { notify } = useToast();
 
   useEffect(() => {
     listFolders()
@@ -69,6 +74,28 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
   // "📂 Ouvrir un dossier" of the command palette does exactly what the button does.
   useRegisterAction('open-folder', () => void handleOpenFolder());
 
+  const handleInitProject = useCallback(() => {
+    if (!activeFolder) { notify("Ouvre un dossier d'abord.", 'warning'); return; }
+    setInitConfirm(true);
+  }, [activeFolder, notify]);
+
+  const confirmInitProject = useCallback(async () => {
+    if (!activeFolder) return;
+    setInitConfirm(false);
+    setInitializing(true);
+    try {
+      // The dialog's own wording already covers both "create" and "overwrite" — see the
+      // rationale in tasks/todo.md (Tâche 85) for why this collapses Python's two-message
+      // create-vs-overwrite flow into one confirmation instead of a separate exists-check op.
+      const result = await initProject(activeFolder, true);
+      notify(result.message, result.success ? 'positive' : 'negative');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Impossible d'initialiser le projet.", 'negative');
+    } finally {
+      setInitializing(false);
+    }
+  }, [activeFolder, notify]);
+
   return (
     <div
       className="flex flex-col"
@@ -83,7 +110,31 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
         >
           {opening ? '…' : '📂 Ouvrir un dossier'}
         </button>
+        <button
+          id="oa-init-project-btn"
+          onClick={handleInitProject}
+          disabled={initializing}
+          className="mt-2 w-full rounded text-xs text-gray-400 hover:text-gray-200 disabled:opacity-60"
+        >
+          {initializing ? 'Analyse…' : '⚡ Init projet'}
+        </button>
       </div>
+      {initConfirm && activeFolder && (
+        <Modal onClose={() => setInitConfirm(false)}>
+          <div className="mb-2 text-sm font-bold text-gray-200">
+            Créer ou remplacer OPENAGENT.md à partir de l’analyse de ce dossier ?
+          </div>
+          <div className="mb-3 break-all font-mono text-xs text-gray-500">{activeFolder}</div>
+          <div className="flex gap-2">
+            <button id="oa-init-project-confirm-btn" onClick={() => void confirmInitProject()} className="rounded bg-purple-700 px-3 py-1.5 text-xs text-white hover:bg-purple-600">
+              Confirmer
+            </button>
+            <button id="oa-init-project-cancel-btn" onClick={() => setInitConfirm(false)} className="rounded bg-gray-800 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700">
+              Annuler
+            </button>
+          </div>
+        </Modal>
+      )}
       {gitInfo && (
         <div
           data-testid="oa-git-status"

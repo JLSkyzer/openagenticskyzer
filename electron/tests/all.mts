@@ -60,3 +60,5 @@ import './hf-token.test.mts';
 import './worker-hf-token.test.mts';
 import './data-dir.test.mts';
 import './worker-data-dir.test.mts';
+import './project-analyzer.test.mts';
+import './worker-project-analyzer.test.mts';

@@ -94,17 +94,38 @@
       "node_modules/node-llama-cpp/**/*",
       "node_modules/@node-llama-cpp/win-x64/**/*",
       "node_modules/@node-llama-cpp/win-x64-vulkan/**/*",
-      "node_modules/@node-llama-cpp/win-arm64/**/*"
+      "node_modules/@node-llama-cpp/win-arm64/**/*",
+      "node_modules/@huggingface/transformers/**/*",
+      "node_modules/@huggingface/jinja/**/*",
+      "node_modules/@huggingface/tokenizers/**/*",
+      "node_modules/onnxruntime-common/**/*",
+      "node_modules/onnxruntime-node/**/*",
+      "!node_modules/onnxruntime-node/bin/napi-v6/darwin/**/*",
+      "!node_modules/onnxruntime-node/bin/napi-v6/linux/**/*",
+      "!node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**/*",
+      "node_modules/sharp/**/*",
+      "node_modules/@img/sharp-win32-x64/**/*",
+      "node_modules/@img/colour/**/*",
+      "node_modules/detect-libc/**/*",
+      "node_modules/semver/**/*"
     ],
     "asarUnpack": [
       "node_modules/node-llama-cpp/**/*",
-      "node_modules/@node-llama-cpp/**/*"
+      "node_modules/@node-llama-cpp/**/*",
+      "node_modules/onnxruntime-node/**/*",
+      "node_modules/onnxruntime-common/**/*",
+      "node_modules/@img/sharp-win32-x64/**/*",
+      "node_modules/sharp/**/*",
+      "node_modules/@img/colour/**/*",
+      "node_modules/detect-libc/**/*",
+      "node_modules/semver/**/*"
     ],
     "win": {
       "target": "dir"
     }
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.0",
     "node-llama-cpp": "^3.21.1"
   }
 }

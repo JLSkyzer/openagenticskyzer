@@ -2774,7 +2774,7 @@ Décision utilisateur explicite : porter `index_status`, jusqu'ici hors scope. R
 
 **Découpage en tâches (TDD, RED-first, preuve worker réelle + preuve Electron réelle par tâche, comme tous les lots précédents) :**
 
-- [ ] Tâche 89 — Module pur chunking + similarité cosinus (`core/semantic-chunk.mts`) : port fidèle de `_chunk` (800/100, fenêtre glissante), `cosineSimilarity(a,b)`.
+- [x] Tâche 89 — Module pur chunking + similarité cosinus (`core/semantic-chunk.mts`) : port fidèle de `_chunk` (800/100, fenêtre glissante), `cosineSimilarity(a,b)`. RED-first (6 tests) : fenêtre glissante 800/100 exacte, chunks vides éliminés, texte court retourné tel quel, similarité cosinus (identique=1, orthogonal=0, opposé=-1), dimensions différentes refusées, vecteur nul → 0 sans division par zéro. 6/6 verts dès la première exécution. `tsc --noEmit` propre.
 - [ ] Tâche 90 — Module d'embeddings local (`core/embeddings.mts`) : `@huggingface/transformers`, modèle `Xenova/all-MiniLM-L6-v2`, backend WASM si possible, singleton paresseux, cache du modèle téléchargé une fois. Spike de faisabilité AVANT d'écrire les tests (vérifier concrètement que le modèle se charge et embed en Node pur, backend choisi).
 - [ ] Tâche 91 — Store vectoriel JSON + pipeline d'indexation (`core/semantic-index.mts`) : scan fichiers (mêmes extensions/exclusions que Python), chunking, embedding par lots, upsert avec purge des chunks obsolètes (fix du bug), callback de progression, `searchCollection(store, query, n)`.
 - [ ] Tâche 92 — Base de connaissances globale (`core/knowledge-base.mts`) : `addToKnowledge`/`listSources`/`removeSource`/`searchKnowledge`, réutilise le chunking/embeddings/store de la Tâche 91.

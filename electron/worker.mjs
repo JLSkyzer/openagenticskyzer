@@ -26,6 +26,8 @@ import { gitStatus } from './core/git-status.mts';
 import { testHfToken } from './core/hf-token.mts';
 import { migrateDataDir, resolveDataHome } from './core/data-dir.mts';
 import { initializeProject } from './core/project-analyzer.mts';
+import { McpConfigStore } from './core/mcp-config.mts';
+import { mcpTools } from './core/mcp-client.mts';
 
 // OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
 // instead of the real user's ~/.openagent — never rely on the default outside tests, and it
@@ -42,6 +44,7 @@ const conversations = new Conversations();
 const folders = new FoldersService(dataHome);
 const ggufLibrary = new GgufLibrary(dataHome);
 const promptLibrary = new PromptLibrary(dataHome);
+const mcpConfig = new McpConfigStore(dataHome);
 // Wipes conversation data of projects unused beyond session_retention_days (0 = keep forever).
 // Run once at startup, before the worker starts taking requests — mirrors the previous NiceGUI
 // app's own synchronous startup cleanup. Never let a corrupt config/folders file crash the worker.
@@ -57,7 +60,7 @@ const sessionAllowed = new Set();
 const allowKey = (folder, tool) => `${folder}\0${tool}`;
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'migrate-data-dir', 'init-project', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-remove', 'shutdown']);
 
 const BASE_SYSTEM_PROMPT = [
   'Tu es openagent, un assistant de développement qui travaille dans le dossier du projet actif avec les outils fournis :',
@@ -104,12 +107,17 @@ async function runCompaction(compactionId, folder, branchId, before, connection,
  * never drift apart. */
 async function registerTools(folder) {
   const effective = await settings.effective(folder);
+  const { tools: mcpDiscovered, errors: mcpErrors } = await mcpTools(await mcpConfig.list());
+  // A broken/unreachable MCP server never blocks the turn or surfaces to the chat — same
+  // server-log-only isolation agent.py's own logging.getLogger("openagentic.mcp").warning had.
+  for (const error of mcpErrors) console.error(`[mcp] ${error}`);
   const tools = [
     ...await workspaceTools(folder, effective.ignored_patterns),
     ...await memoryTools(folder, dataHome),
     ...await gitTools(folder),
     ...await shellTools(folder),
     ...await webTools(),
+    ...mcpDiscovered,
   ];
   return { effective, tools };
 }
@@ -256,6 +264,9 @@ async function handle(message) {
     if (op === 'test-hf-token') result = await testHfToken(payload.token, process.env.OPENAGENT_HF_ENDPOINT ? { baseUrl: process.env.OPENAGENT_HF_ENDPOINT } : undefined);
     if (op === 'migrate-data-dir') result = await migrateDataDir(dataHome, defaultHome, payload.newDir);
     if (op === 'init-project') result = await initializeProject(payload.folder, Boolean(payload.overwrite));
+    if (op === 'mcp-list') result = await mcpConfig.list();
+    if (op === 'mcp-add') result = await mcpConfig.add(payload.commandLine);
+    if (op === 'mcp-remove') result = await mcpConfig.remove(payload.id);
     if (op === 'list_folders') result = await folders.list();
     if (op === 'activate_folder') {
       const list = await folders.recordOpened(payload.folder);

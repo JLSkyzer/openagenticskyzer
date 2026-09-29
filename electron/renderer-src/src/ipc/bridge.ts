@@ -136,6 +136,17 @@ export function initProject(folder: string, overwrite: boolean): Promise<Project
   return request('init-project', { folder, overwrite });
 }
 
+export interface McpServerConfig { id: string; command: string; args: string[]; added_at: string }
+export function listMcpServers(): Promise<McpServerConfig[]> {
+  return request('mcp-list');
+}
+export function addMcpServer(commandLine: string): Promise<McpServerConfig[]> {
+  return request('mcp-add', { commandLine });
+}
+export function removeMcpServer(id: string): Promise<McpServerConfig[]> {
+  return request('mcp-remove', { id });
+}
+
 export function listFolders(): Promise<FolderListItem[]> {
   return request('list_folders');
 }

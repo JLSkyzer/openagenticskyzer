@@ -1,0 +1,121 @@
+// Run with Electron, not node. Proves the "Outils" tab's MCP server list end to end through the
+// real UI and the REAL worker.mjs mcp-list/mcp-add/mcp-remove ops (real mcp.json on disk). The
+// deeper proof — a real agent turn actually spawning a real MCP server process and calling one of
+// its tools — already exists at the worker level in tests/worker-mcp.test.mts (a real fake stdio
+// MCP server, no mocking of the protocol); this visual test does not repeat that here, only the
+// UI plumbing around the config list.
+const { app, BrowserWindow, ipcMain } = require('electron');
+app.disableHardwareAcceleration();
+app.on('window-all-closed', () => {});
+const { Worker } = require('node:worker_threads');
+const path = require('node:path');
+const { mkdtemp, rm, mkdir, writeFile, readFile } = require('node:fs/promises');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
+const assert = require('node:assert/strict');
+const { capturePng } = require('./capture-helper.cjs');
+
+async function waitFor(fn, { timeout = 15000, interval = 100, what = 'condition' } = {}) {
+  const start = Date.now();
+  for (;;) {
+    const value = await fn();
+    if (value) return value;
+    if (Date.now() - start > timeout) throw new Error(`waitFor timed out: ${what}`);
+    await new Promise(resolve => setTimeout(resolve, interval));
+  }
+}
+function flush() {
+  return Promise.all([
+    new Promise(resolve => process.stdout.write('', resolve)),
+    new Promise(resolve => process.stderr.write('', resolve)),
+  ]);
+}
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+app.whenReady().then(async () => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-mcp-visual-'));
+  const home = join(root, 'home');
+  await mkdir(home);
+
+  const screenshotDir = process.env.OPENAGENT_MCP_SCREENSHOT_DIR || home;
+  let win;
+  let worker;
+  try {
+    worker = new Worker(path.join(__dirname, '..', 'worker.mjs'), { env: { ...process.env, OPENAGENT_HOME: home } });
+    const pending = new Map();
+    worker.on('message', message => {
+      const done = pending.get(message.id);
+      if (done) { pending.delete(message.id); message.ok ? done.resolve(message.result) : done.reject(new Error(message.error)); }
+      win?.webContents.send('backend-message', message);
+    });
+    ipcMain.handle('backend-request', (_event, request) => {
+      const id = `${Date.now()}-${Math.random()}`;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        worker.postMessage({ ...request, id });
+      });
+    });
+
+    win = new BrowserWindow({
+      show: true, opacity: 0, focusable: false, width: 1080, height: 680,
+      webPreferences: { preload: path.join(__dirname, '..', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    await win.loadFile(path.join(__dirname, '..', 'renderer-dist', 'index.html'));
+    await pause(500);
+
+    const js = async code => {
+      try { return await win.webContents.executeJavaScript(code); }
+      catch (error) { throw new Error(`page script failed: ${code.replace(/\s+/g, ' ').slice(0, 160)} — ${error.message.split('\n')[0]}`); }
+    };
+    const q = selector => JSON.stringify(selector);
+    const click = selector => js(`document.querySelector(${q(selector)}).click()`);
+    const exists = selector => js(`!!document.querySelector(${q(selector)})`);
+    const text = selector => js(`document.querySelector(${q(selector)})?.textContent || ''`);
+    const setInput = (selector, value) => js(`(() => {
+      const el = document.querySelector(${q(selector)});
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(value)});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+
+    await click('#oa-settings-btn');
+    await waitFor(() => js(`!!document.querySelector('[data-testid="oa-settings-tab"][data-tab="tools"]')`), { what: 'Outils tab exists' });
+    await click('[data-testid="oa-settings-tab"][data-tab="tools"]');
+    await waitFor(() => exists('[data-testid="oa-mcp-empty"]'), { what: 'empty MCP list shown initially' });
+    await writeFile(join(screenshotDir, 'mcp-1-empty.png'), await capturePng(win));
+
+    // ── A real click adds a real server definition, persisted to a real mcp.json ──────────────────
+    await setInput('[data-testid="oa-mcp-command-input"]', 'npx -y @modelcontextprotocol/server-filesystem /tmp');
+    await click('#oa-mcp-add-btn');
+    await waitFor(async () => (await js(`document.querySelectorAll('[data-testid="oa-mcp-entry"]').length`)) === 1, { what: 'server appears in the list' });
+    assert.match(await text('[data-testid="oa-mcp-entry"]'), /npx.*server-filesystem/);
+    const onDisk = JSON.parse(await readFile(join(home, 'mcp.json'), 'utf8'));
+    assert.equal(onDisk.length, 1);
+    assert.equal(onDisk[0].command, 'npx');
+    await writeFile(join(screenshotDir, 'mcp-2-added.png'), await capturePng(win));
+
+    // ── A real click removes it, for real, from disk too ────────────────────────────────────────────
+    await click('[data-testid="oa-mcp-remove"]');
+    await waitFor(() => exists('[data-testid="oa-mcp-empty"]'), { what: 'list empty again after removal' });
+    const afterRemoval = JSON.parse(await readFile(join(home, 'mcp.json'), 'utf8'));
+    assert.equal(afterRemoval.length, 0);
+
+    process.stdout.write(`PASS mcp tab: real add/remove through the real worker, real mcp.json (Electron ${process.versions.electron})\n`);
+    process.stdout.write(`Screenshots: ${screenshotDir}\n`);
+  } catch (error) {
+    try {
+      await writeFile(join(screenshotDir, 'mcp-failure.png'), await capturePng(win));
+      process.stderr.write(`Page text at failure: ${JSON.stringify((await win.webContents.executeJavaScript('document.body.textContent')).slice(0, 700))}\n`);
+    } catch (diagnosticError) {
+      process.stderr.write(`(diagnostics failed: ${diagnosticError.message})\n`);
+    }
+    throw error;
+  } finally {
+    win?.destroy();
+    worker?.terminate();
+    if (!process.env.OPENAGENT_MCP_SCREENSHOT_DIR) await rm(root, { recursive: true, force: true });
+  }
+}).then(() => flush()).then(() => app.exit(0)).catch(async error => {
+  process.stderr.write(`FAIL mcp visual: ${error.stack || error}\n`);
+  await flush();
+  app.exit(1);
+});

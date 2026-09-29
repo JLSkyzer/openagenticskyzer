@@ -6,7 +6,8 @@ import { DangerTab } from './DangerTab';
 import { FolderTab } from './FolderTab';
 import { GeneralTab } from './GeneralTab';
 import { PermissionsTab } from './PermissionsTab';
-import { Placeholder, Section } from './parts';
+import { ToolsTab } from './ToolsTab';
+import { Section } from './parts';
 import { useSettingsDraft } from './useSettingsDraft';
 
 type TabId = 'general' | 'appearance' | 'context' | 'permissions' | 'tools' | 'folder' | 'danger';
@@ -53,13 +54,12 @@ export function SettingsDialog({ activeFolder, onClose, onHistoryCleared, onFold
     { id: 'danger', label: '⚠️ Danger' },
   ];
 
-  // Tabs without controls yet get theirs in the following tasks of this lot.
   const panels: Record<TabId, ReactNode> = {
     general: <GeneralTab draft={draft} />,
     appearance: <AppearanceTab />,
     context: <ContextTab draft={draft} activeFolder={activeFolder} />,
     permissions: <PermissionsTab draft={draft} />,
-    tools: <TabStub title="Outils" badge="EXTENSIONS" />,
+    tools: <ToolsTab />,
     folder: <FolderTab activeFolder={activeFolder} />,
     danger: (
       <DangerTab
@@ -134,15 +134,6 @@ export function SettingsDialog({ activeFolder, onClose, onHistoryCleared, onFold
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-function TabStub({ title, badge }: { title: string; badge?: string }) {
-  return (
-    <div className="flex flex-col gap-3">
-      <Section title={title} badge={badge} />
-      <Placeholder text="Les contrôles de cet onglet arrivent avec les prochaines tâches du lot — à venir." />
     </div>
   );
 }

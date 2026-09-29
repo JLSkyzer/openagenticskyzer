@@ -67,3 +67,4 @@ import './mcp-client.test.mts';
 import './worker-mcp.test.mts';
 import './semantic-chunk.test.mts';
 import './embeddings.test.mts';
+import './semantic-index.test.mts';

@@ -28,6 +28,7 @@ import { migrateDataDir, resolveDataHome } from './core/data-dir.mts';
 import { initializeProject } from './core/project-analyzer.mts';
 import { McpConfigStore } from './core/mcp-config.mts';
 import { mcpTools } from './core/mcp-client.mts';
+import { searchTools } from './core/search-tools.mts';
 
 // OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
 // instead of the real user's ~/.openagent — never rely on the default outside tests, and it
@@ -117,6 +118,7 @@ async function registerTools(folder) {
     ...await gitTools(folder),
     ...await shellTools(folder),
     ...await webTools(),
+    ...await searchTools(folder, dataHome),
     ...mcpDiscovered,
   ];
   return { effective, tools };

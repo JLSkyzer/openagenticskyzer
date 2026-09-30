@@ -30,7 +30,7 @@ let loaded: Loaded | null = null;
 // beats a hard refusal. Floored at 4096 for a small model, left at the model's own choice (`undefined`) once
 // it is already at least that — never lowered, and never pushed past a firm ceiling that could exhaust a
 // small GPU's VRAM.
-const MIN_CONTEXT = 8192;
+const MIN_CONTEXT = 16384;
 function contextSizeFor(trainContextSize: number | undefined): number | undefined {
   return trainContextSize === undefined || trainContextSize >= MIN_CONTEXT ? undefined : MIN_CONTEXT;
 }

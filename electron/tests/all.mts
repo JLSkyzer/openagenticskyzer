@@ -69,3 +69,5 @@ import './semantic-chunk.test.mts';
 import './embeddings.test.mts';
 import './semantic-index.test.mts';
 import './knowledge-base.test.mts';
+import './search-tools.test.mts';
+import './worker-search-tools.test.mts';

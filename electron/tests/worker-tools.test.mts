@@ -80,7 +80,7 @@ async function setup(t: any, steps: Step[] = [{ text: 'ok' }], extraEnv: Record<
 const sh = async (args: string[], cwd: string) => (await run('git', args, { cwd })).stdout.trim();
 
 // ── tools and prompt reach the model ──────────────────────────────────────────────
-const READ_TOOLS = ['read_file', 'view_file', 'list_dir', 'grep_file', 'glob_files', 'grep_codebase', 'read_memory', 'git_status', 'git_diff', 'git_diff_staged', 'git_log', 'git_blame', 'git_branch_list'];
+const READ_TOOLS = ['read_file', 'view_file', 'list_dir', 'grep_file', 'glob_files', 'grep_codebase', 'read_memory', 'git_status', 'git_diff', 'git_diff_staged', 'git_log', 'git_blame', 'git_branch_list', 'semantic_search', 'knowledge_search'];
 const OTHER_TOOLS = ['create_file', 'edit_file', 'create_dir', 'delete_file', 'delete_dir', 'save_memory', 'forget_memory', 'git_add', 'git_commit', 'git_checkout', 'git_create_branch', 'git_stash', 'git_stash_pop', 'git_push', 'git_pull', 'run_command', 'fetch_url', 'internet_search'];
 
 test('the model is offered every tool by default, and only the read tools in strict mode', async t => {

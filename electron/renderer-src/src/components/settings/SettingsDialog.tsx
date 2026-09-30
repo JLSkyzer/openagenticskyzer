@@ -59,7 +59,7 @@ export function SettingsDialog({ activeFolder, onClose, onHistoryCleared, onFold
     appearance: <AppearanceTab />,
     context: <ContextTab draft={draft} activeFolder={activeFolder} />,
     permissions: <PermissionsTab draft={draft} />,
-    tools: <ToolsTab />,
+    tools: <ToolsTab activeFolder={activeFolder} />,
     folder: <FolderTab activeFolder={activeFolder} />,
     danger: (
       <DangerTab

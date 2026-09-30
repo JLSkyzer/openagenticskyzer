@@ -1,22 +1,26 @@
 import { useEffect, useState } from 'react';
-import { addMcpServer, listMcpServers, removeMcpServer, type McpServerConfig } from '../../ipc/bridge';
+import { addMcpServer, listMcpServers, listPlugins, removeMcpServer, type McpServerConfig, type PluginListResult } from '../../ipc/bridge';
 import { Group, Section } from './parts';
 import { useToast } from '../../state/ToastProvider';
 
 const button = 'self-start rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs text-gray-300';
 
-// Mirrors settings.py::_tab_tools' "Serveurs MCP (stdio)" group — a full command line typed in
-// one field, split into command + args, exactly like add_server. The "Plugins Python" section of
-// the reference implementation has no Node equivalent and is deliberately not ported (see
-// tasks/todo.md, Tâche 86).
-export function ToolsTab() {
+// Mirrors settings.py::_tab_tools' "Plugins Python" (now a real Node loader, see
+// core/plugin-loader.mts and tasks/todo.md's plugin-system lot) and "Serveurs MCP (stdio)"
+// groups — a full command line typed in one field, split into command + args, exactly like
+// add_server.
+export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
   const [servers, setServers] = useState<McpServerConfig[]>([]);
   const [commandLine, setCommandLine] = useState('');
   const [adding, setAdding] = useState(false);
+  const [plugins, setPlugins] = useState<PluginListResult>({ tools: [], errors: [] });
   const { notify } = useToast();
 
   const refresh = () => listMcpServers().then(setServers).catch(() => {});
   useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    listPlugins(activeFolder).then(setPlugins).catch(() => setPlugins({ tools: [], errors: [] }));
+  }, [activeFolder]);
 
   const handleAdd = async () => {
     const value = commandLine.trim();
@@ -41,6 +45,32 @@ export function ToolsTab() {
     <div className="flex flex-col gap-5">
       <div>
         <Section title="Outils et intégrations" badge="EXTENSIONS" />
+        <Group>
+          <div className="flex flex-col gap-2 px-4 py-3">
+            <span className="text-xs font-medium text-gray-300">Plugins</span>
+            <span className="text-xs text-gray-600">
+              Fichiers .mjs/.mts déposés dans ~/.openagent/tools ou tools/ du projet — chargés au démarrage de chaque tour de l'agent.
+            </span>
+            {plugins.tools.length === 0 ? (
+              <span data-testid="oa-plugin-empty" className="text-xs text-gray-600">
+                Aucun plugin chargé.
+              </span>
+            ) : (
+              <div className="flex flex-col gap-1">
+                {plugins.tools.map(name => (
+                  <span key={name} data-testid="oa-plugin-entry" className="font-mono text-xs text-green-400">
+                    🧩 {name}
+                  </span>
+                ))}
+              </div>
+            )}
+            {plugins.errors.map(error => (
+              <span key={error} data-testid="oa-plugin-error" className="font-mono text-xs text-yellow-600">
+                ⚠️ {error}
+              </span>
+            ))}
+          </div>
+        </Group>
         <Group>
           <div className="flex flex-col gap-2 px-4 py-3">
             <span className="text-xs font-medium text-gray-300">Serveurs MCP (stdio)</span>

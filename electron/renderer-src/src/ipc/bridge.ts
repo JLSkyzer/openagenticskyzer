@@ -163,6 +163,11 @@ export function initProject(folder: string, overwrite: boolean): Promise<Project
   return request('init-project', { folder, overwrite });
 }
 
+export interface PluginListResult { tools: string[]; errors: string[] }
+export function listPlugins(folder: string | null): Promise<PluginListResult> {
+  return request('plugin-list', { folder });
+}
+
 export interface McpServerConfig { id: string; command: string; args: string[]; added_at: string }
 export function listMcpServers(): Promise<McpServerConfig[]> {
   return request('mcp-list');

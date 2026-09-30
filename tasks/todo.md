@@ -2839,4 +2839,37 @@ Décision utilisateur explicite : porter `index_status`, jusqu'ici hors scope. R
   Audit préalable (avant de repackager, pas après) : `git diff a46685f..e1a5b03 -- package.json` (Tâches 93-95) ne montre qu'une ligne ajoutée (`"test:knowledge"` dans `scripts`) — aucune nouvelle dépendance de production, aucun nouveau fichier `.cjs`/`.mjs` à la racine d'`electron/` (les 3 nouveaux modules `core/search-tools.mts`/`core/semantic-index.mts` (Tâche 91, déjà couvert)/`core/knowledge-base.mts` vivent tous sous `core/**/*`, déjà présent dans `build.files` — aucune entrée individuelle à ajouter, contrairement à `tray-icon.cjs` en Tâche 82). Le risque de récidive de la leçon du 2026-09-30 était donc structurellement nul pour ce lot — vérifié par lecture du diff, pas supposé.
 
   **Vérification réelle effectuée quand même** (le plan l'exige, et « aucun risque identifié » n'est pas la même chose que « vérifié ») : `npm run package:win` (build renderer + `electron-builder --win dir`) réussi, `npm run test:package` (exe packagé réel, hors `npm start`) réussi — l'app démarre et charge la vraie UI. Allé plus loin, avec la même rigueur que la Tâche 90 (pas seulement « l'app s'ouvre ») : script de vérification `ELECTRON_RUN_AS_NODE=1` exécuté contre le `app.asar` réel du build packagé, import réel de `core/knowledge-base.mts`/`core/search-tools.mts`/`core/semantic-index.mts` depuis l'intérieur de l'archive, puis exécution réelle de bout en bout : `addToKnowledge` (1 vrai chunk embeddé), `indexFolder` sur un vrai fichier, puis le vrai outil agent `semantic_search` exécuté et son texte de sortie réel (`[a.py] (score: 0.40)\ndef a():...`) — confirme que les Tâches 93-95 fonctionnent réellement depuis le paquet, pas seulement en développement.
-- [ ] Tâche 97 — Vérification finale du lot, mise à jour lessons.md, bilan honnête.
+- [x] Tâche 97 — Vérification finale du lot, mise à jour lessons.md, bilan honnête.
+
+  **Vérification finale effectuée** : `tests/all.mts` **511/511 passent** (aucune régression sur l'ensemble du lot, Tâches 89-96), `tsc --noEmit` propre sur `tsconfig.core.json` (mêmes 5 erreurs préexistantes sans rapport, antérieures à ce lot) et `renderer-src/tsconfig.json` (aucune erreur), `npm audit --omit=dev` : **0 vulnérabilité**, `npm run package:win && npm run test:package` + vérification `ELECTRON_RUN_AS_NODE` réelle contre `app.asar` (Tâche 96) : le lot fonctionne réellement depuis le paquet, pas seulement en développement.
+
+### Bilan du lot — `index_status` (recherche sémantique de code + base de connaissances, ChromaDB → local sans Python) (2026-09-30 → 2026-10-01)
+
+**Ce qui a été livré dans ce lot (Tâches 89-96), chacune avec RED-first, preuve worker réelle et preuve Electron réelle :**
+- Tâche 89 — chunking (fenêtre 800/100, port fidèle de `_chunk`) + similarité cosinus, modules purs testés unitairement.
+- Tâche 90 — embeddings locaux réels (`@huggingface/transformers`, `Xenova/all-MiniLM-L6-v2`, 384 dimensions), spike de faisabilité qui a infirmé l'hypothèse WASM initiale (device natif `onnxruntime-node` retenu), packaging natif complet (`sharp` + ses dépendances transitives incluses) prouvé sur l'exe réel.
+- Tâche 91 — store vectoriel JSON par projet (`<projet>/.openagent/index/codebase.json`) + pipeline d'indexation, remplacement intégral du store à chaque appel (corrige nativement la fuite de chunks obsolètes de l'original Python, sans logique de purge séparée).
+- Tâche 92 — base de connaissances globale (`~/.openagent/knowledge/knowledge.json`), remplacement ciblé par source (pas un remplacement intégral, puisque les sources s'ajoutent une à une) — corrige la même classe de fuite que Python sur son propre bug d'upsert sans purge.
+- Tâche 93 — outils agent `semantic_search`/`knowledge_search`, même contrat texte que `index_tools.py`, câblés dans `registerTools`.
+- Tâche 94 — déclenchement automatique de l'indexation (activation de dossier + pré-chauffage au démarrage si `restore_last_folder`), ops IPC `index-status`, affichage réel dans la barre de contexte avec un vrai état d'erreur (amélioration vs. Python, qui retombe silencieusement sur `""`).
+- Tâche 95 — base de connaissances RÉELLE et fonctionnelle dans la sidebar (sélecteur natif, ajout/liste/suppression), contrairement au bouton mort de `sidebar.py` (vérifié : `add_to_knowledge` n'y est jamais appelé).
+- Tâche 96 — packaging vérifié (aucun changement nécessaire, confirmé par audit du diff + vérification réelle `ELECTRON_RUN_AS_NODE`).
+
+**Bugs réels de l'original Python corrigés (pas reproduits), chacun documenté à sa tâche :**
+- Fuite de vecteurs obsolètes dans `index_folder()` (jamais de `collection.delete()` pour un fichier supprimé/raccourci) — Tâche 91.
+- Même classe de fuite dans `add_to_knowledge()` (upsert par id déterministe, jamais de purge) — Tâche 92.
+- État d'index indiscernable entre « jamais indexé » et « erreur » (`state.index_status` retombe sur `""` dans les deux cas) — Tâche 94.
+- Bouton « + Ajouter un document » de la sidebar totalement mort (jamais câblé à `add_to_knowledge`) — Tâche 95.
+
+**Écarts voulus vs. Python, tous documentés à leur tâche (pas cachés) :**
+- Pas de ChromaDB ni de dépendance vectorielle externe : store JSON + recherche cosinus brute-force en mémoire (volumes réalistes largement dans le budget).
+- Le pré-chauffage de l'index au démarrage (`restore_last_folder`) n'auto-sélectionne PAS le dossier comme actif dans le renderer — cette fonctionnalité de restauration complète n'existe pas du tout côté Electron aujourd'hui (vérifié : `App.tsx`/`Sidebar.tsx` n'appellent jamais `activate_folder` au montage), c'est un écart pré-existant distinct d'`index_status`, jamais signalé par l'audit des 9 écarts d'origine. Non résolu ici : élargir le scope aurait dépassé ce lot.
+- La section « Base de connaissances » de la sidebar est placée hors de la zone défilante (reste visible en bas), contrairement à Python qui la fait défiler avec l'historique des dossiers.
+
+**Limite connue, documentée, jamais cachée** : l'appariement dossier↔événement d'indexation (`event.folder` résolu côté worker vs `activeFolder` côté renderer) repose sur une égalité de chaîne qui coïncide dans l'usage normal (confirmé par les tests visuels) mais pourrait théoriquement diverger pour un dossier ouvert avec une casse différente de celle stockée dans `folders.json` — sans conséquence aujourd'hui puisque le pré-chauffage au démarrage ne sélectionne de toute façon aucun dossier actif.
+
+**2 leçons réelles consignées dans `tasks/lessons.md` pendant ce lot** (au moment même où elles ont été trouvées, pas différées) :
+1. Tout ajout d'outil agent grossit le prompt système envoyé à TOUS les fournisseurs — y compris les modèles locaux à petit contexte dont le plancher est une constante fixe ; toujours relancer la suite COMPLÈTE après un ajout d'outil, jamais seulement les nouveaux tests.
+2. Tout comportement ajouté au DÉMARRAGE du worker doit être audité contre tous les tests qui spawnent `new Worker(worker.mjs)` sans `OPENAGENT_HOME` isolé — un seul test non isolé suffit à faire fuiter un effet de bord vers la machine réelle du développeur (trouvé et corrigé avant qu'aucune donnée réelle ne soit écrite).
+
+**Ce que cette vérification ne couvre PAS** (honnêtement, pas caché) : aucun nouvel audit indépendant n'a été relancé pour chercher d'AUTRES écarts NiceGUI → Electron au-delà d'`index_status` lui-même — ce lot répond précisément à la limite assumée listée à la fin du lot précédent (Tâche 88), pas à un audit complet renouvelé. La fonctionnalité de restauration complète du dernier dossier au démarrage (sélection + affichage, pas seulement le pré-chauffage de l'index) reste un écart réel et non résolu, à traiter dans un lot séparé si besoin.

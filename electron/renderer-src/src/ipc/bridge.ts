@@ -6,6 +6,8 @@ import type {
   ConnectionPatch,
   ConnectionSnapshot,
   FolderListItem,
+  IndexEvent,
+  IndexState,
   ProjectSettings,
   PromptEntry,
 } from './types';
@@ -52,6 +54,14 @@ export function decidePermission(
 
 export function onAgentEvent(callback: (event: AgentEvent) => void): () => void {
   return window.openagent.onAgentEvent(callback);
+}
+
+export function onIndexEvent(callback: (event: IndexEvent) => void): () => void {
+  return window.openagent.onIndexEvent(callback);
+}
+
+export function getIndexStatus(folder: string): Promise<{ state: IndexState; current?: number; total?: number; message?: string }> {
+  return request('index-status', { folder });
 }
 
 export interface GlobalSettings {
@@ -254,6 +264,8 @@ export type {
   ConnectionPatch,
   ConnectionSnapshot,
   FolderListItem,
+  IndexEvent,
+  IndexState,
   ProjectSettings,
   PromptEntry,
   ProviderName,

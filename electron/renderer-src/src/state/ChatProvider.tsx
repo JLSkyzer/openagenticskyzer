@@ -5,15 +5,18 @@ import {
   forkBranch,
   getConnection,
   getGlobalSettings,
+  getIndexStatus,
   getMessages,
   listBranches,
   onAgentEvent,
+  onIndexEvent,
   onSettingsChanged,
   sendMessage,
   stop,
   type AgentEvent,
   type Attachment,
   type ChatMessage,
+  type IndexState,
 } from '../ipc/bridge';
 import { canForkAt, currentBranchLabel, nextBranchLabel } from './branches';
 import { computeContext, shouldAutoCompact, type ContextUsage } from './context';
@@ -54,6 +57,9 @@ interface ChatContextValue {
   context: { usage: ContextUsage; settings: ContextSettings };
   // Summarise the conversation on screen (context_bar.py::trigger_compact). `auto` is the attempt
   // made by the app itself after a turn: it stays silent when there is simply nothing to summarise.
+  // index_status (semantic search) for the active folder, shown in the context bar next to the
+  // token gauge — real events from the worker's automatic indexing (Tâche 94), not polled.
+  indexStatus: { state: IndexState; current?: number; total?: number; message?: string };
   compact(options?: { auto?: boolean }): Promise<void>;
   send(text: string, attachments?: Attachment[]): Promise<void>;
   stopRun(): Promise<void>;
@@ -157,6 +163,28 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
       .catch(() => { /* keep what is shown: a gauge that cannot read its settings must not break the chat */ });
     return () => { cancelled = true; };
   }, [activeFolder, settingsVersion]);
+
+  // index_status: read the current state once per folder switch (in case indexing already
+  // finished or is mid-flight before this mount), then keep it live from the worker's own events —
+  // filtered to the active folder, since the worker may be indexing a DIFFERENT one in the background
+  // (e.g. the startup pre-warm of the last-used folder while the user has since opened another).
+  const [indexStatus, setIndexStatus] = useState<{ state: IndexState; current?: number; total?: number; message?: string }>({ state: 'idle' });
+  useEffect(() => {
+    setIndexStatus({ state: 'idle' });
+    if (!activeFolder) return;
+    let cancelled = false;
+    getIndexStatus(activeFolder)
+      .then(status => { if (!cancelled) setIndexStatus(status); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [activeFolder]);
+  useEffect(
+    () =>
+      onIndexEvent(event => {
+        if (event.folder === activeFolderRef.current) setIndexStatus(event);
+      }),
+    [],
+  );
 
   // Notifies App of the active branch's id/label whenever it changes, so TopBar (outside this
   // provider) can show "Depuis : <branche>" in the export menu without needing useChat() itself.
@@ -329,7 +357,7 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
 
   return (
     <ChatContext.Provider
-      value={{ state, activeFolder, context: { usage, settings: contextSettings }, compact, send, stopRun, decide, forkFrom, switchBranch, editMessage, draft, regenerate, closeArtifact, dismissNotice }}
+      value={{ state, activeFolder, context: { usage, settings: contextSettings }, indexStatus, compact, send, stopRun, decide, forkFrom, switchBranch, editMessage, draft, regenerate, closeArtifact, dismissNotice }}
     >
       {children}
     </ChatContext.Provider>

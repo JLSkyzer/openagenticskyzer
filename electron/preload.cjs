@@ -13,4 +13,11 @@ contextBridge.exposeInMainWorld('openagent', {
     ipcRenderer.on('backend-message', listener);
     return () => ipcRenderer.removeListener('backend-message', listener);
   },
+  onIndexEvent: (callback) => {
+    const listener = (_event, message) => {
+      if (message?.type === 'event' && message.event === 'index') callback(message);
+    };
+    ipcRenderer.on('backend-message', listener);
+    return () => ipcRenderer.removeListener('backend-message', listener);
+  },
 });

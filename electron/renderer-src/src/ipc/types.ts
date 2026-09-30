@@ -108,9 +108,23 @@ export type AgentEvent =
   | { type: 'event'; event: 'agent'; runId: string; kind: 'compacted'; messages: ChatMessage[] }
   | { type: 'event'; event: 'agent'; runId: string; kind: 'compact-failed'; message: string };
 
+// index_status (semantic search): mirrors worker.mjs::postIndexEvent, one per folder. 'error' is a
+// real state the original NiceGUI app never had (it silently fell back to an empty string).
+export type IndexState = 'idle' | 'indexing' | 'ready' | 'error';
+export interface IndexEvent {
+  type: 'event';
+  event: 'index';
+  folder: string;
+  state: IndexState;
+  current?: number;
+  total?: number;
+  message?: string;
+}
+
 export interface OpenAgentBridge {
   request(request: { op: string; payload?: Record<string, unknown> }): Promise<unknown>;
   onAgentEvent(callback: (event: AgentEvent) => void): () => void;
+  onIndexEvent(callback: (event: IndexEvent) => void): () => void;
 }
 
 declare global {

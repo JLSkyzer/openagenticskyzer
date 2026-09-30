@@ -37,6 +37,7 @@
     "test:datadir": "node tests/run-data-dir-visual.cjs",
     "test:projectinit": "node tests/run-project-init-visual.cjs",
     "test:mcp": "node tests/run-mcp-visual.cjs",
+    "test:indexstatus": "node tests/run-index-status-visual.cjs",
     "package:win": "npm run renderer:build && electron-builder --win dir",
     "test:package": "node tests/package-smoke.cjs",
     "test:final-e2e": "node tests/final-e2e.cjs",

@@ -29,6 +29,7 @@ import { initializeProject } from './core/project-analyzer.mts';
 import { McpConfigStore } from './core/mcp-config.mts';
 import { mcpTools } from './core/mcp-client.mts';
 import { searchTools } from './core/search-tools.mts';
+import { indexFolder } from './core/semantic-index.mts';
 
 // OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
 // instead of the real user's ~/.openagent — never rely on the default outside tests, and it
@@ -46,10 +47,45 @@ const folders = new FoldersService(dataHome);
 const ggufLibrary = new GgufLibrary(dataHome);
 const promptLibrary = new PromptLibrary(dataHome);
 const mcpConfig = new McpConfigStore(dataHome);
+// index_status (semantic search): folder (resolved absolute path) -> {state, current?, total?, message?}.
+// state.index_status in the previous NiceGUI app was a single free-form string a background thread
+// updated in place; here it is a real small state machine ('idle'|'indexing'|'ready'|'error') per
+// folder, pushed to the renderer as events — 'error' is a real, distinct state the original never had
+// (it silently fell back to "" on any exception).
+const indexStatus = new Map();
+function postIndexEvent(folder, patch) {
+  const key = resolve(String(folder));
+  const status = { state: 'idle', ...indexStatus.get(key), ...patch };
+  indexStatus.set(key, status);
+  parentPort.postMessage({ type: 'event', event: 'index', folder: key, ...status });
+}
+/** Fire-and-forget: indexes `folder`'s codebase in the background (semantic-index.mts), streaming
+ * progress through the 'index' event. One run at a time per folder — a second trigger while one is
+ * already in flight (e.g. re-activating the same folder) is a harmless no-op, not a queued restart. */
+async function triggerIndexing(folder) {
+  const key = resolve(String(folder));
+  if (indexStatus.get(key)?.state === 'indexing') return;
+  postIndexEvent(folder, { state: 'indexing', current: 0, total: 0, message: undefined });
+  try {
+    await indexFolder(folder, dataHome, (current, total) => postIndexEvent(folder, { state: 'indexing', current, total }));
+    postIndexEvent(folder, { state: 'ready', current: undefined, total: undefined, message: undefined });
+  } catch (error) {
+    postIndexEvent(folder, { state: 'error', current: undefined, total: undefined, message: error instanceof Error ? error.message : 'Erreur interne' });
+  }
+}
 // Wipes conversation data of projects unused beyond session_retention_days (0 = keep forever).
 // Run once at startup, before the worker starts taking requests — mirrors the previous NiceGUI
 // app's own synchronous startup cleanup. Never let a corrupt config/folders file crash the worker.
 await cleanupOldFolders(folders, (await settings.global().catch(() => ({ session_retention_days: 0 }))).session_retention_days).catch(() => {});
+// index_status parity: main.py sets state.active_folder to the last-used folder at startup when
+// restore_last_folder is on, and a background thread indexes it from there. This worker mirrors
+// that for the INDEX only (pre-warms it) — it does not select a folder as "active" in the renderer,
+// which never auto-restores one today (a separate, pre-existing gap: verified Sidebar.tsx/App.tsx
+// never call activate_folder on mount either way, so this is not a regression introduced here).
+if ((await settings.global().catch(() => ({ restore_last_folder: true }))).restore_last_folder) {
+  const [mostRecent] = await folders.list().catch(() => []);
+  if (mostRecent?.path) void triggerIndexing(mostRecent.path);
+}
 const active = new Map();
 // requestId -> { resolve(allow), folder, category } — filled by the confirm() callback
 // passed to runAgent, drained by the 'permission-decision' op below.
@@ -61,7 +97,7 @@ const sessionAllowed = new Set();
 const allowKey = (folder, tool) => `${folder}\0${tool}`;
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-remove', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-remove', 'index-status', 'shutdown']);
 
 const BASE_SYSTEM_PROMPT = [
   'Tu es openagent, un assistant de développement qui travaille dans le dossier du projet actif avec les outils fournis :',
@@ -270,9 +306,11 @@ async function handle(message) {
     if (op === 'mcp-add') result = await mcpConfig.add(payload.commandLine);
     if (op === 'mcp-remove') result = await mcpConfig.remove(payload.id);
     if (op === 'list_folders') result = await folders.list();
+    if (op === 'index-status') result = indexStatus.get(resolve(String(payload.folder))) ?? { state: 'idle' };
     if (op === 'activate_folder') {
       const list = await folders.recordOpened(payload.folder);
       result = { history: await conversations.messages(payload.folder, 'main').catch(() => []), folders: list };
+      void triggerIndexing(payload.folder);
     }
     if (op === 'settings') result = payload.folder ? await settings.project(payload.folder) : await settings.publicGlobal();
     if (op === 'save_settings') {

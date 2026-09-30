@@ -41,6 +41,10 @@ app.whenReady().then(async () => {
   const alpha = join(root, 'alpha');
   await Promise.all([mkdir(home), mkdir(alpha)]);
   await writeFile(join(home, 'folders.json'), JSON.stringify([{ path: alpha, last_used: new Date().toISOString() }]));
+  // This test is about export, not about restore_last_folder (its own dedicated test covers that) —
+  // disabled so the "click the same entry twice to reload after seeding messages" step below keeps
+  // relying on activeFolder really starting at null, not on a folder the automatic restore already picked.
+  await writeFile(join(home, 'config.json'), JSON.stringify({ restore_last_folder: false }));
   const screenshotDir = process.env.OPENAGENT_EXPORT_SCREENSHOT_DIR || home;
   let win;
   let worker;

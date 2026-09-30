@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { activateFolder, gitStatus, initProject, listFolders, openFolderDialog, type ChatMessage, type FolderListItem, type GitStatus } from '../ipc/bridge';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { activateFolder, getGlobalSettings, gitStatus, initProject, listFolders, openFolderDialog, type ChatMessage, type FolderListItem, type GitStatus } from '../ipc/bridge';
 import { useRegisterAction } from '../state/ActionRegistry';
 import { KnowledgeSection } from './KnowledgeSection';
 import { Modal } from './settings/Modal';
@@ -58,6 +58,35 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
     },
     [onActivated],
   );
+
+  // Restaure le dernier dossier utilisé au démarrage (main.py:254-267) — réutilise `activate()`
+  // telle quelle : activate_folder renvoie déjà l'historique de chat, et ChatProvider résout déjà
+  // la connexion/le modèle et les branches à chaque changement de `activeFolder`, quelle que soit
+  // la façon dont il a changé (clic ou restauration automatique). Aucun nouvel op, aucune nouvelle
+  // fonction bridge. `activeFolderRef` (plutôt que la prop close dans l'effet) pour ne jamais
+  // écraser un dossier déjà activé entre-temps (onboarding, clic manuel) — la même course que
+  // Python évite en testant `not state.active_folder` juste avant d'écrire. Une seule tentative
+  // par montage (`attempted`) ; toute erreur (dossier supprimé depuis, fichier illisible) est
+  // avalée silencieusement, même comportement qu'avant l'existence de cette fonctionnalité.
+  const activeFolderRef = useRef(activeFolder);
+  activeFolderRef.current = activeFolder;
+  const attempted = useRef(false);
+  useEffect(() => {
+    if (attempted.current) return;
+    attempted.current = true;
+    (async () => {
+      try {
+        const [settings, list] = await Promise.all([getGlobalSettings(), listFolders()]);
+        if (activeFolderRef.current || settings.restore_last_folder === false || !list[0]) return;
+        await activate(list[0].path);
+      } catch {
+        /* dossier supprimé depuis, ou lecture impossible : on démarre sans dossier actif */
+      }
+    })();
+    // Volontairement unique au montage : `activate`/`activeFolder` sont lus via des refs pour que
+    // cet effet ne se redéclenche jamais lui-même.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleOpenFolder = useCallback(async () => {
     setOpening(true);

@@ -44,6 +44,9 @@ app.whenReady().then(async () => {
     { path: alpha, last_used: new Date().toISOString() },
     { path: beta, last_used: new Date(Date.now() - 1000).toISOString() },
   ]));
+  // This test needs activeFolder to genuinely start at null ("── 3. No folder open" below) — it is
+  // not about restore_last_folder itself (its own dedicated test covers that).
+  await writeFile(join(home, 'config.json'), JSON.stringify({ restore_last_folder: false }));
   await writeFile(join(alpha, '.openagent', 'memory.md'), '<!-- 2026-09-23 10:00 -->\n# Faits\n- utilise **pnpm**\n- écrit en français\n');
   const screenshotDir = process.env.OPENAGENT_PALETTE_SCREENSHOT_DIR || home;
   let win;

@@ -75,6 +75,41 @@ test('a full memory refuses more facts instead of growing without bound', async 
   await refuses(invoke('save_memory', { facts: 'encore' }), /pleine/i);
 });
 
+test('appendCompactionSummary writes a timestamped entry to the PROJECT memory, like save_memory does', async t => {
+  const { home, project, projectFile, globalFile } = await fixture(t);
+  const { appendCompactionSummary } = await import('../core/memory-tools.mts');
+  await appendCompactionSummary(project, home, '  décision : garder la branche A  ');
+  assert.match(await readFile(projectFile, 'utf8'), new RegExp(`^${STAMP}\\ndécision : garder la branche A\\n?$`));
+  await assert.rejects(stat(globalFile), 'compaction summaries never touch the global memory');
+});
+
+test('appendCompactionSummary appends a second real entry after the first, both kept', async t => {
+  const { home, project, projectFile } = await fixture(t);
+  const { appendCompactionSummary } = await import('../core/memory-tools.mts');
+  await appendCompactionSummary(project, home, 'premier résumé');
+  await appendCompactionSummary(project, home, 'second résumé');
+  const content = await readFile(projectFile, 'utf8');
+  assert.match(content, /premier résumé/);
+  assert.match(content, /second résumé/);
+  assert.equal(content.match(new RegExp(STAMP, 'g'))?.length, 2, 'two separate timestamped entries, not one merged entry');
+});
+
+test('appendCompactionSummary is a silent no-op on a blank summary — nothing written', async t => {
+  const { home, project, projectFile } = await fixture(t);
+  const { appendCompactionSummary } = await import('../core/memory-tools.mts');
+  await appendCompactionSummary(project, home, '   \n ');
+  await assert.rejects(stat(projectFile), 'a blank summary writes nothing');
+});
+
+test('appendCompactionSummary never throws, even when the memory is already full — a compaction that already succeeded must not be broken by this', async t => {
+  const { home, project, projectFile } = await fixture(t);
+  await mkdir(join(project, '.openagent'), { recursive: true });
+  await writeFile(projectFile, 'y'.repeat(1024 * 1024));
+  const { appendCompactionSummary } = await import('../core/memory-tools.mts');
+  await appendCompactionSummary(project, home, 'ce résumé ne rentre plus'); // must resolve, not reject
+  assert.equal((await readFile(projectFile, 'utf8')).includes('ce résumé ne rentre plus'), false, 'silently dropped, not appended past the cap');
+});
+
 test('read_memory reports empty, project-only, global-only and both (global first)', async t => {
   const { invoke } = await fixture(t);
   assert.equal(await invoke('read_memory', {}), 'La mémoire est vide.');

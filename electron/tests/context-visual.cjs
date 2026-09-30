@@ -259,8 +259,13 @@ app.whenReady().then(async () => {
     const summaryRequest = requests.find(r => r.isSummary).body;
     assert.equal(summaryRequest.tools, undefined, 'the summariser was given no tool');
     assert.equal(summaryRequest.messages.length, 1);
-    const found = [...await readdir(home, { recursive: true }), ...await readdir(join(alpha, '.openagent'), { recursive: true })];
-    assert.equal(found.some(name => String(name).endsWith('memory.md')), false, `the summary was not written into memory.md: ${JSON.stringify(found)}`);
+    // context_bar.py::trigger_compact parity (Tâche 101): the summary IS now persisted into the
+    // project's own memory.md, so it survives a later clear-history/re-compaction — global memory
+    // stays untouched (project-scoped only, same as Python).
+    const projectMemory = await readFile(join(alpha, '.openagent', 'memory.md'), 'utf8');
+    assert.match(projectMemory, /décision : garder la branche A/, 'the real summary landed in the project memory');
+    const homeFound = await readdir(home, { recursive: true }).catch(() => []);
+    assert.equal(homeFound.some(name => String(name).endsWith('memory.md')), false, `the global memory is never touched by a compaction: ${JSON.stringify(homeFound)}`);
     await writeFile(join(screenshotDir, 'context-5-compacted.png'), await capturePng(win));
 
     // ── 6. A failing model leaves everything as it was ───────────────────────────

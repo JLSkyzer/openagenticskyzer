@@ -53,6 +53,38 @@ function stamp() {
   return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
 }
 
+/** Appends one timestamped entry to `file`, same format as save_memory. Returns whether it was
+ * actually written, so callers can decide how to react to "full" differently (save_memory throws;
+ * appendCompactionSummary below stays silent) without duplicating the read/build-entry/write steps. */
+function appendEntry(file: string, facts: string): Promise<'written' | 'empty' | 'full'> {
+  const clean = facts.trim();
+  if (!clean) return Promise.resolve('empty');
+  return serialized(file, async () => {
+    const existing = await readMemory(file);
+    const entry = `<!-- ${stamp()} -->\n${clean}`;
+    const next = existing ? `${existing}\n\n${entry}` : entry;
+    if (next.length > MAX_FILE) return 'full';
+    await writeMemory(file, next);
+    return 'written';
+  });
+}
+
+/**
+ * Persists a compaction's own summary into the project's persistent memory, so it survives a
+ * later clear-history or a subsequent re-compaction — context_bar.py::trigger_compact does the
+ * same via append_to_project_memory right after a successful compaction. Unlike save_memory (an
+ * explicit user/agent action, which should be told when it fails), this is called from the
+ * background compaction flow AFTER the conversation was already replaced: it must never throw,
+ * the same way project_memory.py's own save swallows OSError rather than propagate it.
+ */
+export async function appendCompactionSummary(folder: string, home: string, summary: string): Promise<void> {
+  if (!isAbsolute(folder) || !isAbsolute(home)) return;
+  try {
+    const file = join(await metadataDirectory(folder), 'memory.md');
+    await appendEntry(file, summary);
+  } catch { /* a memory write failure must never surface as a compaction failure */ }
+}
+
 /** Persistent notes for the agent. Only these tools write memory.md; the file tools cannot reach .openagent. */
 export async function memoryTools(folder: string, home: string): Promise<AgentTool[]> {
   if (!isAbsolute(folder) || !isAbsolute(home)) throw new Error('Chemins absolus requis');
@@ -73,14 +105,9 @@ export async function memoryTools(folder: string, home: string): Promise<AgentTo
         const scope = (args.scope as string | undefined) ?? 'project';
         if (!facts) return 'Rien à mémoriser : texte vide.';
         const file = await memoryFile(scope);
-        return serialized(file, async () => {
-          const existing = await readMemory(file);
-          const entry = `<!-- ${stamp()} -->\n${facts}`;
-          const next = existing ? `${existing}\n\n${entry}` : entry;
-          if (next.length > MAX_FILE) throw new Error('Mémoire pleine (1 Mio) : oubliez des entrées avant d’en ajouter');
-          await writeMemory(file, next);
-          return `✓ Mémorisé dans la mémoire ${label(scope)}.`;
-        });
+        const result = await appendEntry(file, facts);
+        if (result === 'full') throw new Error('Mémoire pleine (1 Mio) : oubliez des entrées avant d’en ajouter');
+        return `✓ Mémorisé dans la mémoire ${label(scope)}.`;
       },
     }),
     defineTool({

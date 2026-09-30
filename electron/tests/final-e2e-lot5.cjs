@@ -200,10 +200,14 @@ async function main() {
     assert.deepEqual(compacted.slice(1), legacy.slice(-2), 'the last exchange is kept untouched');
     assert.deepEqual(await userBubbles(), [legacy.at(-2).content]);
     assert.equal(await gaugeLabel(), expected(compacted, 4000));
-    const all = [...await readdir(home, { recursive: true }), ...await readdir(join(alpha, '.openagent'), { recursive: true })];
-    assert.equal(all.some(name => String(name).endsWith('memory.md')), false, 'the summary was not written into memory.md');
+    // context_bar.py::trigger_compact parity (Tâche 101): the summary IS now persisted into the
+    // project's own memory.md — global memory stays untouched.
+    const projectMemory = await readFile(join(alpha, '.openagent', 'memory.md'), 'utf8');
+    assert.match(projectMemory, /décision : garder la branche A/, 'the real summary landed in the project memory');
+    const homeFound = await readdir(home, { recursive: true }).catch(() => []);
+    assert.equal(homeFound.some(name => String(name).endsWith('memory.md')), false, 'the global memory is never touched by a compaction');
     await app.cdp.screenshot(join(proofDir, 'lot5-3-compacted.png'));
-    record('PROOF 5 — real click on ⚡: summary + last exchange on disk, screen = disk, gauge recomputed; the vault key was on the request (Authorization), no tool, no memory.md');
+    record('PROOF 5 — real click on ⚡: summary + last exchange on disk, screen = disk, gauge recomputed; the vault key was on the request (Authorization), no tool, summary persisted in the project memory.md (not the global one)');
 
     // ── Proof 6: a real restart keeps the compacted conversation and the settings ────
     const code = await quit(app);

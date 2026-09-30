@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, rm, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readdir, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
@@ -152,13 +152,23 @@ test('worker::compact refuses a conversation that is too short, or a single long
   assert.equal(model.requests.length, 0, 'the model was never called');
 });
 
-test('worker::compact never writes the summary into memory.md (it would be re-injected in every future prompt)', async t => {
+test('worker::compact persists its own summary into the PROJECT memory (context_bar.py::trigger_compact parity), not the global one', async t => {
   const { home, project, seed, compact } = await setup(t);
   await seed(exchanges(4));
   await (await compact()).outcome;
+  const projectMemory = await readFile(join(project, '.openagent', 'memory.md'), 'utf8');
+  assert.match(projectMemory, /^<!-- \d{4}-\d{2}-\d{2} \d{2}:\d{2} -->\n- décision : utiliser la branche A\n- fichier modifié : notes\.md\n?$/, 'the raw summary, no "**[Résumé...]**" display prefix — same text Python persists');
+  await assert.rejects(stat(join(home, 'memory.md')), 'the global memory is never touched by a compaction');
+});
+
+test('worker::compact writes nothing to memory.md when the model fails — only a REAL summary is ever persisted', async t => {
+  const { home, project, model, seed, compact } = await setup(t);
+  await seed(exchanges(4));
+  model.mode = 'error';
+  await assert.rejects((await compact()).outcome.then(outcome => { if (outcome.kind !== 'compacted') throw new Error(outcome.message); }));
   const listing = async (dir: string) => readdir(dir, { recursive: true }).catch(() => [] as string[]);
   const all = [...await listing(home), ...await listing(join(project, '.openagent'))];
-  assert.equal(all.some(entry => String(entry).endsWith('memory.md')), false, `no memory.md anywhere: ${JSON.stringify(all)}`);
+  assert.equal(all.some(entry => String(entry).endsWith('memory.md')), false, `a failed compaction has no summary to persist: ${JSON.stringify(all)}`);
 });
 
 test('worker::compact leaves the conversation untouched when the model fails (no destructive fallback)', async t => {

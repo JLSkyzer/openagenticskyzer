@@ -11,12 +11,12 @@ import { completeLocal } from './core/local-engine.mts';
 import { runAgent } from './core/agent.mts';
 import { ChatProvider } from './core/provider.mts';
 import { workspaceTools } from './core/workspace.mts';
-import { memoryTools } from './core/memory-tools.mts';
+import { memoryTools, appendCompactionSummary } from './core/memory-tools.mts';
 import { gitTools } from './core/git-tools.mts';
 import { shellTools, stopAllServers } from './core/shell-tool.mts';
 import { webTools } from './core/web-tools.mts';
 import { buildInstructions } from './core/context.mts';
-import { compactMessages, planCompaction } from './core/compact.mts';
+import { compactMessages, planCompaction, SUMMARY_PREFIX } from './core/compact.mts';
 import { PromptLibrary } from './core/prompts.mts';
 import { readProjectMemory } from './core/project-memory.mts';
 import { validateAttachments } from './core/attachments.mts';
@@ -130,6 +130,12 @@ async function runCompaction(compactionId, folder, branchId, before, connection,
   try {
     const after = await compactMessages({ provider, connection, messages: before, signal: active.get(compactionId).controller.signal });
     await conversations.replaceIfUnchanged(folder, branchId, before, after);
+    // context_bar.py::trigger_compact parity: persist the summary itself into the project's
+    // memory so it survives a later clear-history/re-compaction. Awaited (not fire-and-forget)
+    // so the write is guaranteed done before the 'compacted' event is announced — safe because
+    // appendCompactionSummary itself never throws (a memory-write failure never turns an
+    // already-successful compaction into a reported failure).
+    await appendCompactionSummary(folder, dataHome, after[0].content.slice(SUMMARY_PREFIX.length));
     outcome = { kind: 'compacted', messages: after };
   } catch (error) {
     const aborted = error?.name === 'AbortError';

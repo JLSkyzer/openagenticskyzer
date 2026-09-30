@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { activateFolder, gitStatus, initProject, listFolders, openFolderDialog, type ChatMessage, type FolderListItem, type GitStatus } from '../ipc/bridge';
 import { useRegisterAction } from '../state/ActionRegistry';
+import { KnowledgeSection } from './KnowledgeSection';
 import { Modal } from './settings/Modal';
 import { useToast } from '../state/ToastProvider';
 
@@ -171,6 +172,7 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
           );
         })}
       </div>
+      <KnowledgeSection />
     </div>
   );
 }

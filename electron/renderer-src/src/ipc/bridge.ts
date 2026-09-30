@@ -117,6 +117,23 @@ export function removeGguf(id: string): Promise<GgufEntry[]> {
   return request('gguf-remove', { id });
 }
 
+// Personal knowledge base ("📚 Base de connaissances") — a REAL, working counterpart to
+// sidebar.py's "+ Ajouter un document" button, which only ever showed a hint and never actually
+// read a file. Same two-step shape as the .gguf library: pickKnowledgeFile opens the native
+// dialog (.txt/.md filtered), addKnowledgeFile then reads and embeds the chosen file for real.
+export function pickKnowledgeFile(): Promise<string | null> {
+  return request('pick-knowledge-file');
+}
+export function listKnowledge(): Promise<string[]> {
+  return request('knowledge-list');
+}
+export function addKnowledgeFile(filePath: string): Promise<{ source: string; chunks: number }> {
+  return request('knowledge-add', { filePath });
+}
+export function removeKnowledgeSource(source: string): Promise<void> {
+  return request('knowledge-remove', { source });
+}
+
 export function activateFolder(folder: string): Promise<{ history: ChatMessage[]; folders: FolderListItem[] }> {
   return request('activate_folder', { folder });
 }

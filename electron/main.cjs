@@ -13,7 +13,7 @@ let tray;
 let backend;
 let connections;
 const pending = new Map();
-const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','git-status','test-hf-token','migrate-data-dir','init-project','mcp-list','mcp-add','mcp-remove','index-status']);
+const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','git-status','test-hf-token','migrate-data-dir','init-project','mcp-list','mcp-add','mcp-remove','index-status','knowledge-list','knowledge-add','knowledge-remove']);
 
 // Exactly the pattern core/export.mts::exportFilename generates — never a filename supplied as-is
 // by the renderer. Constrains what "open-export" (below) is allowed to open, whatever the folder.
@@ -192,6 +192,12 @@ async function handleBackendRequest(event, request) {
   // the same two-step shape as open-folder + activate_folder.
   if (request.op === 'pick-gguf') {
     const picked = await dialog.showOpenDialog(mainWindow, { properties: ['openFile'], filters: [{ name: 'Modèles GGUF', extensions: ['gguf'] }] });
+    return picked.canceled ? null : picked.filePaths[0];
+  }
+  // Same two-step shape as pick-gguf: the native picker only, adding the chosen file to the
+  // knowledge base (knowledge-add) is a separate worker op that reads and embeds it for real.
+  if (request.op === 'pick-knowledge-file') {
+    const picked = await dialog.showOpenDialog(mainWindow, { properties: ['openFile'], filters: [{ name: 'Documents', extensions: ['txt', 'md'] }] });
     return picked.canceled ? null : picked.filePaths[0];
   }
   if (request.op === 'connection-snapshot') return connections.snapshot(request.payload?.folder ?? null);

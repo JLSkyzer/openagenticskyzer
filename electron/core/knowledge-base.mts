@@ -1,7 +1,11 @@
-import { join } from 'node:path';
+import { readFile, stat } from 'node:fs/promises';
+import { basename, extname, isAbsolute, join } from 'node:path';
 import { JsonStore } from './json-store.mts';
 import { chunkText, cosineSimilarity } from './semantic-chunk.mts';
 import { embed } from './embeddings.mts';
+
+const ALLOWED_EXTENSIONS = new Set(['.txt', '.md']);
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
 
 export interface KnowledgeEntry {
   id: string;
@@ -51,6 +55,24 @@ export async function addToKnowledge(source: string, text: string, home: string)
     entries: [...current.entries.filter(e => e.source !== source), ...newEntries],
   }));
   return newEntries.length;
+}
+
+/**
+ * Real, functional counterpart to sidebar.py's "+ Ajouter un document" button — which, verified by
+ * reading the whole Python file, only ever shows a ui.notify() hint and never actually reads a
+ * file (add_to_knowledge is never called anywhere in that repo). Reads a real .txt/.md file from
+ * disk and adds it under its basename as `source`.
+ */
+export async function addFileToKnowledge(filePath: string, home: string): Promise<{ source: string; chunks: number }> {
+  if (!isAbsolute(filePath) || !isAbsolute(home)) throw new Error('Chemins absolus requis');
+  if (!ALLOWED_EXTENSIONS.has(extname(filePath).toLowerCase())) throw new Error('Seuls les fichiers .txt et .md sont acceptés');
+  const info = await stat(filePath);
+  if (!info.isFile()) throw new Error('Fichier introuvable');
+  if (info.size > MAX_FILE_BYTES) throw new Error('Fichier trop volumineux (5 Mio maximum)');
+  const text = await readFile(filePath, 'utf8');
+  const source = basename(filePath);
+  const chunks = await addToKnowledge(source, text, home);
+  return { source, chunks };
 }
 
 export async function listSources(home: string): Promise<string[]> {

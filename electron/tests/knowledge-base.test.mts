@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -78,4 +78,32 @@ test('addToKnowledge on empty text adds nothing and reports 0 chunks', { timeout
   const count = await addToKnowledge('empty.txt', '   ', home);
   assert.equal(count, 0);
   assert.deepEqual(await listSources(home), []);
+});
+
+test('addFileToKnowledge reads a real .txt/.md file from disk and adds it by its basename', { timeout: 60000 }, async t => {
+  const { root, home } = await fixture(t);
+  const filePath = join(root, 'notes.md');
+  await writeFile(filePath, '# Notes\n\nCeci est un vrai fichier sur disque.');
+  const { addFileToKnowledge, listSources } = await import('../core/knowledge-base.mts');
+
+  const result = await addFileToKnowledge(filePath, home);
+  assert.equal(result.source, 'notes.md');
+  assert.ok(result.chunks >= 1);
+  assert.deepEqual(await listSources(home), ['notes.md']);
+});
+
+test('addFileToKnowledge refuses a file whose extension is not .txt or .md', { timeout: 20000 }, async t => {
+  const { root, home } = await fixture(t);
+  const filePath = join(root, 'binaire.exe');
+  await writeFile(filePath, 'peu importe le contenu');
+  const { addFileToKnowledge } = await import('../core/knowledge-base.mts');
+
+  await assert.rejects(addFileToKnowledge(filePath, home), /\.txt|\.md/);
+});
+
+test('addFileToKnowledge refuses a path that does not exist', { timeout: 20000 }, async t => {
+  const { root, home } = await fixture(t);
+  const { addFileToKnowledge } = await import('../core/knowledge-base.mts');
+
+  await assert.rejects(addFileToKnowledge(join(root, 'jamais-créé.txt'), home));
 });

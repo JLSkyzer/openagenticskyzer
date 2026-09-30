@@ -30,6 +30,7 @@ import { McpConfigStore } from './core/mcp-config.mts';
 import { mcpTools } from './core/mcp-client.mts';
 import { searchTools } from './core/search-tools.mts';
 import { indexFolder } from './core/semantic-index.mts';
+import { loadPlugins } from './core/plugin-loader.mts';
 import { addFileToKnowledge, listSources as listKnowledgeSources, removeSource as removeKnowledgeSource } from './core/knowledge-base.mts';
 
 // OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
@@ -98,7 +99,7 @@ const sessionAllowed = new Set();
 const allowKey = (folder, tool) => `${folder}\0${tool}`;
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'shutdown']);
 
 const BASE_SYSTEM_PROMPT = [
   'Tu es openagent, un assistant de développement qui travaille dans le dossier du projet actif avec les outils fournis :',
@@ -155,6 +156,8 @@ async function registerTools(folder) {
   // A broken/unreachable MCP server never blocks the turn or surfaces to the chat — same
   // server-log-only isolation agent.py's own logging.getLogger("openagentic.mcp").warning had.
   for (const error of mcpErrors) console.error(`[mcp] ${error}`);
+  const { tools: pluginTools, errors: pluginErrors } = await loadPlugins(folder, dataHome);
+  for (const error of pluginErrors) console.error(`[plugin] ${error}`);
   const tools = [
     ...await workspaceTools(folder, effective.ignored_patterns),
     ...await memoryTools(folder, dataHome),
@@ -163,6 +166,7 @@ async function registerTools(folder) {
     ...await webTools(),
     ...await searchTools(folder, dataHome),
     ...mcpDiscovered,
+    ...pluginTools,
   ];
   return { effective, tools };
 }
@@ -309,6 +313,10 @@ async function handle(message) {
     if (op === 'test-hf-token') result = await testHfToken(payload.token, process.env.OPENAGENT_HF_ENDPOINT ? { baseUrl: process.env.OPENAGENT_HF_ENDPOINT } : undefined);
     if (op === 'migrate-data-dir') result = await migrateDataDir(dataHome, defaultHome, payload.newDir);
     if (op === 'init-project') result = await initializeProject(payload.folder, Boolean(payload.overwrite));
+    if (op === 'plugin-list') {
+      const { tools, errors } = await loadPlugins(payload.folder ?? null, dataHome);
+      result = { tools: tools.map(t => t.name), errors };
+    }
     if (op === 'mcp-list') result = await mcpConfig.list();
     if (op === 'mcp-add') result = await mcpConfig.add(payload.commandLine);
     if (op === 'mcp-remove') result = await mcpConfig.remove(payload.id);

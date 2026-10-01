@@ -2966,3 +2966,26 @@ Décision utilisateur explicite (discussion post-audit, `superpowers:brainstormi
 
 **Process de ce lot, différent des précédents** : première utilisation de la chaîne complète `brainstorming` → `writing-plans` → `subagent-driven-development` dans cette session (jusqu'ici, tout le travail était fait directement en session). Ledger complet (rulings, findings mineurs différés, historique des revues) conservé dans `.superpowers/sdd/2026-10-01-node-plugin-system/progress.md` (hors dépôt git, scratch).
 
+### Bilan du lot — MCP enrichi (2026-10-01)
+
+Pipeline identique au lot précédent : `superpowers:brainstorming` → spec approuvée (`docs/superpowers/specs/2026-10-01-mcp-enhancement-design.md`) → `superpowers:writing-plans` → plan approuvé (`docs/superpowers/plans/2026-10-01-mcp-enhancement.md`) → exécution `superpowers:subagent-driven-development`, un sous-agent implémenteur + un sous-agent réviseur par tâche, travail direct sur `master`. Ledger complet (rulings, findings mineurs différés, historique des revues) conservé dans `.superpowers/sdd/2026-10-01-mcp-enhancement/progress.md` (hors dépôt git, scratch).
+
+**3 capacités réelles livrées :**
+- `.mcp.json` de projet (schéma Claude Code) fusionné avec le `~/.openagent/mcp.json` global existant, le projet gagnant en cas de collision — `core/mcp-config.mts` (Tâche 1, commits 7c186e0..e635290).
+- Variables d'environnement pour les serveurs MCP stdio, additives à l'environnement du process déjà spawné (jamais un remplacement) — même fichier, même tâche.
+- Un vrai transport distant SSE/HTTP (« Streamable HTTP »), vérifié contre la spec officielle MCP AVANT l'implémentation (pas supposé) — `core/mcp-client.mts`, aux côtés du transport stdio déjà existant (Tâche 2, commits e635290..36178bf).
+
+**Câblage et UI (Tâches 3-4, commits 36178bf..b160a1c)** : `worker.mjs`/`main.cjs` fusionnent config globale + projet pour la découverte d'outils agent, nouvel op `mcp-add-remote` ; liste de serveurs fusionnée dans l'UI avec badge « projet », suppression désactivée pour les entrées de scope projet, nouveau formulaire d'ajout de serveur distant.
+
+**Décision de fusion prise en écrivant le plan** : deux entrées serveur sont « le même serveur » quand leur IDENTITÉ DE CONNEXION correspond (command+args pour stdio, url pour distant) — jamais par nom, puisque le format de config globale pré-existant n'a aucun champ nom. En cas de correspondance, l'entrée projet gagne.
+
+**Honnêteté sur ce que la revue a trouvé** (2 vrais bugs, aucune erreur d'implémenteur — reproduits fidèlement depuis le code de référence du plan lui-même, trouvés par la revue de tâche avant fusion, pas après) :
+- Tâche 2 : le timeout des requêtes distantes ne couvrait pas la lecture du corps de réponse — un serveur distant qui répond vite (en-têtes reçus) puis se bloque sur le corps pouvait faire pendre un appel indéfiniment, contournant `discoveryTimeoutMs`/`callTimeoutMs`. Corrigé en gardant le minuteur d'abandon armé jusqu'à la consommation complète du corps, pas seulement jusqu'à la résolution de `fetch()`.
+- Tâche 4 : les trois gestionnaires de mutation de l'UI (`handleAdd`/`handleAddRemote`/`handleRemove`) réinitialisaient la liste affichée à la valeur de retour de la mutation — GLOBALE SEULEMENT, jamais fusionnée — après chaque ajout/suppression, masquant silencieusement les serveurs de scope projet jusqu'au prochain changement de dossier ou rechargement (purement un défaut d'affichage : le fichier `.mcp.json` lui-même n'était jamais touché). Corrigé en re-récupérant systématiquement la liste fusionnée (`refresh()`/`listMcpServers`) après une mutation plutôt que de faire confiance à la valeur de retour de la mutation elle-même.
+
+**Vérification finale (cette tâche)** : suite complète `tests/all.mts` **557/557 passent** (aucune régression). `tsc --noEmit` propre sur `tsconfig.core.json` (mêmes 5 erreurs préexistantes sans rapport, aucune touchant un fichier MCP : `local-engine.mts`, `local-provider.mts`, `pdf-loader.ts`, `local-provider.test.mts` ×2) et zéro erreur sur `renderer-src/tsconfig.json`.
+
+**Hors scope, explicitement (pas un oubli)** : pas d'OAuth (en-têtes statiques seulement pour l'authentification distante), `.mcp.json` reste en LECTURE SEULE depuis cette app (aucun chemin d'écriture), pas de ressources ni de prompts MCP (outils seulement, comme avant ce lot).
+
+**10 constats Mineurs parqués à travers les revues des 4 tâches, honnêtement signalés ici** : surtout des lacunes de couverture de test — par exemple pas de test dédié pour une clé `mcpServers` absente d'un `.mcp.json` par ailleurs valide, pas de test de blocage spécifique à la branche SSE (seule la branche JSON est couverte par le test de hang, la symétrie SSE n'est vérifiée que par inspection du code), pas de contrôle UI pour un serveur distant de type `sse` (seul `http` est exposé), le correctif de liste fusionnée de `handleRemove`/`handleAdd` non prouvé séparément par un test (seul `handleAddRemote` l'est directement, bien que le correctif soit mécaniquement identique dans les trois gestionnaires). Aucun bloquant, tous à faible risque, listés en détail dans le ledger SDD (`.superpowers/sdd/2026-10-01-mcp-enhancement/progress.md`) si plus de détail est un jour nécessaire.
+

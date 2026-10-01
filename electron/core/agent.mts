@@ -20,6 +20,10 @@ export interface AgentOptions {
   emit?: (event: { type: string; [key: string]: unknown }) => void;
 }
 
+/** The one rule for a tool name, from any source. Exported so the plugin loader rejects a bad name
+ * up front (one file's error) instead of letting it reach runAgent, which fails the whole turn. */
+export const TOOL_NAME_PATTERN = /^[\w.-]{1,128}$/;
+
 async function approval<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted();
   let cancel!: () => void;
@@ -52,7 +56,7 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
   const messages: ChatMessage[] = [{ role: 'system', content: instructions }, ...structuredClone(options.messages.filter(m => m.role !== 'system'))];
   const registry = new Map<string, AgentTool>();
   for (const tool of tools) {
-    if (!/^[\w.-]{1,128}$/.test(tool.name) || registry.has(tool.name)) throw new Error('Nom outil invalide ou dupliqué');
+    if (!TOOL_NAME_PATTERN.test(tool.name) || registry.has(tool.name)) throw new Error('Nom outil invalide ou dupliqué');
     registry.set(tool.name, tool);
   }
   const schemas = tools.filter(tool => policy(tool, settings) !== 'deny').map(tool => ({

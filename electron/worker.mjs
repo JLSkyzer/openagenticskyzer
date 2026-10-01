@@ -152,13 +152,19 @@ async function runCompaction(compactionId, folder, branchId, before, connection,
  * never drift apart. */
 async function registerTools(folder) {
   const effective = await settings.effective(folder);
+  const others = await nonPluginTools(folder, effective);
+  const { tools: pluginTools, errors: pluginErrors } = await pluginToolsBeside(folder, others);
+  for (const error of pluginErrors) console.error(`[plugin] ${error}`);
+  return { effective, tools: [...others, ...pluginTools] };
+}
+
+/** Built-in + MCP tools for a real project folder. */
+async function nonPluginTools(folder, effective) {
   const { tools: mcpDiscovered, errors: mcpErrors } = await mcpTools(await mcpConfig.list());
   // A broken/unreachable MCP server never blocks the turn or surfaces to the chat — same
   // server-log-only isolation agent.py's own logging.getLogger("openagentic.mcp").warning had.
   for (const error of mcpErrors) console.error(`[mcp] ${error}`);
-  const { tools: pluginTools, errors: pluginErrors } = await loadPlugins(folder, dataHome);
-  for (const error of pluginErrors) console.error(`[plugin] ${error}`);
-  const tools = [
+  return [
     ...await workspaceTools(folder, effective.ignored_patterns),
     ...await memoryTools(folder, dataHome),
     ...await gitTools(folder),
@@ -166,9 +172,22 @@ async function registerTools(folder) {
     ...await webTools(),
     ...await searchTools(folder, dataHome),
     ...mcpDiscovered,
-    ...pluginTools,
   ];
-  return { effective, tools };
+}
+
+/** The folder's plugin tools minus any whose name `others` already uses: runAgent refuses a
+ * duplicated name for the WHOLE turn, so one plugin named like a built-in would otherwise break
+ * every turn. Shared by registerTools and plugin-list, so the Outils tab shows exactly what a
+ * turn gets. */
+async function pluginToolsBeside(folder, others) {
+  const { tools, errors } = await loadPlugins(folder, dataHome);
+  const taken = new Set(others.map(tool => tool.name));
+  const kept = [];
+  for (const tool of tools) {
+    if (taken.has(tool.name)) errors.push(`${tool.name}: nom déjà utilisé par un autre outil, ignoré`);
+    else kept.push(tool);
+  }
+  return { tools: kept, errors };
 }
 
 const EXPORT_FORMATS = new Set(['md', 'html', 'json']);
@@ -314,7 +333,11 @@ async function handle(message) {
     if (op === 'migrate-data-dir') result = await migrateDataDir(dataHome, defaultHome, payload.newDir);
     if (op === 'init-project') result = await initializeProject(payload.folder, Boolean(payload.overwrite));
     if (op === 'plugin-list') {
-      const { tools, errors } = await loadPlugins(payload.folder ?? null, dataHome);
+      // No active project: no built-in tool set to collide with yet — the global plugins as loaded.
+      const folder = payload.folder ?? null;
+      const { tools, errors } = folder
+        ? await pluginToolsBeside(folder, await nonPluginTools(folder, await settings.effective(folder)))
+        : await loadPlugins(null, dataHome);
       result = { tools: tools.map(t => t.name), errors };
     }
     if (op === 'mcp-list') result = await mcpConfig.list();

@@ -142,6 +142,80 @@ test('onLoad(folder) is really called with the active folder after a successful 
   assert.match(proof, /^loaded:/);
 });
 
+test('a tool name runAgent would refuse (a space) rejects that file here, as its own error', async t => {
+  const { home, project } = await fixture(t);
+  await mkdir(join(home, 'tools'), { recursive: true });
+  await writeFile(join(home, 'tools', 'spaced.mjs'), VALID_PLUGIN.replace('echo_plugin', 'bad name'));
+  await writeFile(join(home, 'tools', 'good.mjs'), VALID_PLUGIN);
+
+  const { loadPlugins } = await import('../core/plugin-loader.mts');
+  const { tools, errors } = await loadPlugins(project, home);
+  assert.deepEqual(tools.map(tool => tool.name), ['echo_plugin'], 'nothing from spaced.mjs, the other file unaffected');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /spaced\.mjs.*invalide/);
+});
+
+test('a later file reusing a name an earlier file already registered is rejected — first one wins', async t => {
+  const { home, project } = await fixture(t);
+  await mkdir(join(home, 'tools'), { recursive: true });
+  await writeFile(join(home, 'tools', 'a.mjs'), VALID_PLUGIN.replace("'echo: '", "'first: '"));
+  await mkdir(join(project, 'tools'), { recursive: true });
+  await writeFile(join(project, 'tools', 'b.mjs'), VALID_PLUGIN);
+
+  const { loadPlugins } = await import('../core/plugin-loader.mts');
+  const { tools, errors } = await loadPlugins(project, home);
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0].name, 'echo_plugin');
+  assert.equal(await tools[0].execute({ text: 'x' }, new AbortController().signal), 'first: x', 'the global (scanned first) one is kept');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /b\.mjs.*echo_plugin/);
+});
+
+test('a directory reached through two scanned paths (home = <projet>/.openagent) is loaded once, without self-collision', async t => {
+  const { project } = await fixture(t);
+  // The user opened the parent of their data folder as a project: <projet>/.openagent/tools IS <home>/tools.
+  const home = join(project, '.openagent');
+  await mkdir(join(home, 'tools'), { recursive: true });
+  await writeFile(join(home, 'tools', 'echo.mjs'), VALID_PLUGIN);
+
+  const { loadPlugins } = await import('../core/plugin-loader.mts');
+  const { tools, errors } = await loadPlugins(project, home);
+  assert.deepEqual(errors, [], 'the second path to the same directory must not be scanned at all');
+  assert.deepEqual(tools.map(tool => tool.name), ['echo_plugin']);
+});
+
+test('an edited plugin file is really re-imported on the next loadPlugins call, not served from the module cache', async t => {
+  const { home, project } = await fixture(t);
+  await mkdir(join(home, 'tools'), { recursive: true });
+  const file = join(home, 'tools', 'live.mjs');
+  await writeFile(file, `throw new Error('version cassée');`);
+
+  const { loadPlugins } = await import('../core/plugin-loader.mts');
+  const first = await loadPlugins(project, home);
+  assert.deepEqual(first.tools, []);
+  assert.match(first.errors[0], /live\.mjs.*version cassée/);
+
+  await writeFile(file, VALID_PLUGIN.replace("'echo: '", "'v2: '"));
+  const second = await loadPlugins(project, home);
+  assert.deepEqual(second.errors, [], 'the fixed file must load — a cached module would keep throwing');
+  assert.equal(await second.tools[0].execute({ text: 'ok' }, new AbortController().signal), 'v2: ok');
+
+  await writeFile(file, VALID_PLUGIN.replace("'echo: '", "'v3, plus long: '"));
+  const third = await loadPlugins(project, home);
+  assert.equal(await third.tools[0].execute({ text: 'ok' }, new AbortController().signal), 'v3, plus long: ok');
+});
+
+test('a .mts plugin is loaded too (type annotations stripped, cache-busting query included)', async t => {
+  const { home, project } = await fixture(t);
+  await mkdir(join(home, 'tools'), { recursive: true });
+  await writeFile(join(home, 'tools', 'typed.mts'), VALID_PLUGIN.replace('async (args)', 'async (args: { text: string }): Promise<string>'));
+
+  const { loadPlugins } = await import('../core/plugin-loader.mts');
+  const { tools, errors } = await loadPlugins(project, home);
+  assert.deepEqual(errors, []);
+  assert.equal(await tools[0].execute({ text: 'x' }, new AbortController().signal), 'echo: x');
+});
+
 test('loadPlugins refuses a relative home, and a relative non-null folder', async t => {
   const { home, project } = await fixture(t);
   const { loadPlugins } = await import('../core/plugin-loader.mts');

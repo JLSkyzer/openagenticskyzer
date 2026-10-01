@@ -136,28 +136,45 @@ function openRemoteSession(target: McpRemoteTarget, timeoutMs: number): Session 
     };
     if (sessionId) headers['mcp-session-id'] = sessionId;
     const controller = new AbortController();
+    // The timer must stay armed until the response BODY is fully read, not just until headers
+    // arrive: a server that sends 200 + headers promptly but then stalls the body (never finishes
+    // an SSE event, dribbles a JSON response) must still be caught by discoveryTimeoutMs/
+    // callTimeoutMs. Node's fetch keeps the body stream tied to the same AbortSignal through body
+    // consumption, so aborting here still interrupts an in-progress readSseJsonRpcResponse/
+    // response.json() — cleared in `finally` so it covers every exit path.
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-    let response: Response;
+    const asTimeoutOrError = (error: any) =>
+      error?.name === 'AbortError' ? new Error(`délai dépassé (${method})`) : error instanceof Error ? error : new Error(String(error));
     try {
-      response = await fetch(target.url, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id, method, params }), signal: controller.signal });
-    } catch (error: any) {
+      let response: Response;
+      try {
+        response = await fetch(target.url, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id, method, params }), signal: controller.signal });
+      } catch (error: any) {
+        const wrapped = asTimeoutOrError(error);
+        startupError = startupError ?? wrapped;
+        throw wrapped;
+      }
+      if (!response.ok) {
+        const error = new Error(`serveur MCP distant : HTTP ${response.status}`);
+        startupError = startupError ?? error;
+        throw error;
+      }
+      const returnedSessionId = response.headers.get('mcp-session-id');
+      if (returnedSessionId) sessionId = returnedSessionId;
+      const contentType = response.headers.get('content-type') || '';
+      let message: any;
+      try {
+        message = contentType.includes('text/event-stream') ? await readSseJsonRpcResponse(response, id) : await response.json();
+      } catch (error: any) {
+        const wrapped = asTimeoutOrError(error);
+        startupError = startupError ?? wrapped;
+        throw wrapped;
+      }
+      if (message?.error) throw new Error(message.error.message || 'Erreur MCP');
+      return message?.result;
+    } finally {
       clearTimeout(timer);
-      const wrapped = error?.name === 'AbortError' ? new Error(`délai dépassé (${method})`) : error instanceof Error ? error : new Error(String(error));
-      startupError = startupError ?? wrapped;
-      throw wrapped;
     }
-    clearTimeout(timer);
-    if (!response.ok) {
-      const error = new Error(`serveur MCP distant : HTTP ${response.status}`);
-      startupError = startupError ?? error;
-      throw error;
-    }
-    const returnedSessionId = response.headers.get('mcp-session-id');
-    if (returnedSessionId) sessionId = returnedSessionId;
-    const contentType = response.headers.get('content-type') || '';
-    const message = contentType.includes('text/event-stream') ? await readSseJsonRpcResponse(response, id) : await response.json();
-    if (message?.error) throw new Error(message.error.message || 'Erreur MCP');
-    return message?.result;
   }
   // No persistent connection to tear down over HTTP; an idle session simply expires server-side —
   // matches the stdio session's own "ephemeral, closed right after use" design, just with nothing

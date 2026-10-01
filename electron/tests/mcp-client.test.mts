@@ -135,3 +135,14 @@ test('a remote server with an unreachable URL is isolated: an error is reported,
   assert.equal(errors.length, 1);
   assert.deepEqual(tools.map(tl => tl.name).sort(), ['mcp_boom', 'mcp_echo'], 'the working server still discovered its tools');
 });
+
+test('a remote server that sends headers but stalls the body times out instead of hanging forever', async t => {
+  const { startFakeMcpHttpServer } = await import('./fixtures/fake-mcp-http-server.cjs');
+  const fake = await startFakeMcpHttpServer({ mode: 'hang' });
+  t.after(() => fake.close());
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  const { tools, errors } = await mcpTools([{ type: 'http', url: fake.url }], { discoveryTimeoutMs: 200 });
+  assert.equal(tools.length, 0);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /délai|timeout/i);
+});

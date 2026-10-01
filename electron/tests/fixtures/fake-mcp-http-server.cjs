@@ -5,11 +5,16 @@
 // coverage from the same fixture). Exposes the same two tools as fixtures/fake-mcp-server.cjs
 // (echo, boom) for parity with the stdio fixture — kept in a SEPARATE file since the stdio fixture
 // is shared by tests asserting its exact tool list and must not change.
+//
+// mode: 'hang' sends a 200 + headers promptly (so fetch() resolves) but never writes or ends the
+// response body — it simulates a server that stalls mid-response, to exercise the client's
+// timeout covering body consumption, not just the time to first byte.
 const { createServer } = require('node:http');
 const { randomUUID } = require('node:crypto');
 
 function startFakeMcpHttpServer({ mode = 'json', sessionId = randomUUID() } = {}) {
   const receivedRequests = [];
+  const sockets = new Set();
   const server = createServer((req, res) => {
     let raw = '';
     req.on('data', chunk => { raw += chunk; });
@@ -18,6 +23,14 @@ function startFakeMcpHttpServer({ mode = 'json', sessionId = randomUUID() } = {}
       try { message = JSON.parse(raw); } catch { res.writeHead(400).end(); return; }
       receivedRequests.push({ headers: req.headers, message });
       const { id, method, params } = message;
+
+      if (mode === 'hang') {
+        // Headers arrive right away; the body never does — never call res.write()/res.end().
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.flushHeaders();
+        return;
+      }
+
       let result;
       let error;
       if (method === 'initialize') {
@@ -50,6 +63,13 @@ function startFakeMcpHttpServer({ mode = 'json', sessionId = randomUUID() } = {}
       }
     });
   });
+  // Tracked so `close()` can forcibly tear down a connection left open by `mode: 'hang'` — the
+  // client's own abort destroys its end on a real timeout, but close() must not depend on timing
+  // against that to actually finish.
+  server.on('connection', socket => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => {
@@ -58,7 +78,10 @@ function startFakeMcpHttpServer({ mode = 'json', sessionId = randomUUID() } = {}
         url: `http://127.0.0.1:${address.port}/mcp`,
         sessionId,
         receivedRequests,
-        close: () => new Promise(r => server.close(() => r(undefined))),
+        close: () => new Promise(r => {
+          server.close(() => r(undefined));
+          for (const socket of sockets) socket.destroy();
+        }),
       });
     });
   });

@@ -37,12 +37,19 @@ async function handle(line) {
       tools: [
         { name: 'echo', description: 'Echoes the input text back', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
         { name: 'boom', description: 'Always fails', inputSchema: { type: 'object', properties: {} } },
+        // Opt-in third tool with an arbitrary (possibly invalid) name, for tests only.
+        ...(process.env.FAKE_MCP_EXTRA_TOOL_NAME ? [{ name: process.env.FAKE_MCP_EXTRA_TOOL_NAME, inputSchema: { type: 'object', properties: {} } }] : []),
       ],
     });
   } else if (method === 'tools/call') {
     const name = params?.name;
     const args = params?.arguments || {};
-    if (name === 'echo') reply(id, { content: [{ type: 'text', text: String(args.text ?? '') }] });
+    // An optional first CLI argument tags the echo, so a test can run two instances of this same
+    // fixture (different args = different server identity) and tell which one actually answered.
+    // Without that argument the output is unchanged.
+    const tag = process.argv[2];
+    const text = String(args.text ?? '');
+    if (name === 'echo') reply(id, { content: [{ type: 'text', text: tag ? `[${tag}] ${text}` : text }] });
     else if (name === 'boom') replyError(id, -32000, 'Outil boom : échec volontaire');
     else replyError(id, -32601, `Outil inconnu : ${name}`);
   } else {

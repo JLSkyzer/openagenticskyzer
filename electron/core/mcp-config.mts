@@ -128,15 +128,53 @@ export class McpConfigStore {
   }
 }
 
+const PLACEHOLDER = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g;
+
+/** Claude Code's `.mcp.json` placeholder syntax: `${VAR}` is the variable's value (empty if unset),
+ * `${VAR:-default}` falls back to `default` when VAR is unset or empty. This is how a team keeps a
+ * secret OUT of a committed `.mcp.json` ("Authorization": "Bearer ${API_KEY}"). The replacement is
+ * a function, so a value containing `$&` or `$1` is inserted literally. */
+function expandText(text: string, env: NodeJS.ProcessEnv): string {
+  return text.replace(PLACEHOLDER, (_match, name: string, fallback: string | undefined) => {
+    const value = env[name];
+    if (fallback !== undefined) return value ? value : fallback;
+    return value ?? '';
+  });
+}
+function expandRecord(record: Record<string, string>, env: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(Object.entries(record).map(([key, value]) => [key, expandText(value, env)]));
+}
+
+/** A project-scope entry with every placeholder expanded in `command`, `args`, `env` values, `url`
+ * and `headers` values — exactly the fields Claude Code expands. Keys are never expanded. */
+export function expandServerPlaceholders(server: McpServerConfig, env: NodeJS.ProcessEnv = process.env): McpServerConfig {
+  if ('command' in server) {
+    return {
+      ...server,
+      command: expandText(server.command, env),
+      args: server.args.map(arg => expandText(arg, env)),
+      ...(server.env ? { env: expandRecord(server.env, env) } : {}),
+    };
+  }
+  return { ...server, url: expandText(server.url, env), ...(server.headers ? { headers: expandRecord(server.headers, env) } : {}) };
+}
+
 /**
- * Reads `<folder>/.mcp.json` — the real Claude Code project-config schema, for real interop (a file
- * written for Claude Code works here unchanged). Never written by this app: the user edits it by
+ * Reads `<folder>/.mcp.json` — the real Claude Code project-config schema, for real interop with
+ * one known limit: `type: "sse"` is handled like `"http"` (MCP's Streamable HTTP), whereas Claude
+ * Code means the LEGACY HTTP+SSE transport by it — a legacy-only SSE endpoint will not work here.
+ * Stdio and `"http"` entries, placeholders included, do. Never written by this app: the user edits it by
  * hand or via git, same convention Claude Code itself uses for a file meant to be shared with a
  * team. Tolerant by design: a missing file means simply "no project servers" (empty list), and a
  * malformed one is logged and treated the same way — this must never block folder activation, the
  * same philosophy already applied to this project's other best-effort reads.
+ *
+ * `${VAR}` / `${VAR:-default}` placeholders are expanded against `process.env` (see
+ * `expandServerPlaceholders`) — only here, never for the global store, whose values the user types
+ * for real. `expandEnv: false` returns the entries exactly as written, for display: an expanded
+ * placeholder is typically a secret.
  */
-export async function readProjectMcpConfig(folder: string): Promise<McpServerConfig[]> {
+export async function readProjectMcpConfig(folder: string, { expandEnv = true }: { expandEnv?: boolean } = {}): Promise<McpServerConfig[]> {
   if (!isAbsolute(folder)) throw new Error('Dossier absolu requis');
   const path = join(folder, '.mcp.json');
   let raw: string;
@@ -179,13 +217,28 @@ export async function readProjectMcpConfig(folder: string): Promise<McpServerCon
       console.error(`[mcp] .mcp.json : entrée "${name}" invalide`);
     }
   }
-  return result;
+  return expandEnv ? result.map(server => expandServerPlaceholders(server)) : result;
 }
 
 /** A server's identity for merge purposes: command+args (stdio) or url (remote) — not `name`,
  * since global entries (added via the UI's single command-line field) have none. */
 function serverIdentity(server: McpServerConfig): string {
   return 'command' in server ? `stdio:${server.command}:${JSON.stringify(server.args)}` : `remote:${server.url}`;
+}
+
+/** Stands in for every secret value in what the renderer receives. */
+const REDACTED = '••••••••';
+
+/** The server list as it may cross to the renderer: every `env` (stdio) and `headers` (remote)
+ * VALUE replaced by `REDACTED`, keys kept — the renderer never needs a value (it displays none),
+ * and secrets never travel back to it, the same invariant the connection API key and the HF token
+ * already follow. The worker keeps using the real values; only this copy is redacted. */
+export function redactSecrets(servers: McpServerConfig[]): McpServerConfig[] {
+  const mask = (record: Record<string, string>) => Object.fromEntries(Object.keys(record).map(key => [key, REDACTED]));
+  return servers.map(server => {
+    if ('command' in server) return server.env ? { ...server, env: mask(server.env) } : server;
+    return server.headers ? { ...server, headers: mask(server.headers) } : server;
+  });
 }
 
 /** Unions global + project server lists. On a collision (same identity — see `serverIdentity`),

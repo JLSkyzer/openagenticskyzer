@@ -9,10 +9,14 @@
 // mode: 'hang' sends a 200 + headers promptly (so fetch() resolves) but never writes or ends the
 // response body — it simulates a server that stalls mid-response, to exercise the client's
 // timeout covering body consumption, not just the time to first byte.
+//
+// lineEnding (sse mode): '\n' by default; '\r\n' reproduces the CRLF framing the official Python
+// MCP SDK sends (sse-starlette's default). splitChunks additionally sends the JSON over several
+// `data:` lines and cuts the stream right after every '\r', so each CRLF straddles two chunks.
 const { createServer } = require('node:http');
 const { randomUUID } = require('node:crypto');
 
-function startFakeMcpHttpServer({ mode = 'json', sessionId = randomUUID() } = {}) {
+function startFakeMcpHttpServer({ mode = 'json', sessionId = randomUUID(), lineEnding = '\n', splitChunks = false } = {}) {
   const receivedRequests = [];
   const sockets = new Set();
   const server = createServer((req, res) => {
@@ -55,8 +59,22 @@ function startFakeMcpHttpServer({ mode = 'json', sessionId = randomUUID() } = {}
       const extraHeaders = method === 'initialize' ? { 'mcp-session-id': sessionId } : {};
       if (mode === 'sse') {
         res.writeHead(200, { 'content-type': 'text/event-stream', ...extraHeaders });
-        res.write(`data: ${payload}\n\n`);
-        res.end();
+        // splitChunks also spreads the JSON over several `data:` lines (pretty-printed), which SSE
+        // allows and sse-starlette does for any multi-line payload: a CRLF split mistaken for an
+        // event boundary would then cut one message into pieces that are each invalid JSON.
+        const dataText = splitChunks ? JSON.stringify(JSON.parse(payload), null, 2) : payload;
+        const dataLines = dataText.split('\n').map(line => `data: ${line}${lineEnding}`).join('');
+        const event = `event: message${lineEnding}${dataLines}${lineEnding}`;
+        if (!splitChunks) { res.write(event); res.end(); return; }
+        // One write per line ending, each cut right after its '\r': a CRLF then straddles two
+        // network chunks, the way a real server's separate flushes can split it.
+        const pieces = event.split(/(?<=\r)/);
+        const writeNext = () => {
+          if (!pieces.length) { res.end(); return; }
+          res.write(pieces.shift());
+          setTimeout(writeNext, 15);
+        };
+        writeNext();
       } else {
         res.writeHead(200, { 'content-type': 'application/json', ...extraHeaders });
         res.end(payload);

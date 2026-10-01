@@ -192,3 +192,76 @@ test('mergeServerConfigs: a remote server collision is identified by url, not by
   assert.equal(merged.length, 1);
   assert.equal((merged[0] as any).headers.Authorization, 'Bearer y');
 });
+
+/** Sets (or, with `undefined`, unsets) real process.env variables for one test, restoring the
+ * previous values — including "was unset" — afterwards. */
+function withEnv(t: { after(fn: () => void): void }, vars: Record<string, string | undefined>) {
+  for (const [key, value] of Object.entries(vars)) {
+    const had = Object.prototype.hasOwnProperty.call(process.env, key);
+    const previous = process.env[key];
+    t.after(() => { if (had) process.env[key] = previous; else delete process.env[key]; });
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
+}
+
+async function projectWith(t: { after(fn: () => unknown): void }, servers: Record<string, unknown>): Promise<string> {
+  const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'openagent-mcp-expand-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const project = join(root, 'project');
+  await mkdir(project);
+  await writeFile(join(project, '.mcp.json'), JSON.stringify({ mcpServers: servers }));
+  return project;
+}
+
+test('readProjectMcpConfig expands ${VAR} and ${VAR:-default} from process.env, like Claude Code', async t => {
+  withEnv(t, { OA_TEST_TOKEN: 'real-token-123', OA_TEST_BIN: 'node', OA_TEST_UNSET: undefined, OA_TEST_EMPTY: '' });
+  const project = await projectWith(t, {
+    local: {
+      command: '${OA_TEST_BIN}',
+      args: ['--token=${OA_TEST_TOKEN}', '${OA_TEST_UNSET:-fallback-arg}', 'plain'],
+      env: { TOKEN: '${OA_TEST_TOKEN}', MISSING: '${OA_TEST_UNSET}', EMPTY_DEFAULT: '${OA_TEST_EMPTY:-was-empty}' },
+    },
+    distant: {
+      type: 'http',
+      url: 'https://${OA_TEST_UNSET:-mcp.example.com}/v1',
+      headers: { Authorization: 'Bearer ${OA_TEST_TOKEN}', 'X-Team': '${OA_TEST_UNSET:-default-team}' },
+    },
+  });
+  const { readProjectMcpConfig } = await import('../core/mcp-config.mts');
+  const servers = await readProjectMcpConfig(project);
+  const local = servers.find(s => s.id === 'local') as any;
+  assert.equal(local.command, 'node');
+  assert.deepEqual(local.args, ['--token=real-token-123', 'fallback-arg', 'plain']);
+  assert.deepEqual(local.env, { TOKEN: 'real-token-123', MISSING: '', EMPTY_DEFAULT: 'was-empty' });
+  const distant = servers.find(s => s.id === 'distant') as any;
+  assert.equal(distant.url, 'https://mcp.example.com/v1');
+  assert.deepEqual(distant.headers, { Authorization: 'Bearer real-token-123', 'X-Team': 'default-team' });
+});
+
+test('readProjectMcpConfig: a set variable wins over its default; a value with "$&" is inserted literally', async t => {
+  withEnv(t, { OA_TEST_TOKEN: 'a$&b$1' });
+  const project = await projectWith(t, { s: { command: 'x', args: ['${OA_TEST_TOKEN:-unused}'] } });
+  const { readProjectMcpConfig } = await import('../core/mcp-config.mts');
+  const [server] = await readProjectMcpConfig(project) as any[];
+  assert.deepEqual(server.args, ['a$&b$1']);
+});
+
+test('readProjectMcpConfig({ expandEnv: false }) returns the entries exactly as written', async t => {
+  withEnv(t, { OA_TEST_TOKEN: 'real-token-123' });
+  const project = await projectWith(t, { s: { command: 'x', args: ['${OA_TEST_TOKEN}'], env: { T: '${OA_TEST_TOKEN}' } } });
+  const { readProjectMcpConfig } = await import('../core/mcp-config.mts');
+  const [server] = await readProjectMcpConfig(project, { expandEnv: false }) as any[];
+  assert.deepEqual(server.args, ['${OA_TEST_TOKEN}']);
+  assert.deepEqual(server.env, { T: '${OA_TEST_TOKEN}' });
+});
+
+test('the global mcp.json store never expands placeholders (the user types real values there)', async t => {
+  withEnv(t, { OA_TEST_TOKEN: 'real-token-123' });
+  const home = await fixture(t);
+  const { McpConfigStore } = await import('../core/mcp-config.mts');
+  const store = new McpConfigStore(home);
+  await store.add('x --token=${OA_TEST_TOKEN}');
+  const [server] = await store.list() as any[];
+  assert.deepEqual(server.args, ['--token=${OA_TEST_TOKEN}']);
+});

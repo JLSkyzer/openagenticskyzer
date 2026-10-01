@@ -14,5 +14,5 @@ export interface FakeMcpHttpServer {
 }
 
 export function startFakeMcpHttpServer(
-  options?: { mode?: 'json' | 'sse' | 'hang'; sessionId?: string },
+  options?: { mode?: 'json' | 'sse' | 'hang'; sessionId?: string; lineEnding?: '\n' | '\r\n'; splitChunks?: boolean },
 ): Promise<FakeMcpHttpServer>;

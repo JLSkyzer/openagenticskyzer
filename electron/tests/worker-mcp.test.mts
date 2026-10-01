@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
@@ -193,6 +193,153 @@ test('worker::send: a project .mcp.json server overrides a colliding global one 
   assert.equal(events.at(-1).kind, 'done', `expected done (no duplicate-tool-name error), got: ${JSON.stringify(events.at(-1))}`);
 });
 
+test('worker::send: two DIFFERENT servers exposing the same tool names never fail the turn — the project one wins', { timeout: 30000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-samename-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  t.after(() => worker.terminate());
+  await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
+
+  // Same fixture, different args: two distinct server identities, so mergeServerConfigs keeps
+  // BOTH — yet both expose `echo`/`boom`, i.e. two `mcp_echo` and two `mcp_boom` AgentTools.
+  await callWorker(worker, 'mcp-add', { commandLine: `"${process.execPath}" "${FAKE_MCP_SERVER}" global` });
+  await writeFile(join(project, '.mcp.json'), JSON.stringify({
+    mcpServers: { fake: { command: process.execPath, args: [FAKE_MCP_SERVER, 'project'] } },
+  }));
+
+  const toolNamesPerRequest: string[][] = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.on('data', chunk => { body += chunk; });
+    request.on('end', () => {
+      const parsed = JSON.parse(body);
+      toolNamesPerRequest.push((parsed.tools ?? []).map((tool: any) => tool.function.name));
+      response.writeHead(200, { 'content-type': 'application/json' });
+      if (toolNamesPerRequest.length === 1) {
+        response.end(JSON.stringify({
+          choices: [{ message: { content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'mcp_echo', arguments: JSON.stringify({ text: 'qui répond ?' }) } }] }, finish_reason: 'tool_calls' }],
+        }));
+      } else {
+        response.end(JSON.stringify({ choices: [{ message: { content: 'Fait.' }, finish_reason: 'stop' }] }));
+      }
+    });
+  });
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
+  const port = (server.address() as { port: number }).port;
+  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'utilise echo', connection });
+  const { events, stop } = collectAgentEvents(worker, runId);
+  await waitUntilDone(events);
+  stop();
+
+  assert.equal(events.at(-1).kind, 'done', `expected done (no duplicate-tool-name error), got: ${JSON.stringify(events.at(-1))}`);
+  const offered = toolNamesPerRequest[0];
+  assert.equal(offered.filter(name => name === 'mcp_echo').length, 1, `exactly one mcp_echo offered, got: ${offered.join(',')}`);
+  assert.equal(offered.filter(name => name === 'mcp_boom').length, 1, `exactly one mcp_boom offered, got: ${offered.join(',')}`);
+  const messages = await callWorker(worker, 'messages', { folder: project, branchId: 'main' });
+  const toolResult = messages.find((m: any) => m.role === 'tool');
+  assert.equal(toolResult.content, '[project] qui répond ?', 'the project-scope server (listed first by mergeServerConfigs) is the one that answered');
+});
+
+test('worker::send: an MCP tool with an invalid name is dropped instead of failing the turn', { timeout: 30000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-badname-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  await writeFile(join(project, '.mcp.json'), JSON.stringify({
+    mcpServers: { fake: { command: process.execPath, args: [FAKE_MCP_SERVER], env: { FAKE_MCP_EXTRA_TOOL_NAME: 'nom avec espaces' } } },
+  }));
+
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  t.after(() => worker.terminate());
+  await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
+
+  const toolNames: string[] = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.on('data', chunk => { body += chunk; });
+    request.on('end', () => {
+      toolNames.push(...(JSON.parse(body).tools ?? []).map((tool: any) => tool.function.name));
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ choices: [{ message: { content: 'Fait.' }, finish_reason: 'stop' }] }));
+    });
+  });
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
+  const port = (server.address() as { port: number }).port;
+  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const { events, stop } = collectAgentEvents(worker, runId);
+  await waitUntilDone(events);
+  stop();
+
+  assert.equal(events.at(-1).kind, 'done', `expected done (no invalid-tool-name error), got: ${JSON.stringify(events.at(-1))}`);
+  assert.ok(toolNames.includes('mcp_echo'), 'the server\'s valid tools are still offered');
+  assert.ok(!toolNames.includes('mcp_nom avec espaces'), 'the invalid one is not');
+});
+
+test('worker::mcp-list shows project entries as written (an expanded ${VAR} never reaches the renderer), deduped as a turn would be', { timeout: 30000 }, async t => {
+  const SECRET = 'sk-EXPANDED-ARG-SECRET';
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-expand-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  const { startFakeMcpHttpServer } = await import('./fixtures/fake-mcp-http-server.cjs');
+  const fake = await startFakeMcpHttpServer({ mode: 'json' });
+  t.after(() => fake.close());
+  const distantUrl = `${fake.url}/\${OA_TEST_SECRET}`; // the fake server answers on any path
+  await writeFile(join(project, '.mcp.json'), JSON.stringify({
+    mcpServers: {
+      local: { command: '${OA_TEST_NODE}', args: [FAKE_MCP_SERVER] },
+      tokened: { command: 'some-server', args: ['--token=${OA_TEST_SECRET}'] },
+      distant: { type: 'http', url: distantUrl, headers: { Authorization: 'Bearer ${OA_TEST_SECRET}' } },
+    },
+  }));
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
+    env: { ...process.env, OPENAGENT_HOME: home, OA_TEST_SECRET: SECRET, OA_TEST_NODE: process.execPath },
+  });
+  t.after(() => worker.terminate());
+  // Same command+args as the project's `local` entry ONCE EXPANDED: a turn runs only one of them.
+  await callWorker(worker, 'mcp-add', { commandLine: `"${process.execPath}" "${FAKE_MCP_SERVER}"` });
+
+  const listed = await callWorker(worker, 'mcp-list', { folder: project });
+  assert.ok(!JSON.stringify(listed).includes(SECRET), `the expanded secret must not reach the renderer — got ${JSON.stringify(listed)}`);
+  const byId = new Map(listed.map((s: any) => [s.id, s]));
+  assert.deepEqual((byId.get('tokened') as any).args, ['--token=${OA_TEST_SECRET}'], 'shown exactly as written in .mcp.json');
+  assert.equal((byId.get('distant') as any).url, distantUrl);
+  assert.equal((byId.get('local') as any).command, '${OA_TEST_NODE}');
+  assert.equal(listed.length, 3, `the global duplicate of the expanded \`local\` entry is merged away, as in a turn — got ${JSON.stringify(listed)}`);
+
+  // A real turn uses the EXPANDED values: the remote server receives the real path and header.
+  const llm = createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ choices: [{ message: { content: 'Fait.' }, finish_reason: 'stop' }] }));
+    });
+  });
+  await new Promise<void>((resolve, reject) => { llm.once('error', reject); llm.listen(0, '127.0.0.1', resolve); });
+  t.after(() => new Promise(resolve => llm.close(() => resolve(undefined))));
+  const port = (llm.address() as { port: number }).port;
+  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const { events, stop } = collectAgentEvents(worker, runId);
+  await waitUntilDone(events);
+  stop();
+  assert.equal(events.at(-1).kind, 'done', `expected done, got: ${JSON.stringify(events.at(-1))}`);
+  const init = fake.receivedRequests.find(r => r.message.method === 'initialize');
+  assert.equal(init?.headers.authorization, `Bearer ${SECRET}`, 'the header placeholder was expanded for the real request');
+});
+
 test('worker::mcp-add-remote persists a real remote server definition', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-remote-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -207,5 +354,72 @@ test('worker::mcp-add-remote persists a real remote server definition', async t 
   assert.equal(result[0].url, 'https://example.com/mcp');
   const relisted = await callWorker(worker, 'mcp-list', {});
   assert.equal(relisted.length, 1);
-  assert.equal(relisted[0].headers.Authorization, 'Bearer tok');
+  assert.equal(relisted[0].url, 'https://example.com/mcp');
+  assert.deepEqual(Object.keys(relisted[0].headers), ['Authorization'], 'the header name survives for the renderer');
+  assert.ok(!JSON.stringify([result, relisted]).includes('Bearer tok'), 'but never its value');
+  const onDisk = JSON.parse(await readFile(join(home, 'mcp.json'), 'utf8'));
+  assert.equal(onDisk[0].headers.Authorization, 'Bearer tok', 'the real value is still persisted');
+});
+
+test('worker::mcp-* replies never carry a real env/header secret to the renderer — yet the real value is still used', { timeout: 30000 }, async t => {
+  const SECRET_HEADER = 'Bearer sk-HEADER-SECRET-123';
+  const SECRET_ENV = 'sk-ENV-SECRET-456';
+  const SECRET_PROJECT_HEADER = 'sk-PROJECT-HEADER-789';
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-secrets-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  await writeFile(join(project, '.mcp.json'), JSON.stringify({
+    mcpServers: {
+      local: { command: process.execPath, args: [FAKE_MCP_SERVER], env: { API_KEY: SECRET_ENV } },
+      distant: { type: 'http', url: 'http://127.0.0.1:1/unused', headers: { 'X-Api-Key': SECRET_PROJECT_HEADER } },
+    },
+  }));
+  const { startFakeMcpHttpServer } = await import('./fixtures/fake-mcp-http-server.cjs');
+  const fake = await startFakeMcpHttpServer({ mode: 'json' });
+  t.after(() => fake.close());
+
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  t.after(() => worker.terminate());
+  const assertNoSecret = (label: string, value: unknown) => {
+    const text = JSON.stringify(value);
+    for (const secret of [SECRET_HEADER, SECRET_ENV, SECRET_PROJECT_HEADER]) {
+      assert.ok(!text.includes(secret), `${label}: "${secret}" must never come back to the renderer — got ${text}`);
+    }
+  };
+
+  const added = await callWorker(worker, 'mcp-add-remote', { url: fake.url, type: 'http', headers: { Authorization: SECRET_HEADER } });
+  assertNoSecret('mcp-add-remote reply', added);
+  assertNoSecret('mcp-add reply', await callWorker(worker, 'mcp-add', { commandLine: 'echo hello' }));
+  const listed = await callWorker(worker, 'mcp-list', { folder: project });
+  assertNoSecret('mcp-list reply', listed);
+  assert.equal(listed.length, 4, 'both scopes listed');
+  const byId = new Map(listed.map((s: any) => [s.id, s]));
+  assert.deepEqual(Object.keys((byId.get('local') as any).env), ['API_KEY'], 'env key names survive, values do not');
+  assert.deepEqual(Object.keys((byId.get('distant') as any).headers), ['X-Api-Key']);
+  const echoEntry = listed.find((s: any) => s.command === 'echo');
+  assertNoSecret('mcp-remove reply', await callWorker(worker, 'mcp-remove', { id: echoEntry.id }));
+
+  // On disk and inside the worker, the real value is untouched: a real turn sends it for real.
+  const onDisk = await readFile(join(home, 'mcp.json'), 'utf8');
+  assert.ok(onDisk.includes(SECRET_HEADER), 'mcp.json keeps the real header value');
+  const llm = createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ choices: [{ message: { content: 'Fait.' }, finish_reason: 'stop' }] }));
+    });
+  });
+  await new Promise<void>((resolve, reject) => { llm.once('error', reject); llm.listen(0, '127.0.0.1', resolve); });
+  t.after(() => new Promise(resolve => llm.close(() => resolve(undefined))));
+  const port = (llm.address() as { port: number }).port;
+  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const { events, stop } = collectAgentEvents(worker, runId);
+  await waitUntilDone(events);
+  stop();
+  assert.equal(events.at(-1).kind, 'done');
+  const init = fake.receivedRequests.find(r => r.message.method === 'initialize');
+  assert.equal(init?.headers.authorization, SECRET_HEADER, 'the remote server really received the real, unredacted header');
 });

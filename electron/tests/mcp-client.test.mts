@@ -84,6 +84,30 @@ test('mcpTools discovers real tools from a real HTTP server (text/event-stream m
   assert.deepEqual(tools.map(tl => tl.name).sort(), ['mcp_boom', 'mcp_echo']);
 });
 
+test('mcpTools discovers real tools from a CRLF-framed SSE stream (the official Python SDK\'s framing)', async t => {
+  const { startFakeMcpHttpServer } = await import('./fixtures/fake-mcp-http-server.cjs');
+  const fake = await startFakeMcpHttpServer({ mode: 'sse', lineEnding: '\r\n' });
+  t.after(() => fake.close());
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  const { tools, errors } = await mcpTools([{ type: 'http', url: fake.url }]);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(tools.map(tl => tl.name).sort(), ['mcp_boom', 'mcp_echo']);
+  const result = await tools.find(tl => tl.name === 'mcp_echo')!.execute({ text: 'via CRLF' }, new AbortController().signal);
+  assert.equal(result, 'via CRLF');
+});
+
+test('a CRLF split across two network chunks still frames the SSE events correctly', async t => {
+  const { startFakeMcpHttpServer } = await import('./fixtures/fake-mcp-http-server.cjs');
+  const fake = await startFakeMcpHttpServer({ mode: 'sse', lineEnding: '\r\n', splitChunks: true });
+  t.after(() => fake.close());
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  const { tools, errors } = await mcpTools([{ type: 'http', url: fake.url }]);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(tools.map(tl => tl.name).sort(), ['mcp_boom', 'mcp_echo']);
+  const result = await tools.find(tl => tl.name === 'mcp_echo')!.execute({ text: 'coupé' }, new AbortController().signal);
+  assert.equal(result, 'coupé');
+});
+
 test('a real tool call round-trips over real HTTP and returns the real result', async t => {
   const { startFakeMcpHttpServer } = await import('./fixtures/fake-mcp-http-server.cjs');
   const fake = await startFakeMcpHttpServer({ mode: 'json' });

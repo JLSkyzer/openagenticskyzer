@@ -8,7 +8,7 @@ import { Conversations } from './core/conversations.mts';
 import { FoldersService } from './core/folders.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
 import { completeLocal } from './core/local-engine.mts';
-import { runAgent } from './core/agent.mts';
+import { runAgent, TOOL_NAME_PATTERN } from './core/agent.mts';
 import { ChatProvider } from './core/provider.mts';
 import { workspaceTools } from './core/workspace.mts';
 import { memoryTools, appendCompactionSummary } from './core/memory-tools.mts';
@@ -26,7 +26,7 @@ import { gitStatus } from './core/git-status.mts';
 import { testHfToken } from './core/hf-token.mts';
 import { migrateDataDir, resolveDataHome } from './core/data-dir.mts';
 import { initializeProject } from './core/project-analyzer.mts';
-import { McpConfigStore, readProjectMcpConfig, mergeServerConfigs } from './core/mcp-config.mts';
+import { McpConfigStore, readProjectMcpConfig, mergeServerConfigs, redactSecrets, expandServerPlaceholders } from './core/mcp-config.mts';
 import { mcpTools } from './core/mcp-client.mts';
 import { searchTools } from './core/search-tools.mts';
 import { indexFolder } from './core/semantic-index.mts';
@@ -165,15 +165,43 @@ async function nonPluginTools(folder, effective) {
   // A broken/unreachable MCP server never blocks the turn or surfaces to the chat — same
   // server-log-only isolation agent.py's own logging.getLogger("openagentic.mcp").warning had.
   for (const error of mcpErrors) console.error(`[mcp] ${error}`);
-  return [
+  const builtIn = [
     ...await workspaceTools(folder, effective.ignored_patterns),
     ...await memoryTools(folder, dataHome),
     ...await gitTools(folder),
     ...await shellTools(folder),
     ...await webTools(),
     ...await searchTools(folder, dataHome),
-    ...mcpDiscovered,
   ];
+  return [...builtIn, ...mcpToolsBeside(mcpDiscovered, builtIn)];
+}
+
+/** The discovered MCP tools minus any whose name is invalid or already taken — by a built-in, or
+ * by an EARLIER MCP tool: two different servers (e.g. a global and a project filesystem server)
+ * easily expose the same tool name, and runAgent refuses a duplicated or invalid name for the
+ * WHOLE turn. First registered wins; mergeServerConfigs lists project servers first, so a project
+ * server's tool wins over a global one's. Same idiom as pluginToolsBeside, logged like mcpErrors. */
+function mcpToolsBeside(discovered, others) {
+  const taken = new Set(others.map(tool => tool.name));
+  const kept = [];
+  for (const tool of discovered) {
+    if (!TOOL_NAME_PATTERN.test(tool.name)) console.error(`[mcp] ${tool.name}: nom d’outil invalide, ignoré`);
+    else if (taken.has(tool.name)) console.error(`[mcp] ${tool.name}: nom déjà utilisé par un autre outil, ignoré`);
+    else { taken.add(tool.name); kept.push(tool); }
+  }
+  return kept;
+}
+
+/** The merged server list for the Outils tab: merged exactly as a turn merges it (placeholders
+ * expanded, so the same entries dedupe), but each project entry shown as written in .mcp.json —
+ * an expanded `${TOKEN}` in args or url is a secret, and those fields are displayed, not masked. */
+async function mcpServersForDisplay(folder) {
+  const global = await mcpConfig.list();
+  if (!folder) return global;
+  const asWritten = await readProjectMcpConfig(folder, { expandEnv: false });
+  const byId = new Map(asWritten.map(server => [server.id, server]));
+  const merged = mergeServerConfigs(global, asWritten.map(server => expandServerPlaceholders(server)));
+  return merged.map(server => (server.scope === 'project' ? byId.get(server.id) ?? server : server));
 }
 
 /** The folder's plugin tools minus any whose name `others` already uses: runAgent refuses a
@@ -341,10 +369,11 @@ async function handle(message) {
         : await loadPlugins(null, dataHome);
       result = { tools: tools.map(t => t.name), errors };
     }
-    if (op === 'mcp-list') result = mergeServerConfigs(await mcpConfig.list(), payload.folder ? await readProjectMcpConfig(payload.folder) : []);
-    if (op === 'mcp-add') result = await mcpConfig.add(payload.commandLine);
-    if (op === 'mcp-add-remote') result = await mcpConfig.addRemote(payload.url, payload.type, payload.headers);
-    if (op === 'mcp-remove') result = await mcpConfig.remove(payload.id);
+    // Every MCP op's reply goes through redactSecrets: env/header values never reach the renderer.
+    if (op === 'mcp-list') result = redactSecrets(await mcpServersForDisplay(payload.folder ?? null));
+    if (op === 'mcp-add') result = redactSecrets(await mcpConfig.add(payload.commandLine));
+    if (op === 'mcp-add-remote') result = redactSecrets(await mcpConfig.addRemote(payload.url, payload.type, payload.headers));
+    if (op === 'mcp-remove') result = redactSecrets(await mcpConfig.remove(payload.id));
     if (op === 'list_folders') result = await folders.list();
     if (op === 'index-status') result = indexStatus.get(resolve(String(payload.folder))) ?? { state: 'idle' };
     if (op === 'knowledge-list') result = await listKnowledgeSources(dataHome);

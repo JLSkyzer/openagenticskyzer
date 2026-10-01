@@ -99,6 +99,12 @@ async function readSseJsonRpcResponse(response: Response, id: string): Promise<a
       const { value, done } = await reader.read();
       if (done) throw new Error('Flux SSE terminé sans réponse');
       buffer += decoder.decode(value, { stream: true });
+      // SSE allows CRLF, LF or CR line endings, and the official Python SDK (sse-starlette) sends
+      // CRLF: normalize to LF so a single '\n\n' search finds every event boundary. A trailing '\r'
+      // may be the first half of a CRLF split across two chunks — held back until the next one,
+      // or it would become '\n' and its '\n' a second, fake one (a premature event boundary).
+      const heldCr = buffer.endsWith('\r');
+      buffer = (heldCr ? buffer.slice(0, -1) : buffer).replace(/\r\n?/g, '\n') + (heldCr ? '\r' : '');
       let index: number;
       while ((index = buffer.indexOf('\n\n')) >= 0) {
         const rawEvent = buffer.slice(0, index);

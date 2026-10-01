@@ -26,8 +26,13 @@ en-tête statique seulement pour ce lot, pas d'OAuth).
     l'utilisateur, l'UI ne fait que le lire et fusionner.
   - Fusion : union des deux ensembles ; en cas de collision de nom, le serveur
     projet l'emporte sur le serveur global (portée la plus spécifique gagne).
-- **Même schéma que le vrai Claude Code** (interopérabilité réelle : un
-  `.mcp.json` écrit pour Claude Code doit fonctionner tel quel ici) :
+- **Même schéma que le vrai Claude Code**, avec une limite d'interopérabilité
+  constatée lors de la revue finale du lot (2026-10-02) : `type: "sse"` est
+  traité ici comme le transport MCP moderne « Streamable HTTP », pas comme le
+  transport historique HTTP+SSE de Claude Code (GET + événement `endpoint` +
+  POST) — un `.mcp.json` réel pointant vers un serveur SSE *historique* ne
+  fonctionnera pas ici. Pour tout le reste du schéma (stdio, `env`, `http`),
+  un fichier écrit pour Claude Code se lit tel quel :
   ```json
   {
     "mcpServers": {
@@ -65,7 +70,10 @@ en-tête statique seulement pour ce lot, pas d'OAuth).
   qui bloquerait l'activation du dossier — même philosophie que
   `project_memory.py`/les autres lectures tolérantes déjà dans ce projet).
   Nouvelle fonction pure `mergeServerConfigs(global, project):
-  McpServerConfig[]` — union par nom, projet gagne sur collision.
+  McpServerConfig[]` — union par **identité de connexion** (`command`+`args`
+  pour un serveur stdio, `url` pour un serveur distant), pas par nom : la
+  config globale existante n'a pas de champ nom, une règle par nom serait
+  donc quasiment inopérante. Projet gagne sur collision d'identité.
 - Type union `McpServerConfig` :
   ```ts
   type StdioServerConfig = { id: string; name?: string; command: string; args: string[]; env?: Record<string, string> };

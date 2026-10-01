@@ -13,7 +13,7 @@ let tray;
 let backend;
 let connections;
 const pending = new Map();
-const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','git-status','test-hf-token','migrate-data-dir','init-project','mcp-list','mcp-add','mcp-remove','index-status','knowledge-list','knowledge-add','knowledge-remove','plugin-list']);
+const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','git-status','test-hf-token','migrate-data-dir','init-project','mcp-list','mcp-add','mcp-add-remote','mcp-remove','index-status','knowledge-list','knowledge-add','knowledge-remove','plugin-list']);
 
 // Exactly the pattern core/export.mts::exportFilename generates — never a filename supplied as-is
 // by the renderer. Constrains what "open-export" (below) is allowed to open, whatever the folder.

@@ -168,12 +168,18 @@ export function listPlugins(folder: string | null): Promise<PluginListResult> {
   return request('plugin-list', { folder });
 }
 
-export interface McpServerConfig { id: string; command: string; args: string[]; added_at: string }
-export function listMcpServers(): Promise<McpServerConfig[]> {
-  return request('mcp-list');
+export interface StdioServerConfig { id: string; name?: string; scope: 'global' | 'project'; command: string; args: string[]; env?: Record<string, string>; added_at?: string }
+export interface RemoteServerConfig { id: string; name?: string; scope: 'global' | 'project'; type: 'sse' | 'http'; url: string; headers?: Record<string, string>; added_at?: string }
+export type McpServerConfig = StdioServerConfig | RemoteServerConfig;
+
+export function listMcpServers(folder: string | null): Promise<McpServerConfig[]> {
+  return request('mcp-list', { folder });
 }
 export function addMcpServer(commandLine: string): Promise<McpServerConfig[]> {
   return request('mcp-add', { commandLine });
+}
+export function addMcpRemoteServer(url: string, type: 'sse' | 'http', headers?: Record<string, string>): Promise<McpServerConfig[]> {
+  return request('mcp-add-remote', { url, type, headers });
 }
 export function removeMcpServer(id: string): Promise<McpServerConfig[]> {
   return request('mcp-remove', { id });

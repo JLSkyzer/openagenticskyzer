@@ -99,6 +99,38 @@ app.whenReady().then(async () => {
     const afterRemoval = JSON.parse(await readFile(join(home, 'mcp.json'), 'utf8'));
     assert.equal(afterRemoval.length, 0);
 
+    // ── A real project .mcp.json shows the "projet" badge, with ✕ disabled ───────
+    const alpha = join(home, '..', 'alpha'); // sibling of home, a real project folder
+    await (await import('node:fs/promises')).mkdir(alpha, { recursive: true });
+    await (await import('node:fs/promises')).writeFile(join(alpha, '.mcp.json'), JSON.stringify({
+      mcpServers: { teamserver: { command: 'npx', args: ['-y', 'some-pkg'] } },
+    }));
+    await (await import('node:fs/promises')).writeFile(join(home, 'folders.json'), JSON.stringify([{ path: alpha, last_used: new Date().toISOString() }]));
+    await win.webContents.reload();
+    await pause(500);
+    await waitFor(() => js(`document.querySelectorAll('[data-testid="oa-folder-entry"]').length === 1`), { what: 'alpha listed after seeding folders.json' });
+    await click('[data-testid="oa-folder-entry"]');
+    await waitFor(() => exists('#oa-input-ta'), { what: 'alpha activated' });
+    await click('#oa-settings-btn');
+    await waitFor(() => js(`!!document.querySelector('[data-testid="oa-settings-tab"][data-tab="tools"]')`), { what: 'Outils tab exists' });
+    await click('[data-testid="oa-settings-tab"][data-tab="tools"]');
+    await waitFor(() => exists('[data-testid="oa-mcp-project-badge"]'), { what: 'project badge shown for the .mcp.json server' });
+    const projectEntryRemoveDisabled = await js(`document.querySelector('[data-testid="oa-mcp-entry"][data-scope="project"] [data-testid="oa-mcp-remove"]').disabled`);
+    assert.equal(projectEntryRemoveDisabled, true, 'a project-scope server cannot be removed from the UI');
+    await writeFile(join(screenshotDir, 'mcp-3-project-badge.png'), await capturePng(win));
+
+    // ── A real click adds a real remote server definition, persisted to the real mcp.json ───────
+    await js(`(() => {
+      const el = document.querySelector('[data-testid="oa-mcp-remote-url-input"]');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, 'https://example.com/mcp');
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await click('#oa-mcp-add-remote-btn');
+    await waitFor(async () => (await js(`document.querySelectorAll('[data-testid="oa-mcp-entry"][data-scope="global"]').length`)) === 1, { what: 'remote server appears in the list' });
+    const onDiskAfterRemote = JSON.parse(await (await import('node:fs/promises')).readFile(join(home, 'mcp.json'), 'utf8'));
+    assert.ok(onDiskAfterRemote.some(e => e.type === 'http' && e.url === 'https://example.com/mcp'), 'really persisted to mcp.json');
+    await writeFile(join(screenshotDir, 'mcp-4-remote-added.png'), await capturePng(win));
+
     process.stdout.write(`PASS mcp tab: real add/remove through the real worker, real mcp.json (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshots: ${screenshotDir}\n`);
   } catch (error) {

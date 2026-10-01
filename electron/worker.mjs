@@ -341,7 +341,7 @@ async function handle(message) {
         : await loadPlugins(null, dataHome);
       result = { tools: tools.map(t => t.name), errors };
     }
-    if (op === 'mcp-list') result = await mcpConfig.list();
+    if (op === 'mcp-list') result = mergeServerConfigs(await mcpConfig.list(), payload.folder ? await readProjectMcpConfig(payload.folder) : []);
     if (op === 'mcp-add') result = await mcpConfig.add(payload.commandLine);
     if (op === 'mcp-add-remote') result = await mcpConfig.addRemote(payload.url, payload.type, payload.headers);
     if (op === 'mcp-remove') result = await mcpConfig.remove(payload.id);

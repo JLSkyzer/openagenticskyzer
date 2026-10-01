@@ -63,3 +63,75 @@ test('an empty command is refused with a clear error, no process ever spawned', 
   assert.equal(tools.length, 0);
   assert.match(errors[0], /commande/i);
 });
+
+test('mcpTools discovers real tools from a real HTTP server (application/json mode)', async t => {
+  const { startFakeMcpHttpServer } = await import('./fixtures/fake-mcp-http-server.cjs');
+  const fake = await startFakeMcpHttpServer({ mode: 'json' });
+  t.after(() => fake.close());
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  const { tools, errors } = await mcpTools([{ type: 'http', url: fake.url }]);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(tools.map(tl => tl.name).sort(), ['mcp_boom', 'mcp_echo']);
+});
+
+test('mcpTools discovers real tools from a real HTTP server (text/event-stream mode)', async t => {
+  const { startFakeMcpHttpServer } = await import('./fixtures/fake-mcp-http-server.cjs');
+  const fake = await startFakeMcpHttpServer({ mode: 'sse' });
+  t.after(() => fake.close());
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  const { tools, errors } = await mcpTools([{ type: 'sse', url: fake.url }]);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(tools.map(tl => tl.name).sort(), ['mcp_boom', 'mcp_echo']);
+});
+
+test('a real tool call round-trips over real HTTP and returns the real result', async t => {
+  const { startFakeMcpHttpServer } = await import('./fixtures/fake-mcp-http-server.cjs');
+  const fake = await startFakeMcpHttpServer({ mode: 'json' });
+  t.after(() => fake.close());
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  const { tools } = await mcpTools([{ type: 'http', url: fake.url }]);
+  const echo = tools.find(tl => tl.name === 'mcp_echo')!;
+  const result = await echo.execute({ text: 'bonjour distant' }, new AbortController().signal);
+  assert.match(result, /bonjour distant/);
+});
+
+test('a real tool call the remote server rejects surfaces the real MCP error message', async t => {
+  const { startFakeMcpHttpServer } = await import('./fixtures/fake-mcp-http-server.cjs');
+  const fake = await startFakeMcpHttpServer({ mode: 'json' });
+  t.after(() => fake.close());
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  const { tools } = await mcpTools([{ type: 'http', url: fake.url }]);
+  const boom = tools.find(tl => tl.name === 'mcp_boom')!;
+  await assert.rejects(boom.execute({}, new AbortController().signal), /échec volontaire/);
+});
+
+test('the Mcp-Session-Id from initialize is really sent back on the following request', async t => {
+  const { startFakeMcpHttpServer } = await import('./fixtures/fake-mcp-http-server.cjs');
+  const fake = await startFakeMcpHttpServer({ mode: 'json' });
+  t.after(() => fake.close());
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  await mcpTools([{ type: 'http', url: fake.url }]);
+  const toolsListRequest = fake.receivedRequests.find(r => r.message.method === 'tools/list');
+  assert.equal(toolsListRequest?.headers['mcp-session-id'], fake.sessionId);
+});
+
+test('a configured header (e.g. Authorization) is really received by the remote server', async t => {
+  const { startFakeMcpHttpServer } = await import('./fixtures/fake-mcp-http-server.cjs');
+  const fake = await startFakeMcpHttpServer({ mode: 'json' });
+  t.after(() => fake.close());
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  await mcpTools([{ type: 'http', url: fake.url, headers: { Authorization: 'Bearer my-real-token' } }]);
+  const initRequest = fake.receivedRequests.find(r => r.message.method === 'initialize');
+  assert.equal(initRequest?.headers.authorization, 'Bearer my-real-token');
+});
+
+test('a remote server with an unreachable URL is isolated: an error is reported, other servers still work', async t => {
+  const { startFakeMcpHttpServer } = await import('./fixtures/fake-mcp-http-server.cjs');
+  const fake = await startFakeMcpHttpServer({ mode: 'json' });
+  t.after(() => fake.close());
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  const unreachable: any = { type: 'http', url: 'http://127.0.0.1:1/mcp' };
+  const { tools, errors } = await mcpTools([unreachable, { type: 'http', url: fake.url }]);
+  assert.equal(errors.length, 1);
+  assert.deepEqual(tools.map(tl => tl.name).sort(), ['mcp_boom', 'mcp_echo'], 'the working server still discovered its tools');
+});

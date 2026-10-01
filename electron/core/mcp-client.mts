@@ -9,14 +9,33 @@ export interface McpServerTarget {
   args: string[];
   env?: Record<string, string>;
 }
+export interface McpRemoteTarget {
+  type: 'sse' | 'http';
+  url: string;
+  headers?: Record<string, string>;
+}
+export type McpTarget = McpServerTarget | McpRemoteTarget;
+
+function isRemoteTarget(target: McpTarget): target is McpRemoteTarget {
+  return 'url' in target;
+}
+function targetLabel(target: McpTarget): string {
+  return isRemoteTarget(target) ? target.url : target.command;
+}
 
 const DISCOVERY_TIMEOUT_MS = 10_000;
 const CALL_TIMEOUT_MS = 60_000;
 const MAX_ARGS_BYTES = 1024 * 1024;
+const PROTOCOL_VERSION = '2024-11-05';
+
+interface Session {
+  request(method: string, params?: unknown): Promise<any>;
+  close(): Promise<void>;
+}
 
 /** A short-lived JSON-RPC 2.0 session over stdio — one per discovery, one per call, exactly like
  * mcp_client/adapter.py's own _discover/_invoke (never a persistent connection). */
-function openSession(target: McpServerTarget, timeoutMs: number) {
+function openStdioSession(target: McpServerTarget, timeoutMs: number): Session {
   const child = spawn(target.command, target.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, ...target.env },
@@ -67,10 +86,94 @@ function openSession(target: McpServerTarget, timeoutMs: number) {
   return { request, close };
 }
 
-async function initialize(target: McpServerTarget, timeoutMs: number) {
+/** Reads a Streamable-HTTP SSE response body until it finds the JSON-RPC message whose `id`
+ * matches the request — the spec allows the server to send other messages first, but the matching
+ * response SHOULD eventually arrive on this same stream before it closes. */
+async function readSseJsonRpcResponse(response: Response, id: string): Promise<any> {
+  if (!response.body) throw new Error('Flux SSE vide');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error('Flux SSE terminé sans réponse');
+      buffer += decoder.decode(value, { stream: true });
+      let index: number;
+      while ((index = buffer.indexOf('\n\n')) >= 0) {
+        const rawEvent = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+        const dataLines = rawEvent.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trim());
+        if (!dataLines.length) continue;
+        let message: any;
+        try { message = JSON.parse(dataLines.join('\n')); } catch { continue; }
+        if (message?.id === id) return message;
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+}
+
+/** A short-lived MCP "Streamable HTTP" session — same one-shot philosophy as the stdio session
+ * above (one per discovery, one per call), but over `fetch` instead of a spawned process. Verified
+ * against the official spec (modelcontextprotocol.io/specification/2025-06-18/basic/transports)
+ * before implementing: every JSON-RPC message is its own POST, the server may answer with a plain
+ * JSON object or an SSE stream (both handled), and a server-assigned `Mcp-Session-Id` is captured
+ * from `initialize` and replayed on every later request in the same session. */
+function openRemoteSession(target: McpRemoteTarget, timeoutMs: number): Session {
+  let sessionId: string | null = null;
+  let startupError: Error | null = null;
+
+  async function request(method: string, params?: unknown): Promise<any> {
+    if (startupError) throw startupError;
+    const id = randomUUID();
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+      'mcp-protocol-version': PROTOCOL_VERSION,
+      ...target.headers,
+    };
+    if (sessionId) headers['mcp-session-id'] = sessionId;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let response: Response;
+    try {
+      response = await fetch(target.url, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id, method, params }), signal: controller.signal });
+    } catch (error: any) {
+      clearTimeout(timer);
+      const wrapped = error?.name === 'AbortError' ? new Error(`délai dépassé (${method})`) : error instanceof Error ? error : new Error(String(error));
+      startupError = startupError ?? wrapped;
+      throw wrapped;
+    }
+    clearTimeout(timer);
+    if (!response.ok) {
+      const error = new Error(`serveur MCP distant : HTTP ${response.status}`);
+      startupError = startupError ?? error;
+      throw error;
+    }
+    const returnedSessionId = response.headers.get('mcp-session-id');
+    if (returnedSessionId) sessionId = returnedSessionId;
+    const contentType = response.headers.get('content-type') || '';
+    const message = contentType.includes('text/event-stream') ? await readSseJsonRpcResponse(response, id) : await response.json();
+    if (message?.error) throw new Error(message.error.message || 'Erreur MCP');
+    return message?.result;
+  }
+  // No persistent connection to tear down over HTTP; an idle session simply expires server-side —
+  // matches the stdio session's own "ephemeral, closed right after use" design, just with nothing
+  // to actively close on this side.
+  async function close() { /* no-op */ }
+  return { request, close };
+}
+
+function openSession(target: McpTarget, timeoutMs: number): Session {
+  return isRemoteTarget(target) ? openRemoteSession(target, timeoutMs) : openStdioSession(target, timeoutMs);
+}
+
+async function initialize(target: McpTarget, timeoutMs: number): Promise<Session> {
   const session = openSession(target, timeoutMs);
   try {
-    await session.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'openagent', version: '1.0' } });
+    await session.request('initialize', { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'openagent', version: '1.0' } });
   } catch (error) {
     await session.close();
     throw error;
@@ -86,21 +189,23 @@ interface McpRemoteTool {
 
 /** Discovers every configured server's tools in parallel, isolating a broken/slow/crashing server
  * from the rest — one bad entry in the MCP config must never keep the others from loading, the
- * same isolation agent.py's own try/except-per-server already had. */
+ * same isolation agent.py's own try/except-per-server already had. Works identically for stdio and
+ * remote (sse/http) targets. */
 export async function mcpTools(
-  targets: McpServerTarget[],
+  targets: McpTarget[],
   options: { discoveryTimeoutMs?: number; callTimeoutMs?: number } = {},
 ): Promise<{ tools: AgentTool[]; errors: string[] }> {
   const discoveryTimeoutMs = options.discoveryTimeoutMs ?? DISCOVERY_TIMEOUT_MS;
   const callTimeoutMs = options.callTimeoutMs ?? CALL_TIMEOUT_MS;
   const errors: string[] = [];
   const perServer = await Promise.all(targets.map(async target => {
-    if (!target.command?.trim()) { errors.push('MCP : commande absente'); return []; }
-    let session;
+    const missing = isRemoteTarget(target) ? !target.url?.trim() : !target.command?.trim();
+    if (missing) { errors.push(`MCP : ${isRemoteTarget(target) ? 'URL' : 'commande'} absente`); return []; }
+    let session: Session;
     try {
       session = await initialize(target, discoveryTimeoutMs);
     } catch (error) {
-      errors.push(`MCP ${target.command}: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push(`MCP ${targetLabel(target)}: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     }
     try {
@@ -108,7 +213,7 @@ export async function mcpTools(
       const remote: McpRemoteTool[] = Array.isArray(result?.tools) ? result.tools : [];
       return remote.filter(t => typeof t.name === 'string' && t.name).map(t => toAgentTool(target, t, callTimeoutMs));
     } catch (error) {
-      errors.push(`MCP ${target.command}: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push(`MCP ${targetLabel(target)}: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     } finally {
       await session.close();
@@ -117,7 +222,7 @@ export async function mcpTools(
   return { tools: perServer.flat(), errors };
 }
 
-function toAgentTool(target: McpServerTarget, remote: McpRemoteTool, callTimeoutMs: number): AgentTool {
+function toAgentTool(target: McpTarget, remote: McpRemoteTool, callTimeoutMs: number): AgentTool {
   const name = `mcp_${remote.name}`;
   const parameters = remote.inputSchema && typeof remote.inputSchema === 'object'
     ? remote.inputSchema

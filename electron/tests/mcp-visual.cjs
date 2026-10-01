@@ -129,6 +129,12 @@ app.whenReady().then(async () => {
     await waitFor(async () => (await js(`document.querySelectorAll('[data-testid="oa-mcp-entry"][data-scope="global"]').length`)) === 1, { what: 'remote server appears in the list' });
     const onDiskAfterRemote = JSON.parse(await (await import('node:fs/promises')).readFile(join(home, 'mcp.json'), 'utf8'));
     assert.ok(onDiskAfterRemote.some(e => e.type === 'http' && e.url === 'https://example.com/mcp'), 'really persisted to mcp.json');
+
+    // ── Regression check: adding a global server must not drop the project-scope entry from view ──
+    // (handleAddRemote/handleAdd/handleRemove must re-fetch the MERGED list, not just the global
+    // mutation's own return value, or the "projet"-badged .mcp.json entry silently disappears.)
+    await waitFor(() => exists('[data-testid="oa-mcp-entry"][data-scope="project"]'), { what: 'project-scope server still shown after adding a global remote server' });
+    assert.match(await text('[data-testid="oa-mcp-entry"][data-scope="project"]'), /teamserver|npx.*some-pkg/, 'the surviving project entry is really teamserver, not a stale/empty node');
     await writeFile(join(screenshotDir, 'mcp-4-remote-added.png'), await capturePng(win));
 
     process.stdout.write(`PASS mcp tab: real add/remove through the real worker, real mcp.json (Electron ${process.versions.electron})\n`);

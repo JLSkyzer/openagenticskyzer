@@ -36,7 +36,8 @@ export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
     if (!value) return;
     setAdding(true);
     try {
-      setServers(await addMcpServer(value));
+      await addMcpServer(value);
+      await refresh();
       setCommandLine('');
       notify('Serveur MCP enregistré.', 'positive');
     } catch (error) {
@@ -51,7 +52,8 @@ export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
     setAddingRemote(true);
     try {
       const headers = remoteAuth.trim() ? { Authorization: remoteAuth.trim() } : undefined;
-      setServers(await addMcpRemoteServer(url, 'http', headers));
+      await addMcpRemoteServer(url, 'http', headers);
+      await refresh();
       setRemoteUrl('');
       setRemoteAuth('');
       notify('Serveur MCP distant enregistré.', 'positive');
@@ -62,7 +64,7 @@ export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
     }
   };
   const handleRemove = async (id: string) => {
-    try { setServers(await removeMcpServer(id)); }
+    try { await removeMcpServer(id); await refresh(); }
     catch { /* the list already reflects the last known-good state */ }
   };
 

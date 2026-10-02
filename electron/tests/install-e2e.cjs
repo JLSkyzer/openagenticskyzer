@@ -29,6 +29,11 @@ const UNINSTALL_ROOT = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Unin
 
 // oneClick + perMachine:false installs into %LOCALAPPDATA%\Programs\<package name> (electron-builder's sanitizedName),
 // while the uninstall entry is named "<productName> <version>" (e.g. "openagent 0.2.0").
+// electron-builder (NsisTarget.js): APP_GUID = UUID v5 of the appId in its own namespace; the installer's registry key is Software\<APP_GUID>.
+const { UUID } = require('builder-util-runtime');
+const APP_GUID = UUID.v5(pkg.build.appId, UUID.parse('50e065bc-3134-11e6-9bab-38c9862bdaf3'));
+// electron-updater's cache folder: `<package name>-updater` (the built app-update.yml is checked against it after the build).
+const updaterCacheDirName = `${pkg.name}-updater`;
 const installDir = path.join(process.env.LOCALAPPDATA, 'Programs', pkg.name);
 const guardDirs = [path.join(process.env.LOCALAPPDATA, 'Programs', 'openagent'), installDir];
 const installedExe = path.join(installDir, 'openagent.exe');
@@ -94,7 +99,20 @@ function uninstallEntries() {
   return entries;
 }
 const entryVersion = () => uninstallEntries()[0]?.version ?? null;
-const normalizeDir = dir => path.resolve(dir.replace(/^"|"$/g, '')).replace(/[\/]+$/, '').toLowerCase();
+const normalizeDir = dir => path.resolve(dir.replace(/^"|"$/g, '')).replace(/[\\/]+$/, '').toLowerCase();
+
+// Does HKCU\Software\<guid> exist? The per-user installer reads InstallLocation from it to choose INSTDIR, so an orphan
+// key would send the install elsewhere. `reg query` exits 1 both for "not found" and for other failures (and its message is
+// localized), so a 1 only counts as "absent" when HKCU\Software itself reads fine; anything else fails closed (throws).
+function installRegistryKeyExists(guid) {
+  const key = `HKCU\\Software\\${guid}`;
+  const result = run('reg', ['query', key]);
+  if (result.error) throw new Error(`reg query ${key} failed: ${result.error.message}`);
+  if (result.code === 0) return true;
+  const parent = run('reg', ['query', 'HKCU\\Software']);
+  if (result.code === 1 && !parent.error && parent.code === 0) return false;
+  throw new Error(`reg query ${key} failed (status ${result.code}): ${result.out.trim()}`);
+}
 // Where the uninstall entry says the app lives: InstallLocation, else the folder of UninstallString.
 function entryLocation(entry) {
   if (entry.installLocation) return normalizeDir(entry.installLocation);
@@ -141,8 +159,13 @@ async function main() {
   const desktopShortcut = path.join(desktop, 'openagent.lnk');
 
   // Guard first, conservative: any trace of an openagent installation aborts the test before anything is touched.
+  // The updater cache root (electron-builder: `<package name>-updater`; the installer copies itself there as installer.exe)
+  // must be absent too, which proves the whole root is ours and lets the cleanup remove it entirely.
+  const cacheRoot = path.join(process.env.LOCALAPPDATA, updaterCacheDirName);
   const traces = [
     ...guardDirs.filter(existsSync).map(dir => `folder ${dir}`),
+    ...(installRegistryKeyExists(APP_GUID) ? [`HKCU\\Software\\${APP_GUID} (clé de l'installeur, lue pour choisir le dossier d'installation)`] : []),
+    ...(existsSync(cacheRoot) ? [`updater cache ${cacheRoot}`] : []),
     ...uninstallEntries().map(entry => `HKCU entry "${entry.name}"`),
     ...[desktopShortcut, startMenuShortcut].filter(existsSync).map(file => `shortcut ${file}`),
   ];
@@ -158,13 +181,9 @@ async function main() {
   build([`-c.extraMetadata.version=${next}`, '-c.directories.output=release-next']);
   assert.ok(existsSync(SETUP_CURRENT), `built ${SETUP_CURRENT}`);
 
-  const updaterCacheDirName = /^updaterCacheDirName:\s*(\S+)\s*$/m.exec(readFileSync(path.join(ROOT, 'release', 'win-unpacked', 'resources', 'app-update.yml'), 'utf8'))?.[1];
-  assert.ok(updaterCacheDirName, 'app-update.yml names the updater cache directory');
-  // electron-updater also drops files next to `pending` (e.g. current.blockmap): if the cache root is ours, remove all of it.
-  const cacheRoot = path.join(process.env.LOCALAPPDATA, updaterCacheDirName);
-  const cacheRootExisted = existsSync(cacheRoot);
-  const pendingDir = path.join(cacheRoot, 'pending');
-  const pendingExisted = existsSync(pendingDir);
+  // The guard used `<package name>-updater`; the built app must agree, or the guard checked the wrong folder.
+  const builtCacheDirName = /^updaterCacheDirName:\s*(\S+)\s*$/m.exec(readFileSync(path.join(ROOT, 'release', 'win-unpacked', 'resources', 'app-update.yml'), 'utf8'))?.[1];
+  assert.equal(builtCacheDirName, updaterCacheDirName, 'app-update.yml names the updater cache directory the guard checked');
 
   const temps = [];
   let server = null;
@@ -250,19 +269,20 @@ async function main() {
     if (server) server.close();
     killInstalledProcesses();
     const entriesLeft = () => { try { return uninstallEntries(); } catch { return null; } };
+    const installKeyLeft = () => { try { return installRegistryKeyExists(APP_GUID); } catch { return true; } }; // unreadable: report it
     if (installStarted && (existsSync(installDir) || entriesLeft()?.length !== 0)) {
       if (existsSync(uninstaller)) { try { runInstaller(uninstaller, ['/S']); } catch (error) { process.stderr.write(`cleanup uninstall: ${error.message}\n`); } }
       await waitFor(() => !existsSync(installDir) && uninstallEntries().length === 0, { timeout: 120000, interval: 1000, what: 'cleanup uninstall' }).catch(() => {});
     }
     for (const dir of temps) await removeDir(dir);
-    if (!cacheRootExisted) await removeDir(cacheRoot);
-    else if (!pendingExisted) await removeDir(pendingDir);
+    await removeDir(cacheRoot); // the guard proved the root did not exist: everything in it is from this test
     const remaining = entriesLeft();
     const left = [
       ...guardDirs.filter(existsSync).map(dir => `folder ${dir}`),
-      ...(remaining === null ? ['HKCU uninstall entries (registry unreadable, check by hand)'] : remaining.map(entry => `HKCU entry "${entry.name}" (${entry.key}, location ${entry.installLocation || 'unknown'})`)),
+      ...(remaining === null ? ['HKCU uninstall entries (registry unreadable, check by hand)'] : remaining.map(entry => `HKCU entry "${entry.name}" (${entry.key}, location ${entryLocation(entry) || 'unknown'})`)),
       ...[desktopShortcut, startMenuShortcut].filter(existsSync).map(file => `shortcut ${file}`),
-      ...(!cacheRootExisted && existsSync(cacheRoot) ? [`updater cache ${cacheRoot}`] : []),
+      ...(installKeyLeft() ? [`HKCU\\Software\\${APP_GUID}`] : []),
+      ...(existsSync(cacheRoot) ? [`updater cache ${cacheRoot}`] : []),
     ];
     process.stdout.write(left.length ? `LEFT BEHIND: ${left.join('; ')}\n` : 'cleanup verified: nothing left behind\n');
   }

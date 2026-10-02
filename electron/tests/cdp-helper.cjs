@@ -38,13 +38,15 @@ async function waitForPage(port, title = 'openagent', timeout = 30000) {
 }
 
 // One-shot Runtime.evaluate (awaits promises, returns by value) over a fresh CDP connection.
+// Never hangs: a page or app that dies mid-call, or never answers within `timeout` ms, rejects.
 let nextEvaluateId = 1;
-async function cdpEvaluate(webSocketDebuggerUrl, expression) {
+async function cdpEvaluate(webSocketDebuggerUrl, expression, timeout = 15000) {
   const ws = new WebSocket(webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error('CDP connection failed')); });
   const id = nextEvaluateId++;
+  let timer;
   try {
-    return await new Promise((resolve, reject) => {
+    const response = new Promise((resolve, reject) => {
       ws.onmessage = event => {
         const message = JSON.parse(event.data);
         if (message.id !== id) return;
@@ -52,9 +54,16 @@ async function cdpEvaluate(webSocketDebuggerUrl, expression) {
         else if (message.result.exceptionDetails) reject(new Error(message.result.exceptionDetails.exception?.description || message.result.exceptionDetails.text));
         else resolve(message.result.result.value);
       };
+      ws.onclose = () => reject(new Error('CDP connection closed before the evaluation answered (page or app gone)'));
+      ws.onerror = () => reject(new Error('CDP connection error during the evaluation'));
       ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
     });
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`cdpEvaluate timed out after ${timeout} ms`)), timeout);
+    });
+    return await Promise.race([response, deadline]);
   } finally {
+    clearTimeout(timer);
     ws.close();
   }
 }

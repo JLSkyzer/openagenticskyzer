@@ -40,6 +40,7 @@
     "test:indexstatus": "node tests/run-index-status-visual.cjs",
     "test:knowledge": "node tests/run-knowledge-visual.cjs",
     "test:plugins": "node tests/run-plugin-visual.cjs",
+    "test:trust": "node tests/run-trust-visual.cjs",
     "test:restorefolder": "node tests/run-restore-folder-visual.cjs",
     "package:win": "npm run renderer:build && electron-builder --win dir",
     "test:package": "node tests/package-smoke.cjs",

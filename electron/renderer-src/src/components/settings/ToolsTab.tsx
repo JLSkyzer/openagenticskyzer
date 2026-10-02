@@ -1,9 +1,16 @@
 import { useEffect, useState } from 'react';
-import { addMcpRemoteServer, addMcpServer, listMcpServers, listPlugins, removeMcpServer, type McpServerConfig, type PluginListResult } from '../../ipc/bridge';
+import { addMcpRemoteServer, addMcpServer, decideProjectTrust, getProjectTrust, listMcpServers, listPlugins, removeMcpServer, type McpServerConfig, type PluginListResult, type ProjectTrustView } from '../../ipc/bridge';
 import { Group, Section } from './parts';
 import { useToast } from '../../state/ToastProvider';
 
 const button = 'self-start rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs text-gray-300';
+const EMPTY_PLUGINS: PluginListResult = { tools: [], errors: [], untrusted: [] };
+const TRUST_TEXT: Record<ProjectTrustView['state'], string> = {
+  none: 'Ce projet n’apporte ni plugin, ni serveur MCP, ni assouplissement de permission.',
+  pending: 'En attente de ta décision : ses plugins, serveurs MCP et assouplissements ne sont pas appliqués.',
+  trusted: 'Approuvé : ses plugins, serveurs MCP et assouplissements sont appliqués.',
+  ignored: 'Ignoré : ses plugins, serveurs MCP et assouplissements ne sont pas appliqués.',
+};
 
 function serverLabel(server: McpServerConfig): string {
   if ('command' in server) return `${server.command} ${server.args.join(' ')}`.trim();
@@ -15,6 +22,7 @@ function serverLabel(server: McpServerConfig): string {
 // (~/.openagent/mcp.json, managed here) with the active project's .mcp.json (read-only — a
 // "projet" badge marks those entries, and their ✕ is disabled: there is nothing to remove from
 // this app's side, the file itself is the source of truth, same convention as Claude Code).
+// A project's own plugins and servers apply only once the project is trusted (core/project-trust.mts).
 export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
   const [servers, setServers] = useState<McpServerConfig[]>([]);
   const [commandLine, setCommandLine] = useState('');
@@ -22,15 +30,31 @@ export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
   const [remoteUrl, setRemoteUrl] = useState('');
   const [remoteAuth, setRemoteAuth] = useState('');
   const [addingRemote, setAddingRemote] = useState(false);
-  const [plugins, setPlugins] = useState<PluginListResult>({ tools: [], errors: [] });
+  const [plugins, setPlugins] = useState<PluginListResult>(EMPTY_PLUGINS);
+  const [trust, setTrust] = useState<ProjectTrustView | null>(null);
+  const [deciding, setDeciding] = useState(false);
   const { notify } = useToast();
 
   const refresh = () => listMcpServers(activeFolder).then(setServers).catch(() => {});
+  const refreshPlugins = () => listPlugins(activeFolder).then(setPlugins).catch(() => setPlugins(EMPTY_PLUGINS));
+  const refreshTrust = () => (activeFolder ? getProjectTrust(activeFolder).then(setTrust).catch(() => setTrust(null)) : Promise.resolve(setTrust(null)));
   useEffect(() => { refresh(); }, [activeFolder]);
-  useEffect(() => {
-    listPlugins(activeFolder).then(setPlugins).catch(() => setPlugins({ tools: [], errors: [] }));
-  }, [activeFolder]);
+  useEffect(() => { refreshPlugins(); }, [activeFolder]);
+  useEffect(() => { refreshTrust(); }, [activeFolder]);
 
+  const handleTrust = async (decision: 'trusted' | 'revoke') => {
+    if (!activeFolder || !trust) return;
+    setDeciding(true);
+    try {
+      setTrust(await decideProjectTrust(activeFolder, decision, trust.token));
+      await Promise.all([refresh(), refreshPlugins()]);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Décision impossible.', 'negative');
+      await refreshTrust();
+    } finally {
+      setDeciding(false);
+    }
+  };
   const handleAdd = async () => {
     const value = commandLine.trim();
     if (!value) return;
@@ -72,6 +96,25 @@ export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
     <div className="flex flex-col gap-5">
       <div>
         <Section title="Outils et intégrations" badge="EXTENSIONS" />
+        {activeFolder && trust && trust.state !== 'none' && (
+          <Group>
+            <div className="flex flex-col gap-2 px-4 py-3">
+              <span className="text-xs font-medium text-gray-300">Confiance du projet</span>
+              <span data-testid="oa-trust-state" data-state={trust.state} className="text-xs text-gray-500">
+                {TRUST_TEXT[trust.state]}
+              </span>
+              {trust.state === 'trusted' ? (
+                <button id="oa-trust-revoke" onClick={() => void handleTrust('revoke')} disabled={deciding} className={button + ' disabled:cursor-not-allowed disabled:opacity-60'}>
+                  Retirer la confiance
+                </button>
+              ) : (
+                <button id="oa-trust-approve" onClick={() => void handleTrust('trusted')} disabled={deciding} className={button + ' disabled:cursor-not-allowed disabled:opacity-60'}>
+                  Faire confiance
+                </button>
+              )}
+            </div>
+          </Group>
+        )}
         <Group>
           <div className="flex flex-col gap-2 px-4 py-3">
             <span className="text-xs font-medium text-gray-300">Plugins</span>
@@ -91,6 +134,11 @@ export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
                 ))}
               </div>
             )}
+            {plugins.untrusted.map(path => (
+              <span key={path} data-testid="oa-plugin-untrusted" className="font-mono text-xs text-gray-500">
+                ⏸ {path} — non chargé (projet non approuvé)
+              </span>
+            ))}
             {plugins.errors.map(error => (
               <span key={error} data-testid="oa-plugin-error" className="font-mono text-xs text-yellow-600">
                 ⚠️ {error}
@@ -111,9 +159,10 @@ export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
             ) : (
               <div className="flex flex-col gap-1">
                 {servers.map(server => (
-                  <div key={server.id} data-testid="oa-mcp-entry" data-scope={server.scope} className="flex items-center justify-between gap-2 rounded px-2 py-1" style={{ background: '#0a0a1a', border: '1px solid #1e1e3a' }}>
+                  <div key={server.id} data-testid="oa-mcp-entry" data-scope={server.scope} className={`flex items-center justify-between gap-2 rounded px-2 py-1 ${server.trusted === false ? 'opacity-50' : ''}`} style={{ background: '#0a0a1a', border: '1px solid #1e1e3a' }}>
                     <span className="truncate font-mono text-xs text-blue-400">
                       {server.scope === 'project' && <span data-testid="oa-mcp-project-badge" className="mr-1 rounded bg-purple-900 px-1 text-[10px] text-purple-300">projet</span>}
+                      {server.trusted === false && <span data-testid="oa-mcp-untrusted-badge" className="mr-1 rounded bg-gray-800 px-1 text-[10px] text-gray-400">non approuvé</span>}
                       {serverLabel(server)}
                     </span>
                     <button

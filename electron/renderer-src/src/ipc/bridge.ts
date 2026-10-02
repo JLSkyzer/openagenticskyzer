@@ -163,14 +163,29 @@ export function initProject(folder: string, overwrite: boolean): Promise<Project
   return request('init-project', { folder, overwrite });
 }
 
-export interface PluginListResult { tools: string[]; errors: string[] }
+export interface PluginListResult { tools: string[]; errors: string[]; untrusted: string[] }
 export function listPlugins(folder: string | null): Promise<PluginListResult> {
   return request('plugin-list', { folder });
 }
 
-export interface StdioServerConfig { id: string; name?: string; scope: 'global' | 'project'; command: string; args: string[]; env?: Record<string, string>; added_at?: string }
-export interface RemoteServerConfig { id: string; name?: string; scope: 'global' | 'project'; type: 'sse' | 'http'; url: string; headers?: Record<string, string>; added_at?: string }
+export interface StdioServerConfig { id: string; name?: string; scope: 'global' | 'project'; command: string; args: string[]; env?: Record<string, string>; added_at?: string; trusted?: boolean }
+export interface RemoteServerConfig { id: string; name?: string; scope: 'global' | 'project'; type: 'sse' | 'http'; url: string; headers?: Record<string, string>; added_at?: string; trusted?: boolean }
 export type McpServerConfig = StdioServerConfig | RemoteServerConfig;
+
+export interface ProjectTrustView {
+  state: 'none' | 'pending' | 'trusted' | 'ignored';
+  changed: boolean;
+  token: string;
+  plugins: string[];
+  mcpServers: McpServerConfig[];
+  relaxations: Record<string, { project: unknown; global: unknown }>;
+}
+export function getProjectTrust(folder: string): Promise<ProjectTrustView> {
+  return request('project-trust', { folder });
+}
+export function decideProjectTrust(folder: string, decision: 'trusted' | 'ignored' | 'revoke', token?: string): Promise<ProjectTrustView> {
+  return request('trust-project', { folder, decision, token });
+}
 
 export function listMcpServers(folder: string | null): Promise<McpServerConfig[]> {
   return request('mcp-list', { folder });

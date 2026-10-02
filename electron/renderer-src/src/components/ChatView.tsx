@@ -6,6 +6,7 @@ import { ToolMessage } from './ToolMessage';
 import { EmptyState } from './EmptyState';
 import { PermissionBanner } from './PermissionBanner';
 import { BranchSelector } from './BranchSelector';
+import { ProjectTrustBanner } from './ProjectTrustBanner';
 
 const NOTICE_MS = 3500;
 
@@ -37,6 +38,7 @@ export function ChatView() {
   return (
     <div style={{ position: 'relative', display: 'flex', flex: 1, flexDirection: 'column', minHeight: 0, background: 'var(--bg)' }}>
       <BranchSelector />
+      <ProjectTrustBanner />
       {state.notice && (
         <div
           role="status"

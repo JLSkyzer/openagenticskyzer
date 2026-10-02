@@ -285,6 +285,96 @@ test('read tools fail closed: nothing runs when the repository config cannot be 
   await refuses(invoke('git_status'), /configuration git du dépôt.*non lancée/);
 });
 
+test('read tools fail closed on a filter whose name is not valid UTF-8', async t => {
+  const { repo, root, invoke } = await fixture(t);
+  const marker = join(root, 'bad-utf8-filter-ran').replace(/\\/g, '/');
+  const name = Buffer.from([0x78, 0xff, 0x79]);
+  await writeFile(join(repo, '.gitattributes'), Buffer.concat([Buffer.from('*.txt filter='), name, Buffer.from('\n')]));
+  await writeFile(join(repo, 'a.txt'), 'hi\n');
+  await sh(['add', '.gitattributes', 'a.txt'], repo);
+  await sh(['commit', '-m', 'filtered'], repo);
+  await writeFile(join(repo, '.git', 'config'), Buffer.concat([
+    Buffer.from('[filter "'), name, Buffer.from(`"]\n\tclean = "sh -c 'echo ran > \\"${marker}\\"; cat'"\n\tsmudge = cat\n`),
+  ]), { flag: 'a' });
+  await restat(join(repo, 'a.txt'));
+  await sh(['-c', 'core.fsmonitor=false', 'status', '--porcelain'], repo);
+  assert.equal(await exists(marker), true, 'control: plain git status runs the non-UTF-8-named filter');
+  await rm(marker);
+  for (const [tool, args] of READ_TOOLS) {
+    await restat(join(repo, 'a.txt'));
+    await refuses(invoke(tool, args), /configuration git du dépôt.*non lancée/);
+    assert.equal(await exists(marker), false, `${tool} ran the non-UTF-8-named filter`);
+  }
+});
+
+test('git_blame never runs the repository\'s upload-pack command through a partial clone\'s lazy fetch', async t => {
+  const { root } = await fixture(t);
+  const server = join(root, 'server');
+  const repo = join(root, 'partial');
+  const marker = join(root, 'lazy-fetch-ran').replace(/\\/g, '/');
+  await mkdir(server);
+  await sh(['init', '-b', 'main'], server);
+  for (const [key, value] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['commit.gpgsign', 'false'], ['uploadpack.allowFilter', 'true'], ['uploadpack.allowAnySHA1InWant', 'true']]) {
+    await sh(['config', key, value], server);
+  }
+  for (const content of ['one\n', 'one\ntwo\n']) {
+    await writeFile(join(server, 'a.txt'), content);
+    await sh(['add', 'a.txt'], server);
+    await sh(['commit', '-m', content.trim().split('\n').pop()!], server);
+  }
+  // The checkout fetches only the tip's blob: blaming a.txt needs the older one.
+  await sh(['clone', '--filter=blob:none', `file://${server.replace(/\\/g, '/')}`, repo], root);
+  await sh(['config', 'remote.origin.uploadpack', `sh -c 'echo ran > "${marker}"' x`], repo);
+  await sh(['blame', '--no-textconv', '--', 'a.txt'], repo).catch(() => '');
+  assert.equal(await exists(marker), true, 'control: plain git blame lazily fetches through the repository\'s upload-pack');
+  await rm(marker);
+  const { gitTools } = await import('../core/git-tools.mts');
+  const tools = await gitTools(repo);
+  await tools.find(entry => entry.name === 'git_blame')!.execute({ file: 'a.txt' }, new AbortController().signal).catch(() => '');
+  assert.equal(await exists(marker), false, 'git_blame ran the repository’s upload-pack command');
+});
+
+test('diff tools never run a diff driver declared in a submodule\'s own config (diff.submodule=diff)', async t => {
+  const { root, repo } = await fixture(t);
+  const sub = join(root, 'sub');
+  const marker = join(root, 'submodule-diff-ran').replace(/\\/g, '/');
+  await mkdir(sub);
+  await sh(['init', '-b', 'main'], sub);
+  await sh(['config', 'user.name', 'Test'], sub);
+  await sh(['config', 'user.email', 'test@example.com'], sub);
+  await sh(['config', 'commit.gpgsign', 'false'], sub);
+  await writeFile(join(sub, '.gitattributes'), '*.txt diff=conv\n');
+  await writeFile(join(sub, 's.txt'), 'inside\n');
+  await sh(['add', '.'], sub);
+  await sh(['commit', '-m', 'sub'], sub);
+  await sh(['-c', 'protocol.file.allow=always', 'submodule', 'add', '../sub', 'sub'], repo);
+  await sh(['commit', '-m', 'add submodule'], repo);
+  const inner = join(repo, 'sub');
+  await sh(['config', 'user.name', 'Test'], inner);
+  await sh(['config', 'user.email', 'test@example.com'], inner);
+  await sh(['config', 'commit.gpgsign', 'false'], inner);
+  await writeFile(join(inner, 's.txt'), 'inside\nmoved\n');
+  await sh(['commit', '-am', 'moved'], inner);
+  // Superproject asks for inline submodule diffs; the submodule's own config names the driver.
+  await sh(['config', 'diff.submodule', 'diff'], repo);
+  await sh(['config', 'diff.conv.command', `sh -c 'echo ran > "${marker}"' x`], inner);
+  const previousGuard = ['-c', 'core.fsmonitor=false', '-c', 'protocol.ext.allow=never', 'diff', '--no-ext-diff', '--no-textconv', '--ignore-submodules=dirty'];
+  const { gitTools } = await import('../core/git-tools.mts');
+  const tools = await gitTools(repo);
+  const invoke = (name: string) => tools.find(entry => entry.name === name)!.execute({}, new AbortController().signal);
+  await sh(previousGuard, repo);
+  assert.equal(await exists(marker), true, 'control: the previous guard still runs the submodule’s driver (unstaged)');
+  await rm(marker);
+  assert.match(await invoke('git_diff'), /sub/);
+  assert.equal(await exists(marker), false, 'git_diff ran the submodule’s diff driver');
+  await sh(['add', 'sub'], repo);
+  await sh([...previousGuard, '--staged'], repo);
+  assert.equal(await exists(marker), true, 'control: the previous guard still runs the submodule’s driver (staged)');
+  await rm(marker);
+  assert.match(await invoke('git_diff_staged'), /sub/);
+  assert.equal(await exists(marker), false, 'git_diff_staged ran the submodule’s diff driver');
+});
+
 // ── staging and committing ────────────────────────────────────────────────────────
 test('git_add stages files, a directory dot, quoted paths with spaces and backslash paths', async t => {
   const { repo, invoke } = await fixture(t);

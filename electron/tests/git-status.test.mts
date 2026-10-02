@@ -190,6 +190,76 @@ test('gitStatus fails closed: no indicator when the repository config cannot be 
   assert.equal(await gitStatus(corrupt), null);
 });
 
+test('a filter whose name is not valid UTF-8 cannot slip past the guard: gitStatus fails closed', async t => {
+  const repo = await repoFixture(t);
+  const marker = join(repo, '..', 'bad-utf8-filter-ran').replace(/\\/g, '/');
+  // Raw bytes: the name "x\xFFy" cannot even be written on a Windows command line, let alone overridden.
+  const name = Buffer.from([0x78, 0xff, 0x79]);
+  await writeFile(join(repo, '.gitattributes'), Buffer.concat([Buffer.from('*.txt filter='), name, Buffer.from('\n')]));
+  await writeFile(join(repo, 'a.txt'), 'hi\n');
+  await sh(['add', '.gitattributes', 'a.txt'], repo);
+  await sh(['commit', '-m', 'filtered'], repo);
+  await writeFile(join(repo, '.git', 'config'), Buffer.concat([
+    Buffer.from('[filter "'), name, Buffer.from(`"]\n\tclean = "sh -c 'echo ran > \\"${marker}\\"; cat'"\n\tsmudge = cat\n`),
+  ]), { flag: 'a' });
+  await restat(join(repo, 'a.txt'));
+  await sh(['-c', 'core.fsmonitor=false', 'status', '--porcelain'], repo);
+  assert.equal(await exists(marker), true, 'control: plain git status runs the non-UTF-8-named filter');
+  await rm(marker);
+  await restat(join(repo, 'a.txt'));
+  const { gitStatus } = await import('../core/git-status.mts');
+  assert.equal(await gitStatus(repo), null);
+  assert.equal(await exists(marker), false, 'gitStatus ran the non-UTF-8-named filter');
+});
+
+/** Partial clone (blob:none) of a one-file server, whose own config names a marking upload-pack command. */
+async function partialClone(t: any, extra: string[]) {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-git-partial-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const server = join(root, 'server');
+  const repo = join(root, 'repo');
+  const marker = join(root, 'lazy-fetch-ran').replace(/\\/g, '/');
+  await mkdir(server);
+  await sh(['init', '-b', 'main'], server);
+  for (const [key, value] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['commit.gpgsign', 'false'], ['uploadpack.allowFilter', 'true'], ['uploadpack.allowAnySHA1InWant', 'true']]) {
+    await sh(['config', key, value], server);
+  }
+  const lines = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n') + '\n';
+  await writeFile(join(server, 'a.txt'), lines);
+  await sh(['add', 'a.txt'], server);
+  await sh(['commit', '-m', 'one'], server);
+  await sh(['clone', '--filter=blob:none', ...extra, `file://${server.replace(/\\/g, '/')}`, repo], root);
+  await sh(['config', 'user.name', 'Test'], repo);
+  await sh(['config', 'user.email', 'test@example.com'], repo);
+  // The repository's own config: a lazy fetch of a missing blob runs this command.
+  await sh(['config', 'remote.origin.uploadpack', `sh -c 'echo ran > "${marker}"' x`], repo);
+  return { repo, marker, lines };
+}
+
+test('opening a partial clone never runs the repository\'s upload-pack command through a lazy fetch', async t => {
+  const { repo, marker, lines } = await partialClone(t, ['--no-checkout']);
+  // HEAD's a.txt blob is missing; a similar staged b.txt makes status look for a rename, i.e. read a.txt.
+  await writeFile(join(repo, 'b.txt'), lines + 'more\n');
+  await sh(['add', 'b.txt'], repo);
+  await sh(['-c', 'core.fsmonitor=false', 'status', '--porcelain'], repo).catch(() => '');
+  assert.equal(await exists(marker), true, 'control: plain git status lazily fetches through the repository\'s upload-pack');
+  await rm(marker);
+  const { gitStatus } = await import('../core/git-status.mts');
+  // git status cannot complete without the blob: no indicator, rather than a made-up "clean".
+  assert.equal(await gitStatus(repo), null);
+  assert.equal(await exists(marker), false, 'gitStatus ran the repository’s upload-pack command');
+});
+
+test('gitStatus returns null, not "clean", when git status itself fails', async t => {
+  const repo = await repoFixture(t);
+  await writeFile(join(repo, '.git', 'index'), 'not an index');
+  const control = await run('git', ['status', '--porcelain'], { cwd: repo }).then(() => 0, (error: any) => error.code);
+  assert.notEqual(control, 0, 'control: git status really fails on this repository');
+  assert.equal(await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repo }).then(r => r.stdout.trim()), 'main', 'control: the branch is still readable');
+  const { gitStatus } = await import('../core/git-status.mts');
+  assert.equal(await gitStatus(repo), null);
+});
+
 test('gitStatus returns null for a folder that does not exist on disk, never throws', async t => {
   const { gitStatus } = await import('../core/git-status.mts');
   await assert.doesNotReject(gitStatus('D:/definitely-not-a-real-path-openagent-test'));

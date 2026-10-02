@@ -27,7 +27,8 @@ export async function gitStatus(folder: string, timeout = 3000): Promise<GitStat
     if (!branch) return null;
     // Changes inside a submodule's work tree are not reported (see NO_SUBMODULE_WORKTREES).
     const statusResult = await runProcess('git', [...guard, 'status', '--porcelain', NO_SUBMODULE_WORKTREES], { cwd: folder, env, timeout, maxBytes: 1024 * 1024 });
-    if (statusResult.timedOut) return null;
+    // A failed status (corrupt index, a blob a partial clone may not fetch…) is not "clean".
+    if (statusResult.timedOut || statusResult.code !== 0) return null;
     return { branch, dirty: statusResult.stdout.trim().length > 0 };
   } catch {
     return null;

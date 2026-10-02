@@ -9,9 +9,16 @@ import { runProcess } from './process.mts';
  *  - log.showSignature makes `git log` run gpg.program on signed commits;
  *  - core.hooksPath points at a directory that cannot exist: `status`/`diff` refreshing the index
  *    otherwise run .git/hooks/post-index-change (verified, Git 2.55 Windows). From Node, git does
- *    not translate "/dev/null" on Windows (it would mean <drive>:\dev\null), hence NUL there.
+ *    not translate "/dev/null" on Windows (it would mean <drive>:\dev\null), hence NUL there;
+ *  - --no-lazy-fetch (git >= 2.44): in a partial clone, reading a missing blob otherwise spawns a
+ *    fetch that runs the repository's remote.<name>.uploadpack / core.sshCommand. -c protocol.*
+ *    cannot stop it: a repo-local protocol.file.allow=always wins. The read then fails instead;
+ *  - diff.submodule=short: with `diff`, git diffs inside the submodule in a child that does not
+ *    inherit --no-ext-diff, running a diff driver from the submodule's own config.
  */
 const FIXED_GUARDS = [
+  '--no-lazy-fetch',
+  '-c', 'diff.submodule=short',
   '-c', 'core.fsmonitor=false',
   '-c', 'protocol.ext.allow=never',
   '-c', 'log.showSignature=false',
@@ -35,16 +42,21 @@ const REPO_SCOPES = new Set(['local', 'worktree']);
  * filter command means "no filter"; an empty textconv makes git fail instead of running anything).
  *
  * Reads the config once (`git config` executes nothing; --includes follows include.path). Fails
- * closed: throws if the config cannot be read (corrupt file, timeout, git without --show-scope) or a
- * name cannot be overridden — the caller must then not run its command.
+ * closed: throws if the config cannot be read (corrupt file, timeout, git without --show-scope or
+ * --no-lazy-fetch, i.e. older than 2.44) or a name cannot be overridden — the caller must then not
+ * run its command.
  */
 export async function readOnlyGitArgs(cwd: string, env: NodeJS.ProcessEnv, options: { timeout: number; signal?: AbortSignal }): Promise<string[]> {
-  const result = await runProcess('git', ['config', '--show-scope', '--includes', '--name-only', '-z', '--get-regexp', '^(filter|diff)\\.'],
+  // --no-lazy-fetch here too: a git that does not know it fails now, before anything else runs.
+  const result = await runProcess('git', ['--no-lazy-fetch', 'config', '--show-scope', '--includes', '--name-only', '-z', '--get-regexp', '^(filter|diff)\\.'],
     { cwd, env, timeout: options.timeout, signal: options.signal, maxBytes: 1024 * 1024 });
   if (result.timedOut || result.truncated) throw new Error('lecture de la configuration git interrompue');
   // --get-regexp exits 1 when nothing matches: that is "no entries", not a failure.
   const noMatch = result.code === 1 && !result.stdout && !result.stderr.trim();
-  if (result.code !== 0 && !noMatch) throw new Error(result.stderr.trim() || `git config a échoué (code ${result.code})`);
+  if (result.code !== 0 && !noMatch) {
+    if (/no-lazy-fetch/.test(result.stderr)) throw new Error('git 2.44 ou plus récent est requis (option --no-lazy-fetch inconnue de la version installée)');
+    throw new Error(result.stderr.trim() || `git config a échoué (code ${result.code})`);
+  }
 
   // -z --name-only: "<scope>\0<key>\0" per entry. Keys are "<section>.<name>.<variable>", where only
   // <name> keeps its case and may itself contain dots.
@@ -61,7 +73,9 @@ export async function readOnlyGitArgs(cwd: string, env: NodeJS.ProcessEnv, optio
     const section = key.slice(0, first);
     const name = key.slice(first + 1, last);
     // "-c filter.a=b.clean=" would set "filter.a": such a name cannot be neutralised, so refuse.
-    if (name.includes('=')) throw new Error(`nom de ${section} impossible à neutraliser : ${JSON.stringify(name)}`);
+    // A name that is not valid UTF-8 was decoded lossily (U+FFFD): overriding the decoded text would
+    // target another key, and such bytes cannot even be passed on a Windows command line. Refuse.
+    if (name.includes('=') || name.includes('\uFFFD')) throw new Error(`nom de ${section} impossible à neutraliser : ${JSON.stringify(name)}`);
     if (seen.has(`${section}.${name}`)) continue;
     seen.add(`${section}.${name}`);
     const variables = section === 'filter' ? ['clean=', 'smudge=', 'process=', 'required=false'] : ['command=', 'textconv='];

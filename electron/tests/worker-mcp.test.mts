@@ -177,6 +177,7 @@ test('worker::send: a project .mcp.json server overrides a colliding global one 
   await writeFile(join(project, '.mcp.json'), JSON.stringify({
     mcpServers: { fake: { command: process.execPath, args: [FAKE_MCP_SERVER] } },
   }));
+  await approveProject(worker, project);
 
   let requestCount = 0;
   const server = createServer((request, response) => {
@@ -392,6 +393,7 @@ test('worker::mcp-* replies never carry a real env/header secret to the renderer
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
   t.after(() => worker.terminate());
+  await approveProject(worker, project);
   const assertNoSecret = (label: string, value: unknown) => {
     const text = JSON.stringify(value);
     for (const secret of [SECRET_HEADER, SECRET_ENV, SECRET_PROJECT_HEADER]) {

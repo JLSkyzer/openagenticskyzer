@@ -120,6 +120,8 @@ test('nothing a project brings runs before approval — not on evaluation, Outil
   const trusted = await callWorker(worker, 'plugin-list', { folder: project });
   assert.deepEqual(trusted.tools, ['marker_tool']);
   assert.deepEqual(trusted.untrusted, []);
+  const trustedServers = await callWorker(worker, 'mcp-list', { folder: project });
+  assert.equal(trustedServers.find((server: any) => server.scope === 'project').trusted, true, 'the project entry is listed as trusted once approved');
   assert.equal(await exists(pluginMarker), true, 'loaded once trusted');
   assert.equal(await exists(mcpMarker), true, 'started once trusted');
 });

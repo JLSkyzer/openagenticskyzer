@@ -236,6 +236,17 @@ function trustView(projectTrust) {
   return { state, changed, token, plugins: inventory.plugins, mcpServers: redactSecrets(inventory.mcpServers), relaxations: inventory.relaxations };
 }
 
+/** The user just saved these project fields themselves: approve them so they apply at once. Never
+ * throws — the save already succeeded, and a failed approval only leaves the relaxation pending
+ * (fail-closed: not applied until the user approves the project). */
+async function approveSavedFields(folder, fields) {
+  try {
+    await trust.approveRelaxations(folder, fields);
+  } catch (error) {
+    console.error(`[trust] approbation de ${Object.keys(fields).join(', ')} impossible : ${error instanceof Error ? error.message : error}`);
+  }
+}
+
 const EXPORT_FORMATS = new Set(['md', 'html', 'json']);
 
 /** Writes the conversation to `<folder>/conversation_<timestamp>.<ext>` and returns its filename —
@@ -418,7 +429,7 @@ async function handle(message) {
       else {
         const patch = { agent_mode: payload.settings?.agent_mode || 'inherit', custom_prompt: payload.settings?.custom_prompt || '' };
         result = await settings.saveProject(payload.folder, patch);
-        await trust.approveRelaxations(payload.folder, patch);
+        await approveSavedFields(payload.folder, patch);
       }
     }
     if (op === 'compact') {
@@ -484,9 +495,10 @@ async function handle(message) {
         if (payload.always && payload.allow && pending.category === 'shell') {
           sessionAllowed.add(allowKey(pending.folder, pending.tool));
         } else if (payload.always && payload.allow && field) {
-          await settings.saveProject(pending.folder, { override_permissions: true, [field]: false }).catch(() => {});
-          // The user's own choice: approved at once, and only this field (core/project-trust.mts).
-          await trust.approveRelaxations(pending.folder, { [field]: false }).catch(() => {});
+          const saved = await settings.saveProject(pending.folder, { override_permissions: true, [field]: false }).then(() => true, () => false);
+          // The user's own choice: approved at once, and only this field (core/project-trust.mts) —
+          // but only once it was really saved.
+          if (saved) await approveSavedFields(pending.folder, { [field]: false });
         }
         pending.resolve(payload.allow);
       }
@@ -499,7 +511,7 @@ async function handle(message) {
     if (op === 'save-global-settings') { await settings.saveGlobal(payload.patch); result = await settings.publicGlobal(); }
     if (op === 'save-project-settings') {
       result = await settings.saveProject(payload.folder, payload.patch);
-      await trust.approveRelaxations(payload.folder, payload.patch);
+      await approveSavedFields(payload.folder, payload.patch);
     }
     // Zone Danger: none of these delete project files — history and sidebar entries only.
     if (op === 'clear-history') {

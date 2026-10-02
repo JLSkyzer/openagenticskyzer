@@ -22,7 +22,7 @@ async function main() {
   // The packaged exe (npm run package:win): `electron .` on the unpackaged tree opens no
   // window here, and the packaged build is what actually ships anyway.
   const child = spawn(path.join(electronDir, 'release', 'win-unpacked', 'openagent.exe'), [`--remote-debugging-port=${port}`, `--user-data-dir=${userData}`], {
-    env: { ...process.env, OPENAGENT_HOME: home },
+    env: { ...process.env, OPENAGENT_HOME: home, OPENAGENT_DISABLE_UPDATES: '1' },
     stdio: 'ignore',
   });
   let cdp;

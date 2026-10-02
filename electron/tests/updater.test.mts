@@ -1,8 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { readdir, readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
+
+test('every test that launches the packaged exe switches updates off, except the three updater tests', async () => {
+  // Otherwise each run asks production GitHub; once a newer release exists, the run would download it into
+  // the real %LOCALAPPDATA%\openagent-desktop-updater and install it when the app closes gracefully.
+  const dir = fileURLToPath(new URL('.', import.meta.url));
+  const RUN_THE_UPDATER = ['package-smoke.cjs', 'update-e2e.cjs', 'install-e2e.cjs']; // loopback feed or refused port
+  const launchers: string[] = [];
+  const missing: string[] = [];
+  for (const name of (await readdir(dir)).filter(file => /\.(c|m)?[jt]s$/.test(file)).sort()) {
+    const source = await readFile(`${dir}${name}`, 'utf8');
+    if (!/win-unpacked|openagent\.exe/.test(source) || RUN_THE_UPDATER.includes(name)) continue;
+    if (name === 'updater.test.mts') continue; // this guard names the exe itself
+    launchers.push(name);
+    if (!/OPENAGENT_DISABLE_UPDATES:\s*'1'/.test(source)) missing.push(name);
+  }
+  assert.ok(launchers.includes('bridge-real.cjs') && launchers.includes('final-e2e.cjs'), `the scan found the launchers (${launchers.join(', ')})`);
+  assert.deepEqual(missing, [], 'packaged-exe launchers that would query production GitHub');
+});
 
 test('feedOverride accepts only http loopback URLs, normalised with a trailing slash', () => {
   const { feedOverride } = require('../updater.cjs');

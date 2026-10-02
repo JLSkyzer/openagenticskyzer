@@ -100,7 +100,7 @@ async function main() {
     const exePath = path.join(__dirname, '..', 'release', 'win-unpacked', 'openagent.exe');
     const debugPort = 9336;
     child = spawn(exePath, [`--remote-debugging-port=${debugPort}`, `--user-data-dir=${userData}`], {
-      env: { ...process.env, PATH: sanitizedPath, OPENAGENT_HOME: home },
+      env: { ...process.env, PATH: sanitizedPath, OPENAGENT_HOME: home, OPENAGENT_DISABLE_UPDATES: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child.stdout.on('data', d => childOutput.push(`[stdout] ${d}`));

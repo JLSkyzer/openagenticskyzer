@@ -1,10 +1,23 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { SettingsDraft } from './useSettingsDraft';
 import { Group, Row, Section, Toggle } from './parts';
-import { migrateDataDir, pickDataDir, testHfToken } from '../../ipc/bridge';
+import { checkForUpdates, getUpdateStatus, migrateDataDir, onUpdateStatus, pickDataDir, testHfToken, type UpdateStatus } from '../../ipc/bridge';
 import { useToast } from '../../state/ToastProvider';
 
 const button = 'self-start rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs text-gray-300';
+
+function updateText(update: UpdateStatus): string {
+  if (!update.enabled) return 'Mises à jour désactivées (version de développement)';
+  switch (update.status) {
+    case 'idle': return 'Pas encore vérifié';
+    case 'checking': return 'Vérification…';
+    case 'available': return `Version ${update.version} disponible — téléchargement…`;
+    case 'downloading': return `Téléchargement : ${update.percent ?? 0} %`;
+    case 'ready': return `Version ${update.version} prête — elle s’installera à la fermeture`;
+    case 'up-to-date': return 'À jour';
+    case 'error': return `Échec : ${update.message ?? 'erreur inconnue'}`;
+  }
+}
 
 // Mirrors settings.py::_tab_general.
 export function GeneralTab({ draft }: { draft: SettingsDraft }) {
@@ -14,6 +27,20 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
   const [newDataDir, setNewDataDir] = useState('');
   const [migrating, setMigrating] = useState(false);
   const { notify } = useToast();
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [checking, setChecking] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    getUpdateStatus().then(status => { if (alive) setUpdate(status); }).catch(() => {});
+    const off = onUpdateStatus(status => setUpdate(status));
+    return () => { alive = false; off(); };
+  }, []);
+  const runCheck = async () => {
+    setChecking(true);
+    try { setUpdate(await checkForUpdates()); }
+    catch (error) { notify(error instanceof Error ? error.message : 'Vérification impossible.', 'negative'); }
+    finally { setChecking(false); }
+  };
 
   const dataHome = draft.get<string>('data_home', '');
 
@@ -181,6 +208,31 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
               className={button + ' disabled:cursor-not-allowed disabled:opacity-60'}
             >
               {testing ? 'Test…' : 'Tester le token'}
+            </button>
+          </div>
+        </Group>
+      </div>
+
+      <div>
+        <Section title="Mises à jour" />
+        <Group>
+          <div className="flex flex-col gap-2 px-4 py-3 text-xs">
+            <span className="text-gray-300">
+              Version installée : <span data-testid="oa-update-version" className="font-mono">{update?.currentVersion ?? '…'}</span>
+            </span>
+            {update && (
+              <span data-testid="oa-update-state" data-status={update.enabled ? update.status : 'disabled'} className="text-gray-500">
+                {updateText(update)}
+                {update.at && ` (${new Date(update.at).toLocaleString('fr-FR')})`}
+              </span>
+            )}
+            <button
+              id="oa-update-check"
+              onClick={() => void runCheck()}
+              disabled={checking || !update?.enabled}
+              className={button + ' disabled:cursor-not-allowed disabled:opacity-60'}
+            >
+              {checking ? 'Vérification…' : 'Vérifier les mises à jour'}
             </button>
           </div>
         </Group>

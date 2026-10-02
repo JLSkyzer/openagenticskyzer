@@ -121,10 +121,21 @@ export interface IndexEvent {
   message?: string;
 }
 
+export interface UpdateStatus {
+  enabled: boolean;
+  currentVersion: string;
+  status: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'up-to-date' | 'error';
+  version?: string;
+  percent?: number;
+  message?: string;
+  at: string | null;
+}
+
 export interface OpenAgentBridge {
   request(request: { op: string; payload?: Record<string, unknown> }): Promise<unknown>;
   onAgentEvent(callback: (event: AgentEvent) => void): () => void;
   onIndexEvent(callback: (event: IndexEvent) => void): () => void;
+  onUpdateStatus(callback: (status: UpdateStatus) => void): () => void;
 }
 
 declare global {

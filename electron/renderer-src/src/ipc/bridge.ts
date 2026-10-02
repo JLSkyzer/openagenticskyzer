@@ -10,6 +10,7 @@ import type {
   IndexState,
   ProjectSettings,
   PromptEntry,
+  UpdateStatus,
 } from './types';
 
 // The only place in the renderer allowed to touch window.openagent directly — every
@@ -58,6 +59,19 @@ export function onAgentEvent(callback: (event: AgentEvent) => void): () => void 
 
 export function onIndexEvent(callback: (event: IndexEvent) => void): () => void {
   return window.openagent.onIndexEvent(callback);
+}
+
+export function getUpdateStatus(): Promise<UpdateStatus> {
+  return request('update-status');
+}
+export function checkForUpdates(): Promise<UpdateStatus> {
+  return request('update-check');
+}
+export function installUpdateNow(): Promise<{ installing: boolean }> {
+  return request('update-install-now');
+}
+export function onUpdateStatus(callback: (status: UpdateStatus) => void): () => void {
+  return window.openagent.onUpdateStatus(callback);
 }
 
 export function getIndexStatus(folder: string): Promise<{ state: IndexState; current?: number; total?: number; message?: string }> {
@@ -328,4 +342,5 @@ export type {
   ProjectSettings,
   PromptEntry,
   ProviderName,
+  UpdateStatus,
 } from './types';

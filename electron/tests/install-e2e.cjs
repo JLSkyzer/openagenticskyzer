@@ -27,7 +27,10 @@ const SETUP_CURRENT = path.join(ROOT, 'release', `openagent-Setup-${current}.exe
 const INSTALLER_NEXT = `openagent-Setup-${next}.exe`;
 const UNINSTALL_ROOT = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall';
 
-const installDir = path.join(process.env.LOCALAPPDATA, 'Programs', 'openagent');
+// oneClick + perMachine:false installs into %LOCALAPPDATA%\Programs\<package name> (electron-builder's sanitizedName),
+// while the uninstall entry is named "<productName> <version>" (e.g. "openagent 0.2.0").
+const installDir = path.join(process.env.LOCALAPPDATA, 'Programs', pkg.name);
+const guardDirs = [path.join(process.env.LOCALAPPDATA, 'Programs', 'openagent'), installDir];
 const installedExe = path.join(installDir, 'openagent.exe');
 const uninstaller = path.join(installDir, 'Uninstall openagent.exe');
 const startMenuShortcut = path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'openagent.lnk');
@@ -42,8 +45,9 @@ function startFeedServer() {
     const size = statSync(file).size;
     const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
     if (range && (range[1] || range[2])) {
-      const start = range[1] ? Number(range[1]) : size - Number(range[2]);
+      const start = Math.max(0, range[1] ? Number(range[1]) : size - Number(range[2]));
       const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+      if (start > end) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); res.end(); return; }
       res.writeHead(206, { 'Content-Length': end - start + 1, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Type': 'application/octet-stream' });
       createReadStream(file, { start, end }).pipe(res);
       return;
@@ -57,28 +61,52 @@ function startFeedServer() {
   });
 }
 
-function run(command, args) {
-  const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true });
-  return { code: result.status, out: `${result.stdout || ''}${result.stderr || ''}` };
+// Every child process gets a timeout: a hung reg/powershell/installer must fail the test, not freeze it.
+function run(command, args, timeout = 30000) {
+  const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, timeout });
+  return { code: result.status, out: `${result.stdout || ''}${result.stderr || ''}`, error: result.error || null, signal: result.signal };
+}
+// Setup / Uninstall executables: 180 s, and a spawn error, a timeout or a non-zero status is a failure.
+function runInstaller(exe, args) {
+  const result = run(exe, args, 180000);
+  if (result.error) throw new Error(`${path.basename(exe)} ${args.join(' ')} failed to run to completion: ${result.error.message}`);
+  if (result.code !== 0) throw new Error(`${path.basename(exe)} ${args.join(' ')} exited with status ${result.code} (signal ${result.signal})`);
 }
 
-// The HKCU uninstall entry whose DisplayName is exactly `openagent`: { key, version } or null.
-function uninstallEntry() {
+// Every HKCU uninstall entry whose DisplayName is "openagent" or starts with "openagent " (the real one is "openagent <version>"):
+// [{ key, name, version, installLocation, uninstallString }].
+function uninstallEntries() {
   const search = run('reg', ['query', UNINSTALL_ROOT, '/s', '/f', 'openagent', '/d']);
+  if (search.error) throw new Error(`reg query failed: ${search.error.message}`);
+  const entries = [];
   let key = null;
   for (const line of search.out.split(/\r?\n/)) {
-    if (/^HKEY_/i.test(line.trim())) key = line.trim();
-    else if (key && /^\s*DisplayName\s+REG_SZ\s+openagent\s*$/.test(line)) {
-      const version = /^\s*DisplayVersion\s+REG_SZ\s+(\S+)\s*$/m.exec(run('reg', ['query', key, '/v', 'DisplayVersion']).out);
-      return { key, version: version ? version[1] : null };
+    if (/^HKEY_/i.test(line.trim())) { key = line.trim(); continue; }
+    const name = key && /^\s*DisplayName\s+REG_SZ\s+(.*?)\s*$/.exec(line)?.[1];
+    if (name && /^openagent(\s|$)/i.test(name)) {
+      const values = run('reg', ['query', key]);
+      if (values.error) throw new Error(`reg query ${key} failed: ${values.error.message}`);
+      const value = field => new RegExp(`^\\s*${field}\\s+REG_\\w+\\s+(.+?)\\s*$`, 'm').exec(values.out)?.[1] ?? null;
+      entries.push({ key, name, version: value('DisplayVersion'), installLocation: value('InstallLocation'), uninstallString: value('UninstallString') });
+      key = null;
     }
   }
-  return null;
+  return entries;
+}
+const entryVersion = () => uninstallEntries()[0]?.version ?? null;
+const normalizeDir = dir => path.resolve(dir.replace(/^"|"$/g, '')).replace(/[\/]+$/, '').toLowerCase();
+// Where the uninstall entry says the app lives: InstallLocation, else the folder of UninstallString.
+function entryLocation(entry) {
+  if (entry.installLocation) return normalizeDir(entry.installLocation);
+  const exe = entry.uninstallString && /^\s*"([^"]+)"|^\s*(\S+\.exe)/i.exec(entry.uninstallString);
+  return exe ? normalizeDir(path.dirname(exe[1] || exe[2])) : null;
 }
 
-// Image-name filter that cannot see foreign processes: only the executables living under the folder we installed.
+// Only processes whose executable lives under the installed folder (trailing separator: a sibling such as
+// "openagent-desktop-x" can never match).
 function installedProcessIds() {
-  const script = `Get-Process openagent -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith('${installDir.replace(/'/g, "''")}', [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $_.Id }`;
+  const prefix = (installDir + path.sep).replace(/'/g, "''");
+  const script = `Get-Process openagent -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith('${prefix}', [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $_.Id }`;
   return run('powershell', ['-NoProfile', '-Command', script]).out.split(/\r?\n/).map(s => s.trim()).filter(s => /^\d+$/.test(s));
 }
 function killInstalledProcesses() {
@@ -90,27 +118,40 @@ function installerProcessRunning() {
 }
 
 function launchInstalled(cdpPort, userData, openagentHome, extraEnv) {
-  return spawn(installedExe, [`--remote-debugging-port=${cdpPort}`, `--user-data-dir=${userData}`], {
+  const child = spawn(installedExe, [`--remote-debugging-port=${cdpPort}`, `--user-data-dir=${userData}`], {
     stdio: 'ignore',
     env: { ...process.env, OPENAGENT_HOME: openagentHome, OPENAGENT_USERDATA_DIR: userData, OPENAGENT_SKIP_ONBOARDING: '1', ...extraEnv },
   });
+  child.on('error', error => process.stderr.write(`installed app failed to start: ${error.message}\n`)); // 'exit' never fires then
+  return child;
 }
+// Resolves when the process is gone — or never started ('error' instead of 'exit').
 function exited(child) {
-  return new Promise(resolve => (child.exitCode !== null ? resolve() : child.once('exit', resolve)));
+  return new Promise(resolve => {
+    if (child.exitCode !== null || child.signalCode !== null) { resolve(); return; }
+    child.once('exit', resolve);
+    child.once('error', resolve);
+  });
 }
 const removeDir = dir => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }).catch(() => {});
 
 async function main() {
-  // Guard first: never touch an existing installation.
-  if (existsSync(installDir) || uninstallEntry()) {
-    process.stdout.write("SKIP: openagent est déjà installé — test annulé pour ne pas toucher à ton installation\n");
-    process.exitCode = 1;
-    return;
-  }
   const desktop = run('powershell', ['-NoProfile', '-Command', "[Environment]::GetFolderPath('Desktop')"]).out.trim();
   assert.ok(desktop && existsSync(desktop), `resolved the Desktop folder (${desktop})`);
   const desktopShortcut = path.join(desktop, 'openagent.lnk');
-  assert.ok(!existsSync(desktopShortcut) && !existsSync(startMenuShortcut), 'no openagent shortcut exists before the test (would make the cleanup check meaningless)');
+
+  // Guard first, conservative: any trace of an openagent installation aborts the test before anything is touched.
+  const traces = [
+    ...guardDirs.filter(existsSync).map(dir => `folder ${dir}`),
+    ...uninstallEntries().map(entry => `HKCU entry "${entry.name}"`),
+    ...[desktopShortcut, startMenuShortcut].filter(existsSync).map(file => `shortcut ${file}`),
+  ];
+  if (traces.length) {
+    process.stdout.write("SKIP: openagent est déjà installé — test annulé pour ne pas toucher à ton installation\n");
+    process.stdout.write(`(traces trouvées : ${traces.join('; ')})\n`);
+    process.exitCode = 1;
+    return;
+  }
 
   // N in release/, N+1 in release-next/ — never touches package.json.
   build([]);
@@ -132,13 +173,16 @@ async function main() {
   try {
     // 3. Install N, silently.
     installStarted = true;
-    run(SETUP_CURRENT, ['/S']);
-    await waitFor(() => existsSync(installedExe) && uninstallEntry()?.version === current, { timeout: 120000, interval: 1000, what: `openagent v${current} installed (exe + HKCU DisplayVersion)` });
+    runInstaller(SETUP_CURRENT, ['/S']);
+    await waitFor(() => existsSync(installedExe) && entryVersion() === current, { timeout: 120000, interval: 1000, what: `openagent v${current} installed (exe + HKCU DisplayVersion)` });
     await waitFor(() => !installerProcessRunning(), { timeout: 60000, interval: 1000, what: 'the installer process finished' });
     killInstalledProcesses(); // a silent install must not leave the app running; make sure before driving it
+    const entries = uninstallEntries();
+    assert.equal(entries.length, 1, `exactly one openagent uninstall entry after the install (got ${entries.length})`);
+    assert.equal(entryLocation(entries[0]), normalizeDir(installDir), `the uninstall entry's location (${entries[0].installLocation || entries[0].uninstallString}) is the folder this test cleans up (${installDir})`);
     assert.ok(existsSync(desktopShortcut), `Desktop shortcut exists: ${desktopShortcut}`);
     assert.ok(existsSync(startMenuShortcut), `Start menu shortcut exists: ${startMenuShortcut}`);
-    process.stdout.write(`installed v${current} in ${installDir}, shortcuts present\n`);
+    process.stdout.write(`installed v${current} in ${installDir} ("${entries[0].name}"), shortcuts present\n`);
 
     // 4. Launch the INSTALLED exe against the local feed; click the real button.
     const started = await startFeedServer();
@@ -160,19 +204,26 @@ async function main() {
     assert.equal(ready.currentVersion, current, 'the installed app is the current version');
     assert.equal(ready.version, next, 'the installed app found the next version');
     process.stdout.write(`update v${next} downloaded; clicking "Redémarrer maintenant"\n`);
-    await cdpEvaluate(page.webSocketDebuggerUrl, "document.querySelector('#oa-update-install').click(), true");
+    // The click is deferred so quitAndInstall cannot close the CDP socket before the evaluation answers.
+    await cdpEvaluate(page.webSocketDebuggerUrl, "(() => { const button = document.querySelector('#oa-update-install'); if (!button) throw new Error('no #oa-update-install button'); setTimeout(() => button.click(), 0); return true; })()");
 
     // 5. The app quits, the installer updates in place, nothing relaunches (NO_RELAUNCH).
-    await Promise.race([
-      exited(first),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('the app did not exit after clicking install')), 120000)),
-    ]);
-    await waitFor(() => uninstallEntry()?.version === next, { timeout: 180000, interval: 1000, what: `HKCU DisplayVersion becomes ${next}` });
+    let exitTimer;
+    try {
+      await Promise.race([
+        exited(first),
+        new Promise((_, reject) => { exitTimer = setTimeout(() => reject(new Error('the app did not exit after clicking install')), 120000); }),
+      ]);
+    } finally {
+      clearTimeout(exitTimer);
+    }
+    await waitFor(() => entryVersion() === next, { timeout: 180000, interval: 1000, what: `HKCU DisplayVersion becomes ${next}` });
     await waitFor(() => !installerProcessRunning(), { timeout: 60000, interval: 1000, what: 'the update installer finished' });
     killInstalledProcesses();
     process.stdout.write(`updated in place to v${next}\n`);
 
-    const second = launchInstalled(9338, userData, openagentHome, {});
+    // Relaunch with updates disabled (no feed): the real GitHub check must not start.
+    const second = launchInstalled(9338, userData, openagentHome, { OPENAGENT_DISABLE_UPDATES: '1' });
     try {
       const page2 = await waitForPage(9338);
       const status = await cdpEvaluate(page2.webSocketDebuggerUrl, "window.openagent.request({ op: 'update-status' })");
@@ -185,9 +236,9 @@ async function main() {
 
     // 6. Uninstall, silently, and check nothing is left.
     killInstalledProcesses();
-    run(uninstaller, ['/S']);
+    runInstaller(uninstaller, ['/S']);
     await waitFor(
-      () => !existsSync(installDir) && !uninstallEntry() && !existsSync(desktopShortcut) && !existsSync(startMenuShortcut),
+      () => !existsSync(installDir) && uninstallEntries().length === 0 && !existsSync(desktopShortcut) && !existsSync(startMenuShortcut),
       { timeout: 120000, interval: 1000, what: 'uninstall removed the folder, the HKCU entry and both shortcuts' },
     );
     installStarted = false;
@@ -198,23 +249,22 @@ async function main() {
     // On any failure, still try to leave the machine as we found it, and say exactly what is left.
     if (server) server.close();
     killInstalledProcesses();
-    if (installStarted && (existsSync(installDir) || uninstallEntry())) {
-      if (existsSync(uninstaller)) run(uninstaller, ['/S']);
-      await waitFor(() => !existsSync(installDir) && !uninstallEntry(), { timeout: 120000, interval: 1000, what: 'cleanup uninstall' }).catch(() => {});
+    const entriesLeft = () => { try { return uninstallEntries(); } catch { return null; } };
+    if (installStarted && (existsSync(installDir) || entriesLeft()?.length !== 0)) {
+      if (existsSync(uninstaller)) { try { runInstaller(uninstaller, ['/S']); } catch (error) { process.stderr.write(`cleanup uninstall: ${error.message}\n`); } }
+      await waitFor(() => !existsSync(installDir) && uninstallEntries().length === 0, { timeout: 120000, interval: 1000, what: 'cleanup uninstall' }).catch(() => {});
     }
     for (const dir of temps) await removeDir(dir);
     if (!cacheRootExisted) await removeDir(cacheRoot);
     else if (!pendingExisted) await removeDir(pendingDir);
-    if (installStarted || failure) {
-      const left = [
-        existsSync(installDir) && `folder ${installDir}`,
-        uninstallEntry() && 'HKCU uninstall entry',
-        existsSync(desktopShortcut) && `shortcut ${desktopShortcut}`,
-        existsSync(startMenuShortcut) && `shortcut ${startMenuShortcut}`,
-        !cacheRootExisted && existsSync(cacheRoot) && `updater cache ${cacheRoot}`,
-      ].filter(Boolean);
-      process.stdout.write(left.length ? `LEFT BEHIND: ${left.join('; ')}\n` : 'cleanup verified: nothing left behind\n');
-    }
+    const remaining = entriesLeft();
+    const left = [
+      ...guardDirs.filter(existsSync).map(dir => `folder ${dir}`),
+      ...(remaining === null ? ['HKCU uninstall entries (registry unreadable, check by hand)'] : remaining.map(entry => `HKCU entry "${entry.name}" (${entry.key}, location ${entry.installLocation || 'unknown'})`)),
+      ...[desktopShortcut, startMenuShortcut].filter(existsSync).map(file => `shortcut ${file}`),
+      ...(!cacheRootExisted && existsSync(cacheRoot) ? [`updater cache ${cacheRoot}`] : []),
+    ];
+    process.stdout.write(left.length ? `LEFT BEHIND: ${left.join('; ')}\n` : 'cleanup verified: nothing left behind\n');
   }
   if (failure) throw failure;
 }

@@ -43,8 +43,9 @@ function startFeedServer() {
     const size = statSync(file).size;
     const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
     if (range && (range[1] || range[2])) {
-      const start = range[1] ? Number(range[1]) : size - Number(range[2]);
+      const start = Math.max(0, range[1] ? Number(range[1]) : size - Number(range[2]));
       const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+      if (start > end) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); res.end(); return; }
       res.writeHead(206, { 'Content-Length': end - start + 1, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Type': 'application/octet-stream' });
       createReadStream(file, { start, end }).pipe(res);
       return;
@@ -84,11 +85,15 @@ async function main() {
   const appUpdate = readFileSync(path.join(ROOT, 'release', 'win-unpacked', 'resources', 'app-update.yml'), 'utf8');
   const cacheDirName = /^updaterCacheDirName:\s*(\S+)\s*$/m.exec(appUpdate)?.[1];
   assert.ok(cacheDirName, 'app-update.yml names the updater cache directory');
-  // electron-updater also drops files next to `pending` (e.g. current.blockmap): if the cache root is ours, remove all of it.
+  // A real install's updater cache must never be touched: refuse to run if the cache root already exists.
+  // (electron-updater drops several files in it, e.g. current.blockmap, so the whole root is removed afterwards.)
   const cacheRoot = path.join(process.env.LOCALAPPDATA, cacheDirName);
-  const cacheRootExisted = existsSync(cacheRoot);
+  if (existsSync(cacheRoot)) {
+    process.stdout.write(`SKIP: ${cacheRoot} existe déjà (cache de mise à jour d'une installation réelle ?) — test annulé pour ne pas y toucher\n`);
+    process.exitCode = 1;
+    return;
+  }
   const pendingDir = path.join(cacheRoot, 'pending');
-  const pendingExisted = existsSync(pendingDir);
   const expected = await expectedSha512();
 
   const { server, port } = await startFeedServer();
@@ -105,6 +110,7 @@ async function main() {
       OPENAGENT_UPDATE_CHECK_DELAY_MS: '500',
     },
   });
+  child.on('error', error => process.stderr.write(`packaged app failed to start: ${error.message}\n`)); // 'exit' never fires then
   try {
     const page = await waitForPage(CDP_PORT);
     let last = '';
@@ -129,11 +135,12 @@ async function main() {
     process.stdout.write(`PASS update e2e: packaged v${current} found v${next} on a local feed, downloaded and verified it (sha512), banner shown — not installed\n`);
   } finally {
     child.kill(); // TerminateProcess: no `quit` event, so nothing installs
-    await new Promise(resolve => (child.exitCode !== null ? resolve() : child.once('exit', resolve)));
+    await new Promise(resolve => { // resolves on exit, or on a spawn error (no exit event then)
+      if (child.exitCode !== null || child.signalCode !== null) resolve();
+      else { child.once('exit', resolve); child.once('error', resolve); }
+    });
     server.close();
-    for (const dir of [userData, openagentHome]) await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }).catch(() => {});
-    if (!cacheRootExisted) await rm(cacheRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }).catch(() => {});
-    else if (!pendingExisted) await rm(pendingDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }).catch(() => {});
+    for (const dir of [userData, openagentHome, cacheRoot]) await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }).catch(() => {});
   }
 }
 

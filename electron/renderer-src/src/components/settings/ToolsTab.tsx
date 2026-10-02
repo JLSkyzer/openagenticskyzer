@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { addMcpRemoteServer, addMcpServer, decideProjectTrust, getProjectTrust, listMcpServers, listPlugins, removeMcpServer, type McpServerConfig, type PluginListResult, type ProjectTrustView } from '../../ipc/bridge';
+import { useEffect, useRef, useState } from 'react';
+import { addMcpRemoteServer, addMcpServer, decideProjectTrust, getProjectTrust, listMcpServers, listPlugins, removeMcpServer, TRUST_CHANGED_EVENT, type McpServerConfig, type PluginListResult, type ProjectTrustView } from '../../ipc/bridge';
 import { Group, Section } from './parts';
 import { useToast } from '../../state/ToastProvider';
 
@@ -35,12 +35,35 @@ export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
   const [deciding, setDeciding] = useState(false);
   const { notify } = useToast();
 
-  const refresh = () => listMcpServers(activeFolder).then(setServers).catch(() => {});
-  const refreshPlugins = () => listPlugins(activeFolder).then(setPlugins).catch(() => setPlugins(EMPTY_PLUGINS));
-  const refreshTrust = () => (activeFolder ? getProjectTrust(activeFolder).then(setTrust).catch(() => setTrust(null)) : Promise.resolve(setTrust(null)));
+  // Only the latest read for the current folder may land: a slow answer for folder A must not
+  // overwrite folder B's state, nor an older answer a newer one.
+  const folderRef = useRef(activeFolder);
+  folderRef.current = activeFolder;
+  const seqs = useRef({ servers: 0, plugins: 0, trust: 0 });
+  const guarded = <T,>(kind: 'servers' | 'plugins' | 'trust', read: Promise<T>, apply: (value: T) => void, fallback?: () => void) => {
+    const folder = activeFolder;
+    const seq = ++seqs.current[kind];
+    const current = () => seq === seqs.current[kind] && folderRef.current === folder;
+    return read.then(value => { if (current()) apply(value); }, () => { if (current()) fallback?.(); });
+  };
+  const refresh = () => guarded('servers', listMcpServers(activeFolder), setServers);
+  const refreshPlugins = () => guarded('plugins', listPlugins(activeFolder), setPlugins, () => setPlugins(EMPTY_PLUGINS));
+  const refreshTrust = () => (activeFolder
+    ? guarded('trust', getProjectTrust(activeFolder), setTrust, () => setTrust(null))
+    : Promise.resolve(setTrust(null)));
   useEffect(() => { refresh(); }, [activeFolder]);
   useEffect(() => { refreshPlugins(); }, [activeFolder]);
-  useEffect(() => { refreshTrust(); }, [activeFolder]);
+  // Folder A's trust is never shown under folder B while the new read is in flight.
+  useEffect(() => { setTrust(null); refreshTrust(); }, [activeFolder]);
+  // A decision taken elsewhere (the chat banner) changes this row, the plugin list and the server badges.
+  useEffect(() => {
+    const onChanged = (event: Event) => {
+      const folder = (event as CustomEvent<{ folder: string }>).detail?.folder;
+      if (folder && folder === folderRef.current) { void refreshTrust(); void refresh(); void refreshPlugins(); }
+    };
+    window.addEventListener(TRUST_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(TRUST_CHANGED_EVENT, onChanged);
+  }, [activeFolder]);
 
   const handleTrust = async (decision: 'trusted' | 'revoke') => {
     if (!activeFolder || !trust) return;

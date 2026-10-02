@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { decideProjectTrust, getProjectTrust, type McpServerConfig, type ProjectTrustView } from '../ipc/bridge';
+import { decideProjectTrust, getProjectTrust, TRUST_CHANGED_EVENT, type McpServerConfig, type ProjectTrustView } from '../ipc/bridge';
 import { useChat } from '../state/ChatProvider';
 import { useToast } from '../state/ToastProvider';
 
@@ -31,15 +31,36 @@ export function ProjectTrustBanner() {
   const folderRef = useRef(activeFolder);
   folderRef.current = activeFolder;
 
+  const readSeq = useRef(0);
+
+  // Only the latest read of the current folder may land: a slow answer for folder A must never
+  // show under folder B, nor an older answer over a newer one.
+  const read = (folder: string) => {
+    const seq = ++readSeq.current;
+    const current = () => seq === readSeq.current && folderRef.current === folder;
+    getProjectTrust(folder)
+      .then(next => { if (current()) setTrust(next); })
+      .catch(() => { if (current()) setTrust(null); });
+  };
+
+  // Folder A's content is never shown under folder B, not even until the new read resolves.
+  useEffect(() => { setTrust(null); }, [activeFolder]);
+
   // Read again on every folder change and every time a turn ends: a turn can add a plugin.
   useEffect(() => {
     if (!activeFolder || state.agentRunning) return;
-    let cancelled = false;
-    getProjectTrust(activeFolder)
-      .then(next => { if (!cancelled) setTrust(next); })
-      .catch(() => { if (!cancelled) setTrust(null); });
-    return () => { cancelled = true; };
+    read(activeFolder);
   }, [activeFolder, state.agentRunning]);
+
+  // A decision taken elsewhere (the Outils tab) changes what this banner must say.
+  useEffect(() => {
+    const onChanged = (event: Event) => {
+      const folder = (event as CustomEvent<{ folder: string }>).detail?.folder;
+      if (folder && folder === folderRef.current) read(folder);
+    };
+    window.addEventListener(TRUST_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(TRUST_CHANGED_EVENT, onChanged);
+  }, []);
 
   if (!activeFolder || !trust || trust.state !== 'pending') return null;
 

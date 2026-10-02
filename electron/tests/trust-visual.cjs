@@ -119,12 +119,25 @@ export function getTools() { return [{ name: 'trust_plugin', description: 'ok', 
     await click('#oa-trust-revoke');
     await waitFor(() => js(`document.querySelector('[data-testid="oa-trust-state"]')?.dataset.state === 'pending'`), { what: 'pending after revoke' });
     await closeSettings();
-    await win.webContents.reload();
-    await pause(500);
-    await enterAlpha();
-    await waitFor(() => has('[data-testid="oa-trust-banner"]'), { what: 'banner back after revoke' });
+    // The banner and the Outils tab are mounted together: no reload may be needed to see the change.
+    await waitFor(() => has('[data-testid="oa-trust-banner"]'), { what: 'banner back after revoke in Outils, without a reload' });
+    assert.match(await text('[data-testid="oa-trust-plugin"]'), /tools\/marker\.mjs/);
 
-    // ── "Ignorer" is remembered across a reload ───────────────────────────────────────────────
+    // ── Approving in Outils while the banner is shown: the banner must go, without a reload ──
+    await openTools();
+    await click('#oa-trust-approve');
+    await waitFor(() => js(`document.querySelector('[data-testid="oa-trust-state"]')?.dataset.state === 'trusted'`), { what: 'trusted after approving in Outils' });
+    await waitFor(async () => !(await has('[data-testid="oa-trust-banner"]')), { what: 'banner gone while settings is still open' });
+    await closeSettings();
+    await pause(500);
+    assert.equal(await has('[data-testid="oa-trust-banner"]'), false, 'no stale banner after approving in Outils');
+
+    // ── Back to pending (revoke in Outils), then "Ignorer" is remembered across a reload ─────
+    await openTools();
+    await click('#oa-trust-revoke');
+    await waitFor(() => js(`document.querySelector('[data-testid="oa-trust-state"]')?.dataset.state === 'pending'`), { what: 'pending after the second revoke' });
+    await closeSettings();
+    await waitFor(() => has('[data-testid="oa-trust-banner"]'), { what: 'banner back after the second revoke, without a reload' });
     await click('#oa-trust-banner-ignore');
     await waitFor(async () => !(await has('[data-testid="oa-trust-banner"]')), { what: 'banner gone after ignore' });
     await win.webContents.reload();

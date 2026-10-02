@@ -183,8 +183,14 @@ export interface ProjectTrustView {
 export function getProjectTrust(folder: string): Promise<ProjectTrustView> {
   return request('project-trust', { folder });
 }
+// Announced after a decision is saved, so every view of a project's trust (the chat banner, the Outils
+// tab) re-reads it: they are mounted at the same time and hold separate state.
+export const TRUST_CHANGED_EVENT = 'openagent:trust-changed';
 export function decideProjectTrust(folder: string, decision: 'trusted' | 'ignored' | 'revoke', token?: string): Promise<ProjectTrustView> {
-  return request('trust-project', { folder, decision, token });
+  return request<ProjectTrustView>('trust-project', { folder, decision, token }).then(view => {
+    window.dispatchEvent(new CustomEvent(TRUST_CHANGED_EVENT, { detail: { folder } }));
+    return view;
+  });
 }
 
 export function listMcpServers(folder: string | null): Promise<McpServerConfig[]> {

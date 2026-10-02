@@ -3,7 +3,7 @@ import { readFile, realpath, rename } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { JsonStore } from './json-store.mts';
 import { projectPluginFiles } from './plugin-loader.mts';
-import { readProjectMcpConfig, type McpServerConfig } from './mcp-config.mts';
+import { parseProjectMcpConfig, type McpServerConfig } from './mcp-config.mts';
 import { RELAXABLE_KEYS, relaxationsOf, type Relaxations, type SettingsService } from './settings.mts';
 
 export type TrustState = 'none' | 'pending' | 'trusted' | 'ignored';
@@ -40,9 +40,15 @@ async function scanContent(folder: string, home: string) {
   const plugins = files.map(file => relative(folder, file).split(sep).join('/'));
   const parts: Array<[string, Buffer]> = [];
   for (let i = 0; i < files.length; i++) parts.push([plugins[i], await readFile(files[i])]);
-  const mcpServers = await readProjectMcpConfig(folder, { expandEnv: false });
+  // .mcp.json is read ONCE and both parsed and hashed from those same bytes. Only "absent" (ENOENT) means
+  // nothing to approve; any other read error throws, so the project can never look unchanged by accident.
+  const mcpPath = join(folder, '.mcp.json');
+  let mcpBytes: Buffer | null = null;
+  try { mcpBytes = await readFile(mcpPath); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  const mcpServers = mcpBytes ? parseProjectMcpConfig(mcpBytes.toString('utf8'), mcpPath, { expandEnv: false }) : [];
   // An .mcp.json that yields no valid server starts nothing: inert, nothing to approve.
-  if (mcpServers.length) parts.push(['.mcp.json', await readFile(join(folder, '.mcp.json'))]);
+  if (mcpBytes && mcpServers.length) parts.push(['.mcp.json', mcpBytes]);
   parts.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   let fingerprint: string | null = null;
   if (parts.length) {
@@ -108,14 +114,16 @@ export class ProjectTrustService {
     const [global, project] = await Promise.all([this.settings.global(), this.settings.project(folder)]);
     const relaxations = relaxationsOf(global, project);
     let scan: Awaited<ReturnType<typeof scanContent>> | null = null;
-    try { scan = await scanContent(folder, this.home); }
+    // Scanned under the real path: the plugin loader resolves .openagent/tools there, so paths relative
+    // to a junction/symlink would not match. A failing realpath leaves scan null: pending, never approved.
+    try { scan = await scanContent(await realpath(folder), this.home); }
     catch (error) { console.error(`[trust] contenu du projet illisible, non approuvé : ${error instanceof Error ? error.message : error}`); }
     const record = await this.recordFor(folder);
     const fingerprint = scan?.fingerprint ?? null;
     const contentStatus: ContentStatus =
       scan === null ? 'pending'
       : fingerprint === null ? 'none'
-      : record.content?.fingerprint === fingerprint ? record.content.decision
+      : record.content?.fingerprint === fingerprint && (record.content.decision === 'trusted' || record.content.decision === 'ignored') ? record.content.decision
       : 'pending';
     const approved = record.approved_relaxations ?? {};
     const ignored = record.ignored_relaxations ?? {};

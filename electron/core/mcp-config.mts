@@ -185,6 +185,13 @@ export async function readProjectMcpConfig(folder: string, { expandEnv = true }:
     console.error(`[mcp] .mcp.json illisible (${path}) : ${error.message}`);
     return [];
   }
+  return parseProjectMcpConfig(raw, path, { expandEnv });
+}
+
+/** The parsing half of `readProjectMcpConfig`, on content the caller already read: lets a caller that
+ * must also hash the file work on the very same bytes. Same tolerance: malformed or invalid entries
+ * are logged and skipped. */
+export function parseProjectMcpConfig(raw: string, path: string, { expandEnv = true }: { expandEnv?: boolean } = {}): McpServerConfig[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);

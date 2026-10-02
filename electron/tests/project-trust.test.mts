@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { realpath } from 'node:fs/promises';
 
 async function fixture(t: any) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-trust-'));
@@ -179,4 +180,56 @@ test('the registry is keyed by the real path: the same project reached through a
   const link = join(root, 'link');
   await symlink(project, link, 'junction');
   assert.equal((await trust.evaluate(link)).state, 'trusted');
+});
+
+test('an .mcp.json that changes or appears after approval makes the project pending again', async t => {
+  const { project, trust } = await fixture(t);
+  await addPlugin(project, 'a.mjs', 'export {}');
+  await writeFile(join(project, '.mcp.json'), JSON.stringify({ mcpServers: { fs: { command: 'npx', args: ['one'] } } }));
+  await trust.decide(project, 'trusted', (await trust.evaluate(project)).token);
+  assert.equal((await trust.evaluate(project)).state, 'trusted');
+
+  await writeFile(join(project, '.mcp.json'), JSON.stringify({ mcpServers: { fs: { command: 'npx', args: ['two'] } } }));
+  const result = await trust.evaluate(project);
+  assert.equal(result.state, 'pending');
+  assert.equal(result.changed, true);
+  assert.equal(result.contentTrusted, false);
+});
+
+test('an unreadable .mcp.json is never read as absent: the project stays pending, never trusted', async t => {
+  const { project, trust } = await fixture(t);
+  await addPlugin(project, 'a.mjs', 'export {}');
+  await trust.decide(project, 'trusted', (await trust.evaluate(project)).token);
+  assert.equal((await trust.evaluate(project)).contentTrusted, true);
+
+  await mkdir(join(project, '.mcp.json')); // readFile -> EISDIR
+  const result = await trust.evaluate(project);
+  assert.equal(result.contentTrusted, false);
+  assert.equal(result.state, 'pending');
+});
+
+test('a project with .openagent/tools reached through a junction lists the same relative paths and stays trusted', async t => {
+  const { root, project, trust } = await fixture(t);
+  await mkdir(join(project, '.openagent', 'tools'), { recursive: true });
+  await writeFile(join(project, '.openagent', 'tools', 'b.mjs'), 'export {}');
+  await trust.decide(project, 'trusted', (await trust.evaluate(project)).token);
+  const link = join(root, 'link');
+  await symlink(project, link, 'junction');
+  const result = await trust.evaluate(link);
+  assert.equal(result.state, 'trusted');
+  assert.deepEqual(result.inventory.plugins, ['.openagent/tools/b.mjs']);
+});
+
+test('a registry entry with an invalid decision approves nothing', async t => {
+  const { home, project, trust } = await fixture(t);
+  await addPlugin(project, 'a.mjs', 'export {}');
+  await trust.decide(project, 'trusted', (await trust.evaluate(project)).token);
+  const path = join(home, 'trusted-projects.json');
+  const registry = JSON.parse(await readFile(path, 'utf8'));
+  const key = await realpath(project);
+  registry[key].content.decision = 'x';
+  await writeFile(path, JSON.stringify(registry));
+  const result = await trust.evaluate(project);
+  assert.equal(result.state, 'pending');
+  assert.equal(result.contentTrusted, false);
 });

@@ -4,6 +4,7 @@ const { homedir } = require('node:os');
 const { Worker } = require('node:worker_threads');
 const artifactProtocol = require('./artifact-protocol.cjs');
 const { buildDiamondIconPng } = require('./tray-icon.cjs');
+const { createUpdater } = require('./updater.cjs');
 
 // What "artifact-put" (below) fills and the oa-artifact: protocol serves — see artifact-protocol.cjs.
 const artifacts = artifactProtocol.createArtifactStore();
@@ -12,6 +13,7 @@ let mainWindow;
 let tray;
 let backend;
 let connections;
+let updater;
 const pending = new Map();
 const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','git-status','test-hf-token','migrate-data-dir','init-project','mcp-list','mcp-add','mcp-add-remote','mcp-remove','index-status','knowledge-list','knowledge-add','knowledge-remove','plugin-list','project-trust','trust-project']);
 
@@ -213,6 +215,18 @@ async function handleBackendRequest(event, request) {
   // Hands the page's preview document to the protocol handler and answers the URL to frame. The store checks the
   // kind, the type and the size; nothing here reads or writes the disk.
   if (request.op === 'artifact-put') return artifacts.put(request.payload?.kind, request.payload?.html);
+  // Updates live in the main process (electron-updater must run there); the worker never sees them.
+  if (request.op === 'update-status') {
+    return updater ? updater.status() : { enabled: false, currentVersion: app.getVersion(), status: 'idle', at: null };
+  }
+  if (request.op === 'update-check') {
+    if (!updater) throw new Error('Mises à jour indisponibles');
+    return updater.check();
+  }
+  if (request.op === 'update-install-now') {
+    if (!updater) throw new Error('Aucune mise à jour prête à installer');
+    return updater.installNow();
+  }
   if (!allowed.has(request.op)) throw new Error('Opération IPC inconnue');
   if (!backend) throw new Error('Moteur Node indisponible');
   if (needsConnection(request.op)) request = await resolveSendPayload(connections, request);
@@ -246,6 +260,11 @@ if (require.main === module) {
       installCsp();
       connections = await createConnections();
       createWindow();
+      updater = createUpdater({
+        app,
+        send: status => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update-status', status); },
+      });
+      updater.start();
       startBackend();
       createTray();
     });

@@ -20,4 +20,10 @@ contextBridge.exposeInMainWorld('openagent', {
     ipcRenderer.on('backend-message', listener);
     return () => ipcRenderer.removeListener('backend-message', listener);
   },
+  // Update statuses come from the main process on their own channel (never the worker's).
+  onUpdateStatus: (callback) => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on('update-status', listener);
+    return () => ipcRenderer.removeListener('update-status', listener);
+  },
 });

@@ -4,7 +4,7 @@ const { homedir } = require('node:os');
 const { Worker } = require('node:worker_threads');
 const artifactProtocol = require('./artifact-protocol.cjs');
 const { buildDiamondIconPng } = require('./tray-icon.cjs');
-const { createUpdater } = require('./updater.cjs');
+const { createUpdater, createInstallNow, canInstallNow, NOT_READY } = require('./updater.cjs');
 
 // What "artifact-put" (below) fills and the oa-artifact: protocol serves — see artifact-protocol.cjs.
 const artifacts = artifactProtocol.createArtifactStore();
@@ -14,6 +14,7 @@ let tray;
 let backend;
 let connections;
 let updater;
+let installUpdateNow;
 const pending = new Map();
 const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','git-status','test-hf-token','migrate-data-dir','init-project','mcp-list','mcp-add','mcp-add-remote','mcp-remove','index-status','knowledge-list','knowledge-add','knowledge-remove','plugin-list','project-trust','trust-project']);
 
@@ -153,10 +154,12 @@ async function stopWorker(worker, timeoutMs = 3000) {
     await worker.terminate();
   }
 }
+let stoppingBackend = null; // the shutdown in progress, so a quit during "Redémarrer maintenant" waits for it
 async function stopBackend() {
   const worker = backend;
   backend = undefined;
-  await stopWorker(worker);
+  stoppingBackend = stopWorker(worker);
+  try { await stoppingBackend; } finally { stoppingBackend = null; }
 }
 
 // Mirrors worker.mjs's OPENAGENT_HOME override — lets integration tests point the whole
@@ -217,15 +220,16 @@ async function handleBackendRequest(event, request) {
   if (request.op === 'artifact-put') return artifacts.put(request.payload?.kind, request.payload?.html);
   // Updates live in the main process (electron-updater must run there); the worker never sees them.
   if (request.op === 'update-status') {
-    return updater ? updater.status() : { enabled: false, currentVersion: app.getVersion(), status: 'idle', at: null };
+    return updater ? updater.status() : { enabled: false, packaged: app.isPackaged, currentVersion: app.getVersion(), status: 'idle', at: null };
   }
   if (request.op === 'update-check') {
     if (!updater) throw new Error('Mises à jour indisponibles');
     return updater.check();
   }
+  // Worker shut down first (same path as before-quit), then the installer: see updater.cjs::createInstallNow.
   if (request.op === 'update-install-now') {
-    if (!updater) throw new Error('Aucune mise à jour prête à installer');
-    return updater.installNow();
+    if (!installUpdateNow) throw new Error(NOT_READY);
+    return installUpdateNow();
   }
   if (!allowed.has(request.op)) throw new Error('Opération IPC inconnue');
   if (!backend) throw new Error('Moteur Node indisponible');
@@ -265,16 +269,23 @@ if (require.main === module) {
         send: status => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update-status', status); },
       });
       updater.start();
+      installUpdateNow = createInstallNow({
+        canInstall: () => canInstallNow(updater.status()),
+        stop: stopBackend,
+        install: () => updater.installNow(),
+        restart: startBackend,
+      });
       startBackend();
       createTray();
     });
     // Whatever way the app quits, the worker is shut down properly first so no dev server outlives it.
+    // After "Redémarrer maintenant" the worker is already stopped (backend undefined): the quit goes straight on.
     let quitting = false;
     app.on('before-quit', event => {
-      if (quitting || !backend) return;
+      if (quitting || (!backend && !stoppingBackend)) return;
       event.preventDefault();
       quitting = true;
-      stopBackend().finally(() => app.quit());
+      (backend ? stopBackend() : stoppingBackend).finally(() => app.quit());
     });
     app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
   }

@@ -123,6 +123,8 @@ export interface IndexEvent {
 
 export interface UpdateStatus {
   enabled: boolean;
+  /** False only in development: a packaged app can still have updates switched off (OPENAGENT_DISABLE_UPDATES=1). */
+  packaged: boolean;
   currentVersion: string;
   status: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'up-to-date' | 'error';
   version?: string;

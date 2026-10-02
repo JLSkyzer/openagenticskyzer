@@ -69,7 +69,7 @@ app.whenReady().then(async () => {
       win?.webContents.send('backend-message', message);
     });
 
-    let status = { enabled: true, currentVersion: '0.2.0', status: 'idle', at: null };
+    let status = { enabled: true, packaged: true, currentVersion: '0.2.0', status: 'idle', at: null };
     let checks = 0;
     let installs = 0;
     const pushStatus = next => { status = { ...status, ...next, at: new Date().toISOString() }; win.webContents.send('update-status', status); };
@@ -175,7 +175,17 @@ app.whenReady().then(async () => {
     await waitFor(async () => checks === 1 && (await dataOf('[data-testid="oa-update-state"]', 'status')) === 'up-to-date', { what: 'check ran and state is up-to-date' });
     assert.equal(checks, 1);
 
-    process.stdout.write(`PASS update UI: banner, disabled during a turn, install/later, settings check through the real renderer (Electron ${process.versions.electron})\n`);
+    // 7. Updates switched off: only a build that is not packaged is called a development version.
+    pushStatus({ enabled: false, packaged: true, status: 'idle' });
+    await waitFor(async () => (await dataOf('[data-testid="oa-update-state"]', 'status')) === 'disabled', { what: 'disabled state shown (packaged)' });
+    const packagedOff = await text('[data-testid="oa-update-state"]');
+    assert.match(packagedOff, /^Mises à jour désactivées/);
+    assert.doesNotMatch(packagedOff, /développement/, 'a packaged app with updates switched off is not a dev build');
+    assert.equal(await disabled('#oa-update-check'), true, 'nothing to check while switched off');
+    pushStatus({ enabled: false, packaged: false, status: 'idle' });
+    await waitFor(async () => /^Mises à jour désactivées \(version de développement\)/.test(await text('[data-testid="oa-update-state"]')), { what: 'dev build named as such' });
+
+    process.stdout.write(`PASS update UI: banner, disabled during a turn, install/later, settings check, dev vs packaged switched-off wording through the real renderer (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshots: ${screenshotDir}\n`);
   } finally {
     win?.destroy();

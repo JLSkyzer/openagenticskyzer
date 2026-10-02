@@ -63,10 +63,80 @@ test('a disabled updater reports itself disabled and refuses to install', async 
   const sent: unknown[] = [];
   const updater = createUpdater({ app: { isPackaged: false, getVersion: () => '0.2.0' }, send: (s: unknown) => sent.push(s), env: {} });
   updater.start();
-  assert.deepEqual(updater.status(), { enabled: false, currentVersion: '0.2.0', status: 'idle', at: null });
-  assert.deepEqual(await updater.check(), { enabled: false, currentVersion: '0.2.0', status: 'idle', at: null }, 'check is a no-op, never loads electron-updater');
+  assert.deepEqual(updater.status(), { enabled: false, packaged: false, currentVersion: '0.2.0', status: 'idle', at: null });
+  assert.deepEqual(await updater.check(), { enabled: false, packaged: false, currentVersion: '0.2.0', status: 'idle', at: null }, 'check is a no-op, never loads electron-updater');
   assert.throws(() => updater.installNow(), /Aucune mise à jour prête à installer/);
   assert.deepEqual(sent, []);
+});
+
+test('the status says whether the app is packaged, so a switched-off packaged app is not called a dev build', async () => {
+  const { createUpdater } = require('../updater.cjs');
+  const app = { isPackaged: true, getVersion: () => '0.2.0' };
+  const off = createUpdater({ app, send: () => {}, env: { OPENAGENT_DISABLE_UPDATES: '1' } });
+  assert.deepEqual(await off.check(), { enabled: false, packaged: true, currentVersion: '0.2.0', status: 'idle', at: null });
+  const on = createUpdater({ app, send: () => {}, env: {} });
+  assert.deepEqual(on.status(), { enabled: true, packaged: true, currentVersion: '0.2.0', status: 'idle', at: null });
+  assert.throws(() => on.installNow(), /Aucune mise à jour prête à installer/, 'refused before electron-updater is even loaded');
+});
+
+// createInstallNow is tested with real async functions that record what ran and when — its collaborators are
+// main.cjs's stopBackend/startBackend and updater.installNow, which cannot run here without installing.
+function recorder() {
+  const log: string[] = [];
+  const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  return {
+    log,
+    stop: async () => { log.push('stop:start'); await pause(60); log.push('stop:end'); },
+    restart: () => { log.push('restart'); },
+  };
+}
+
+test('install-now stops the worker completely before the installer starts', async () => {
+  const { createInstallNow } = require('../updater.cjs');
+  const r = recorder();
+  const installNow = createInstallNow({ canInstall: () => true, stop: r.stop, restart: r.restart, install: () => { r.log.push('install'); return { installing: true }; } });
+  assert.deepEqual(await installNow(), { installing: true });
+  assert.deepEqual(r.log, ['stop:start', 'stop:end', 'install']);
+});
+
+test('install-now without a ready update is refused before anything stops', async () => {
+  const { createInstallNow } = require('../updater.cjs');
+  const r = recorder();
+  const installNow = createInstallNow({ canInstall: () => false, stop: r.stop, restart: r.restart, install: () => { r.log.push('install'); } });
+  await assert.rejects(installNow(), /Aucune mise à jour prête à installer/);
+  assert.deepEqual(r.log, [], 'the worker was never touched');
+});
+
+test('an installer that cannot start brings the worker back, and the error reaches the caller', async () => {
+  const { createInstallNow } = require('../updater.cjs');
+  const r = recorder();
+  let attempts = 0;
+  const installNow = createInstallNow({
+    canInstall: () => true, stop: r.stop, restart: r.restart,
+    install: () => { r.log.push('install'); if (++attempts === 1) throw new Error('installeur introuvable'); return { installing: true }; },
+  });
+  await assert.rejects(installNow(), /installeur introuvable/);
+  assert.deepEqual(r.log, ['stop:start', 'stop:end', 'install', 'restart']);
+  assert.deepEqual(await installNow(), { installing: true }, 'a failed attempt does not block a retry');
+});
+
+test('a restart that fails too does not hide why the install failed', async () => {
+  const { createInstallNow } = require('../updater.cjs');
+  const installNow = createInstallNow({
+    canInstall: () => true, stop: async () => {}, restart: () => { throw new Error('worker HS'); },
+    install: () => { throw new Error('installeur introuvable'); },
+  });
+  await assert.rejects(installNow(), /installeur introuvable/);
+});
+
+test('a second click while the worker is stopping does not start a second shutdown or an early installer', async () => {
+  const { createInstallNow } = require('../updater.cjs');
+  const r = recorder();
+  const installNow = createInstallNow({ canInstall: () => true, stop: r.stop, restart: r.restart, install: () => { r.log.push('install'); return { installing: true }; } });
+  const [first, second] = await Promise.all([installNow(), installNow()]);
+  assert.deepEqual(first, { installing: true });
+  assert.deepEqual(second, { installing: true });
+  assert.deepEqual(r.log, ['stop:start', 'stop:end', 'install']);
 });
 
 test('a downloaded update is never re-checked, so it stays installable', () => {

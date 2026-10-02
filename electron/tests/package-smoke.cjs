@@ -99,6 +99,15 @@ async function main() {
     assert.equal(status.enabled, true, 'updates are active in the packaged app');
     assert.doesNotMatch(status.message, /Cannot find module/, 'electron-updater and its dependencies are packaged');
     assert.match(status.message, /ECONNREFUSED|ERR_CONNECTION_REFUSED|connect|127\.0\.0\.1/, 'the updater really ran against the feed');
+    assert.equal(status.packaged, true, 'the status says the app is packaged (Réglages never calls it a dev build)');
+
+    // "Redémarrer maintenant" with no downloaded update: the real main.cjs refuses it before touching the worker,
+    // which still answers afterwards.
+    const refusal = await cdpEvaluate(pages[0].webSocketDebuggerUrl, "window.openagent.request({ op: 'update-install-now' }).then(() => 'resolved', error => error.message)");
+    assert.match(refusal, /Aucune mise à jour prête à installer/, 'install-now without a ready update is refused');
+    const folders = await cdpEvaluate(pages[0].webSocketDebuggerUrl, "window.openagent.request({ op: 'list_folders' })");
+    assert.ok(Array.isArray(folders), 'the worker still answers after the refused install');
+    process.stdout.write(`install-now refused: ${JSON.stringify(refusal)}; worker answered list_folders (${folders.length} folder(s))\n`);
 
     process.stdout.write('PASS packaged executable launches outside npm start and loads the real UI\n');
   } finally {

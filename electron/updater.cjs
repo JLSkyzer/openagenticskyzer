@@ -40,6 +40,34 @@ function errorMessage(error) {
   return text.split('\n')[0].slice(0, 300);
 }
 
+const NOT_READY = 'Aucune mise à jour prête à installer';
+
+/**
+ * "Redémarrer maintenant". With --updated, the NSIS installer kills every process under the install folder about
+ * a second after it starts, so the worker (and the run_command process trees it owns) is first shut down by the
+ * same path as a normal quit (`stop`), and only then is the installer started (`install`). Refused before anything
+ * stops unless `canInstall()`. If the installer cannot start, the worker is brought back (`restart`) and the error
+ * still reaches the caller. A second call while one is in flight gets the same promise, never a second installer.
+ */
+function createInstallNow({ canInstall, stop, install, restart }) {
+  let inFlight = null;
+  return function installNow() {
+    if (inFlight) return inFlight;
+    if (!canInstall()) return Promise.reject(new Error(NOT_READY));
+    inFlight = (async () => {
+      await stop();
+      try {
+        return await install();
+      } catch (error) {
+        try { await restart(); } catch (restartError) { console.error('[updater] worker restart failed:', restartError); }
+        throw error;
+      }
+    })();
+    inFlight.catch(() => { inFlight = null; });
+    return inFlight;
+  };
+}
+
 /**
  * The app's updater. `send(status)` pushes every status change to the renderer. Nothing restarts
  * the app except installNow(), which the user triggers; otherwise a downloaded update installs at quit.
@@ -49,7 +77,8 @@ function createUpdater({ app, send, env = process.env }) {
   let last = { status: 'idle', at: null };
   let autoUpdater = null;
 
-  const status = () => ({ enabled, currentVersion: app.getVersion(), ...last });
+  // `packaged` tells the settings apart: a dev build vs a packaged app with OPENAGENT_DISABLE_UPDATES=1.
+  const status = () => ({ enabled, packaged: Boolean(app.isPackaged), currentVersion: app.getVersion(), ...last });
   const publish = next => {
     last = { ...next, at: new Date().toISOString() };
     send(status());
@@ -96,14 +125,17 @@ function createUpdater({ app, send, env = process.env }) {
   }
 
   function installNow() {
-    if (!canInstallNow(last)) throw new Error('Aucune mise à jour prête à installer');
+    if (!canInstallNow(last)) throw new Error(NOT_READY);
     // Test-only: the one-time install test must never relaunch an app outside its isolated data.
     const relaunch = !(feedOverride(env.OPENAGENT_UPDATE_FEED) && env.OPENAGENT_UPDATE_NO_RELAUNCH === '1');
     load().quitAndInstall(true, relaunch);
+    // quitAndInstall never throws: when the installer cannot start synchronously it emits 'error' (which
+    // replaces "ready" above) and does not quit. Report it, so the caller can bring the worker back.
+    if (last.status !== 'ready') throw new Error(`Installation impossible : ${last.message ?? 'erreur inconnue'}`);
     return { installing: true };
   }
 
   return { start, check, installNow, status };
 }
 
-module.exports = { feedOverride, updatesEnabled, checkDelayMs, canInstallNow, shouldCheck, createUpdater };
+module.exports = { feedOverride, updatesEnabled, checkDelayMs, canInstallNow, shouldCheck, createInstallNow, createUpdater, NOT_READY };

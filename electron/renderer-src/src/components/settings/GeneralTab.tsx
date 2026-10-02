@@ -7,7 +7,7 @@ import { useToast } from '../../state/ToastProvider';
 const button = 'self-start rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs text-gray-300';
 
 function updateText(update: UpdateStatus): string {
-  if (!update.enabled) return 'Mises à jour désactivées (version de développement)';
+  if (!update.enabled) return update.packaged ? 'Mises à jour désactivées' : 'Mises à jour désactivées (version de développement)';
   switch (update.status) {
     case 'idle': return 'Pas encore vérifié';
     case 'checking': return 'Vérification…';

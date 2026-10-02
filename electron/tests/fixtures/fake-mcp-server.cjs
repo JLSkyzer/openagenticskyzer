@@ -4,6 +4,8 @@
 // stdout, exactly the transport core/mcp-client.mts speaks. Exposes one tool, "echo", and a
 // second, "boom", that always errors — enough to exercise success and failure paths for real.
 if (process.env.FAKE_MCP_CRASH === '1') process.exit(1);
+// Opt-in: proves a server really was (or was never) started — written before anything else runs.
+if (process.env.FAKE_MCP_MARKER) require('node:fs').writeFileSync(process.env.FAKE_MCP_MARKER, 'started');
 
 let buffer = '';
 process.stdin.on('data', chunk => {

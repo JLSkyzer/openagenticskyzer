@@ -223,3 +223,55 @@ test('loadPlugins refuses a relative home, and a relative non-null folder', asyn
   await assert.rejects(loadPlugins('relative/path', home), /absolus/);
   await assert.doesNotReject(loadPlugins(null, home), 'null folder is valid, not a relative-path violation');
 });
+
+const markerPlugin = (marker: string, name: string) => `
+import { writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(marker)}, 'ran');
+export function getTools() { return [{ name: ${JSON.stringify(name)}, description: 'x', properties: {}, execute: async () => 'ok' }]; }
+`;
+
+test('includeProject: false never imports a project plugin, but still loads the global ones', async t => {
+  const { root, home, project } = await fixture(t);
+  const marker = join(root, 'project-plugin-ran.txt');
+  await mkdir(join(project, 'tools'), { recursive: true });
+  await writeFile(join(project, 'tools', 'marker.mjs'), markerPlugin(marker, 'project_tool'));
+  await mkdir(join(home, 'tools'), { recursive: true });
+  await writeFile(join(home, 'tools', 'echo.mjs'), VALID_PLUGIN);
+
+  const { loadPlugins } = await import('../core/plugin-loader.mts');
+  const { tools, errors } = await loadPlugins(project, home, { includeProject: false });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(tools.map(tool => tool.name), ['echo_plugin']);
+  await assert.rejects(readFile(marker), /ENOENT/, 'the project plugin top-level code never ran');
+});
+
+test('projectPluginFiles lists what loadPlugins would import from the project, without importing it', async t => {
+  const { root, home, project } = await fixture(t);
+  const marker = join(root, 'listed-plugin-ran.txt');
+  await mkdir(join(project, 'tools', 'nested'), { recursive: true });
+  await mkdir(join(project, '.openagent', 'tools'), { recursive: true });
+  await writeFile(join(project, 'tools', 'b.mjs'), markerPlugin(marker, 'b_tool'));
+  await writeFile(join(project, 'tools', 'a.mts'), markerPlugin(marker, 'a_tool'));
+  await writeFile(join(project, 'tools', '.hidden.mjs'), 'export {}');
+  await writeFile(join(project, 'tools', '__init__.mjs'), 'export {}');
+  await writeFile(join(project, 'tools', 'notes.txt'), 'not a plugin');
+  await writeFile(join(project, 'tools', 'nested', 'deep.mjs'), 'export {}');
+  await writeFile(join(project, '.openagent', 'tools', 'meta.mjs'), 'export {}');
+
+  const { projectPluginFiles } = await import('../core/plugin-loader.mts');
+  assert.deepEqual(await projectPluginFiles(project, home), [
+    join(project, 'tools', 'a.mts'),
+    join(project, 'tools', 'b.mjs'),
+    join(project, '.openagent', 'tools', 'meta.mjs'),
+  ]);
+  await assert.rejects(readFile(marker), /ENOENT/, 'listing imports nothing');
+});
+
+test('projectPluginFiles treats <project>/.openagent/tools as global when it IS the data home tools directory', async t => {
+  const { project } = await fixture(t);
+  const home = join(project, '.openagent');
+  await mkdir(join(home, 'tools'), { recursive: true });
+  await writeFile(join(home, 'tools', 'mine.mjs'), 'export {}');
+  const { projectPluginFiles } = await import('../core/plugin-loader.mts');
+  assert.deepEqual(await projectPluginFiles(project, home), []);
+});

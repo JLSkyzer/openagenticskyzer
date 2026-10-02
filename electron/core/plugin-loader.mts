@@ -75,13 +75,20 @@ async function freshImport(file: string) {
  * reusing a name an earlier file (in scan order) already registered is rejected whole, like any
  * other invalid file.
  */
-export async function loadPlugins(folder: string | null, home: string): Promise<PluginLoadResult> {
+export async function loadPlugins(
+  folder: string | null,
+  home: string,
+  { includeProject = true }: { includeProject?: boolean } = {},
+): Promise<PluginLoadResult> {
   if (!isAbsolute(home)) throw new Error('Chemins absolus requis');
   if (folder !== null && !isAbsolute(folder)) throw new Error('Chemins absolus requis');
   const tools: AgentTool[] = [];
   const errors: string[] = [];
   const registered = new Set<string>();
-  for (const dir of await pluginDirectories(folder, home)) {
+  // A project not approved yet (core/project-trust.mts): its directories are not even scanned —
+  // importing a file runs its top-level code.
+  const dirs = includeProject ? await pluginDirectories(folder, home) : [join(home, 'tools')];
+  for (const dir of dirs) {
     for (const file of await pluginFiles(dir)) {
       try {
         const module = await freshImport(file);
@@ -106,4 +113,14 @@ export async function loadPlugins(folder: string | null, home: string): Promise<
     }
   }
   return { tools, errors };
+}
+
+/** The plugin files a project itself brings (its tools/ and .openagent/tools/), selected exactly as
+ * loadPlugins selects them and listed WITHOUT importing anything — what core/project-trust.mts
+ * fingerprints and shows. A project directory that is physically <home>/tools is global content. */
+export async function projectPluginFiles(folder: string, home: string): Promise<string[]> {
+  if (!isAbsolute(home) || !isAbsolute(folder)) throw new Error('Chemins absolus requis');
+  const globalDir = join(home, 'tools');
+  const dirs = (await pluginDirectories(folder, home)).filter(dir => dir !== globalDir);
+  return (await Promise.all(dirs.map(pluginFiles))).flat();
 }

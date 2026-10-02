@@ -35,6 +35,12 @@ async function waitUntilDone(events: any[]) {
   }
 }
 
+/** A project's .mcp.json is only used once the project is trusted (core/project-trust.mts). */
+async function approveProject(worker: Worker, folder: string) {
+  const { token } = await callWorker(worker, 'project-trust', { folder });
+  await callWorker(worker, 'trust-project', { folder, decision: 'trusted', token });
+}
+
 test('worker::mcp-list/add/remove persist real MCP server definitions', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-config-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -118,6 +124,7 @@ test('worker::send discovers a real project-scope server from a real .mcp.json a
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
   t.after(() => worker.terminate());
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
+  await approveProject(worker, project);
 
   let requestCount = 0;
   const server = createServer((request, response) => {
@@ -210,6 +217,7 @@ test('worker::send: two DIFFERENT servers exposing the same tool names never fai
   await writeFile(join(project, '.mcp.json'), JSON.stringify({
     mcpServers: { fake: { command: process.execPath, args: [FAKE_MCP_SERVER, 'project'] } },
   }));
+  await approveProject(worker, project);
 
   const toolNamesPerRequest: string[][] = [];
   const server = createServer((request, response) => {
@@ -260,6 +268,7 @@ test('worker::send: an MCP tool with an invalid name is dropped instead of faili
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
   t.after(() => worker.terminate());
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
+  await approveProject(worker, project);
 
   const toolNames: string[] = [];
   const server = createServer((request, response) => {
@@ -308,6 +317,7 @@ test('worker::mcp-list shows project entries as written (an expanded ${VAR} neve
     env: { ...process.env, OPENAGENT_HOME: home, OA_TEST_SECRET: SECRET, OA_TEST_NODE: process.execPath },
   });
   t.after(() => worker.terminate());
+  await approveProject(worker, project);
   // Same command+args as the project's `local` entry ONCE EXPANDED: a turn runs only one of them.
   await callWorker(worker, 'mcp-add', { commandLine: `"${process.execPath}" "${FAKE_MCP_SERVER}"` });
 

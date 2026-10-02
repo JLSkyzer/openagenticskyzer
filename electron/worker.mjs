@@ -31,6 +31,7 @@ import { mcpTools } from './core/mcp-client.mts';
 import { searchTools } from './core/search-tools.mts';
 import { indexFolder } from './core/semantic-index.mts';
 import { loadPlugins } from './core/plugin-loader.mts';
+import { ProjectTrustService } from './core/project-trust.mts';
 import { addFileToKnowledge, listSources as listKnowledgeSources, removeSource as removeKnowledgeSource } from './core/knowledge-base.mts';
 
 // OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
@@ -44,6 +45,7 @@ const dataHome = process.env.OPENAGENT_HOME ? defaultHome : await resolveDataHom
 // waiting out a real 10s — never rely on it outside tests.
 const LONG_RUN_MS = Number(process.env.OPENAGENT_LONG_RUN_MS) || 10_000;
 const settings = new SettingsService(dataHome);
+const trust = new ProjectTrustService(dataHome, settings);
 const conversations = new Conversations();
 const folders = new FoldersService(dataHome);
 const ggufLibrary = new GgufLibrary(dataHome);
@@ -99,7 +101,7 @@ const sessionAllowed = new Set();
 const allowKey = (folder, tool) => `${folder}\0${tool}`;
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-add-remote', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-add-remote', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'project-trust', 'trust-project', 'shutdown']);
 
 const BASE_SYSTEM_PROMPT = [
   'Tu es openagent, un assistant de développement qui travaille dans le dossier du projet actif avec les outils fournis :',
@@ -149,18 +151,22 @@ async function runCompaction(compactionId, folder, branchId, before, connection,
 
 /** Every registered tool for this folder's settings, plus its effective settings — the single source
  * of truth `runSend`'s permission checks AND the exporter's tool tags both read from, so the two can
- * never drift apart. */
+ * never drift apart. The project's trust is evaluated here, on EVERY turn: a plugin or .mcp.json
+ * added during the session (git pull, or the agent itself) is not loaded before a new approval. */
 async function registerTools(folder) {
-  const effective = await settings.effective(folder);
-  const others = await nonPluginTools(folder, effective);
-  const { tools: pluginTools, errors: pluginErrors } = await pluginToolsBeside(folder, others);
+  const projectTrust = await trust.evaluate(folder);
+  const effective = await settings.effective(folder, { approvedRelaxations: projectTrust.approvedRelaxations });
+  const others = await nonPluginTools(folder, effective, projectTrust);
+  const { tools: pluginTools, errors: pluginErrors } = await pluginToolsBeside(folder, others, projectTrust);
   for (const error of pluginErrors) console.error(`[plugin] ${error}`);
   return { effective, tools: [...others, ...pluginTools] };
 }
 
-/** Built-in + MCP tools for a real project folder. */
-async function nonPluginTools(folder, effective) {
-  const merged = mergeServerConfigs(await mcpConfig.list(), await readProjectMcpConfig(folder));
+/** Built-in + MCP tools for a real project folder — the project's .mcp.json servers only once the
+ * project is trusted (never started or contacted before). */
+async function nonPluginTools(folder, effective, projectTrust) {
+  const projectServers = projectTrust.contentTrusted ? await readProjectMcpConfig(folder) : [];
+  const merged = mergeServerConfigs(await mcpConfig.list(), projectServers);
   const { tools: mcpDiscovered, errors: mcpErrors } = await mcpTools(merged);
   // A broken/unreachable MCP server never blocks the turn or surfaces to the chat — same
   // server-log-only isolation agent.py's own logging.getLogger("openagentic.mcp").warning had.
@@ -192,24 +198,28 @@ function mcpToolsBeside(discovered, others) {
   return kept;
 }
 
-/** The merged server list for the Outils tab: merged exactly as a turn merges it (placeholders
- * expanded, so the same entries dedupe), but each project entry shown as written in .mcp.json —
- * an expanded `${TOKEN}` in args or url is a secret, and those fields are displayed, not masked. */
+/** The merged server list for the Outils tab. Trusted project: merged exactly as a turn merges it
+ * (placeholders expanded, so the same entries dedupe), each project entry shown as written in
+ * .mcp.json — an expanded `${TOKEN}` in args or url is a secret, and those fields are displayed.
+ * Untrusted project: its entries are listed (trusted: false) but take no part in the merge — a turn
+ * only runs the global ones, so a colliding global entry must not be hidden. */
 async function mcpServersForDisplay(folder) {
   const global = await mcpConfig.list();
   if (!folder) return global;
+  const projectTrust = await trust.evaluate(folder);
   const asWritten = await readProjectMcpConfig(folder, { expandEnv: false });
+  if (!projectTrust.contentTrusted) return [...global, ...asWritten.map(server => ({ ...server, trusted: false }))];
   const byId = new Map(asWritten.map(server => [server.id, server]));
   const merged = mergeServerConfigs(global, asWritten.map(server => expandServerPlaceholders(server)));
-  return merged.map(server => (server.scope === 'project' ? byId.get(server.id) ?? server : server));
+  return merged.map(server => (server.scope === 'project' ? { ...(byId.get(server.id) ?? server), trusted: true } : server));
 }
 
 /** The folder's plugin tools minus any whose name `others` already uses: runAgent refuses a
  * duplicated name for the WHOLE turn, so one plugin named like a built-in would otherwise break
- * every turn. Shared by registerTools and plugin-list, so the Outils tab shows exactly what a
- * turn gets. */
-async function pluginToolsBeside(folder, others) {
-  const { tools, errors } = await loadPlugins(folder, dataHome);
+ * every turn. The project's own plugins only once it is trusted — not even imported before.
+ * Shared by registerTools and plugin-list, so the Outils tab shows exactly what a turn gets. */
+async function pluginToolsBeside(folder, others, projectTrust) {
+  const { tools, errors } = await loadPlugins(folder, dataHome, { includeProject: projectTrust.contentTrusted });
   const taken = new Set(others.map(tool => tool.name));
   const kept = [];
   for (const tool of tools) {
@@ -217,6 +227,13 @@ async function pluginToolsBeside(folder, others) {
     else kept.push(tool);
   }
   return { tools: kept, errors };
+}
+
+/** What the renderer is shown about a project's trust: never a secret (env/header values masked,
+ * like every mcp-* reply). */
+function trustView(projectTrust) {
+  const { state, changed, token, inventory } = projectTrust;
+  return { state, changed, token, plugins: inventory.plugins, mcpServers: redactSecrets(inventory.mcpServers), relaxations: inventory.relaxations };
 }
 
 const EXPORT_FORMATS = new Set(['md', 'html', 'json']);
@@ -362,12 +379,23 @@ async function handle(message) {
     if (op === 'migrate-data-dir') result = await migrateDataDir(dataHome, defaultHome, payload.newDir);
     if (op === 'init-project') result = await initializeProject(payload.folder, Boolean(payload.overwrite));
     if (op === 'plugin-list') {
-      // No active project: no built-in tool set to collide with yet — the global plugins as loaded.
       const folder = payload.folder ?? null;
-      const { tools, errors } = folder
-        ? await pluginToolsBeside(folder, await nonPluginTools(folder, await settings.effective(folder)))
-        : await loadPlugins(null, dataHome);
-      result = { tools: tools.map(t => t.name), errors };
+      if (!folder) {
+        // No active project: no built-in tool set to collide with yet — the global plugins as loaded.
+        const { tools, errors } = await loadPlugins(null, dataHome);
+        result = { tools: tools.map(t => t.name), errors, untrusted: [] };
+      } else {
+        const projectTrust = await trust.evaluate(folder);
+        const effective = await settings.effective(folder, { approvedRelaxations: projectTrust.approvedRelaxations });
+        const { tools, errors } = await pluginToolsBeside(folder, await nonPluginTools(folder, effective, projectTrust), projectTrust);
+        result = { tools: tools.map(t => t.name), errors, untrusted: projectTrust.contentTrusted ? [] : projectTrust.inventory.plugins };
+      }
+    }
+    if (op === 'project-trust') result = trustView(await trust.evaluate(payload.folder));
+    if (op === 'trust-project') {
+      result = trustView(payload.decision === 'revoke'
+        ? await trust.revoke(payload.folder)
+        : await trust.decide(payload.folder, payload.decision, payload.token));
     }
     // Every MCP op's reply goes through redactSecrets: env/header values never reach the renderer.
     if (op === 'mcp-list') result = redactSecrets(await mcpServersForDisplay(payload.folder ?? null));
@@ -387,7 +415,11 @@ async function handle(message) {
     if (op === 'settings') result = payload.folder ? await settings.project(payload.folder) : await settings.publicGlobal();
     if (op === 'save_settings') {
       if (!payload.folder) { await settings.saveGlobal(payload.settings || {}); result = await settings.publicGlobal(); }
-      else result = await settings.saveProject(payload.folder, { agent_mode: payload.settings?.agent_mode || 'inherit', custom_prompt: payload.settings?.custom_prompt || '' });
+      else {
+        const patch = { agent_mode: payload.settings?.agent_mode || 'inherit', custom_prompt: payload.settings?.custom_prompt || '' };
+        result = await settings.saveProject(payload.folder, patch);
+        await trust.approveRelaxations(payload.folder, patch);
+      }
     }
     if (op === 'compact') {
       const folder = payload.folder;
@@ -453,6 +485,8 @@ async function handle(message) {
           sessionAllowed.add(allowKey(pending.folder, pending.tool));
         } else if (payload.always && payload.allow && field) {
           await settings.saveProject(pending.folder, { override_permissions: true, [field]: false }).catch(() => {});
+          // The user's own choice: approved at once, and only this field (core/project-trust.mts).
+          await trust.approveRelaxations(pending.folder, { [field]: false }).catch(() => {});
         }
         pending.resolve(payload.allow);
       }
@@ -463,7 +497,10 @@ async function handle(message) {
     // Replies go through publicGlobal(): the HuggingFace token is written to disk but must
     // never travel back to the renderer (only hf_token_configured does).
     if (op === 'save-global-settings') { await settings.saveGlobal(payload.patch); result = await settings.publicGlobal(); }
-    if (op === 'save-project-settings') result = await settings.saveProject(payload.folder, payload.patch);
+    if (op === 'save-project-settings') {
+      result = await settings.saveProject(payload.folder, payload.patch);
+      await trust.approveRelaxations(payload.folder, payload.patch);
+    }
     // Zone Danger: none of these delete project files — history and sidebar entries only.
     if (op === 'clear-history') {
       // An agent run or a compaction is about to write its transcript into this history: clearing it now

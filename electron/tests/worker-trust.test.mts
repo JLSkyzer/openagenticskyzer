@@ -1,0 +1,196 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { Worker } from 'node:worker_threads';
+import { fileURLToPath } from 'node:url';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:http';
+
+const FAKE_MCP_SERVER = fileURLToPath(new URL('./fixtures/fake-mcp-server.cjs', import.meta.url));
+
+function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const id = `test-${Math.random()}`;
+    const listener = (message: any) => {
+      if (message.id !== id) return;
+      worker.off('message', listener);
+      message.ok ? resolve(message.result) : reject(new Error(message.error));
+    };
+    worker.on('message', listener);
+    worker.postMessage({ id, op, payload });
+  });
+}
+function collectAgentEvents(worker: Worker, runId: string) {
+  const events: any[] = [];
+  const listener = (message: any) => {
+    if (message?.type === 'event' && message.event === 'agent' && message.runId === runId) events.push(message);
+  };
+  worker.on('message', listener);
+  return { events, stop: () => worker.off('message', listener) };
+}
+async function exists(file: string) {
+  try { await readFile(file); return true; } catch { return false; }
+}
+const markerPlugin = (marker: string, name: string) => `
+import { writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(marker)}, 'ran');
+export function getTools() { return [{ name: ${JSON.stringify(name)}, description: 'x', properties: {}, execute: async () => 'ok' }]; }
+`;
+
+async function setup(t: any, prefix: string) {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  t.after(() => worker.terminate());
+  return { root, home, project, worker };
+}
+
+/** A fake model: odd requests ask for `toolCall` (when given), even requests end the turn. */
+async function fakeModel(t: any, toolCall?: () => { name: string; arguments: Record<string, unknown> }) {
+  let count = 0;
+  const server = createServer((request, response) => {
+    count++;
+    request.on('data', () => {});
+    request.on('end', () => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      if (toolCall && count % 2 === 1) {
+        const call = toolCall();
+        response.end(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: `call-${count}`, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] }, finish_reason: 'tool_calls' }] }));
+      } else {
+        response.end(JSON.stringify({ choices: [{ message: { content: 'Fait.' }, finish_reason: 'stop' }] }));
+      }
+    });
+  });
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
+  const port = (server.address() as { port: number }).port;
+  return { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+}
+
+/** Runs one turn; answers every permission request with `allow`/`always`. */
+async function turn(worker: Worker, folder: string, connection: unknown, decision = { allow: true, always: false }) {
+  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'vas-y', connection });
+  const { events, stop } = collectAgentEvents(worker, runId);
+  const answered = new Set<string>();
+  while (!events.some(e => ['done', 'error', 'stopped'].includes(e.kind))) {
+    for (const event of events) {
+      if (event.kind === 'permission-request' && !answered.has(event.requestId)) {
+        answered.add(event.requestId);
+        await callWorker(worker, 'permission-decision', { runId, requestId: event.requestId, ...decision });
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  stop();
+  return events;
+}
+
+test('nothing a project brings runs before approval — not on evaluation, Outils tab, mcp-list or a turn', { timeout: 30000 }, async t => {
+  const { root, project, worker } = await setup(t, 'openagent-worker-trust-gate-');
+  const pluginMarker = join(root, 'plugin-ran.txt');
+  const mcpMarker = join(root, 'mcp-started.txt');
+  await mkdir(join(project, 'tools'));
+  await writeFile(join(project, 'tools', 'marker.mjs'), markerPlugin(pluginMarker, 'marker_tool'));
+  await writeFile(join(project, '.mcp.json'), JSON.stringify({
+    mcpServers: { fake: { command: process.execPath, args: [FAKE_MCP_SERVER], env: { FAKE_MCP_MARKER: mcpMarker } } },
+  }));
+  const connection = await fakeModel(t);
+
+  const shown = await callWorker(worker, 'project-trust', { folder: project });
+  assert.equal(shown.state, 'pending');
+  assert.deepEqual(shown.plugins, ['tools/marker.mjs']);
+  assert.equal(shown.mcpServers.length, 1);
+  assert.notEqual(shown.mcpServers[0].env.FAKE_MCP_MARKER, mcpMarker, 'env values never reach the renderer');
+
+  const plugins = await callWorker(worker, 'plugin-list', { folder: project });
+  assert.deepEqual(plugins.tools, []);
+  assert.deepEqual(plugins.untrusted, ['tools/marker.mjs']);
+  const servers = await callWorker(worker, 'mcp-list', { folder: project });
+  assert.equal(servers.find((server: any) => server.scope === 'project').trusted, false);
+  const events = await turn(worker, project, connection);
+  assert.equal(events.at(-1).kind, 'done');
+  assert.equal(await exists(pluginMarker), false, 'the project plugin never ran');
+  assert.equal(await exists(mcpMarker), false, 'the project MCP server never started');
+
+  await callWorker(worker, 'trust-project', { folder: project, decision: 'trusted', token: shown.token });
+  const trusted = await callWorker(worker, 'plugin-list', { folder: project });
+  assert.deepEqual(trusted.tools, ['marker_tool']);
+  assert.deepEqual(trusted.untrusted, []);
+  assert.equal(await exists(pluginMarker), true, 'loaded once trusted');
+  assert.equal(await exists(mcpMarker), true, 'started once trusted');
+});
+
+test('a plugin added after approval is not loaded until the project is approved again', { timeout: 30000 }, async t => {
+  const { root, project, worker } = await setup(t, 'openagent-worker-trust-added-');
+  await mkdir(join(project, 'tools'));
+  await writeFile(join(project, 'tools', 'first.mjs'), markerPlugin(join(root, 'first.txt'), 'first_tool'));
+  const shown = await callWorker(worker, 'project-trust', { folder: project });
+  await callWorker(worker, 'trust-project', { folder: project, decision: 'trusted', token: shown.token });
+
+  const secondMarker = join(root, 'second.txt');
+  await writeFile(join(project, 'tools', 'second.mjs'), markerPlugin(secondMarker, 'second_tool'));
+  const plugins = await callWorker(worker, 'plugin-list', { folder: project });
+  assert.deepEqual(plugins.tools, [], 'the changed project is untrusted as a whole');
+  assert.equal(await exists(secondMarker), false);
+  const after = await callWorker(worker, 'project-trust', { folder: project });
+  assert.equal(after.state, 'pending');
+  assert.equal(after.changed, true);
+});
+
+test('a decision made on a stale listing is refused', async t => {
+  const { project, worker } = await setup(t, 'openagent-worker-trust-stale-');
+  await mkdir(join(project, 'tools'));
+  await writeFile(join(project, 'tools', 'a.mjs'), 'export {}');
+  const shown = await callWorker(worker, 'project-trust', { folder: project });
+  await writeFile(join(project, 'tools', 'a.mjs'), 'export const swapped = 1;');
+  await assert.rejects(callWorker(worker, 'trust-project', { folder: project, decision: 'trusted', token: shown.token }), /a changé depuis l’affichage/);
+});
+
+test('a repo-shipped shell_ask:false is ignored until the project is trusted', { timeout: 30000 }, async t => {
+  const { project, worker } = await setup(t, 'openagent-worker-trust-shell-');
+  await mkdir(join(project, '.openagent'));
+  await writeFile(join(project, '.openagent', 'config.json'), JSON.stringify({ override_permissions: true, shell_ask: false }));
+  const connection = await fakeModel(t, () => ({ name: 'run_command', arguments: { command: 'echo confiance' } }));
+
+  const refused = await turn(worker, project, connection, { allow: false, always: false });
+  assert.ok(refused.some(e => e.kind === 'permission-request'), 'still asks: the shipped relaxation is not applied');
+
+  const shown = await callWorker(worker, 'project-trust', { folder: project });
+  assert.deepEqual(shown.relaxations, { shell_ask: { project: false, global: true } });
+  await callWorker(worker, 'trust-project', { folder: project, decision: 'trusted', token: shown.token });
+  const trusted = await turn(worker, project, connection);
+  assert.equal(trusted.some(e => e.kind === 'permission-request'), false, 'applied once approved');
+});
+
+test('"Toujours" on a file write works at once and approves only that field', { timeout: 30000 }, async t => {
+  const { project, worker } = await setup(t, 'openagent-worker-trust-always-');
+  await callWorker(worker, 'save-global-settings', { patch: { files_ask: true } });
+  let file = 0;
+  const connection = await fakeModel(t, () => ({ name: 'create_file', arguments: { path: `f${++file}.txt`, content: 'ok' } }));
+
+  const first = await turn(worker, project, connection, { allow: true, always: true });
+  assert.ok(first.some(e => e.kind === 'permission-request'));
+  assert.notEqual((await callWorker(worker, 'project-trust', { folder: project })).state, 'pending', 'no banner for the user’s own choice');
+  const second = await turn(worker, project, connection);
+  assert.equal(second.some(e => e.kind === 'permission-request'), false, '"Toujours" is effective right away');
+
+  const config = JSON.parse(await readFile(join(project, '.openagent', 'config.json'), 'utf8'));
+  await writeFile(join(project, '.openagent', 'config.json'), JSON.stringify({ ...config, shell_ask: false }));
+  const after = await callWorker(worker, 'project-trust', { folder: project });
+  assert.equal(after.state, 'pending');
+  assert.deepEqual(Object.keys(after.relaxations).sort(), ['files_ask', 'shell_ask']);
+  assert.equal((await callWorker(worker, 'trust-project', { folder: project, decision: 'ignored', token: after.token })).state, 'ignored');
+});
+
+test('revoke makes a trusted project pending again', async t => {
+  const { project, worker } = await setup(t, 'openagent-worker-trust-revoke-');
+  await mkdir(join(project, 'tools'));
+  await writeFile(join(project, 'tools', 'a.mjs'), 'export {}');
+  const shown = await callWorker(worker, 'project-trust', { folder: project });
+  await callWorker(worker, 'trust-project', { folder: project, decision: 'trusted', token: shown.token });
+  assert.equal((await callWorker(worker, 'trust-project', { folder: project, decision: 'revoke' })).state, 'pending');
+});

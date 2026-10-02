@@ -23,7 +23,9 @@ cible NSIS) ; un **test d'installation réelle exécuté une fois** en preuve fi
 - Cible electron-builder `nsis` (au lieu de `dir`) — produit aussi `release/win-unpacked/`,
   si bien que `npm run test:package` (test de fumée de l'exe décompressé) reste valable.
 - `nsis` : `oneClick: true`, `perMachine: false` (installation dans
-  `%LOCALAPPDATA%\Programs\openagent`, sans UAC), raccourcis menu Démarrer et bureau,
+  `%LOCALAPPDATA%\Programs\openagent-desktop` — nom du paquet, pas `productName`, en
+  installation un clic par utilisateur ; entrée de désinstallation « openagent <version> »
+  — sans UAC), raccourcis menu Démarrer et bureau,
   `deleteAppDataOnUninstall: false`. Les données utilisateur (`~/.openagent` et le
   dossier de données Electron) ne sont jamais supprimées par la désinstallation.
 - Fichiers produits : `openagent-Setup-<version>.exe`, son `.blockmap`, `latest.yml`.

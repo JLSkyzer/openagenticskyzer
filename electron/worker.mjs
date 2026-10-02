@@ -202,13 +202,17 @@ function mcpToolsBeside(discovered, others) {
  * (placeholders expanded, so the same entries dedupe), each project entry shown as written in
  * .mcp.json — an expanded `${TOKEN}` in args or url is a secret, and those fields are displayed.
  * Untrusted project: its entries are listed (trusted: false) but take no part in the merge — a turn
- * only runs the global ones, so a colliding global entry must not be hidden. */
+ * only runs the global ones, so a colliding global entry must not be hidden. A project whose trust
+ * cannot be evaluated (invalid .openagent/config.json, folder gone) is untrusted — never a reason to
+ * hide the global servers. */
 async function mcpServersForDisplay(folder) {
   const global = await mcpConfig.list();
   if (!folder) return global;
-  const projectTrust = await trust.evaluate(folder);
-  const asWritten = await readProjectMcpConfig(folder, { expandEnv: false });
-  if (!projectTrust.contentTrusted) return [...global, ...asWritten.map(server => ({ ...server, trusted: false }))];
+  let contentTrusted = false;
+  try { contentTrusted = (await trust.evaluate(folder)).contentTrusted; }
+  catch (error) { console.error(`[trust] ${folder} : confiance non évaluable, traité comme non approuvé : ${error instanceof Error ? error.message : error}`); }
+  const asWritten = await readProjectMcpConfig(folder, { expandEnv: false }).catch(() => []);
+  if (!contentTrusted) return [...global, ...asWritten.map(server => ({ ...server, trusted: false }))];
   const byId = new Map(asWritten.map(server => [server.id, server]));
   const merged = mergeServerConfigs(global, asWritten.map(server => expandServerPlaceholders(server)));
   return merged.map(server => (server.scope === 'project' ? { ...(byId.get(server.id) ?? server), trusted: true } : server));
@@ -229,11 +233,15 @@ async function pluginToolsBeside(folder, others, projectTrust) {
   return { tools: kept, errors };
 }
 
-/** What the renderer is shown about a project's trust: never a secret (env/header values masked,
- * like every mcp-* reply). */
+/** What the renderer is shown about a project's trust: each part's own status (the aggregate `state`
+ * alone cannot say what IS applied), never a secret (env/header values masked, like every mcp-*
+ * reply — their NAMES stay, so the user sees e.g. a NODE_OPTIONS before approving). */
 function trustView(projectTrust) {
-  const { state, changed, token, inventory } = projectTrust;
-  return { state, changed, token, plugins: inventory.plugins, mcpServers: redactSecrets(inventory.mcpServers), relaxations: inventory.relaxations };
+  const { state, changed, token, contentStatus, unreadable, relaxationStatus, inventory } = projectTrust;
+  return {
+    state, changed, token, contentStatus, unreadable, relaxationStatus,
+    plugins: inventory.plugins, mcpServers: redactSecrets(inventory.mcpServers), relaxations: inventory.relaxations,
+  };
 }
 
 /** The user just saved these project fields themselves: approve them so they apply at once. Never

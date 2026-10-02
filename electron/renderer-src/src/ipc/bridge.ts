@@ -172,11 +172,21 @@ export interface StdioServerConfig { id: string; name?: string; scope: 'global' 
 export interface RemoteServerConfig { id: string; name?: string; scope: 'global' | 'project'; type: 'sse' | 'http'; url: string; headers?: Record<string, string>; added_at?: string; trusted?: boolean }
 export type McpServerConfig = StdioServerConfig | RemoteServerConfig;
 
+export type TrustRelaxationStatus = 'approved' | 'ignored' | 'pending';
 export interface ProjectTrustView {
+  /** Aggregate only ("is anything waiting?"); what IS applied is in the per-part fields below. */
   state: 'none' | 'pending' | 'trusted' | 'ignored';
+  /** The content was trusted, and changed since that approval. */
   changed: boolean;
   token: string;
+  /** Plugins + .mcp.json servers, decided together. */
+  contentStatus: 'none' | 'pending' | 'trusted' | 'ignored';
+  /** The content could not be read: nothing of it is loaded, and it cannot be approved as it is. */
+  unreadable: boolean;
+  /** Per relaxation listed in `relaxations`. */
+  relaxationStatus: Record<string, TrustRelaxationStatus>;
   plugins: string[];
+  /** env/header values are always masked; only their names are real. */
   mcpServers: McpServerConfig[];
   relaxations: Record<string, { project: unknown; global: unknown }>;
 }

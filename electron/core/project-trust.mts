@@ -8,14 +8,24 @@ import { RELAXABLE_KEYS, relaxationsOf, type Relaxations, type SettingsService }
 
 export type TrustState = 'none' | 'pending' | 'trusted' | 'ignored';
 export type TrustDecision = 'trusted' | 'ignored';
+/** Plugins + .mcp.json servers, decided together under one fingerprint. */
+export type ContentStatus = 'none' | 'pending' | TrustDecision;
+export type RelaxationStatus = 'approved' | 'ignored' | 'pending';
 export interface ProjectInventory { plugins: string[]; mcpServers: McpServerConfig[]; relaxations: Relaxations }
 export interface ProjectTrust {
+  /** Aggregate, for "is anything waiting?": pending if any part is pending, else ignored if any part
+   * is refused, else trusted. Never enough to say what IS applied — read the per-part fields. */
   state: TrustState;
-  /** A content decision exists, but for another fingerprint: the plugins/.mcp.json changed since. */
+  /** The content was TRUSTED for another fingerprint: the plugins/.mcp.json changed since that approval. */
   changed: boolean;
   /** What the user was shown. decide() refuses a token that no longer matches the project. */
   token: string;
+  contentStatus: ContentStatus;
   contentTrusted: boolean;
+  /** The project's content could not be read (plugin file, .mcp.json): nothing of it is loaded. */
+  unreadable: boolean;
+  /** Per current relaxation: is ITS project value applied (approved), refused (ignored) or undecided. */
+  relaxationStatus: Record<string, RelaxationStatus>;
   approvedRelaxations: Record<string, unknown>;
   inventory: ProjectInventory;
 }
@@ -25,7 +35,6 @@ interface TrustRecord {
   ignored_relaxations?: Record<string, unknown>;
 }
 type Registry = Record<string, TrustRecord>;
-type ContentStatus = 'none' | 'pending' | TrustDecision;
 
 const CHANGED_MESSAGE = 'Le contenu du projet a changé depuis l’affichage : relis la liste avant de décider.';
 const RELAXABLE = new Set(RELAXABLE_KEYS);
@@ -114,9 +123,10 @@ export class ProjectTrustService {
     const [global, project] = await Promise.all([this.settings.global(), this.settings.project(folder)]);
     const relaxations = relaxationsOf(global, project);
     let scan: Awaited<ReturnType<typeof scanContent>> | null = null;
+    let realFolder: string | null = null;
     // Scanned under the real path: the plugin loader resolves .openagent/tools there, so paths relative
     // to a junction/symlink would not match. A failing realpath leaves scan null: pending, never approved.
-    try { scan = await scanContent(await realpath(folder), this.home); }
+    try { realFolder = await realpath(folder); scan = await scanContent(realFolder, this.home); }
     catch (error) { console.error(`[trust] contenu du projet illisible, non approuvé : ${error instanceof Error ? error.message : error}`); }
     const record = await this.recordFor(folder);
     const fingerprint = scan?.fingerprint ?? null;
@@ -127,19 +137,25 @@ export class ProjectTrustService {
       : 'pending';
     const approved = record.approved_relaxations ?? {};
     const ignored = record.ignored_relaxations ?? {};
-    const entries = Object.entries(relaxations);
-    const pendingRelaxation = entries.some(([key, { project: value }]) => approved[key] !== value && ignored[key] !== value);
-    const refusedRelaxation = entries.some(([key, { project: value }]) => approved[key] !== value && ignored[key] === value);
+    const relaxationStatus: Record<string, RelaxationStatus> = {};
+    for (const [key, { project: value }] of Object.entries(relaxations)) {
+      relaxationStatus[key] = approved[key] === value ? 'approved' : ignored[key] === value ? 'ignored' : 'pending';
+    }
+    const statuses = Object.values(relaxationStatus);
     const state: TrustState =
-      contentStatus === 'none' && entries.length === 0 ? 'none'
-      : contentStatus === 'pending' || pendingRelaxation ? 'pending'
-      : contentStatus === 'ignored' || refusedRelaxation ? 'ignored'
+      contentStatus === 'none' && statuses.length === 0 ? 'none'
+      : contentStatus === 'pending' || statuses.includes('pending') ? 'pending'
+      : contentStatus === 'ignored' || statuses.includes('ignored') ? 'ignored'
       : 'trusted';
     const trust: ProjectTrust = {
       state,
-      changed: scan !== null && fingerprint !== null && record.content !== undefined && record.content.fingerprint !== fingerprint,
-      token: createHash('sha256').update(JSON.stringify([fingerprint, scan === null, relaxations])).digest('hex'),
+      changed: scan !== null && fingerprint !== null && record.content?.decision === 'trusted' && record.content.fingerprint !== fingerprint,
+      // The real path is hashed in too: a token shown for one folder never decides another (defence in depth).
+      token: createHash('sha256').update(JSON.stringify([realFolder, fingerprint, scan === null, relaxations])).digest('hex'),
+      contentStatus,
       contentTrusted: contentStatus === 'trusted',
+      unreadable: scan === null,
+      relaxationStatus,
       approvedRelaxations: approved,
       inventory: { plugins: scan?.plugins ?? [], mcpServers: scan?.mcpServers ?? [], relaxations },
     };

@@ -2,19 +2,30 @@ import { useEffect, useRef, useState } from 'react';
 import { addMcpRemoteServer, addMcpServer, decideProjectTrust, getProjectTrust, listMcpServers, listPlugins, removeMcpServer, TRUST_CHANGED_EVENT, type McpServerConfig, type PluginListResult, type ProjectTrustView } from '../../ipc/bridge';
 import { Group, Section } from './parts';
 import { useToast } from '../../state/ToastProvider';
+import { describeValue, FIELD_LABELS, secretNames, serverLabel } from '../trust-labels';
 
 const button = 'self-start rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs text-gray-300';
 const EMPTY_PLUGINS: PluginListResult = { tools: [], errors: [], untrusted: [] };
+// The aggregate only says whether anything waits; each part below says what IS applied.
 const TRUST_TEXT: Record<ProjectTrustView['state'], string> = {
   none: 'Ce projet n’apporte ni plugin, ni serveur MCP, ni assouplissement de permission.',
-  pending: 'En attente de ta décision : ses plugins, serveurs MCP et assouplissements ne sont pas appliqués.',
-  trusted: 'Approuvé : ses plugins, serveurs MCP et assouplissements sont appliqués.',
-  ignored: 'Ignoré : ses plugins, serveurs MCP et assouplissements ne sont pas appliqués.',
+  pending: 'Une partie de ce que ce projet apporte attend ta décision.',
+  trusted: 'Tout ce que ce projet apporte est approuvé et appliqué.',
+  ignored: 'Rien n’attend ta décision ; une partie de ce projet a été ignorée.',
+};
+const RELAXATION_TEXT: Record<ProjectTrustView['relaxationStatus'][string], string> = {
+  approved: 'approuvé, appliqué',
+  ignored: 'ignoré, non appliqué',
+  pending: 'en attente, non appliqué',
 };
 
-function serverLabel(server: McpServerConfig): string {
-  if ('command' in server) return `${server.command} ${server.args.join(' ')}`.trim();
-  return server.url;
+function contentText(trust: ProjectTrustView): string {
+  const what = 'Plugins et serveurs MCP du projet';
+  if (trust.unreadable) return `${what} : illisibles (fichier verrouillé, droits, .mcp.json…) — rien n’en est chargé.`;
+  if (trust.contentStatus === 'none') return `${what} : aucun.`;
+  if (trust.contentStatus === 'trusted') return `${what} : approuvés, chargés.`;
+  if (trust.contentStatus === 'ignored') return `${what} : ignorés, non chargés.`;
+  return trust.changed ? `${what} : modifiés depuis ton approbation, non chargés en attendant ta décision.` : `${what} : en attente de ta décision, non chargés.`;
 }
 
 // Mirrors settings.py::_tab_tools' "Plugins Python" (now a real Node loader, see
@@ -115,6 +126,14 @@ export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
     catch { /* the list already reflects the last known-good state */ }
   };
 
+  // Per part, never from the aggregate state: trusted plugins can sit beside a pending relaxation.
+  // "Faire confiance" approves the content (unless unreadable) and every listed relaxation, so all of
+  // them are listed above it; "Retirer" is offered as soon as anything at all is applied.
+  const relaxations = trust ? Object.entries(trust.relaxations) : [];
+  const contentOpen = !!trust && !trust.unreadable && (trust.contentStatus === 'pending' || trust.contentStatus === 'ignored');
+  const anythingOpen = contentOpen || relaxations.some(([field]) => trust?.relaxationStatus[field] !== 'approved');
+  const anythingApproved = !!trust && (trust.contentStatus === 'trusted' || relaxations.some(([field]) => trust.relaxationStatus[field] === 'approved'));
+
   return (
     <div className="flex flex-col gap-5">
       <div>
@@ -124,16 +143,44 @@ export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
             <div className="flex flex-col gap-2 px-4 py-3">
               <span className="text-xs font-medium text-gray-300">Confiance du projet</span>
               <span data-testid="oa-trust-state" data-state={trust.state} className="text-xs text-gray-500">
-                {TRUST_TEXT[trust.state]}
+                {trust.unreadable && !anythingOpen ? 'Rien à décider tant que son contenu reste illisible.' : TRUST_TEXT[trust.state]}
               </span>
-              {trust.state === 'trusted' ? (
-                <button id="oa-trust-revoke" onClick={() => void handleTrust('revoke')} disabled={deciding} className={button + ' disabled:cursor-not-allowed disabled:opacity-60'}>
-                  Retirer la confiance
-                </button>
-              ) : (
-                <button id="oa-trust-approve" onClick={() => void handleTrust('trusted')} disabled={deciding} className={button + ' disabled:cursor-not-allowed disabled:opacity-60'}>
-                  Faire confiance
-                </button>
+              <div data-testid="oa-trust-content" data-status={trust.unreadable ? 'unreadable' : trust.contentStatus} className="text-xs text-gray-400">
+                {contentText(trust)}
+                {contentOpen && (
+                  <ul className="mt-1 list-disc pl-5 font-mono text-gray-500">
+                    {trust.plugins.map(path => <li key={path} data-testid="oa-trust-content-plugin">{path}</li>)}
+                    {trust.mcpServers.map(server => {
+                      const names = secretNames(server);
+                      return (
+                        <li key={server.id} data-testid="oa-trust-content-mcp">
+                          {server.name ?? server.id} : {serverLabel(server)}
+                          {names && <div className="font-sans text-gray-600">{names}</div>}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+              {relaxations.map(([field, { project, global }]) => (
+                <div key={field} data-testid="oa-trust-relaxation-row" data-field={field} data-status={trust.relaxationStatus[field]} className="text-xs text-gray-400">
+                  {FIELD_LABELS[field] ?? field} : projet {describeValue(project)}, global {describeValue(global)} — {RELAXATION_TEXT[trust.relaxationStatus[field]] ?? 'en attente, non appliqué'}
+                </div>
+              ))}
+              <div className="flex flex-wrap gap-2">
+                {anythingOpen && (
+                  <button id="oa-trust-approve" onClick={() => void handleTrust('trusted')} disabled={deciding} title="Approuve le contenu et chaque assouplissement listés ci-dessus" className={button + ' disabled:cursor-not-allowed disabled:opacity-60'}>
+                    Faire confiance
+                  </button>
+                )}
+                {anythingApproved && (
+                  <button id="oa-trust-revoke" onClick={() => void handleTrust('revoke')} disabled={deciding} title="Oublie toutes les décisions sur ce projet, y compris tes « Toujours »" className={button + ' disabled:cursor-not-allowed disabled:opacity-60'}>
+                    Retirer la confiance
+                  </button>
+                )}
+              </div>
+              {anythingApproved && (
+                <span className="text-xs text-gray-600">« Retirer la confiance » oublie aussi tes « Toujours » enregistrés pour ce projet.</span>
               )}
             </div>
           </Group>
@@ -187,6 +234,7 @@ export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
                       {server.scope === 'project' && <span data-testid="oa-mcp-project-badge" className="mr-1 rounded bg-purple-900 px-1 text-[10px] text-purple-300">projet</span>}
                       {server.trusted === false && <span data-testid="oa-mcp-untrusted-badge" className="mr-1 rounded bg-gray-800 px-1 text-[10px] text-gray-400">non approuvé</span>}
                       {serverLabel(server)}
+                      {secretNames(server) && <span data-testid="oa-mcp-secret-names" className="ml-2 font-sans text-[10px] text-gray-500">{secretNames(server)}</span>}
                     </span>
                     <button
                       data-testid="oa-mcp-remove"

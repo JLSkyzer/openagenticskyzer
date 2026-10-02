@@ -206,6 +206,8 @@ test('an unreadable .mcp.json is never read as absent: the project stays pending
   const result = await trust.evaluate(project);
   assert.equal(result.contentTrusted, false);
   assert.equal(result.state, 'pending');
+  assert.equal(result.unreadable, true, 'the UI can say plainly that the content could not be read');
+  assert.equal(result.contentStatus, 'pending');
 });
 
 test('a project with .openagent/tools reached through a junction lists the same relative paths and stays trusted', async t => {
@@ -218,6 +220,79 @@ test('a project with .openagent/tools reached through a junction lists the same 
   const result = await trust.evaluate(link);
   assert.equal(result.state, 'trusted');
   assert.deepEqual(result.inventory.plugins, ['.openagent/tools/b.mjs']);
+});
+
+test('mixed state A: trusted plugins + a new repo relaxation — each part reports its own truth, before and after "Ignorer"', async t => {
+  const { project, trust, settings } = await fixture(t);
+  await addPlugin(project, 'a.mjs', 'export {}');
+  await trust.decide(project, 'trusted', (await trust.evaluate(project)).token);
+  await settings.saveProject(project, { override_permissions: true, shell_ask: false });
+
+  const pending = await trust.evaluate(project);
+  assert.equal(pending.state, 'pending', 'aggregate: something waits for a decision');
+  assert.equal(pending.contentStatus, 'trusted', 'the plugins ARE loaded');
+  assert.equal(pending.contentTrusted, true);
+  assert.deepEqual(pending.relaxationStatus, { shell_ask: 'pending' });
+  assert.equal(pending.unreadable, false);
+  assert.equal(pending.changed, false, 'the content did not change');
+
+  const ignored = await trust.decide(project, 'ignored', pending.token);
+  assert.equal(ignored.state, 'ignored');
+  assert.equal(ignored.contentStatus, 'trusted', 'Ignorer never flips trusted content');
+  assert.deepEqual(ignored.relaxationStatus, { shell_ask: 'ignored' });
+  assert.deepEqual(ignored.approvedRelaxations, {});
+});
+
+test('mixed state B: ignored plugins + a "Toujours"-approved relaxation — the relaxation is reported approved and really applies', async t => {
+  const { project, trust, settings } = await fixture(t);
+  await addPlugin(project, 'a.mjs', 'export {}');
+  await trust.decide(project, 'ignored', (await trust.evaluate(project)).token);
+  await settings.saveGlobal({ files_ask: true });
+  await settings.saveProject(project, { override_permissions: true, files_ask: false });
+  await trust.approveRelaxations(project, { files_ask: false });
+
+  const result = await trust.evaluate(project);
+  assert.equal(result.state, 'ignored');
+  assert.equal(result.contentStatus, 'ignored');
+  assert.equal(result.contentTrusted, false);
+  assert.deepEqual(result.relaxationStatus, { files_ask: 'approved' });
+  assert.equal((await settings.effective(project, { approvedRelaxations: result.approvedRelaxations })).files_ask, false, 'it IS applied');
+});
+
+test('"changed" means "changed since YOUR approval": not after an Ignorer, yes after a trust', async t => {
+  const { project, trust } = await fixture(t);
+  await addPlugin(project, 'a.mjs', 'export {}');
+  await trust.decide(project, 'ignored', (await trust.evaluate(project)).token);
+  await addPlugin(project, 'a.mjs', 'export const edited = 1;');
+  const afterIgnore = await trust.evaluate(project);
+  assert.equal(afterIgnore.contentStatus, 'pending');
+  assert.equal(afterIgnore.changed, false, 'nothing was approved, so nothing "changed since the approval"');
+
+  await trust.decide(project, 'trusted', afterIgnore.token);
+  await addPlugin(project, 'a.mjs', 'export const edited = 2;');
+  const afterTrust = await trust.evaluate(project);
+  assert.equal(afterTrust.contentStatus, 'pending');
+  assert.equal(afterTrust.changed, true);
+});
+
+test('a project with no content and no relaxation reports content "none", no relaxation, readable', async t => {
+  const { project, trust } = await fixture(t);
+  const result = await trust.evaluate(project);
+  assert.equal(result.contentStatus, 'none');
+  assert.deepEqual(result.relaxationStatus, {});
+  assert.equal(result.unreadable, false);
+});
+
+test('two folders with identical content get different tokens', async t => {
+  const { root, project, trust } = await fixture(t);
+  const twin = join(root, 'twin');
+  await mkdir(twin);
+  await addPlugin(project, 'a.mjs', 'export {}');
+  await addPlugin(twin, 'a.mjs', 'export {}');
+  const [a, b] = await Promise.all([trust.evaluate(project), trust.evaluate(twin)]);
+  assert.deepEqual(a.inventory, b.inventory, 'same content');
+  assert.notEqual(a.token, b.token);
+  await assert.rejects(trust.decide(twin, 'trusted', a.token), /a changé depuis l’affichage/, 'a token shown for one folder never decides another');
 });
 
 test('a registry entry with an invalid decision approves nothing', async t => {

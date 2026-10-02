@@ -188,6 +188,39 @@ test('"Toujours" on a file write works at once and approves only that field', { 
   assert.equal((await callWorker(worker, 'trust-project', { folder: project, decision: 'ignored', token: after.token })).state, 'ignored');
 });
 
+test('the project-trust view tells each part apart: trusted plugins stay "trusted" while a new repo relaxation is pending', async t => {
+  const { project, worker } = await setup(t, 'openagent-worker-trust-parts-');
+  await mkdir(join(project, 'tools'));
+  await writeFile(join(project, 'tools', 'a.mjs'), markerPlugin(join(project, '..', 'a.txt'), 'a_tool'));
+  await callWorker(worker, 'trust-project', { folder: project, decision: 'trusted', token: (await callWorker(worker, 'project-trust', { folder: project })).token });
+  await mkdir(join(project, '.openagent'), { recursive: true });
+  await writeFile(join(project, '.openagent', 'config.json'), JSON.stringify({ override_permissions: true, shell_ask: false }));
+
+  const view = await callWorker(worker, 'project-trust', { folder: project });
+  assert.equal(view.state, 'pending');
+  assert.equal(view.contentStatus, 'trusted');
+  assert.deepEqual(view.relaxationStatus, { shell_ask: 'pending' });
+  assert.equal(view.unreadable, false);
+  assert.equal(view.changed, false);
+  assert.deepEqual((await callWorker(worker, 'plugin-list', { folder: project })).tools, ['a_tool'], 'and the plugin really is loaded');
+});
+
+test('a project whose own config.json is invalid, or a folder that is gone, never hides the GLOBAL servers in mcp-list', async t => {
+  const { root, project, worker } = await setup(t, 'openagent-worker-trust-mcplist-');
+  await callWorker(worker, 'mcp-add', { commandLine: 'npx -y global-server' });
+  await mkdir(join(project, '.openagent'));
+  await writeFile(join(project, '.openagent', 'config.json'), '{ not json');
+  await writeFile(join(project, '.mcp.json'), JSON.stringify({ mcpServers: { local: { command: 'npx', args: ['local-server'] } } }));
+
+  const servers = await callWorker(worker, 'mcp-list', { folder: project });
+  assert.ok(servers.some((server: any) => server.scope === 'global' && server.args.includes('global-server')), 'the global server is still listed');
+  const local = servers.find((server: any) => server.scope === 'project');
+  assert.equal(local?.trusted, false, 'the readable project entry is listed, as untrusted');
+
+  const gone = await callWorker(worker, 'mcp-list', { folder: join(root, 'deleted-folder') });
+  assert.deepEqual(gone.map((server: any) => server.scope), ['global']);
+});
+
 test('revoke makes a trusted project pending again', async t => {
   const { project, worker } = await setup(t, 'openagent-worker-trust-revoke-');
   await mkdir(join(project, 'tools'));

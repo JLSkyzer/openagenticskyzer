@@ -40,6 +40,37 @@ const projectRules: Record<string, Rule> = {
   custom_prompt: text(50000), override_permissions: bool, ...permissionRules,
 };
 
+export type Relaxations = Record<string, { project: unknown; global: unknown }>;
+/** Fields a project can use to make the agent MORE permissive than the global settings. */
+export const RELAXABLE_KEYS: readonly string[] = [...Object.keys(permissionRules), 'agent_mode'];
+const PERMISSION_MODE_RANK: Record<string, number> = { auto: 0, demander: 1, strict: 2 };
+const READ_ONLY_MODES = new Set(['ask', 'plan']);
+
+/** True when using `project` for `key` instead of `global` would make the agent more permissive. */
+function isRelaxation(key: string, project: unknown, global: unknown): boolean {
+  if (key === 'shell_ask' || key === 'files_ask' || key === 'search_ask') return project === false && global === true;
+  if (key === 'permission_mode') return PERMISSION_MODE_RANK[String(project)] < PERMISSION_MODE_RANK[String(global)];
+  if (key === 'agent_mode') return project === 'auto' && READ_ONLY_MODES.has(String(global));
+  return false;
+}
+
+/** What a project's own config.json would relax, field by field — the part a repository could ship to
+ * switch off confirmations. A stricter-or-equal value is not listed: it needs no approval. */
+export function relaxationsOf(global: Config, project: Config): Relaxations {
+  const result: Relaxations = {};
+  if (project.override_permissions) {
+    for (const key of Object.keys(permissionRules)) {
+      if (Object.hasOwn(project, key) && isRelaxation(key, project[key], global[key])) {
+        result[key] = { project: project[key], global: global[key] };
+      }
+    }
+  }
+  if (project.agent_mode !== 'inherit' && isRelaxation('agent_mode', project.agent_mode, global.agent_mode)) {
+    result.agent_mode = { project: project.agent_mode, global: global.agent_mode };
+  }
+  return result;
+}
+
 function validatePatch(patch: unknown, rules: Record<string, Rule>) {
   object(patch);
   for (const [key, value] of Object.entries(patch)) {
@@ -112,13 +143,19 @@ export class SettingsService {
     });
     return this.project(folder);
   }
-  async effective(folder: string) {
+  /** A project value applies when it is stricter-or-equal to the global one, or when it is a
+   * relaxation the user approved at exactly this value (core/project-trust.mts). Without
+   * `approvedRelaxations`, no relaxation applies: a repository cannot ship its own permissions. */
+  async effective(folder: string, { approvedRelaxations = {} }: { approvedRelaxations?: Record<string, unknown> } = {}) {
     const [global, project] = await Promise.all([this.global(), this.project(folder)]);
     const result = { ...global, ...project };
-    result.agent_mode = project.agent_mode === 'inherit' ? global.agent_mode : project.agent_mode;
-    if (!project.override_permissions) {
-      for (const key of Object.keys(permissionRules)) result[key] = global[key];
+    const allowed = (key: string, value: unknown) => !isRelaxation(key, value, global[key]) || approvedRelaxations[key] === value;
+    for (const key of Object.keys(permissionRules)) {
+      const fromProject = project.override_permissions && Object.hasOwn(project, key) && allowed(key, project[key]);
+      result[key] = fromProject ? project[key] : global[key];
     }
+    const mode = project.agent_mode === 'inherit' ? global.agent_mode : project.agent_mode;
+    result.agent_mode = allowed('agent_mode', mode) ? mode : global.agent_mode;
     return result;
   }
 }

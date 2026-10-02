@@ -75,3 +75,4 @@ import './worker-index-status.test.mts';
 import './worker-knowledge.test.mts';
 import './plugin-loader.test.mts';
 import './worker-plugin.test.mts';
+import './settings-relaxations.test.mts';

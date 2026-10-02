@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, stat, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -62,6 +62,132 @@ test('opening a repository never runs the command its own core.fsmonitor names, 
   const { gitStatus } = await import('../core/git-status.mts');
   assert.deepEqual(await gitStatus(repo), { branch: 'main', dirty: false });
   assert.equal(await stat(marker).then(() => true, () => false), false, 'gitStatus ran the repository’s core.fsmonitor command');
+});
+
+// ── commands declared in the repository's own config (filters, hooks, submodules) ──────────────
+const exists = (path: string) => stat(path).then(() => true, () => false);
+let tick = 0;
+/** Gives a tracked file a new mtime, so git must re-read it (and run its clean filter) to know it is unchanged. */
+const restat = (file: string) => utimes(file, new Date(2001, 0, 1, 0, 0, ++tick), new Date(2001, 0, 1, 0, 0, tick));
+/** A shell command (git runs filters through its own sh, Git for Windows included) that leaves a marker and passes content through. */
+const markingFilter = (marker: string) => `sh -c 'echo ran > "${marker}"; cat'`;
+
+/** Repo whose committed a.txt goes through filter `name`, declared afterwards in the repo's own .git/config. */
+async function filteredRepo(t: any, name: string) {
+  const repo = await repoFixture(t);
+  const marker = join(repo, '..', 'filter-ran').replace(/\\/g, '/');
+  await writeFile(join(repo, '.gitattributes'), `*.txt filter=${name}\n`);
+  await writeFile(join(repo, 'a.txt'), 'hi\n');
+  await sh(['add', '.gitattributes', 'a.txt'], repo);
+  await sh(['commit', '-m', 'filtered'], repo);
+  await sh(['config', `filter.${name}.clean`, markingFilter(marker)], repo);
+  await sh(['config', `filter.${name}.smudge`, 'cat'], repo);
+  return { repo, marker, file: join(repo, 'a.txt') };
+}
+
+test('opening a repository never runs a clean filter its own .git/config declares, and the status stays right', async t => {
+  const { repo, marker, file } = await filteredRepo(t, 'ev.il');
+  await restat(file);
+  await sh(['-c', 'core.fsmonitor=false', '-c', 'protocol.ext.allow=never', 'status', '--porcelain'], repo);
+  assert.equal(await exists(marker), true, 'control: the previous guard alone still runs the filter');
+  await rm(marker);
+  await restat(file);
+  const { gitStatus } = await import('../core/git-status.mts');
+  assert.deepEqual(await gitStatus(repo), { branch: 'main', dirty: false });
+  assert.equal(await exists(marker), false, 'gitStatus ran the repository’s clean filter');
+});
+
+test('a filter declared in the user\'s GLOBAL config still runs: only the repository\'s own config is neutralised', async t => {
+  const repo = await repoFixture(t);
+  const marker = join(repo, '..', 'global-filter-ran').replace(/\\/g, '/');
+  const globalConfig = join(repo, '..', 'global.gitconfig');
+  await writeFile(join(repo, '.gitattributes'), '*.txt filter=userwide\n');
+  await writeFile(join(repo, 'a.txt'), 'hi\n');
+  await sh(['add', '.gitattributes', 'a.txt'], repo);
+  await sh(['commit', '-m', 'filtered'], repo);
+  // Written by git itself: in a hand-written config file ";" would start a comment and cut the command.
+  await sh(['config', '--file', globalConfig, 'filter.userwide.clean', markingFilter(marker)], repo);
+  const previous = process.env.GIT_CONFIG_GLOBAL;
+  process.env.GIT_CONFIG_GLOBAL = globalConfig;
+  t.after(() => { if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = previous; });
+  await restat(join(repo, 'a.txt'));
+  const { gitStatus } = await import('../core/git-status.mts');
+  assert.deepEqual(await gitStatus(repo), { branch: 'main', dirty: false });
+  assert.equal(await exists(marker), true, 'a filter the user installed globally (git-lfs…) must keep working');
+});
+
+test('opening a repository never runs a hook from its own .git/hooks when git refreshes the index', async t => {
+  const repo = await repoFixture(t);
+  const marker = join(repo, '..', 'hook-ran').replace(/\\/g, '/');
+  const file = join(repo, 'README.md');
+  await writeFile(join(repo, '.git', 'hooks', 'post-index-change'), `#!/bin/sh\necho ran > "${marker}"\n`, { mode: 0o755 });
+  await restat(file);
+  await sh(['-c', 'core.fsmonitor=false', '-c', 'protocol.ext.allow=never', 'status', '--porcelain'], repo);
+  assert.equal(await exists(marker), true, 'control: plain git status runs post-index-change');
+  await rm(marker);
+  await restat(file);
+  const { gitStatus } = await import('../core/git-status.mts');
+  assert.deepEqual(await gitStatus(repo), { branch: 'main', dirty: false });
+  assert.equal(await exists(marker), false, 'gitStatus ran the repository’s post-index-change hook');
+});
+
+/** Superproject with a submodule whose OWN config (.git/modules/sub/config) declares a marking clean filter. */
+async function submoduleRepo(t: any) {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-git-submodule-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sub = join(root, 'sub');
+  const repo = join(root, 'repo');
+  const marker = join(root, 'submodule-filter-ran').replace(/\\/g, '/');
+  for (const dir of [sub, repo]) {
+    await mkdir(dir);
+    await sh(['init', '-b', 'main'], dir);
+    await sh(['config', 'user.name', 'Test'], dir);
+    await sh(['config', 'user.email', 'test@example.com'], dir);
+    await sh(['config', 'commit.gpgsign', 'false'], dir);
+  }
+  await writeFile(join(sub, '.gitattributes'), '*.txt filter=subonly\n');
+  await writeFile(join(sub, 's.txt'), 'inside\n');
+  await sh(['add', '.'], sub);
+  await sh(['commit', '-m', 'sub'], sub);
+  await writeFile(join(repo, 'README.md'), '# Super\n');
+  await sh(['add', 'README.md'], repo);
+  await sh(['commit', '-m', 'initial'], repo);
+  await sh(['-c', 'protocol.file.allow=always', 'submodule', 'add', '../sub', 'sub'], repo);
+  await sh(['commit', '-m', 'add submodule'], repo);
+  // Declared in the submodule's own config only: the superproject's config never names it.
+  await sh(['config', 'filter.subonly.clean', markingFilter(marker)], join(repo, 'sub'));
+  return { repo, marker, file: join(repo, 'sub', 's.txt') };
+}
+
+test('opening a superproject never runs a filter declared only in a submodule\'s own config', async t => {
+  const { repo, marker, file } = await submoduleRepo(t);
+  await restat(file);
+  await sh(['-c', 'core.fsmonitor=false', '-c', 'protocol.ext.allow=never', 'status', '--porcelain'], repo);
+  assert.equal(await exists(marker), true, 'control: plain git status recurses into the submodule and runs its filter');
+  await rm(marker);
+  await restat(file);
+  const { gitStatus } = await import('../core/git-status.mts');
+  assert.deepEqual(await gitStatus(repo), { branch: 'main', dirty: false });
+  assert.equal(await exists(marker), false, 'gitStatus ran the submodule’s clean filter');
+});
+
+test('gitStatus fails closed: no indicator when the repository config cannot be read safely', async t => {
+  const { gitStatus } = await import('../core/git-status.mts');
+  // A filter name containing "=" cannot be overridden with -c (git would read "filter.a" = "b.clean="):
+  // plain git runs it, so the guard must refuse rather than run status unprotected.
+  const { repo, marker, file } = await filteredRepo(t, 'a=b');
+  await restat(file);
+  await sh(['status', '--porcelain'], repo);
+  assert.equal(await exists(marker), true, 'control: plain git status runs the "a=b" filter');
+  await rm(marker);
+  await restat(file);
+  assert.equal(await gitStatus(repo), null);
+  assert.equal(await exists(marker), false, 'nothing ran after the guard refused');
+
+  const corrupt = await repoFixture(t);
+  await writeFile(join(corrupt, '.git', 'config'), '[core\nbroken', { flag: 'a' });
+  await assert.doesNotReject(gitStatus(corrupt));
+  assert.equal(await gitStatus(corrupt), null);
 });
 
 test('gitStatus returns null for a folder that does not exist on disk, never throws', async t => {

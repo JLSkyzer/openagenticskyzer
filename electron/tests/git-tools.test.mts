@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -148,6 +148,141 @@ test('git_blame names the author, supports a line range, and validates it', asyn
 test('git_branch_list shows the branches', async t => {
   const { invoke } = await fixture(t);
   assert.match(await invoke('git_branch_list'), /main/);
+});
+
+// ── read tools never run commands declared in the repository's own config ─────────────
+const exists = (path: string) => stat(path).then(() => true, () => false);
+let tick = 0;
+/** Gives a tracked file a new mtime, so git must re-read it (and run its clean filter) to know it is unchanged. */
+const restat = (file: string) => utimes(file, new Date(2001, 0, 1, 0, 0, ++tick), new Date(2001, 0, 1, 0, 0, tick));
+const markingFilter = (marker: string) => `sh -c 'echo ran > "${marker}"; cat'`;
+const READ_TOOLS: Array<[string, Record<string, unknown>]> = [
+  ['git_status', {}], ['git_diff', {}], ['git_diff_staged', {}], ['git_log', {}], ['git_log', { oneline: false }], ['git_blame', { file: 'a.txt' }], ['git_branch_list', {}],
+];
+
+async function filteredFixture(t: any, name: string) {
+  const base = await fixture(t);
+  const marker = join(base.root, 'filter-ran').replace(/\\/g, '/');
+  await writeFile(join(base.repo, '.gitattributes'), `*.txt filter=${name}\n`);
+  await writeFile(join(base.repo, 'a.txt'), 'hi\n');
+  await sh(['add', '.gitattributes', 'a.txt'], base.repo);
+  await sh(['commit', '-m', 'filtered'], base.repo);
+  await sh(['config', `filter.${name}.clean`, markingFilter(marker)], base.repo);
+  await sh(['config', `filter.${name}.smudge`, 'cat'], base.repo);
+  return { ...base, marker, file: join(base.repo, 'a.txt') };
+}
+
+test('read tools never run a clean filter the repository\'s own .git/config declares', async t => {
+  const { repo, marker, file, invoke } = await filteredFixture(t, 'ev.il');
+  await restat(file);
+  await sh(['-c', 'core.fsmonitor=false', '-c', 'protocol.ext.allow=never', 'status', '--porcelain'], repo);
+  assert.equal(await exists(marker), true, 'control: the previous guard alone still runs the filter');
+  await rm(marker);
+  for (const [name, args] of READ_TOOLS) {
+    await restat(file);
+    await invoke(name, args);
+    assert.equal(await exists(marker), false, `${name} ran the repository’s clean filter`);
+  }
+  assert.equal(await invoke('git_status'), 'Working tree clean.');
+  assert.equal(await invoke('git_diff'), 'No changes.');
+  assert.match(await invoke('git_blame', { file: 'a.txt' }), /hi/);
+});
+
+test('git_blame never runs a textconv the repository\'s own .git/config declares', async t => {
+  const { repo, root, invoke } = await fixture(t);
+  const marker = join(root, 'textconv-ran').replace(/\\/g, '/');
+  await writeFile(join(repo, '.gitattributes'), '*.txt diff=conv\n');
+  await writeFile(join(repo, 'a.txt'), 'hi\n');
+  await sh(['add', '.gitattributes', 'a.txt'], repo);
+  await sh(['commit', '-m', 'conv'], repo);
+  await sh(['config', 'diff.conv.textconv', `sh -c 'echo ran > "${marker}"; cat "$1"' -`], repo);
+  await sh(['blame', '--', 'a.txt'], repo);
+  assert.equal(await exists(marker), true, 'control: plain git blame runs textconv by default');
+  await rm(marker);
+  assert.match(await invoke('git_blame', { file: 'a.txt' }), /hi/);
+  assert.equal(await exists(marker), false, 'git_blame ran the repository’s textconv');
+});
+
+test('git_log never runs the repository\'s gpg.program, even with log.showSignature and a signed commit', async t => {
+  const { repo, root, invoke } = await fixture(t);
+  const marker = join(root, 'gpg-ran').replace(/\\/g, '/');
+  const gpg = join(root, 'fake-gpg.sh').replace(/\\/g, '/');
+  await writeFile(gpg, `#!/bin/sh\necho ran > "${marker}"\nexit 1\n`, { mode: 0o755 });
+  // Re-create HEAD as a commit object carrying a gpgsig header (continuation lines start with a space).
+  const raw = await sh(['cat-file', 'commit', 'HEAD'], repo);
+  const signed = raw.replace(/^(committer .*)$/m, '$1\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n iQEzBAABCAAdFiEE\n -----END PGP SIGNATURE-----') + '\n';
+  const sha = execFileSync('git', ['hash-object', '-t', 'commit', '-w', '--stdin'], { cwd: repo, input: signed }).toString().trim();
+  await sh(['update-ref', 'HEAD', sha], repo);
+  await sh(['config', 'log.showSignature', 'true'], repo);
+  await sh(['config', 'gpg.program', gpg], repo);
+  await sh(['log', '-n', '1', '--oneline'], repo).catch(() => '');
+  assert.equal(await exists(marker), true, 'control: plain git log verifies the signature with gpg.program');
+  await rm(marker);
+  assert.match(await invoke('git_log'), /initial/);
+  assert.match(await invoke('git_log', { oneline: false }), /initial/);
+  assert.equal(await exists(marker), false, 'git_log ran the repository’s gpg.program');
+});
+
+test('read tools never run a hook from the repository\'s own .git/hooks when git refreshes the index', async t => {
+  const { repo, root, invoke } = await fixture(t);
+  const marker = join(root, 'hook-ran').replace(/\\/g, '/');
+  const file = join(repo, 'README.md');
+  await writeFile(join(repo, '.git', 'hooks', 'post-index-change'), `#!/bin/sh\necho ran > "${marker}"\n`, { mode: 0o755 });
+  await restat(file);
+  await sh(['-c', 'core.fsmonitor=false', 'diff'], repo);
+  assert.equal(await exists(marker), true, 'control: plain git diff runs post-index-change');
+  await rm(marker);
+  for (const name of ['git_status', 'git_diff']) {
+    await restat(file);
+    await invoke(name);
+    assert.equal(await exists(marker), false, `${name} ran the repository’s post-index-change hook`);
+  }
+});
+
+test('read tools never run a filter declared only in a submodule\'s own config', async t => {
+  const { root, repo } = await fixture(t);
+  const sub = join(root, 'sub');
+  const marker = join(root, 'submodule-filter-ran').replace(/\\/g, '/');
+  await mkdir(sub);
+  await sh(['init', '-b', 'main'], sub);
+  await sh(['config', 'user.name', 'Test'], sub);
+  await sh(['config', 'user.email', 'test@example.com'], sub);
+  await sh(['config', 'commit.gpgsign', 'false'], sub);
+  await writeFile(join(sub, '.gitattributes'), '*.txt filter=subonly\n');
+  await writeFile(join(sub, 's.txt'), 'inside\n');
+  await sh(['add', '.'], sub);
+  await sh(['commit', '-m', 'sub'], sub);
+  await sh(['-c', 'protocol.file.allow=always', 'submodule', 'add', '../sub', 'sub'], repo);
+  await sh(['commit', '-m', 'add submodule'], repo);
+  await sh(['config', 'filter.subonly.clean', markingFilter(marker)], join(repo, 'sub'));
+  const file = join(repo, 'sub', 's.txt');
+  await restat(file);
+  await sh(['-c', 'core.fsmonitor=false', '-c', 'protocol.ext.allow=never', 'status', '--porcelain'], repo);
+  assert.equal(await exists(marker), true, 'control: plain git status recurses into the submodule and runs its filter');
+  await rm(marker);
+  const { gitTools } = await import('../core/git-tools.mts');
+  const tools = await gitTools(repo);
+  for (const name of ['git_status', 'git_diff']) {
+    await restat(file);
+    await tools.find(entry => entry.name === name)!.execute({}, new AbortController().signal);
+    assert.equal(await exists(marker), false, `${name} ran the submodule’s clean filter`);
+  }
+});
+
+test('read tools fail closed: nothing runs when the repository config cannot be neutralised or read', async t => {
+  // A filter name containing "=" cannot be overridden with -c (git would read "filter.a" = "b.clean=").
+  const { repo, marker, file, invoke } = await filteredFixture(t, 'a=b');
+  await restat(file);
+  await sh(['status', '--porcelain'], repo);
+  assert.equal(await exists(marker), true, 'control: plain git status runs the "a=b" filter');
+  await rm(marker);
+  for (const [name, args] of READ_TOOLS) {
+    await restat(file);
+    await refuses(invoke(name, args), /configuration git du dépôt.*non lancée/);
+    assert.equal(await exists(marker), false, `${name} ran something after the guard refused`);
+  }
+  await writeFile(join(repo, '.git', 'config'), '[core\nbroken', { flag: 'a' });
+  await refuses(invoke('git_status'), /configuration git du dépôt.*non lancée/);
 });
 
 // ── staging and committing ────────────────────────────────────────────────────────

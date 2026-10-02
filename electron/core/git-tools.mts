@@ -1,6 +1,7 @@
 import { lstat, realpath } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { AgentTool } from './agent.mts';
+import { NO_SUBMODULE_WORKTREES, readOnlyGitArgs } from './git-safety.mts';
 import { runProcess } from './process.mts';
 import { defineTool, type ParamRule } from './tool-kit.mts';
 
@@ -60,16 +61,27 @@ export async function gitTools(folder: string): Promise<AgentTool[]> {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', LANG: 'C' };
   // core.fsmonitor and ext:: are code-execution hooks a repository (or a remote name) could carry.
   const base = ['-c', 'core.quotepath=false', '-c', 'core.fsmonitor=false', '-c', 'protocol.ext.allow=never'];
+  const gitMissing = (error: any) => (error?.code === 'ENOENT' ? new Error('git non trouvé : installez Git et ajoutez-le au PATH') : error);
   const git = async (args: string[], signal: AbortSignal, timeout = QUICK_TIMEOUT): Promise<string> => {
     let result;
     try { result = await runProcess('git', [...base, ...args], { cwd: root, env, timeout, signal, maxBytes: 1024 * 1024 }); }
-    catch (error: any) {
-      if (error?.code === 'ENOENT') throw new Error('git non trouvé : installez Git et ajoutez-le au PATH');
-      throw error;
-    }
+    catch (error: any) { throw gitMissing(error); }
     if (result.timedOut) throw new Error(`timeout (>${timeout / 1000}s)`);
     if (result.code !== 0) throw new Error(result.stderr.trim() || result.stdout.trim() || 'commande échouée');
     return result.stdout.trim();
+  };
+  // Read tools run without confirmation, so they also neutralise every command the repository's own
+  // config declares (git-safety.mts), recomputed per call since the config can change. Write/network
+  // tools act under the user's permission settings and keep the repository's filters and hooks
+  // (git-crypt, git-lfs, husky…): neutralising a clean filter there would commit the wrong content.
+  const gitRead = async (args: string[], signal: AbortSignal): Promise<string> => {
+    let guard: string[];
+    try { guard = await readOnlyGitArgs(root, env, { timeout: QUICK_TIMEOUT, signal }); }
+    catch (error: any) {
+      if (signal.aborted || error?.code === 'ENOENT') throw gitMissing(error);
+      throw new Error(`Impossible de lire la configuration git du dépôt : commande non lancée (${error?.message ?? error})`);
+    }
+    return git([...guard, ...args], signal);
   };
   const okIfEmpty = (out: string) => out || 'OK (pas de sortie)';
   const fileRule: ParamRule = { type: 'string', maxLength: 4000, description: 'Fichiers séparés par des espaces (guillemets pour les noms avec espaces)' };
@@ -77,7 +89,8 @@ export async function gitTools(folder: string): Promise<AgentTool[]> {
 
   return [
     defineTool({ name: 'git_status', description: 'État du dépôt (branche et fichiers modifiés).', category: 'read', properties: {}, execute: async (_a, signal) => {
-      const out = await git(['status', '--short', '--branch'], signal);
+      // Changes inside a submodule's work tree are not reported (see NO_SUBMODULE_WORKTREES).
+      const out = await gitRead(['status', '--short', '--branch', NO_SUBMODULE_WORKTREES], signal);
       return out.split('\n').length <= 1 ? 'Working tree clean.' : out;
     } }),
     defineTool({ name: 'git_diff', description: 'Différences non indexées, éventuellement pour un seul fichier.', category: 'read',
@@ -85,16 +98,16 @@ export async function gitTools(folder: string): Promise<AgentTool[]> {
         const file = args.file as string | undefined;
         if (file && isProtected(file)) throw new Error('Fichier protégé : diff refusé');
         // .env files are excluded even when tracked: a committed secret must not leak through a diff.
-        return (await git(['diff', '--no-ext-diff', '--no-textconv', '--', ...(file ? [file] : []), ...EXCLUDE_ENV], signal)) || 'No changes.';
+        return (await gitRead(['diff', '--no-ext-diff', '--no-textconv', NO_SUBMODULE_WORKTREES, '--', ...(file ? [file] : []), ...EXCLUDE_ENV], signal)) || 'No changes.';
       } }),
     defineTool({ name: 'git_diff_staged', description: 'Différences indexées (prêtes à être commitées).', category: 'read', properties: {}, execute: async (_a, signal) =>
-      (await git(['diff', '--staged', '--no-ext-diff', '--no-textconv', '--', ...EXCLUDE_ENV], signal)) || 'No changes (staged).' }),
+      (await gitRead(['diff', '--staged', '--no-ext-diff', '--no-textconv', '--', ...EXCLUDE_ENV], signal)) || 'No changes (staged).' }),
     defineTool({ name: 'git_log', description: 'Derniers commits.', category: 'read',
       properties: { n: { type: 'integer', maximum: 200, description: 'Nombre de commits (10 par défaut)' }, oneline: { type: 'boolean', description: 'Une ligne par commit (vrai par défaut)' } },
       execute: async (args, signal) => {
         const n = (args.n as number | undefined) ?? 10;
         const oneline = (args.oneline as boolean | undefined) ?? true;
-        return okIfEmpty(await git(['log', '-n', String(n), oneline ? '--oneline' : '--format=%h %an %ar%n%s%n'], signal));
+        return okIfEmpty(await gitRead(['log', '-n', String(n), oneline ? '--oneline' : '--format=%h %an %ar%n%s%n'], signal));
       } }),
     defineTool({ name: 'git_blame', description: 'Qui a modifié chaque ligne d’un fichier (plage facultative).', category: 'read',
       properties: { file: { type: 'string', maxLength: 1000 }, start: { type: 'integer', description: 'Première ligne (1 par défaut)' }, end: { type: 'integer', minimum: 0, description: 'Dernière ligne (0 = jusqu’à la fin)' } },
@@ -105,9 +118,10 @@ export async function gitTools(folder: string): Promise<AgentTool[]> {
         if (isProtected(file)) throw new Error('Fichier protégé : blame refusé');
         if (end > 0 && end < start) throw new Error('Plage de lignes invalide');
         const range = end > 0 || start > 1 ? ['-L', `${start},${end > 0 ? end : ''}`] : [];
-        return okIfEmpty(await git(['blame', ...range, '--', file], signal));
+        // blame applies textconv by default (verified): never run the repository's converter.
+        return okIfEmpty(await gitRead(['blame', '--no-textconv', ...range, '--', file], signal));
       } }),
-    defineTool({ name: 'git_branch_list', description: 'Liste des branches locales et distantes.', category: 'read', properties: {}, execute: async (_a, signal) => okIfEmpty(await git(['branch', '-a'], signal)) }),
+    defineTool({ name: 'git_branch_list', description: 'Liste des branches locales et distantes.', category: 'read', properties: {}, execute: async (_a, signal) => okIfEmpty(await gitRead(['branch', '-a'], signal)) }),
 
     defineTool({ name: 'git_add', description: 'Indexer des fichiers (ou « . » pour tout).', category: 'write', properties: { files: fileRule }, required: ['files'],
       execute: async (args, signal) => okIfEmpty(await git(['add', '--', ...splitFiles(args.files as string)], signal)) }),

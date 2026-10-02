@@ -9,6 +9,7 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const net = require('node:net');
 
 function httpGetJson(url) {
   return new Promise((resolve, reject) => {
@@ -38,11 +39,35 @@ async function waitFor(fn, { timeout = 10000, interval = 200 } = {}) {
   }
 }
 
+function freeLoopbackPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+}
+
 async function main() {
   const exePath = path.join(__dirname, '..', 'release', 'win-unpacked', 'openagent.exe');
   const userData = await mkdtemp(join(tmpdir(), 'openagent-package-userdata-'));
+  const openagentHome = await mkdtemp(join(tmpdir(), 'openagent-package-home-'));
   const port = 9334;
-  const child = spawn(exePath, [`--remote-debugging-port=${port}`, `--user-data-dir=${userData}`], { stdio: 'ignore' });
+  // A loopback port that was just freed refuses connections: the updater runs for real and fails,
+  // without any network access. (Not port 9: Chromium's net stack blocks it as ERR_UNSAFE_PORT
+  // before any socket is opened, which would prove nothing about the feed.)
+  const closedPort = await freeLoopbackPort();
+  const child = spawn(exePath, [`--remote-debugging-port=${port}`, `--user-data-dir=${userData}`], {
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+      OPENAGENT_HOME: openagentHome,
+      OPENAGENT_UPDATE_FEED: `http://127.0.0.1:${closedPort}/`,
+      OPENAGENT_UPDATE_CHECK_DELAY_MS: '200',
+    },
+  });
   try {
     const version = await waitFor(() => httpGetJson(`http://127.0.0.1:${port}/json/version`));
     assert.match(version.Browser, /Chrome/, 'a real Chromium instance answered the debug port');
@@ -65,10 +90,21 @@ async function main() {
       'loaded from the packaged asar bundle, not a dev server or loose files',
     );
 
+    const { cdpEvaluate, waitFor: waitForCdp } = require('./cdp-helper.cjs');
+    const status = await waitForCdp(async () => {
+      const value = await cdpEvaluate(pages[0].webSocketDebuggerUrl, "window.openagent.request({ op: 'update-status' })");
+      return value && value.status === 'error' ? value : null;
+    }, { timeout: 20000, what: 'the packaged updater reports its (expected) connection failure' });
+    process.stdout.write(`updater status observed: ${JSON.stringify(status)}\n`);
+    assert.equal(status.enabled, true, 'updates are active in the packaged app');
+    assert.doesNotMatch(status.message, /Cannot find module/, 'electron-updater and its dependencies are packaged');
+    assert.match(status.message, /ECONNREFUSED|ERR_CONNECTION_REFUSED|connect|127\.0\.0\.1/, 'the updater really ran against the feed');
+
     process.stdout.write('PASS packaged executable launches outside npm start and loads the real UI\n');
   } finally {
     child.kill();
     await rm(userData, { recursive: true, force: true }).catch(() => {});
+    await rm(openagentHome, { recursive: true, force: true }).catch(() => {});
   }
 }
 

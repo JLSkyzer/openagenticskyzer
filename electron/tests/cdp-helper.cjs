@@ -18,14 +18,44 @@ function httpGetJson(url) {
   });
 }
 
-async function waitFor(fn, { timeout = 10000, interval = 150 } = {}) {
+async function waitFor(fn, { timeout = 10000, interval = 150, what = '' } = {}) {
   const start = Date.now();
   for (;;) {
     let value;
     try { value = await fn(); } catch { value = null; }
     if (value) return value;
-    if (Date.now() - start > timeout) throw new Error('waitFor timed out');
+    if (Date.now() - start > timeout) throw new Error(what ? `waitFor timed out: ${what}` : 'waitFor timed out');
     await new Promise(resolve => setTimeout(resolve, interval));
+  }
+}
+
+// The /json entry of the page whose <title> is `title` (with its webSocketDebuggerUrl), once it has parsed.
+async function waitForPage(port, title = 'openagent', timeout = 30000) {
+  return waitFor(async () => {
+    const list = await httpGetJson(`http://127.0.0.1:${port}/json`);
+    return list.find(page => page.type === 'page' && page.title === title) || null;
+  }, { timeout, interval: 250, what: `page "${title}" on port ${port}` });
+}
+
+// One-shot Runtime.evaluate (awaits promises, returns by value) over a fresh CDP connection.
+let nextEvaluateId = 1;
+async function cdpEvaluate(webSocketDebuggerUrl, expression) {
+  const ws = new WebSocket(webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error('CDP connection failed')); });
+  const id = nextEvaluateId++;
+  try {
+    return await new Promise((resolve, reject) => {
+      ws.onmessage = event => {
+        const message = JSON.parse(event.data);
+        if (message.id !== id) return;
+        if (message.error) reject(new Error(message.error.message));
+        else if (message.result.exceptionDetails) reject(new Error(message.result.exceptionDetails.exception?.description || message.result.exceptionDetails.text));
+        else resolve(message.result.result.value);
+      };
+      ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
+    });
+  } finally {
+    ws.close();
   }
 }
 
@@ -101,4 +131,4 @@ async function checkPythonAbsent() {
   return { sanitizedPath, stripped, whereCode: code, whereOutput: out.trim() };
 }
 
-module.exports = { httpGetJson, waitFor, Cdp, checkPythonAbsent };
+module.exports = { httpGetJson, waitFor, waitForPage, cdpEvaluate, Cdp, checkPythonAbsent };

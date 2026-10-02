@@ -79,3 +79,4 @@ import './settings-relaxations.test.mts';
 import './project-trust.test.mts';
 import './worker-trust.test.mts';
 import './updater.test.mts';
+import './release-win.test.mts';

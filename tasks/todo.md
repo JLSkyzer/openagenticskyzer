@@ -3081,3 +3081,30 @@ Ferme la « Limite restante » du bilan précédent. Conception approuvée par l
 **Limites acceptées** :
 - fenêtre TOCTOU entre la lecture de la config et la commande : la config peut changer entre les deux, ce qui suppose déjà un accès en écriture local à cet instant ;
 - les variables `GIT_*` héritées de l'environnement de l'utilisateur (pas du dépôt) sont conservées.
+
+### Bilan du lot — installeur Windows et mises à jour (2026-10-02)
+
+Remplace le packaging « dossier décompressé » (`--win dir`) par un vrai installeur et des mises à jour automatiques. Conception approuvée par l'utilisateur (mises à jour téléchargées puis proposées, installation par utilisateur sans admin, pas de certificat, publication locale vers un brouillon GitHub), TDD, exécution en sous-agents avec revue par tâche.
+
+**Installeur** (`electron/package.json`, electron-builder 26.15.3) : cible `nsis`, `oneClick: true`, `perMachine: false` → installation sans UAC dans `%LOCALAPPDATA%\Programs\openagent-desktop` (electron-builder prend le **nom du paquet**, pas `productName`, en un clic par utilisateur — la spec disait `Programs\openagent`, corrigée), entrée de désinstallation HKCU « openagent <version> », raccourcis bureau + menu Démarrer, `deleteAppDataOnUninstall: false`. Produit `openagent-Setup-<version>.exe` (≈ 279 Mo, non signé), `.blockmap`, `latest.yml`. `electron-updater` et ses 15 paquets d'exécution sont ajoutés un par un à `build.files` (arbre relevé en parcourant les `dependencies`, `npm ls --parseable` ne le donnant pas), ainsi que `updater.cjs` — sans lui l'app empaquetée plantait au démarrage.
+
+**Mise à jour dans l'app** : `electron/updater.cjs` (process principal), actif seulement dans l'app empaquetée (`OPENAGENT_DISABLE_UPDATES=1` le coupe). Vérification 10 s après l'ouverture puis toutes les 6 h, téléchargement automatique, `allowDowngrade`/`allowPrerelease` à false, installation à la fermeture. Statuts poussés au renderer par `onUpdateStatus` ; ops gérées par le main : `update-status`, `update-check`, `update-install-now` (refusé sans mise à jour prête, puis `quitAndInstall(true, true)`). Un statut `ready` est collant : une vérification ultérieure ne l'efface plus (bug trouvé en revue). Interface : bandeau « Version X prête — Redémarrer maintenant / Plus tard » (bouton désactivé pendant un tour d'agent) et bloc « Mises à jour » dans Réglages › Général (version, bouton Vérifier, dernier résultat daté).
+
+**Publication** : `npm run package:win` construit sans publier ; `npm run release:win` (`scripts/release-win.cjs`) refuse si `electron/` a des changements non commités, si la branche n'a pas d'amont ou a des commits non poussés, si le dépôt GitHub est inaccessible, ou si la release/le tag `v<version>` existe ; le jeton (`gh auth token`) n'est lu qu'après le build du renderer et n'est passé QU'à electron-builder (`GH_TOKEN`), jamais affiché ni écrit. Le script ne fait qu'un **brouillon** ; publier reste un geste de l'utilisateur.
+
+**Décisions de rédaction du plan** : la vérification d'arbre sale est limitée à `electron/` (le dépôt porte aussi le travail Python non commité, sans rapport) ; les trois variables de test (`OPENAGENT_UPDATE_FEED`, `OPENAGENT_UPDATE_CHECK_DELAY_MS`, `OPENAGENT_UPDATE_NO_RELAUNCH`) ne sont honorées qu'avec un flux loopback `http://127.0.0.1|localhost:<port>/` sans identifiants, requête ni fragment.
+
+**Vérification (2026-10-02)** :
+- suite complète `tests/all.mts` **637/637** (623 avant le lot + 14 : updater 6, release-win 8), 0 échec ; tsc core : 5 erreurs préexistantes seulement ; tsc renderer : 0 ;
+- `package:win` OK ; `test:package` PASS (l'app empaquetée charge `electron-updater` : statut `error net::ERR_CONNECTION_REFUSED` sur un port loopback libéré, pas « Cannot find module ») ; `test:update-ui` PASS ; `test:trust` PASS ;
+- `test:update` PASS — l'app v0.2.0 empaquetée trouve v0.2.1 sur un flux local, la télécharge, SHA-512 égal à `latest.yml`, bandeau affiché, rien installé ;
+- **`test:install` lancé UNE fois** (accord du 2026-10-02) : PASS — v0.2.0 installée en silencieux dans `Programs\openagent-desktop`, raccourcis présents, mise à jour en place vers v0.2.1 par le bouton « Redémarrer maintenant » du bandeau, désinstallation silencieuse. Nettoyage revérifié à la main ensuite : dossiers, clé `HKCU\Software\<APP_GUID>`, entrée de désinstallation, raccourcis, cache `openagent-desktop-updater`, processus — tous absents ;
+- `release-win.cjs --dry-run` après push : « v0.2.0 publiable en brouillon (jeton GitHub lu, 40 caractères, non affiché) ».
+
+**Sécurité** : installeur **non signé** → Windows SmartScreen avertit au premier lancement. Intégrité de chaque mise à jour par SHA-512 (`latest.yml`) sur HTTPS ; **la sécurité des mises à jour repose sur le compte GitHub `JLSkyzer`** : quiconque peut publier une release sur ce dépôt peut livrer une mise à jour. La signature pourra s'ajouter via `CSC_LINK`/`CSC_KEY_PASSWORD` sans changer le code.
+
+**Publier une version** : augmenter `version` dans `electron/package.json`, commiter et pousser, `npm run release:win` depuis `electron/`, puis relire et publier le brouillon sur GitHub. Les apps installées ne voient la version qu'une fois le brouillon publié.
+
+**Limites connues** : les harnais de test visuels qui contournent `main.cjs` journalisent « Opération IPC inconnue » pour `update-status` (rejet attrapé par le renderer, sans effet sur les tests) ; la vérification d'amont du script compare la référence de suivi locale (pas de fetch) et la branche courante seulement ; `build()` des scripts e2e et `httpGetJson` n'ont pas de délai maximal (avant toute installation / en loopback).
+
+**Hors scope** : signature du code, macOS/Linux, intégration continue, canal bêta, publication automatique.

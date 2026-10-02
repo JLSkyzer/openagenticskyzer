@@ -10,7 +10,8 @@ function feedOverride(value) {
   let url;
   try { url = new URL(value); } catch { return null; }
   if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(url.hostname)) return null;
-  return url.href.endsWith('/') ? url.href : `${url.href}/`;
+  if (url.username || url.password || url.search || url.hash) return null;
+  return url.origin + (url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`);
 }
 
 function updatesEnabled({ isPackaged, env }) {
@@ -20,12 +21,18 @@ function updatesEnabled({ isPackaged, env }) {
 /** First-check delay; only a test pointed at a loopback feed may shorten it. */
 function checkDelayMs(env) {
   if (!feedOverride(env.OPENAGENT_UPDATE_FEED)) return FIRST_CHECK_MS;
-  const value = Number(env.OPENAGENT_UPDATE_CHECK_DELAY_MS);
+  const raw = env.OPENAGENT_UPDATE_CHECK_DELAY_MS;
+  const value = typeof raw === 'string' && raw.trim() ? Number(raw) : NaN;
   return Number.isFinite(value) && value >= 0 ? value : FIRST_CHECK_MS;
 }
 
 function canInstallNow(status) {
   return status?.status === 'ready';
+}
+
+/** A downloaded update is on disk: a later check must not erase "ready" (it would refuse the install). */
+function shouldCheck(status) {
+  return status?.status !== 'ready';
 }
 
 function errorMessage(error) {
@@ -73,7 +80,7 @@ function createUpdater({ app, send, env = process.env }) {
   }
 
   async function check() {
-    if (!enabled) return status();
+    if (!enabled || !shouldCheck(last)) return status();
     try {
       await load().checkForUpdates();
     } catch (error) {
@@ -99,4 +106,4 @@ function createUpdater({ app, send, env = process.env }) {
   return { start, check, installNow, status };
 }
 
-module.exports = { feedOverride, updatesEnabled, checkDelayMs, canInstallNow, createUpdater };
+module.exports = { feedOverride, updatesEnabled, checkDelayMs, canInstallNow, shouldCheck, createUpdater };

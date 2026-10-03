@@ -2,18 +2,9 @@ import { useEffect, useState } from 'react';
 import { getConnection } from '../../ipc/bridge';
 import type { SettingsDraft } from './useSettingsDraft';
 import { Group, Row, Section, Toggle } from './parts';
+// The maximum context of the active provider's models: the table the worker sizes every request with.
+import { contextWindow } from '../../../../core/context-budget.mts';
 
-// utils.py::_DEFAULT_CTX_LIMITS — the maximum context of the active provider's models.
-const CTX_LIMITS: Record<string, number> = {
-  together: 128_000,
-  groq: 128_000,
-  mistral: 32_000,
-  gemini: 1_000_000,
-  openrouter: 128_000,
-  ollama: 32_000,
-  lmstudio: 32_000,
-  llamacpp: 32_000,
-};
 // Node's SettingsService rejects a context limit below 2048 (settings.py's slider started
 // at 2000), so the smallest value the slider can produce is clamped to it.
 const MIN_TOKENS = 2048;
@@ -35,7 +26,7 @@ export function ContextTab({ draft, activeFolder }: { draft: SettingsDraft; acti
     };
   }, [activeFolder]);
 
-  const ctxMax = CTX_LIMITS[provider] ?? 32_000;
+  const ctxMax = contextWindow(provider, null);
   const maxTokens = draft.get<number>('max_tokens', Math.floor(ctxMax / 2));
   const threshold = draft.get<number>('compact_threshold', 70);
 

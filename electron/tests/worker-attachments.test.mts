@@ -79,13 +79,15 @@ test('an image goes as an image_url part followed by the text part; the data URI
   assert.deepEqual((await saved())[0].attachments, [IMAGE]);
 });
 
-test('a LATER turn still shows the model the earlier files (they are rebuilt from the saved transcript)', async t => {
-  const { seen, send } = await setup(t);
+test('a LATER turn shows an earlier file as one placeholder line, not its content (H3)', async t => {
+  const { seen, send, saved } = await setup(t);
   await send({ text: 'lis ça', attachments: [TEXT] });
   await send({ text: 'et maintenant ?' });
   const firstUser = seen[1].messages.find((m: any) => m.role === 'user');
-  assert.match(firstUser.content, /FICHIER-SECRET-42/, 'the file is still there on the second turn');
+  assert.equal(firstUser.content, '[pièce jointe : notes.txt]\nlis ça');
+  assert.equal(JSON.stringify(seen[1]).includes('FICHIER-SECRET-42'), false, 'the file is not re-sent');
   assert.equal(lastUser(seen[1]).content, 'et maintenant ?');
+  assert.deepEqual((await saved())[0].attachments, [TEXT], 'the saved message keeps its file');
 });
 
 test('a message without attachments is saved and sent exactly as before (no attachments field at all)', async t => {

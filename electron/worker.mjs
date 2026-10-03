@@ -7,7 +7,7 @@ import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
 import { FoldersService } from './core/folders.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
-import { completeLocal } from './core/local-engine.mts';
+import { completeLocal, engineContextSize } from './core/local-engine.mts';
 import { runAgent, TOOL_NAME_PATTERN } from './core/agent.mts';
 import { ChatProvider } from './core/provider.mts';
 import { workspaceTools } from './core/workspace.mts';
@@ -20,6 +20,8 @@ import { compactMessages, planCompaction, SUMMARY_PREFIX } from './core/compact.
 import { PromptLibrary } from './core/prompts.mts';
 import { readProjectMemory } from './core/project-memory.mts';
 import { validateAttachments } from './core/attachments.mts';
+import { contextWindow } from './core/context-budget.mts';
+import { closeDanglingCalls } from './core/request-context.mts';
 import { buildHtml, buildJson, buildMarkdown, exportFilename, renderEntries } from './core/export.mts';
 import { cleanupOldFolders } from './core/cleanup.mts';
 import { gitStatus } from './core/git-status.mts';
@@ -309,7 +311,11 @@ async function providerFor(connection, localModel) {
   if (!localModel) return new ChatProvider(undefined, { idleTimeoutMs: PROVIDER_IDLE_MS });
   const modelPath = await ggufLibrary.resolve(localModel);
   if (!modelPath) throw new Error('Modèle local introuvable : il a peut-être été retiré de la bibliothèque. Choisis-en un autre.');
-  return { complete: options => completeLocal({ modelPath, messages: options.messages, tools: options.tools, signal: options.signal, onDelta: options.onDelta, maxTokens: options.maxTokens }) };
+  return {
+    complete: options => completeLocal({ modelPath, messages: options.messages, tools: options.tools, signal: options.signal, onDelta: options.onDelta, maxTokens: options.maxTokens }),
+    // The budget of a turn on the built-in engine is its real context size (H3), not a provider table entry.
+    contextWindow: () => engineContextSize(modelPath),
+  };
 }
 
 async function runSend(runId, folder, branchId, text, connection, keep, attachments = [], provider) {
@@ -356,8 +362,13 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
       signal.addEventListener('abort', () => { pendingPermissions.delete(requestId); reject(signal.reason); }, { once: true });
       post({ kind: 'permission-request', requestId, tool: request.tool, category: toolCategory.get(request.tool), arguments: request.arguments });
     });
+    // The window the request must fit in (H3): the built-in engine's real context size (capped by max_tokens
+    // when the user set one), else max_tokens or the provider's table entry (core/context-budget.mts).
+    const contextTokens = provider.contextWindow
+      ? Math.min(await provider.contextWindow(), effective.max_tokens ?? Number.POSITIVE_INFINITY)
+      : contextWindow(connection?.provider ?? null, effective.max_tokens);
     const result = await runAgent({
-      provider, connection, messages: collected, instructions, tools,
+      provider, connection, messages: collected, instructions, tools, contextWindow: contextTokens,
       settings: { mode: effective.agent_mode, permission_mode: effective.permission_mode, files_ask: effective.files_ask, shell_ask: effective.shell_ask, search_ask: effective.search_ask, reserved_tokens: effective.reserved_tokens },
       signal: controller.signal, confirm, emit,
     });
@@ -365,21 +376,29 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
     finish('done', { summary: lastAssistantSummary(result) });
   } catch (error) {
     const aborted = error?.name === 'AbortError';
+    const message = error instanceof Error ? error.message : 'Erreur interne';
+    // H4: a tool call of THIS run left without its result (Stop during a permission prompt or a running tool,
+    // an error) gets one, in call order, so the saved transcript stays valid for every provider. Only this
+    // run's messages: an older turn's dangling call is never sent again (H3), and closing it would insert a
+    // message mid-list in the file but at the end on screen. Posted too: the screen must hold the same
+    // messages as the file, at the same indices (edit/regenerate cut both at the same index).
+    const { messages: produced, added } = closeDanglingCalls(accumulated, aborted ? "Interrompu par l'utilisateur" : `Interrompu : ${message}`);
+    for (const closing of added) post({ kind: 'message', message: closing });
     // Text already streamed is kept whatever ended the turn — a Stop, a provider gone silent (idle
     // timeout), a cut stream — exactly like a completed message, so the screen and the saved
     // transcript agree.
     if (partialText.trim()) {
       const partial = { role: 'assistant', content: partialText };
-      accumulated.push(partial);
+      produced.push(partial);
       post({ kind: 'message', message: partial });
     }
     // Persist whatever the model/tools actually produced even on Stop/error — losing an
     // in-flight tool-call's already-emitted messages would silently discard real work.
-    await conversations.save(folder, branchId, [...collected, ...accumulated]).catch(() => {});
+    await conversations.save(folder, branchId, [...collected, ...produced]).catch(() => {});
     // A Stop is the user's own action, taken while they're already looking at the app — never
     // worth an OS notification, unlike a completion or a failure reached while they stepped away.
     if (aborted) post({ kind: 'stopped' });
-    else finish('error', { message: error instanceof Error ? error.message : 'Erreur interne' });
+    else finish('error', { message });
   } finally {
     active.delete(runId);
   }

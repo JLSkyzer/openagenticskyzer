@@ -33,8 +33,13 @@ function flush() {
 }
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// max_tokens 4096 minus the default 2048 reserved tokens: a limit of exactly 2048 tokens.
-const LIMIT = 4096 - 2048;
+// max_tokens 18432 minus the default 2048 reserved tokens: a limit of exactly 16384 tokens. Every turn this test
+// sends must fit that budget WITH the system prompt and the 33 tool schemas (about 3 100 tokens, measured
+// 2026-10-03), or the worker refuses it with "Contexte plein" (H3). The gauge counts only the conversation, so
+// the histories below are 8 times what they were under the former 2048-token limit: same percentages, same
+// levels, token counts 8 times larger.
+const MAX_TOKENS = 18432;
+const LIMIT = MAX_TOKENS - 2048;
 
 app.whenReady().then(async () => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-context-'));
@@ -142,7 +147,7 @@ app.whenReady().then(async () => {
     };
 
     // What the gauge must say, computed here from the messages ON DISK (4 characters per token, user +
-    // assistant only, limit 2048): the test never trusts the number the UI shows about itself.
+    // assistant only, limit LIMIT): the test never trusts the number the UI shows about itself.
     const expected = messages => {
       const chars = messages.filter(m => m.role === 'user' || m.role === 'assistant').reduce((sum, m) => sum + [...m.content].length, 0);
       const tokens = Math.floor(chars / 4);
@@ -182,13 +187,13 @@ app.whenReady().then(async () => {
       await pause(400);
     };
 
-    await callWorker('save-global-settings', { patch: { max_tokens: 4096, auto_compact: false, compact_threshold: 70 } });
+    await callWorker('save-global-settings', { patch: { max_tokens: MAX_TOKENS, auto_compact: false, compact_threshold: 70 } });
     await waitFor(() => js(`document.querySelectorAll('[data-testid="oa-folder-entry"]').length === 2`), { what: 'both folders in the sidebar' });
 
     // ── 1. The numbers on screen are the ones of the file on disk ────────────────
-    await reloadWith(history(6, 800));
+    await reloadWith(history(6, 6400));
     let want = expected(await mainOnDisk());
-    assert.equal(want.label, '59% · ~1,200 tokens', 'sanity check of the fixture itself');
+    assert.equal(want.label, '59% · ~9,600 tokens', 'sanity check of the fixture itself');
     assert.equal(await exists('[data-testid="oa-context-bar"]'), true, 'the gauge is shown');
     assert.match(await text('[data-testid="oa-context-bar"]'), /🧠 Contexte/);
     let shown = await gauge();
@@ -199,7 +204,7 @@ app.whenReady().then(async () => {
     await writeFile(join(screenshotDir, 'context-1-normal.png'), await capturePng(win));
 
     // ── 2. Colours and the cap, still checked against the disk ───────────────────
-    for (const [count, length, level, screenshot] of [[8, 800, 'warning', null], [8, 950, 'critical', 'context-2-critical.png'], [8, 2000, 'critical', null]]) {
+    for (const [count, length, level, screenshot] of [[8, 6400, 'warning', null], [8, 7600, 'critical', 'context-2-critical.png'], [8, 16000, 'critical', null]]) {
       await reloadWith(history(count, length));
       want = expected(await mainOnDisk());
       shown = await gauge();
@@ -208,12 +213,12 @@ app.whenReady().then(async () => {
       assert.equal(want.level, level);
       if (screenshot) await writeFile(join(screenshotDir, screenshot), await capturePng(win));
     }
-    assert.equal(shown.label, '100% · ~4,000 tokens', 'past the limit the percentage stops at 100, the token count does not');
+    assert.equal(shown.label, '100% · ~32,000 tokens', 'past the limit the percentage stops at 100, the token count does not');
     assert.match(shown.width, /width:\s*100%/);
     assert.equal(await exists('#oa-compact-btn'), true, 'the button shows once the threshold is reached');
 
     // ── 3. The settings dialog changes the gauge live ────────────────────────────
-    await reloadWith(history(6, 800));
+    await reloadWith(history(6, 6400));
     assert.equal(await exists('#oa-compact-btn'), false, '59% is under the threshold of 70');
     await setContextSettings({ threshold: 50 });
     assert.equal(await exists('#oa-compact-btn'), true, 'lowering the threshold to 50 shows the button at once, no restart');
@@ -231,7 +236,7 @@ app.whenReady().then(async () => {
     assert.equal(summaryRequests(), 0, 'auto_compact is off: no summary was requested');
 
     // ── 5. A real click compacts: locked while it runs, then summary + last exchange on disk ──
-    await reloadWith(history(6, 800));
+    await reloadWith(history(6, 6400));
     const before = await mainOnDisk();
     state.summary = 'hold';
     const heldRequest = new Promise(resolve => { onHeld = resolve; });
@@ -270,7 +275,7 @@ app.whenReady().then(async () => {
     await writeFile(join(screenshotDir, 'context-5-compacted.png'), await capturePng(win));
 
     // ── 6. A failing model leaves everything as it was ───────────────────────────
-    await reloadWith(history(6, 800));
+    await reloadWith(history(6, 6400));
     const untouched = JSON.stringify(await mainOnDisk());
     state.summary = 'fail';
     const requestsBefore = summaryRequests();
@@ -294,7 +299,7 @@ app.whenReady().then(async () => {
 
     // ── 7. Automatic compaction on: one attempt after a completed turn, no click ─
     await setContextSettings({ auto: true });
-    await reloadWith(history(6, 800));
+    await reloadWith(history(6, 6400));
     const summariesBefore = summaryRequests();
     await send('suite');
     await waitFor(async () => (await mainOnDisk())[0]?.content.startsWith('**[Résumé de contexte compressé]**'), { timeout: 15000, what: 'automatic compaction' });
@@ -306,16 +311,16 @@ app.whenReady().then(async () => {
 
     // ── 8. The gauge follows the branch on screen ────────────────────────────────
     await setContextSettings({ auto: false });
-    await callWorker('save-messages', { folder: alpha, branchId: 'main', messages: history(6, 800) });
+    await callWorker('save-messages', { folder: alpha, branchId: 'main', messages: history(6, 6400) });
     const fork = await callWorker('fork', { folder: alpha, source: 'main', count: 2, label: 'Branche 1' });
-    await reloadWith(history(6, 800));
+    await reloadWith(history(6, 6400));
     await waitFor(() => exists('[data-testid="oa-branch-select"]'), { what: 'branch selector' });
-    assert.equal((await gauge()).label, '59% · ~1,200 tokens');
+    assert.equal((await gauge()).label, '59% · ~9,600 tokens');
     await setSelect('[data-testid="oa-branch-select"]', fork.id);
-    await waitFor(async () => (await gauge()).label === '20% · ~400 tokens', { what: 'gauge follows the branch' });
+    await waitFor(async () => (await gauge()).label === '20% · ~3,200 tokens', { what: 'gauge follows the branch' });
     assert.equal((await gauge()).label, expected((await disk()).branches.find(b => b.id === fork.id).messages).label);
     await setSelect('[data-testid="oa-branch-select"]', 'main');
-    await waitFor(async () => (await gauge()).label === '59% · ~1,200 tokens', { what: 'gauge back on main' });
+    await waitFor(async () => (await gauge()).label === '59% · ~9,600 tokens', { what: 'gauge back on main' });
 
     process.stdout.write(`PASS context gauge: numbers match the disk, live settings, real-click compaction, failure-safe, auto-compact, per-branch (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshots: ${screenshotDir}\n`);

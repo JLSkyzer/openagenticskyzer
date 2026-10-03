@@ -17,6 +17,13 @@ const KEY = 'sk-FINAL5-SECRET';
 // The provider chosen in the model dialog is openrouter: its assumed window, minus the default reserved tokens.
 const OPENROUTER_WINDOW = 128_000;
 const RESERVED = 2048;
+// The max_tokens set in the real settings dialog (a value of the slider's 1000-step grid). Proof 8 sends a real
+// turn on top of the 6-message history: it must fit max_tokens − reserved WITH the system prompt and the 33 tool
+// schemas (about 3 100 tokens, measured 2026-10-03), or the worker refuses it with "Contexte plein" (H3). Hence
+// 18 000 and messages of 6 400 characters (formerly 4 000 and 800): the history still sits above the
+// threshold of 50 % (60 %, formerly 61 %), and the turn fits with room to spare.
+const MAX_TOKENS = 18000;
+const LENGTH = 6400;
 
 async function main() {
   const proofDir = process.env.OPENAGENT_E2E_PROOF_DIR;
@@ -38,13 +45,13 @@ async function main() {
     { path: alpha, last_used: new Date().toISOString() },
     { path: beta, last_used: new Date(Date.now() - 1000).toISOString() },
   ]));
-  // A conversation of 6 messages × 800 characters, in the legacy chat_history.json format the app imports.
+  // A conversation of 6 messages × LENGTH characters, in the legacy chat_history.json format the app imports.
   const history = (count, length) => Array.from({ length: count }, (_, i) => {
     const tag = i % 2 === 0 ? `q${i / 2 + 1}-` : `r${(i - 1) / 2 + 1}-`;
     return { role: i % 2 === 0 ? 'user' : 'assistant', content: tag + 'x'.repeat(length - tag.length) };
   });
   await mkdir(join(alpha, '.openagent'), { recursive: true });
-  await writeFile(join(alpha, '.openagent', 'chat_history.json'), JSON.stringify(history(6, 800)));
+  await writeFile(join(alpha, '.openagent', 'chat_history.json'), JSON.stringify(history(6, LENGTH)));
 
   // What the gauge must say, from the messages on disk (4 characters per token, user + assistant only).
   const expected = (messages, maxTokens) => {
@@ -173,18 +180,18 @@ async function main() {
     await waitFor(async () => (await userBubbles()).length === 3, { timeout: 10000 });
     const legacy = JSON.parse(await readFile(join(alpha, '.openagent', 'chat_history.json'), 'utf8'));
     await waitFor(async () => (await gaugeLabel()) === expected(legacy, null), { timeout: 8000 });
-    assert.equal(await gaugeLabel(), '1% · ~1,200 tokens', 'openrouter window (128 000) minus 2 048 reserved: 1 200 tokens is about 1 %');
+    assert.equal(await gaugeLabel(), '8% · ~9,600 tokens', 'openrouter window (128 000) minus 2 048 reserved: 9 600 tokens is about 8 % (32 % with the default 32 000 window)');
     assert.equal(await exists('#oa-compact-btn'), false);
     await app.cdp.screenshot(join(proofDir, 'lot5-1-gauge.png'));
-    record('PROOF 3 — legacy chat_history.json imported; the gauge follows the real connection (openrouter): "1% · ~1,200 tokens", recomputed from the file');
+    record('PROOF 3 — legacy chat_history.json imported; the gauge follows the real connection (openrouter): "8% · ~9,600 tokens", recomputed from the file');
 
-    // ── Proof 4: settings dialog → gauge changes live (max_tokens 4000, threshold 50) ──
-    await setContextSettings({ maxTokens: 4000, threshold: 50, auto: false });
-    assert.equal(await gaugeLabel(), expected(legacy, 4000));
-    assert.equal(await gaugeLabel(), '61% · ~1,200 tokens');
+    // ── Proof 4: settings dialog → gauge changes live (max_tokens 18000, threshold 50) ──
+    await setContextSettings({ maxTokens: MAX_TOKENS, threshold: 50, auto: false });
+    assert.equal(await gaugeLabel(), expected(legacy, MAX_TOKENS));
+    assert.equal(await gaugeLabel(), '60% · ~9,600 tokens');
     await waitFor(() => exists('#oa-compact-btn'), { timeout: 5000 });
     await app.cdp.screenshot(join(proofDir, 'lot5-2-button.png'));
-    record('PROOF 4 — real settings dialog: gauge went to 61 % and the ⚡ button appeared at once, without restart');
+    record('PROOF 4 — real settings dialog: gauge went to 60 % and the ⚡ button appeared at once, without restart');
 
     // ── Proof 5: real click compacts; the API key reached the summary request through main.cjs ──
     await click('#oa-compact-btn');
@@ -199,7 +206,7 @@ async function main() {
     assert.match(compacted[0].content, /^\*\*\[Résumé de contexte compressé\]\*\*\n\n- décision : garder la branche A/);
     assert.deepEqual(compacted.slice(1), legacy.slice(-2), 'the last exchange is kept untouched');
     assert.deepEqual(await userBubbles(), [legacy.at(-2).content]);
-    assert.equal(await gaugeLabel(), expected(compacted, 4000));
+    assert.equal(await gaugeLabel(), expected(compacted, MAX_TOKENS));
     // context_bar.py::trigger_compact parity (Tâche 101): the summary IS now persisted into the
     // project's own memory.md — global memory stays untouched.
     const projectMemory = await readFile(join(alpha, '.openagent', 'memory.md'), 'utf8');
@@ -217,15 +224,15 @@ async function main() {
     await enter('alpha');
     await waitFor(async () => (await userBubbles()).length === 1, { timeout: 10000 });
     assert.match((await assistantBubbles())[0], /Résumé de contexte compressé/, 'the summary is the first message after the restart');
-    await waitFor(async () => (await gaugeLabel()) === expected(await mainOnDisk(), 4000), { timeout: 8000 });
+    await waitFor(async () => (await gaugeLabel()) === expected(await mainOnDisk(), MAX_TOKENS), { timeout: 8000 });
     await waitFor(() => exists('[data-testid="oa-context-bar"]'));
-    record('PROOF 6 — after a real restart the compacted conversation and the gauge (max_tokens 4000) come back exactly as saved');
+    record('PROOF 6 — after a real restart the compacted conversation and the gauge (max_tokens 18000) come back exactly as saved');
 
     // ── Proof 7: a failing model leaves the conversation untouched, and the error is in view ──
     const restore = async () => {
       await writeFile(join(alpha, '.openagent', 'conversations.json'), JSON.stringify({
         version: 1,
-        branches: [{ id: 'main', label: 'Principale', messages: history(6, 800), created_at: new Date().toISOString() }],
+        branches: [{ id: 'main', label: 'Principale', messages: history(6, LENGTH), created_at: new Date().toISOString() }],
       }));
       await enter('beta');
       await sleep(500);

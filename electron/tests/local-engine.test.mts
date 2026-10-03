@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP } from '../core/local-engine.mts';
+import { completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize } from '../core/local-engine.mts';
 
 // Real node-llama-cpp, real tiny GGUF (llama.cpp's own CI asset, 1.1 MB, stories260K — a toy model: its
 // text is low quality, but the MECHANICS (load, stream, abort, unload) are exactly what a real model uses.
@@ -67,4 +67,11 @@ test('toGgufFunctions rejects nothing real: a genuine tool schema does not crash
 
 test('the built-in engine is capped at 8192 output tokens, like the local HTTP servers in Python\'s table', () => {
   assert.equal(LOCAL_OUTPUT_CAP, 8192);
+});
+
+test('engineContextSize loads the model and reports the context size the request budget must use', { timeout: 60000 }, async t => {
+  t.after(() => disposeEngine());
+  const size = await engineContextSize(modelPath);
+  assert.ok(Number.isInteger(size) && size >= 16384, `the toy model (trained for 2048) runs with the 16384 floor, got ${size}`);
+  assert.equal(warmModelPath(), modelPath, 'loaded once, kept warm for the turn that follows');
 });

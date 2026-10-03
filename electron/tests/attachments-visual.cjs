@@ -237,11 +237,16 @@ app.whenReady().then(async () => {
     assert.equal(saved.content, 'résume');
     assert.equal(saved.attachments.length, 4);
 
-    // ── 7. A later turn still shows the model the files ───────────────────────────────────────────────────────
+    // ── 7. A later turn shows the earlier files as one placeholder line each, not their content (H3) ──────────
     await setText('et ensuite ?');
     await pressEnter();
     await waitFor(async () => (await countOf('[data-testid="oa-assistant-bubble"]')) === 2 && await isIdle(), { timeout: 30000, what: 'second reply' });
-    assert.match(JSON.stringify(modelRequests[1]), /FICHIER-SECRET-42/, 'the file is still there on the second turn');
+    const earlierUser = modelRequests[1].messages.find(m => m.role === 'user');
+    assert.equal(earlierUser.content, [...saved.attachments.map(file => `[pièce jointe : ${file.name}]`), 'résume'].join('\n'), 'one line per earlier file, then what was typed');
+    assert.equal(JSON.stringify(modelRequests[1]).includes('FICHIER-SECRET-42'), false, 'the text file is not re-sent');
+    assert.equal(JSON.stringify(modelRequests[1]).includes('data:image/png'), false, 'nor the image');
+    assert.equal(userContent(modelRequests[1]), 'et ensuite ?');
+    assert.equal((await disk(alpha))[0].attachments.length, 4, 'the saved message keeps its files');
 
     // ── 8. Reopening the conversation from disk shows the same message with its files ─────────────────────────
     await openFolder('beta');
@@ -322,7 +327,7 @@ app.whenReady().then(async () => {
     assert.equal(await countOf('[data-testid="oa-attachment-chip"]'), before, 'and nothing was attached by it');
     await writeFile(join(screenshotDir, 'attach-3-paste-drop.png'), await capturePng(win));
 
-    process.stdout.write(`PASS attachments: real files through the real input (text, CSV, image, real PDF read by pdf.js under the app CSP), refusals, ✕, model receives the expanded message, later turns keep the files, reload shows them, ✏️/🔄 keep them, paste, drop (Electron ${process.versions.electron})\n`);
+    process.stdout.write(`PASS attachments: real files through the real input (text, CSV, image, real PDF read by pdf.js under the app CSP), refusals, ✕, model receives the expanded message, a later turn sends them as placeholder lines, reload shows them, ✏️/🔄 keep them, paste, drop (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshots: ${screenshotDir}\n`);
   } catch (error) {
     try {

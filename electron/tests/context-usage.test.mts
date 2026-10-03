@@ -87,3 +87,11 @@ test('formatContextLabel: rounded percentage, comma as thousands separator (as t
   assert.equal(formatContextLabel({ tokens: 1234567, pct: 41.6 }), '42% · ~1,234,567 tokens');
   assert.equal(formatContextLabel({ tokens: 0, pct: 0 }), '0% · ~0 tokens');
 });
+
+test('the gauge uses the worker\'s own table and estimate (core/context-budget.mts), not a copy', async () => {
+  const core = await import('../core/context-budget.mts');
+  assert.equal(CONTEXT_WINDOWS, core.CONTEXT_WINDOWS, 'the very same object');
+  for (const [provider, max, reserved] of [['mistral', null, 2048], ['gemini', 50_000, 1000], [null, null, 0]] as const) {
+    assert.equal(contextLimit(provider, max, reserved), core.contextBudget(core.contextWindow(provider, max), reserved));
+  }
+});

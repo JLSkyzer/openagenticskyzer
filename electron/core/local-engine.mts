@@ -66,6 +66,14 @@ export function warmModelPath(): string | null {
   return loaded?.path ?? null;
 }
 
+/** Loads `modelPath` if needed and returns the context size the engine really runs with: the window the
+ * request budget is computed from for the built-in engine, instead of a remote provider's table entry. */
+export async function engineContextSize(modelPath: string): Promise<number> {
+  await engineFor(modelPath);
+  if (!loaded) throw new Error('Modèle local non chargé');
+  return loaded.context.contextSize;
+}
+
 let mintedIds = 0;
 
 // A real HTTP provider's own server enforces some sane generation limit even when we don't ask for one
@@ -76,7 +84,7 @@ let mintedIds = 0;
 export const LOCAL_OUTPUT_CAP = 8192;
 
 /** Same contract as `ChatProvider.complete()` (provider.mts): agent.mts calls this without knowing the
- * difference. `messages` already has attachments expanded (agent.mts runs toWireMessage first). */
+ * difference. `messages` is the request agent.mts built (request-context.mts: attachments expanded, fitted to the budget). */
 export async function completeLocal(options: LocalCompletionOptions): Promise<ChatMessage & { content: string }> {
   const chat = await engineFor(options.modelPath);
   const response = await chat.generateResponse(historyFromMessages(options.messages), {

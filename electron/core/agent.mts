@@ -1,7 +1,8 @@
 import { ChatProvider } from './provider.mts';
 import type { ChatMessage, ModelConnection } from './provider.mts';
 import { object } from './json-store.mts';
-import { toWireMessage } from './attachments.mts';
+import { fitToBudget, requestMessages } from './request-context.mts';
+import { contextBudget } from './context-budget.mts';
 
 export interface AgentTool {
   name: string; description: string; parameters: Record<string, unknown>;
@@ -16,6 +17,8 @@ export interface AgentSettings {
 export interface AgentOptions {
   provider: ChatProvider; connection: ModelConnection; messages: ChatMessage[]; instructions: string;
   tools: AgentTool[]; settings: AgentSettings; signal?: AbortSignal; maxSteps?: number;
+  // The model's context window in tokens (core/context-budget.mts). Absent: no budget is applied.
+  contextWindow?: number;
   confirm: (request: { tool: string; arguments: Record<string, unknown> }, signal: AbortSignal) => Promise<boolean>;
   emit?: (event: { type: string; [key: string]: unknown }) => void;
 }
@@ -58,6 +61,8 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
   const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
   if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > MAX_STEPS_LIMIT) throw new Error('Limite de tours invalide');
   const signal = options.signal ?? new AbortController().signal;
+  if (options.contextWindow !== undefined && !(Number.isInteger(options.contextWindow) && options.contextWindow > 0)) throw new Error('Fenêtre de contexte invalide');
+  const budgetTokens = options.contextWindow === undefined ? undefined : contextBudget(options.contextWindow, settings.reserved_tokens ?? 0);
   const messages: ChatMessage[] = [{ role: 'system', content: instructions }, ...structuredClone(options.messages.filter(m => m.role !== 'system'))];
   const registry = new Map<string, AgentTool>();
   for (const tool of tools) {
@@ -76,10 +81,13 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
   for (let step = 0; step < maxSteps; step++) {
     signal.throwIfAborted();
     emit?.({ type: 'turn', step });
-    // `messages` keeps the saved shape (files beside the typed text); the model gets the expanded one, built here.
-    // No maxTokens: the provider applies its own cap (provider.mts::outputCap). reserved_tokens only sizes
-    // the context budget now (H1).
-    const answer = await provider.complete({ connection, messages: messages.map(message => toWireMessage(message as never) as unknown as ChatMessage), tools: schemas, signal,
+    // `messages` keeps the saved shape (files beside the typed text); the request is built here (H3): earlier
+    // turns condensed, the turn in progress whole with its files expanded, fitted to the budget — or
+    // CONTEXT_FULL, sending nothing. No maxTokens: the provider applies its own cap (provider.mts::outputCap);
+    // reserved_tokens only sizes the context budget now (H1).
+    const outgoing = requestMessages(messages.slice(1));
+    const fitted = budgetTokens === undefined ? outgoing : fitToBudget(outgoing, { system: instructions, tools: schemas, budgetTokens });
+    const answer = await provider.complete({ connection, messages: [messages[0], ...fitted], tools: schemas, signal,
       onDelta: text => emit?.({ type: 'delta', text }),
     });
     signal.throwIfAborted();

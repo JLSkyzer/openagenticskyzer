@@ -1,7 +1,7 @@
 // file_processor.py::build_message_content, plus the step the original did not need: here the saved transcript
 // keeps what the user TYPED and the files aside (`attachments`), and the model-ready form is built only when the
-// provider is called — so a later turn still sees the files, without their text ever being pasted into a bubble,
-// an export or a summary.
+// provider is called (request-context.mts: in full for the turn in progress, as a `[pièce jointe : <nom>]` line
+// for an earlier one) — so their text is never pasted into a bubble, an export or a summary.
 export interface Attachment {
   name: string;
   content_type: 'text' | 'pdf' | 'csv' | 'image';

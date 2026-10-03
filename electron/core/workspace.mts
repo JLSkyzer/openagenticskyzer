@@ -43,6 +43,26 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
     return { file, text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), bytes: info.size };
   };
   const pathField: ParamRule = { type: 'string', description: 'Chemin dans le projet actif' };
+  // read_file's cap, header and resume marker included: agent.mts's own 50 000-character cut must never
+  // swallow the marker that tells the model where to resume.
+  const READ_FILE_MAX_CHARS = 50000;
+  /**
+   * Creates each missing level of `dir` (inside the project) one at a time, and checks every level, new or
+   * old, is a real directory: never a link, a junction or a file. safePath() already refused the levels
+   * that existed; this closes the gap for the ones created here. Returns how many levels were created.
+   */
+  const ensureDirectories = async (dir: string): Promise<number> => {
+    let created = 0;
+    let cursor = root;
+    for (const segment of relative(root, dir).split(sep).filter(Boolean)) {
+      cursor = join(cursor, segment);
+      try { await mkdir(cursor); created++; }
+      catch (e: any) { if (e.code !== 'EEXIST') throw e; }
+      const info = await lstat(cursor);
+      if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('Dossier impossible : un élément du chemin est un fichier, un lien ou une jonction');
+    }
+    return created;
+  };
 
   // ── Search helpers ──────────────────────────────────────────────────────────────
   // Build/vendor directories and dot-directories are never worth searching, and key
@@ -94,9 +114,34 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
   return [
     make('read_file', 'Lire un fichier texte avec numéros de lignes.', 'read', { path: pathField, offset: { type: 'integer' }, limit: { type: 'integer' } }, ['path'], async (args, signal) => {
       const { text } = await textFile(args.path as string, signal);
-      const offset = Number(args.offset ?? 1); const limit = Number(args.limit ?? 1000);
+      const offset = Math.max(1, Number(args.offset ?? 1)); const limit = Math.max(1, Number(args.limit ?? 1000));
       const lines = text.split(/\r?\n/);
-      return lines.slice(offset - 1, offset - 1 + limit).map((line, index) => `${index + offset}|${line}`).join('\n').slice(0, 50000);
+      const total = lines.length;
+      if (offset > total) return `[Le fichier a ${total} lignes : rien à partir de la ligne ${offset}]`;
+      // Room for "[Lignes X–Y sur N]\n" and "\n[Tronqué : relis avec offset=Z]" inside the 50 000 characters.
+      const room = READ_FILE_MAX_CHARS - 120;
+      const shown: string[] = [];
+      let size = 0;
+      let cut = false;
+      let cutInsideLine = false;
+      for (let index = offset - 1; index < Math.min(total, offset - 1 + limit); index++) {
+        const line = `${index + 1}|${lines[index]}`;
+        const cost = line.length + (shown.length ? 1 : 0);
+        if (size + cost > room) {
+          // A single line longer than the whole budget is shown cut rather than not at all.
+          if (!shown.length) { shown.push(line.slice(0, room)); cutInsideLine = true; }
+          cut = true;
+          break;
+        }
+        shown.push(line);
+        size += cost;
+      }
+      const last = offset + shown.length - 1;
+      if (offset === 1 && last >= total && !cut) return shown.join('\n');
+      // The model must know it did not see everything, and where to go on (audit M3). Resume at the line
+      // that was cut when it was only partly shown, otherwise at the first line not shown.
+      const resume = last < total || cut ? `\n[Tronqué : relis avec offset=${cutInsideLine ? last : last + 1}]` : '';
+      return `[Lignes ${offset}–${last} sur ${total}]\n${shown.join('\n')}${resume}`;
     }),
     make('view_file', 'Voir la taille, le nombre de lignes et les dix premières lignes.', 'read', { path: pathField }, ['path'], async (args, signal) => {
       const { text, bytes } = await textFile(args.path as string, signal); const lines = text.split(/\r?\n/);
@@ -108,10 +153,16 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
       return entries.filter(e => !e.isSymbolicLink() && !blocked(relative(root, join(dir, e.name))))
         .map(e => e.name + (e.isDirectory() ? '/' : '')).sort().join('\n').slice(0, 50000);
     }),
-    make('create_file', 'Créer un fichier sans écraser un fichier existant.', 'write', { path: pathField, content: { type: 'string' } }, ['path'], async (args, signal) => {
+    make('create_file', 'Créer un fichier (et ses dossiers parents) sans écraser un fichier existant.', 'write', { path: pathField, content: { type: 'string' } }, ['path'], async (args, signal) => {
       const file = await safePath(args.path as string);
-      // Parent must exist; create_dir is an explicit, separately authorized operation.
-      const handle = await open(file, 'wx', 0o600);
+      // Missing parents are created under the same guards as the file: safePath above (inside the project,
+      // not ignored or protected, no existing link), each new level checked as it is made, and the full path
+      // checked again just before the file is opened.
+      await ensureDirectories(dirname(file));
+      await safePath(args.path as string);
+      const handle = await open(file, 'wx', 0o600).catch((e: NodeJS.ErrnoException) => {
+        throw e.code === 'EEXIST' ? new Error('le fichier existe : utilise edit_file, ou delete_file puis create_file') : e;
+      });
       try { await handle.writeFile(args.content as string || '', { encoding: 'utf8', signal }); await handle.sync(); }
       finally { await handle.close(); }
       return `Créé : ${relative(root, file)}`;
@@ -131,8 +182,10 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
       } finally { await rm(temp, { force: true }); }
       return `Modifié : ${relative(root, file)}\n-${old}\n+${args.new_string}`;
     }),
-    make('create_dir', 'Créer un dossier du projet.', 'write', { path: pathField }, ['path'], async args => {
-      const dir = await safePath(args.path as string); await mkdir(dir); return `Créé : ${relative(root, dir)}`;
+    make('create_dir', 'Créer un dossier du projet, dossiers parents compris.', 'write', { path: pathField }, ['path'], async args => {
+      const dir = await safePath(args.path as string);
+      const created = await ensureDirectories(dir);
+      return created ? `Créé : ${relative(root, dir)}` : `Existe déjà : ${relative(root, dir)}`;
     }),
     make('delete_file', 'Retirer un fichier en le conservant dans la corbeille du projet.', 'write', { path: pathField }, ['path'], async (args, signal) => {
       const file = await safePath(args.path as string);

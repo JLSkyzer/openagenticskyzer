@@ -1,6 +1,7 @@
 // The ONLY module that imports node-llama-cpp: a native binding, loaded only on first actual use
 // ("réveiller le modèle sélectionné"), never at module load time. Bridges to `local-provider.mts`'s pure
 // mappers so the OpenAI-shaped agent loop (agent.mts, unchanged) never knows this isn't a real HTTP provider.
+import { randomUUID } from 'node:crypto';
 import { getLlama, LlamaChat } from 'node-llama-cpp';
 import { historyFromMessages, responseToMessage, toGgufFunctions } from './local-provider.mts';
 import type { ChatMessage, ToolSchema } from './provider.mts';
@@ -74,7 +75,11 @@ export async function engineContextSize(modelPath: string): Promise<number> {
   return loaded.context.contextSize;
 }
 
-let mintedIds = 0;
+/** A GGUF tool-call id that never repeats, across app launches too: a counter restarted at 1 each time and
+ * collided with the calls already in a conversation, whose results were then shown under the wrong call. */
+export function mintCallId(): string {
+  return `local-${randomUUID()}`;
+}
 
 // A real HTTP provider's own server enforces some sane generation limit even when we don't ask for one
 // — here WE are the server, and node-llama-cpp will happily generate until end-of-sequence or the context
@@ -93,5 +98,5 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
     signal: options.signal,
     maxTokens: options.maxTokens ?? LOCAL_OUTPUT_CAP,
   });
-  return responseToMessage(response, () => `local-${++mintedIds}`);
+  return responseToMessage(response, mintCallId);
 }

@@ -196,11 +196,13 @@ test('a command that merely mentions a server keyword is run normally and return
   assert.equal(await invoke({ command: `node -e "console.log('npm start')"` }), 'npm start');
 });
 
-test('a Next.js dev server is refused while the starter page is untouched', async t => {
+test('a Next.js dev server is refused while the starter page is untouched, with an action that can succeed', async t => {
   const { root, invoke } = await fixture(t);
   await mkdir(join(root, 'web', 'app'), { recursive: true });
   await writeFile(join(root, 'web', 'app', 'page.tsx'), 'export default () => <div>To get started, edit page.tsx</div>');
   const out = await invoke({ command: 'cd web && npm run dev' });
   assert.match(out, /^BLOCKED: .*page\.tsx still has the default Next\.js starter content/);
+  assert.match(out, /edit_file on 'web\/app\/page\.tsx'/, 'it asks for edit_file on the existing page');
+  assert.equal(out.includes("create_file('"), false, 'never the impossible create_file on an existing file');
   await assert.rejects(stat(join(root, 'web', 'beat.txt')), 'nothing was launched');
 });

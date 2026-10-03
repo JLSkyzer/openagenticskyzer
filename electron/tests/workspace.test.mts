@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -64,4 +64,67 @@ test('file deletion is recoverable and directory listing excludes secrets and me
   const listing = await invoke('list_dir', {});
   assert.equal(listing.includes('.env'), false);
   assert.equal(listing.includes('.openagent'), false);
+});
+
+test('create_file creates missing parent folders, under the same guards as the file itself', async t => {
+  const { a, b, invoke } = await fixture(t);
+  assert.equal(await invoke('create_file', { path: 'src/components/Header.tsx', content: 'export {}' }), `Créé : ${join('src', 'components', 'Header.tsx')}`);
+  assert.equal(await readFile(join(a, 'src', 'components', 'Header.tsx'), 'utf8'), 'export {}');
+  await symlink(b, join(a, 'redirect'), 'junction');
+  await assert.rejects(invoke('create_file', { path: 'redirect/deep/new.txt', content: 'bad' }), /Lien ou jonction refusé/);
+  assert.deepEqual(await readdir(b), [], 'nothing created through the junction');
+  await assert.rejects(invoke('create_file', { path: 'node_modules/pkg/index.js', content: 'bad' }), /ignoré ou protégé/);
+  await assert.rejects(invoke('create_file', { path: 'dist/sub/out.js', content: 'bad' }), /ignoré ou protégé/);
+  assert.deepEqual((await readdir(a)).sort(), ['redirect', 'src'], 'no ignored folder was created');
+});
+
+test('create_dir is recursive and accepts a folder that already exists', async t => {
+  const { a, invoke } = await fixture(t);
+  assert.equal(await invoke('create_dir', { path: 'x/y/z' }), `Créé : ${join('x', 'y', 'z')}`);
+  assert.ok((await stat(join(a, 'x', 'y', 'z'))).isDirectory());
+  assert.equal(await invoke('create_dir', { path: 'x/y' }), `Existe déjà : ${join('x', 'y')}`);
+  await writeFile(join(a, 'plain.txt'), 'f');
+  await assert.rejects(invoke('create_dir', { path: 'plain.txt/sub' }), /fichier, un lien ou une jonction/);
+});
+
+test('create_file never overwrites, and says what to do instead', async t => {
+  const { a, invoke } = await fixture(t);
+  await writeFile(join(a, 'api.ts'), 'old');
+  await assert.rejects(invoke('create_file', { path: 'api.ts', content: 'new' }), { message: 'le fichier existe : utilise edit_file, ou delete_file puis create_file' });
+  assert.equal(await readFile(join(a, 'api.ts'), 'utf8'), 'old');
+});
+
+test('read_file says which lines it shows and where to resume when it does not show the whole file', async t => {
+  const { a, invoke } = await fixture(t);
+  await writeFile(join(a, 'long.txt'), Array.from({ length: 2500 }, (_, i) => `ligne ${i + 1}`).join('\n'));
+  const first = (await invoke('read_file', { path: 'long.txt' })).split('\n');
+  assert.equal(first[0], '[Lignes 1–1000 sur 2500]');
+  assert.equal(first[1], '1|ligne 1');
+  assert.equal(first.at(-2), '1000|ligne 1000');
+  assert.equal(first.at(-1), '[Tronqué : relis avec offset=1001]');
+  const end = (await invoke('read_file', { path: 'long.txt', offset: 2001 })).split('\n');
+  assert.equal(end[0], '[Lignes 2001–2500 sur 2500]');
+  assert.equal(end.at(-1), '2500|ligne 2500', 'nothing left after it: no resume marker');
+  assert.equal(await invoke('read_file', { path: 'long.txt', offset: 3000 }), '[Le fichier a 2500 lignes : rien à partir de la ligne 3000]');
+  await writeFile(join(a, 'wide.txt'), Array.from({ length: 1000 }, () => 'x'.repeat(99)).join('\n'));
+  const wide = await invoke('read_file', { path: 'wide.txt' });
+  assert.ok(wide.length <= 50000, `header and marker fit in the 50 000 characters (${wide.length})`);
+  const shown = /^\[Lignes 1–(\d+) sur 1000\]/.exec(wide);
+  assert.ok(shown, wide.slice(0, 60));
+  assert.ok(wide.endsWith(`[Tronqué : relis avec offset=${Number(shown[1]) + 1}]`), 'the character limit is reported too');
+  await writeFile(join(a, 'short.txt'), 'un\ndeux\ntrois');
+  assert.equal(await invoke('read_file', { path: 'short.txt' }), '1|un\n2|deux\n3|trois', 'a file shown whole is unchanged');
+});
+
+test('read_file resumes at the line it cut when one line alone exceeds the character limit, and after the last whole line otherwise', async t => {
+  const { a, invoke } = await fixture(t);
+  await writeFile(join(a, 'over.txt'), ['court', 'y'.repeat(60000), 'fin'].join('\n'));
+  const second = await invoke('read_file', { path: 'over.txt', offset: 2 });
+  assert.ok(second.length <= 50000, `the over-long line is shown cut, inside the limit (${second.length})`);
+  assert.ok(second.startsWith('[Lignes 2–2 sur 3]\n2|yyyy'), second.slice(0, 40));
+  assert.ok(second.endsWith('[Tronqué : relis avec offset=2]'), 'resume at the cut line, not after it');
+  const whole = await invoke('read_file', { path: 'over.txt' });
+  assert.ok(whole.startsWith('[Lignes 1–1 sur 3]\n1|court\n[Tronqué'), whole.slice(0, 60));
+  assert.ok(whole.endsWith('[Tronqué : relis avec offset=2]'), 'the line that did not fit at all is the next one to read');
+  assert.ok(whole.length < 200, 'the over-long line is not shown when it is not the first');
 });

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize } from '../core/local-engine.mts';
 
 // Real node-llama-cpp, real tiny GGUF (llama.cpp's own CI asset, 1.1 MB, stories260K — a toy model: its
@@ -74,4 +75,16 @@ test('engineContextSize loads the model and reports the context size the request
   const size = await engineContextSize(modelPath);
   assert.ok(Number.isInteger(size) && size >= 16384, `the toy model (trained for 2048) runs with the 16384 floor, got ${size}`);
   assert.equal(warmModelPath(), modelPath, 'loaded once, kept warm for the turn that follows');
+});
+
+test('GGUF tool-call ids never repeat across engine restarts (two workers = two app launches)', { timeout: 30000 }, async () => {
+  const url = new URL('../core/local-engine.mts', import.meta.url).href;
+  const mint = () => new Promise<string[]>((resolve, reject) => {
+    const worker = new Worker(`import(${JSON.stringify(url)}).then(m => require('node:worker_threads').parentPort.postMessage([m.mintCallId(), m.mintCallId()]))`, { eval: true });
+    worker.once('message', ids => { void worker.terminate(); resolve(ids); });
+    worker.once('error', reject);
+  });
+  const ids = [...await mint(), ...await mint()];
+  for (const id of ids) assert.match(id, /^local-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.equal(new Set(ids).size, 4, `the second engine reuses none of the first one's ids: ${ids.join(', ')}`);
 });

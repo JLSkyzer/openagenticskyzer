@@ -125,9 +125,10 @@ async function checkNextPage(command: string, root: string): Promise<string | nu
     } catch { continue; }
     if (NEXT_DEFAULT_MARKERS.some(marker => content.includes(marker))) {
       const rel = relative(root, candidate).split(sep).join('/');
+      // The page exists by definition here, and create_file never overwrites: ask for an action that can succeed.
       return `BLOCKED: ${rel} still has the default Next.js starter content (found default marker).\n` +
-        'You MUST overwrite it with the real landing page that imports and renders your components before launching the dev server.\n' +
-        `Call create_file('${rel}', <full page content>) now.`;
+        'You MUST replace it with the real landing page that imports and renders your components before launching the dev server.\n' +
+        `Read it with read_file('${rel}'), then call edit_file on '${rel}' to replace the starter markup with the full page content.`;
     }
   }
   return null;

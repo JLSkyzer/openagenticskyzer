@@ -222,3 +222,70 @@ test('shutdown stops the background dev servers a run started, and aborts what i
   await sleep(900);
   assert.equal((await readFile(join(project, 'beat.txt'), 'utf8')).length, after, 'no process of the server tree is still running');
 });
+
+// ── writes ask by default; « Toujours » covers one tool, one project, this worker only (H5) ─────
+test('by default a file write asks first, and nothing is written before the decision', async t => {
+  const { worker, project, send } = await setup(t, [{ tool: { name: 'create_file', args: { path: 'a.txt', content: 'x' } } }, { text: 'fait' }]);
+  const r = await send(worker);
+  await until(() => r.events.some(e => e.kind === 'permission-request'), 'the write prompt');
+  const request = r.events.find(e => e.kind === 'permission-request');
+  assert.equal(request.tool, 'create_file');
+  assert.equal(request.category, 'write');
+  await assert.rejects(stat(join(project, 'a.txt')), 'nothing written before the decision');
+  await callWorker(worker, 'permission-decision', { runId: r.runId, requestId: request.requestId, allow: true, always: false });
+  await until(() => finished(r.events), 'the approved run');
+  r.stop();
+  assert.equal(await readFile(join(project, 'a.txt'), 'utf8'), 'x');
+});
+
+test('"Toujours" on create_file covers create_file only, for this worker only, and writes no setting', async t => {
+  const steps: Step[] = [
+    { tool: { name: 'create_file', args: { path: 'a.txt', content: '1' } } }, { text: 'a' },
+    { tool: { name: 'create_file', args: { path: 'b.txt', content: '2' } } }, { text: 'b' },
+    { tool: { name: 'git_commit', args: { message: 'x' } } }, { text: 'c' },
+    { tool: { name: 'create_file', args: { path: 'c.txt', content: '3' } } }, { text: 'd' },
+  ];
+  const { worker, start, home, project, send } = await setup(t, steps);
+  const first = await send(worker);
+  await until(() => first.events.some(e => e.kind === 'permission-request'), 'the first prompt');
+  const request = first.events.find(e => e.kind === 'permission-request');
+  await callWorker(worker, 'permission-decision', { runId: first.runId, requestId: request.requestId, allow: true, always: true });
+  await until(() => finished(first.events), 'the first run');
+  first.stop();
+
+  const second = await send(worker, 'encore');
+  await until(() => finished(second.events), 'the second run');
+  second.stop();
+  assert.equal(second.events.some(e => e.kind === 'permission-request'), false, 'create_file is remembered in this session');
+  assert.equal(await readFile(join(project, 'b.txt'), 'utf8'), '2');
+
+  const commit = await send(worker, 'commite');
+  await until(() => commit.events.some(e => e.kind === 'permission-request'), 'the git_commit prompt');
+  const commitRequest = commit.events.find(e => e.kind === 'permission-request');
+  assert.equal(commitRequest.tool, 'git_commit', '« Toujours » on create_file does not cover git_commit');
+  await callWorker(worker, 'permission-decision', { runId: commit.runId, requestId: commitRequest.requestId, allow: false, always: false });
+  await until(() => finished(commit.events), 'the refused commit');
+  commit.stop();
+
+  const projectConfig = await readFile(join(project, '.openagent', 'config.json'), 'utf8').catch(() => '{}');
+  assert.equal(projectConfig.includes('files_ask'), false, 'no project setting was written');
+  assert.equal(projectConfig.includes('override_permissions'), false);
+  const globalConfig = await readFile(join(home, 'config.json'), 'utf8').catch(() => '{}');
+  assert.equal(globalConfig.includes('files_ask'), false, 'nor a global one');
+
+  const fresh = start();
+  const fourth = await send(fresh, 'nouvelle session');
+  await until(() => fourth.events.some(e => e.kind === 'permission-request'), 'a new prompt after a restart');
+  fourth.stop();
+  await assert.rejects(stat(join(project, 'c.txt')), 'nothing written without a decision');
+});
+
+test('a saved files_ask: false is respected: the write runs without asking', async t => {
+  const { worker, project, send } = await setup(t, [{ tool: { name: 'create_file', args: { path: 'a.txt', content: 'x' } } }, { text: 'fait' }]);
+  await callWorker(worker, 'save-global-settings', { patch: { files_ask: false } });
+  const r = await send(worker);
+  await until(() => finished(r.events), 'the run');
+  r.stop();
+  assert.equal(r.events.some(e => e.kind === 'permission-request'), false);
+  assert.equal(await readFile(join(project, 'a.txt'), 'utf8'), 'x');
+});

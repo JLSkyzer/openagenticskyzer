@@ -10,7 +10,7 @@ app.disableHardwareAcceleration();
 app.on('window-all-closed', () => {});
 const { Worker } = require('node:worker_threads');
 const path = require('node:path');
-const { mkdtemp, rm, mkdir, writeFile, readFile } = require('node:fs/promises');
+const { mkdtemp, rm, mkdir, writeFile, readFile, realpath } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
@@ -93,7 +93,8 @@ app.whenReady().then(async () => {
     await click('#oa-hf-toggle');
     assert.equal(await js(`document.querySelector('${q('hf_token')}').type`), 'text', '👁 reveals the token field');
     await click('#oa-hf-toggle');
-    assert.match(await js(`document.querySelector('[data-testid="oa-data-dir"]').textContent`), /\.openagent|défaut/i, 'the data directory row shows the default');
+    // The row shows the real data_home (since 3e113ad), which here is the isolated home this test created.
+    assert.equal((await js(`document.querySelector('[data-testid="oa-data-dir"]').textContent`)).toLowerCase(), (await realpath(home)).toLowerCase(), 'the data directory row shows the isolated data home');
 
     // ── Contexte ──────────────────────────────────────────────────────────────────
     await openTab('context');
@@ -111,6 +112,11 @@ app.whenReady().then(async () => {
     // ── Permissions ───────────────────────────────────────────────────────────────
     await openTab('permissions');
     assert.equal(await value('permission_mode'), 'demander');
+    assert.equal(await checked('files_ask'), true, 'writes ask by default (2026-10-03)');
+    const permissionsText = await js(`document.querySelector('[data-testid="oa-settings-dialog"]').textContent`);
+    assert.ok(permissionsText.includes('Écritures : fichiers, git, mémoire'), 'the switch names everything it covers');
+    assert.equal(permissionsText.includes('Écriture / suppression de fichiers'), false, 'the old label is gone');
+    await writeFile(join(screenshotDir, 'settings-permissions.png'), await capturePng(win));
     await setValue(q('permission_mode'), 'strict');
     await click(q('files_ask'));
 
@@ -121,7 +127,7 @@ app.whenReady().then(async () => {
     const saved = await config();
     assert.deepEqual(
       { agent_mode: saved.agent_mode, animations: saved.animations, hf_token: saved.hf_token, max_tokens: saved.max_tokens, reserved_tokens: saved.reserved_tokens, auto_compact: saved.auto_compact, compact_threshold: saved.compact_threshold, show_context_bar: saved.show_context_bar, session_retention_days: saved.session_retention_days, permission_mode: saved.permission_mode, files_ask: saved.files_ask },
-      { agent_mode: 'plan', animations: false, hf_token: SECRET, max_tokens: 32000, reserved_tokens: 4096, auto_compact: false, compact_threshold: 80, show_context_bar: false, session_retention_days: 90, permission_mode: 'strict', files_ask: true },
+      { agent_mode: 'plan', animations: false, hf_token: SECRET, max_tokens: 32000, reserved_tokens: 4096, auto_compact: false, compact_threshold: 80, show_context_bar: false, session_retention_days: 90, permission_mode: 'strict', files_ask: false },
       'every edited value reached config.json',
     );
     assert.equal('restore_last_folder' in saved, false, 'a key the user did not touch is not written');
@@ -143,7 +149,7 @@ app.whenReady().then(async () => {
     assert.equal(await value('session_retention_days'), '90');
     await openTab('permissions');
     assert.equal(await value('permission_mode'), 'strict');
-    assert.equal(await checked('files_ask'), true);
+    assert.equal(await checked('files_ask'), false, 'the unticked switch was saved and comes back');
 
     // ── An invalid combination is rejected, shown, and stores nothing ─────────────
     await openTab('context');

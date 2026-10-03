@@ -96,12 +96,13 @@ if ((await settings.global().catch(() => ({ restore_last_folder: true }))).resto
   if (mostRecent?.path) void triggerIndexing(mostRecent.path);
 }
 const active = new Map();
-// requestId -> { resolve(allow), folder, category } — filled by the confirm() callback
-// passed to runAgent, drained by the 'permission-decision' op below.
+// requestId -> { resolve(allow), folder, tool } — filled by the confirm() callback passed to
+// runAgent, drained by the 'permission-decision' op below.
 const pendingPermissions = new Map();
-// "Toujours" on a SHELL command is remembered for this worker's lifetime only (folder + tool).
-// Persisting it like the file-write choice would switch on "run any command in this project"
-// for good — files_ask/search_ask stay persistent, shell never is.
+// "Toujours" (any tool: write, shell, network, extension) is remembered for this worker's lifetime
+// only — folder + tool, until the app closes — and never written to a settings file (decision of
+// 2026-10-03: it used to save files_ask/search_ask:false for the whole project, i.e. every git and
+// memory write too). « Toujours » saved by earlier versions stay: past decisions, not migrated.
 const sessionAllowed = new Set();
 const allowKey = (folder, tool) => `${folder}\0${tool}`;
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
@@ -299,8 +300,6 @@ function lastAssistantSummary(messages) {
   return 'Tâche terminée';
 }
 
-const PERMISSION_FIELD = { write: 'files_ask', network: 'search_ask', shell: 'shell_ask' };
-
 /** Runs one agent turn to completion, streaming events to the renderer via parentPort. */
 // "réveiller" a .gguf model: `localModel` (a gguf-library id, never a secret — unlike `connection`, which
 // main.cjs never injects when this is set, see main.cjs's resolveSendPayload) resolves to a real file path
@@ -356,9 +355,9 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
       post(enriched);
     };
     const confirm = (request, signal) => new Promise((resolve, reject) => {
-      if (toolCategory.get(request.tool) === 'shell' && sessionAllowed.has(allowKey(folder, request.tool))) { resolve(true); return; }
+      if (sessionAllowed.has(allowKey(folder, request.tool))) { resolve(true); return; }
       const requestId = randomUUID();
-      pendingPermissions.set(requestId, { resolve, folder, tool: request.tool, category: toolCategory.get(request.tool) });
+      pendingPermissions.set(requestId, { resolve, folder, tool: request.tool });
       signal.addEventListener('abort', () => { pendingPermissions.delete(requestId); reject(signal.reason); }, { once: true });
       post({ kind: 'permission-request', requestId, tool: request.tool, category: toolCategory.get(request.tool), arguments: request.arguments });
     });
@@ -393,8 +392,11 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
       post({ kind: 'message', message: partial });
     }
     // Persist whatever the model/tools actually produced even on Stop/error — losing an
-    // in-flight tool-call's already-emitted messages would silently discard real work.
-    await conversations.save(folder, branchId, [...collected, ...produced]).catch(() => {});
+    // in-flight tool-call's already-emitted messages would silently discard real work. But only once
+    // the turn started (`collected` is assembled): a failure while the tools, the instructions or the
+    // saved history were being read has nothing to persist, and saving [] would empty the branch —
+    // or overwrite a conversation file that was deliberately kept because it could not be read.
+    if (collected.length) await conversations.save(folder, branchId, [...collected, ...produced]).catch(() => {});
     // A Stop is the user's own action, taken while they're already looking at the app — never
     // worth an OS notification, unlike a completion or a failure reached while they stepped away.
     if (aborted) post({ kind: 'stopped' });
@@ -521,15 +523,7 @@ async function handle(message) {
       const pending = pendingPermissions.get(payload.requestId);
       if (pending) {
         pendingPermissions.delete(payload.requestId);
-        const field = PERMISSION_FIELD[pending.category];
-        if (payload.always && payload.allow && pending.category === 'shell') {
-          sessionAllowed.add(allowKey(pending.folder, pending.tool));
-        } else if (payload.always && payload.allow && field) {
-          const saved = await settings.saveProject(pending.folder, { override_permissions: true, [field]: false }).then(() => true, () => false);
-          // The user's own choice: approved at once, and only this field (core/project-trust.mts) —
-          // but only once it was really saved.
-          if (saved) await approveSavedFields(pending.folder, { [field]: false });
-        }
+        if (payload.always && payload.allow) sessionAllowed.add(allowKey(pending.folder, pending.tool));
         pending.resolve(payload.allow);
       }
       result = { ok: true };

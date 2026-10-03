@@ -46,6 +46,10 @@ app.whenReady().then(async () => {
   let server;
   let worker;
   try {
+    // This test is about the conversation flow; the write prompt (asked by default since 2026-10-03)
+    // has its own test, permission-visual.cjs. The user's saved choice is respected.
+    const { SettingsService } = await import('../core/settings.mts');
+    await new SettingsService(home).saveGlobal({ files_ask: false });
     let requestCount = 0;
     server = createServer((request, response) => {
       requestCount++;

@@ -5,7 +5,8 @@ export const globalDefaults = {
   agent_mode: 'auto', auto_compact: true, compact_threshold: 70,
   max_tokens: null as number | null, reserved_tokens: 2048, show_context_bar: true,
   session_retention_days: 30, animations: true, restore_last_folder: true,
-  permission_mode: 'demander', shell_ask: true, files_ask: false, search_ask: false,
+  // Writes (files, git, memory) ask by default since 2026-10-03, as Python's "demander" did; web search does not.
+  permission_mode: 'demander', shell_ask: true, files_ask: true, search_ask: false,
   data_dir: '', theme: 'dark', accent_color: '#3b82f6', onboarding_done: false,
   // Which entry of the .gguf library (gguf-library.mts) is the active model, if any — empty means a
   // remote connection is active instead. Not a secret (unlike connections.mts's vault): just an id.

@@ -124,13 +124,14 @@ async function main() {
     await setValue('[data-setting="session_retention_days"]', 90);
     await openTab('permissions');
     await setValue('[data-setting="permission_mode"]', 'strict');
+    // files_ask is on by default since 2026-10-03: the click switches it OFF.
     await click('[data-setting="files_ask"]');
     await click('#oa-settings-save-btn');
     await untilText('[data-testid="oa-settings-status"]', /Paramètres sauvegardés/);
     const config = await readJson(join(home, 'config.json'));
     assert.deepEqual(
       { agent_mode: config.agent_mode, animations: config.animations, hf_token: config.hf_token, max_tokens: config.max_tokens, reserved_tokens: config.reserved_tokens, session_retention_days: config.session_retention_days, permission_mode: config.permission_mode, files_ask: config.files_ask },
-      { agent_mode: 'plan', animations: false, hf_token: HF, max_tokens: 32000, reserved_tokens: 4096, session_retention_days: 90, permission_mode: 'strict', files_ask: true },
+      { agent_mode: 'plan', animations: false, hf_token: HF, max_tokens: 32000, reserved_tokens: 4096, session_retention_days: 90, permission_mode: 'strict', files_ask: false },
     );
     assert.equal('restore_last_folder' in config, false, 'untouched keys are not written');
     assert.equal(await js(`document.body.innerHTML.includes(${JSON.stringify(HF)}) || Array.from(document.querySelectorAll('input')).some(i => i.value.includes(${JSON.stringify(HF)}))`), false, 'the HuggingFace token never comes back to the page');

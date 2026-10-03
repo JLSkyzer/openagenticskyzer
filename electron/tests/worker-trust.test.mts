@@ -168,24 +168,19 @@ test('a repo-shipped shell_ask:false is ignored until the project is trusted', {
   assert.equal(trusted.some(e => e.kind === 'permission-request'), false, 'applied once approved');
 });
 
-test('"Toujours" on a file write works at once and approves only that field', { timeout: 30000 }, async t => {
+test('"Toujours" on a file write works at once and writes nothing to the project (session only)', { timeout: 30000 }, async t => {
   const { project, worker } = await setup(t, 'openagent-worker-trust-always-');
-  await callWorker(worker, 'save-global-settings', { patch: { files_ask: true } });
   let file = 0;
   const connection = await fakeModel(t, () => ({ name: 'create_file', arguments: { path: `f${++file}.txt`, content: 'ok' } }));
 
   const first = await turn(worker, project, connection, { allow: true, always: true });
-  assert.ok(first.some(e => e.kind === 'permission-request'));
-  assert.notEqual((await callWorker(worker, 'project-trust', { folder: project })).state, 'pending', 'no banner for the user’s own choice');
+  assert.ok(first.some(e => e.kind === 'permission-request'), 'the default asks for a write');
   const second = await turn(worker, project, connection);
   assert.equal(second.some(e => e.kind === 'permission-request'), false, '"Toujours" is effective right away');
-
-  const config = JSON.parse(await readFile(join(project, '.openagent', 'config.json'), 'utf8'));
-  await writeFile(join(project, '.openagent', 'config.json'), JSON.stringify({ ...config, shell_ask: false }));
-  const after = await callWorker(worker, 'project-trust', { folder: project });
-  assert.equal(after.state, 'pending');
-  assert.deepEqual(Object.keys(after.relaxations).sort(), ['files_ask', 'shell_ask']);
-  assert.equal((await callWorker(worker, 'trust-project', { folder: project, decision: 'ignored', token: after.token })).state, 'ignored');
+  assert.equal(await exists(join(project, '.openagent', 'config.json')), false, 'no project config is written');
+  const view = await callWorker(worker, 'project-trust', { folder: project });
+  assert.notEqual(view.state, 'pending', 'nothing for the user to approve');
+  assert.deepEqual(view.relaxations, {});
 });
 
 test('the project-trust view tells each part apart: trusted plugins stay "trusted" while a new repo relaxation is pending', async t => {

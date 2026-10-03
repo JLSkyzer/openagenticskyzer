@@ -1,7 +1,7 @@
 import { useChat } from '../state/ChatProvider';
 
-// Matches chat.py::permission_banner exactly: orange/yellow banner, tool(args truncated
-// to 60 chars), 3 buttons — Toujours (blue, always=true), Autoriser (green), Refuser (red).
+// chat.py::permission_banner: orange/yellow banner, tool(args truncated to 60 chars), 3 buttons —
+// Toujours (blue, always=true: this tool, this project, until the app closes), Autoriser (green), Refuser (red).
 const MAX_SHOWN_COMMAND = 4000;
 
 function truncatedArgs(args: Record<string, unknown>, max = 60): string {
@@ -46,7 +46,7 @@ export function PermissionBanner() {
           onClick={() => decide(true, true)}
           className="rounded bg-blue-700 px-3 py-1 font-bold text-white hover:bg-blue-800"
         >
-          Toujours
+          Toujours (cette session)
         </button>
         <button
           onClick={() => decide(true, false)}

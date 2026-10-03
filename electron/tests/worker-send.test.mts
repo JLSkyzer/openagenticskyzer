@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
@@ -70,6 +70,9 @@ test('worker::send runs a real agent turn: streams events, executes create_file,
   });
   t.after(() => worker.terminate());
 
+  // This test is about the turn itself; the write prompt (asked by default since 2026-10-03) is
+  // tested in worker-tools.test.mts. The user's own saved choice is respected.
+  await callWorker(worker, 'save-global-settings', { patch: { files_ask: false } });
   const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
   const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'crée un fichier notes.md', connection });
   assert.match(runId, /.+/);
@@ -127,4 +130,50 @@ test('worker::send persists whatever was produced so far when the run is stopped
   assert.equal(events.at(-1).kind, 'stopped');
   const persisted = await callWorker(worker, 'messages', { folder: project, branchId: 'main' });
   assert.deepEqual(persisted.map((m: any) => m.content), ['bonjour'], 'the user message survives even though the model never answered');
+});
+
+test('worker::send never rewrites the saved conversation when the turn fails before it started', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-send-early-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+
+  const server = createServer((request, response) => {
+    request.on('data', () => {});
+    request.on('end', () => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ choices: [{ message: { content: 'salut' }, finish_reason: 'stop' }] }));
+    });
+  });
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
+  const port = (server.address() as { port: number }).port;
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  t.after(() => worker.terminate());
+  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const send = async (text: string) => {
+    const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text, connection });
+    const { events, stop } = collectAgentEvents(worker, runId);
+    await waitUntilDone(events);
+    stop();
+    return events;
+  };
+
+  // A real conversation, saved by a real turn.
+  assert.equal((await send('bonjour')).at(-1).kind, 'done');
+  const file = join(project, '.openagent', 'conversations.json');
+  const before = await readFile(file);
+  assert.ok(before.includes('bonjour'), 'the conversation holds the first turn');
+
+  // The project's own settings become unreadable: building the turn's instructions fails for real,
+  // before the first message of the turn is even assembled.
+  await writeFile(join(project, '.openagent', 'config.json'), '{ ceci n\'est pas du JSON');
+  const events = await send('encore');
+  const last = events.at(-1);
+  assert.equal(last.kind, 'error', 'the failure is reported');
+  assert.match(last.message, /JSON illisible/);
+  assert.deepEqual(await readFile(file), before, 'the saved conversation is byte-identical: nothing was emptied or rewritten');
+  const persisted = await callWorker(worker, 'messages', { folder: project, branchId: 'main' });
+  assert.deepEqual(persisted.map((m: any) => m.content), ['bonjour', 'salut']);
 });

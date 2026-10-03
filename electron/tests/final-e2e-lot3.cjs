@@ -162,12 +162,17 @@ async function main() {
       tool('git_commit', { message: 'ajout de hello.txt' }),
       { text: 'Commit créé.' },
     ]);
+    // Writes ask by default since 2026-10-03: approve each one, after checking the banner names it.
+    for (const name of ['create_file', 'git_add', 'git_commit']) {
+      await waitFor(async () => (await text('[data-testid="oa-permission-banner"]')).includes(name), { timeout: 15000 });
+      await clickBanner('Autoriser');
+    }
     await untilIdle();
     assert.equal(await readFile(join(project, 'hello.txt'), 'utf8'), 'bonjour');
     assert.match(await git(['log', '--oneline', '-1']), /ajout de hello\.txt/, 'the commit really exists in the repository');
     assert.equal(await git(['status', '--short']), '', 'nothing left uncommitted');
     await cdp.screenshot(join(proofDir, 'lot3-1-git-work.png'));
-    record('PROOF 4 — create_file + git_add + git_commit through the agent: the file and the commit exist in the real repository');
+    record('PROOF 4 — create_file + git_add + git_commit through the agent, each approved on its banner: the file and the commit exist in the real repository');
 
     // ── Proof 5: run_command asks first, does nothing before the click, runs after ────
     const ran = join(project, 'ran.txt');
@@ -187,7 +192,7 @@ async function main() {
     // ── Proof 6: "Toujours" is remembered for the session, never written to the settings ──
     await send('Encore une commande', [tool('run_command', { command: `node -e "console.log('deuxieme')"` }), { text: 'Fait.' }]);
     await untilBanner();
-    await clickBanner('Toujours');
+    await clickBanner('Toujours (cette session)');
     await untilIdle();
     await send('Et une troisième', [tool('run_command', { command: `node -e "console.log('troisieme')"` }), { text: 'Fait aussi.' }]);
     await untilIdle();
@@ -217,9 +222,12 @@ async function main() {
       tool('git_checkout', { branch: '-f' }),
       { text: 'Refusé.' },
     ]);
-    // git_push is a "shell" tool so it may ask; approving must not be enough to make it run.
-    await waitFor(async () => (await exists('[data-testid="oa-permission-banner"]')) || (await text('#oa-send-btn')) === '➤', { timeout: 15000 });
-    if (await exists('[data-testid="oa-permission-banner"]')) await clickBanner('Autoriser');
+    // git_push is a "shell" tool and git_checkout a "write" tool (asked by default since 2026-10-03): both
+    // ask, and approving must not be enough to make either run.
+    for (const name of ['git_push', 'git_checkout']) {
+      await waitFor(async () => (await text('[data-testid="oa-permission-banner"]')).includes(name), { timeout: 15000 });
+      await clickBanner('Autoriser');
+    }
     await untilIdle();
     cards = await toolCards();
     assert.ok(cards.some(card => card.includes('git_push') && card.includes('invalide')), 'git_push refused the transport-style remote');

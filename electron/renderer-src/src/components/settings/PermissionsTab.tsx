@@ -27,8 +27,8 @@ export function PermissionsTab({ draft }: { draft: SettingsDraft }) {
           >
             <Toggle setting="shell_ask" checked={draft.get('shell_ask', true)} onChange={value => draft.set('shell_ask', value)} />
           </Row>
-          <Row label="Écriture / suppression de fichiers">
-            <Toggle setting="files_ask" checked={draft.get('files_ask', false)} onChange={value => draft.set('files_ask', value)} />
+          <Row label="Écritures : fichiers, git, mémoire">
+            <Toggle setting="files_ask" checked={draft.get('files_ask', true)} onChange={value => draft.set('files_ask', value)} />
           </Row>
           <Row label="Recherche internet" last>
             <Toggle setting="search_ask" checked={draft.get('search_ask', false)} onChange={value => draft.set('search_ask', value)} />

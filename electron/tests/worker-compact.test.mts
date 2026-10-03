@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, readdir, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
@@ -271,6 +271,27 @@ test('worker::compact refuses, without calling the provider, a conversation too 
   assert.match(done.message, /Contexte plein : la conversation est trop longue pour être compactée avec ce modèle/);
   assert.equal(model.requests.length, 0, 'no request reached the provider');
   assert.deepEqual(await readFile(file), before, 'the saved transcript is byte-identical');
+});
+
+test('worker::send and worker::compact size with the same window, the global one, whatever a project config.json ships', async t => {
+  const { worker, project, model, seed, compact } = await setup(t);
+  await callWorker(worker, 'save-global-settings', { patch: { max_tokens: 8000 } });
+  await mkdir(join(project, '.openagent'), { recursive: true });
+  await writeFile(join(project, '.openagent', 'config.json'), JSON.stringify({ max_tokens: 4096, reserved_tokens: 1, inconnue: 1 }));
+  const connection = { ...model.connection, provider: 'mistral' };
+  await seed(longExchanges(8));
+  assert.equal((await (await compact('main', connection)).outcome).kind, 'compacted');
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  await new Promise<void>(resolve => {
+    const listener = (message: any) => {
+      if (message?.type === 'event' && message.runId === runId && ['done', 'error', 'stopped'].includes(message.kind)) { worker.off('message', listener); resolve(); }
+    };
+    worker.on('message', listener);
+  });
+  const [compaction, turn] = model.requests;
+  assert.ok(turn, 'the turn reached the provider');
+  assert.equal(compaction.max_tokens, 8000 - await estimateOf(compaction), 'compaction: the 8 000-token global window');
+  assert.equal(turn.max_tokens, 8000 - await estimateOf(turn), 'send: the same global window, not the 4 096 of the project file');
 });
 
 test('compactMessages: a window that leaves exactly no room refuses; one token of room asks for one token', async () => {

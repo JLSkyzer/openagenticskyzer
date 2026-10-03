@@ -105,7 +105,11 @@ export class SettingsService {
     const saved = await this.store.read(join(await metadataDirectory(folder), 'config.json'), {});
     object(saved);
     validateSaved(saved, projectRules);
-    return { ...projectDefaults, ...saved };
+    // The file is repo-shipped or hand-edited content: only the keys a project may set are kept (the file itself is
+    // not rewritten). Any other key — max_tokens, reserved_tokens, an unknown one — would otherwise slip into
+    // effective() and override the global value without any approval.
+    const kept = Object.fromEntries(Object.entries(saved).filter(([key]) => Object.hasOwn(projectRules, key)));
+    return { ...projectDefaults, ...kept };
   }
   async publicGlobal() {
     const saved = await this.global();

@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
@@ -41,7 +42,7 @@ const call = (id: string, name: string, args: Record<string, unknown>) =>
 /** A real worker on an isolated data home, and a real model server that answers request N with replies[N]. */
 async function setup(t: any, replies: Reply[], env: Record<string, string> = {}) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-request-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -59,7 +60,7 @@ async function setup(t: any, replies: Reply[], env: Record<string, string> = {})
   const port = (server.address() as { port: number }).port;
   const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home, ...env } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   const send = async (text: string, extra: Record<string, unknown> = {}) => {
     const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text, connection, ...extra });
     const events: any[] = [];

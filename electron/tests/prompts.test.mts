@@ -6,12 +6,13 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_PROMPTS, PromptLibrary } from '../core/prompts.mts';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 const IDS = ['refactor', 'tests', 'explain', 'pr_desc', 'debug', 'optimize', 'security', 'review', 'document', 'translate'];
 
 async function home(t: { after(fn: () => unknown): void }) {
   const dir = await mkdtemp(join(tmpdir(), 'openagent-prompts-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  removeAtEnd(t, dir);
   return dir;
 }
 
@@ -97,7 +98,7 @@ test('worker::list-prompts serves the library of its data directory', async t =>
   const dir = await home(t);
   await writeFile(join(dir, 'prompts.json'), JSON.stringify([{ id: 'a', name: 'Alpha', icon: '🔧', description: 'D', template: 'T {filename}' }]));
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: dir } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   const call = (op: string) => new Promise<any>((resolve, reject) => {
     const id = `t-${Math.random()}`;
     const listener = (message: any) => {

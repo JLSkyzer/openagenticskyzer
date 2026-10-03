@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -21,11 +22,11 @@ function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> 
 
 async function startWorker(t: any) {
   const home = await mkdtemp(join(tmpdir(), 'openagent-worker-settings-'));
-  t.after(() => rm(home, { recursive: true, force: true }));
+  removeAtEnd(t, home);
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   return { home, worker };
 }
 

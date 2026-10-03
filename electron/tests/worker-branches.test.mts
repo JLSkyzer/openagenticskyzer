@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -64,14 +65,14 @@ async function fakeModel(t: { after(fn: () => unknown): void }) {
 
 async function setup(t: { after(fn: () => unknown): void }) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-branches-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   const model = await fakeModel(t);
   const turn = async (branchId: string, text: string) => {
     const { runId } = await callWorker(worker, 'send', { folder: project, branchId, text, connection: model.connection });

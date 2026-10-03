@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -48,7 +49,7 @@ async function fakeProviderRoot(t: any) {
 
 test('a real turn finishing above OPENAGENT_LONG_RUN_MS is flagged longRunning with a summary', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-longrun-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -58,7 +59,7 @@ test('a real turn finishing above OPENAGENT_LONG_RUN_MS is flagged longRunning w
     // 1ms threshold: even this fast, fully real (not mocked) HTTP round-trip clears it.
     env: { ...process.env, OPENAGENT_HOME: home, OPENAGENT_LONG_RUN_MS: '1' },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
   const { events, stop } = collectAgentEvents(worker, runId);
@@ -74,7 +75,7 @@ test('a real turn finishing above OPENAGENT_LONG_RUN_MS is flagged longRunning w
 
 test('the same fast turn is NOT flagged longRunning under the real 10s default threshold', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-longrun-default-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -83,7 +84,7 @@ test('the same fast turn is NOT flagged longRunning under the real 10s default t
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
   const { events, stop } = collectAgentEvents(worker, runId);
@@ -97,7 +98,7 @@ test('the same fast turn is NOT flagged longRunning under the real 10s default t
 
 test('a Stop is never flagged longRunning, even past the threshold — the user is already at the app', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-longrun-stop-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -113,7 +114,7 @@ test('a Stop is never flagged longRunning, even past the threshold — the user 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home, OPENAGENT_LONG_RUN_MS: '1' },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
   await providerCalled;

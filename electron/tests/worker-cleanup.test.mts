@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -25,7 +26,7 @@ function daysAgo(n: number) {
 
 test('worker startup wipes conversation data of a project unused beyond the configured retention', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-cleanup-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const old = join(root, 'old-project');
   await Promise.all([mkdir(home), mkdir(old)]);
@@ -36,7 +37,7 @@ test('worker startup wipes conversation data of a project unused beyond the conf
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   // The default retention is 30 days; a real op round-trip proves the worker has finished its
   // (awaited) startup cleanup before answering.
@@ -47,7 +48,7 @@ test('worker startup wipes conversation data of a project unused beyond the conf
 
 test('worker startup leaves conversation data alone when session_retention_days is 0', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-cleanup-off-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const old = join(root, 'old-project');
   await Promise.all([mkdir(home), mkdir(old)]);
@@ -59,7 +60,7 @@ test('worker startup leaves conversation data alone when session_retention_days 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   await callWorker(worker, 'list_folders', {});
   await assert.doesNotReject(readFile(join(old, '.openagent', 'conversations.json')));

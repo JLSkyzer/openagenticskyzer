@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -30,7 +31,7 @@ async function fakeHf(t: any, handler: (request: any, response: any) => void) {
 
 test('worker::test-hf-token round-trips a real request to a valid token', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-hftoken-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   await mkdir(home);
   const endpoint = await fakeHf(t, (request, response) => {
@@ -41,7 +42,7 @@ test('worker::test-hf-token round-trips a real request to a valid token', async 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home, OPENAGENT_HF_ENDPOINT: endpoint },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   const result = await callWorker(worker, 'test-hf-token', { token: 'hf_good' });
   assert.deepEqual(result, { name: 'killian-dev' });
@@ -49,7 +50,7 @@ test('worker::test-hf-token round-trips a real request to a valid token', async 
 
 test('worker::test-hf-token rejects a bad token with the real error, not a generic one', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-hftoken-bad-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   await mkdir(home);
   const endpoint = await fakeHf(t, (_request, response) => {
@@ -60,7 +61,7 @@ test('worker::test-hf-token rejects a bad token with the real error, not a gener
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home, OPENAGENT_HF_ENDPOINT: endpoint },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   await assert.rejects(callWorker(worker, 'test-hf-token', { token: 'hf_bad' }), /401/);
 });

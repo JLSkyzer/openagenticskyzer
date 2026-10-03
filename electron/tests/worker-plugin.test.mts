@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown = {}): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -53,7 +54,7 @@ function runEvents(worker: Worker, runId: string, onEvent: (event: any) => void 
 
 test('worker::send registers a real plugin tool and actually calls it end to end', { timeout: 30000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-plugin-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -72,7 +73,7 @@ test('worker::send registers a real plugin tool and actually calls it end to end
   `);
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
 
   let requestCount = 0;
@@ -123,7 +124,7 @@ test('worker::send registers a real plugin tool and actually calls it end to end
 
 test('worker::plugin-list reports loaded plugin names and isolated errors for the active folder', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-plugin-list-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -132,7 +133,7 @@ test('worker::plugin-list reports loaded plugin names and isolated errors for th
   await writeFile(join(home, 'tools', 'bad.mjs'), `export const notGetTools = true;`);
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   const result = await callWorker(worker, 'plugin-list', { folder: project });
   assert.deepEqual(result.tools, ['good_tool']);
@@ -142,14 +143,14 @@ test('worker::plugin-list reports loaded plugin names and isolated errors for th
 
 test('worker::plugin-list with folder=null only reports global plugins', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-plugin-noproject-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   await mkdir(home);
   await mkdir(join(home, 'tools'), { recursive: true });
   await writeFile(join(home, 'tools', 'global.mjs'), `export function getTools() { return [{ name: 'global_tool', description: 'ok', category: 'read', properties: {}, execute: async () => 'ok' }]; }`);
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   const result = await callWorker(worker, 'plugin-list', { folder: null });
   assert.deepEqual(result.tools, ['global_tool']);
@@ -158,7 +159,7 @@ test('worker::plugin-list with folder=null only reports global plugins', async t
 
 test('worker::send — a plugin tool named like a built-in (read_file) is dropped, the turn still completes and the built-in wins', { timeout: 30000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-plugin-collide-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -168,7 +169,7 @@ test('worker::send — a plugin tool named like a built-in (read_file) is droppe
   await writeFile(join(project, 'note.txt'), 'contenu réel');
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
 
   const listed = await callWorker(worker, 'plugin-list', { folder: project });
@@ -191,7 +192,7 @@ test('worker::send — a plugin tool named like a built-in (read_file) is droppe
 
 test('worker::send — a plugin declaring category read still asks permission in "demander" mode, and a refusal never runs it', { timeout: 30000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-plugin-ask-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -205,7 +206,7 @@ test('worker::send — a plugin declaring category read still asks permission in
   `);
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'demander' } });
 
   const connection = await scriptedModel(t, [

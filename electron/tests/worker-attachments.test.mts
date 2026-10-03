@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload?: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -33,7 +34,7 @@ const IMAGE = { name: 'p.png', content_type: 'image', content: 'data:image/png;b
 
 async function setup(t: { after(fn: () => unknown): void }) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-attachments-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const folder = join(root, 'projet');
   await Promise.all([mkdir(home), mkdir(folder)]);
@@ -51,7 +52,7 @@ async function setup(t: { after(fn: () => unknown): void }) {
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'm', api_key: 'fake' };
   const send = async (payload: Record<string, unknown>) => {
     const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', connection, ...payload });

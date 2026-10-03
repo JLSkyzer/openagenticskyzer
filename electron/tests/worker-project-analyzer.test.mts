@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -21,7 +22,7 @@ function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> 
 
 test('worker::init-project writes a real OPENAGENT.md from a real project scan', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-initproject-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -31,7 +32,7 @@ test('worker::init-project writes a real OPENAGENT.md from a real project scan',
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   const result = await callWorker(worker, 'init-project', { folder: project, overwrite: false });
   assert.equal(result.success, true);

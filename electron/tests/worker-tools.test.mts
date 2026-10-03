@@ -8,6 +8,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 const run = promisify(execFile);
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -43,7 +44,7 @@ const finished = (events: any[]) => events.some(e => ['done', 'error', 'stopped'
 type Step = { tool?: { name: string; args: Record<string, unknown> }; text?: string };
 async function setup(t: any, steps: Step[] = [{ text: 'ok' }], extraEnv: Record<string, string> = {}) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-tools-'));
-  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -67,7 +68,7 @@ async function setup(t: any, steps: Step[] = [{ text: 'ok' }], extraEnv: Record<
   const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
   const start = () => {
     const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home, ...extraEnv } });
-    t.after(() => worker.terminate());
+    terminateAtEnd(t, worker);
     return worker;
   };
   const worker = start();

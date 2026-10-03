@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -35,7 +36,7 @@ async function waitUntilDone(events: any[]) {
 
 test('worker::send registers real semantic_search/knowledge_search tools and actually calls one end to end', { timeout: 60000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-search-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -47,7 +48,7 @@ test('worker::send registers real semantic_search/knowledge_search tools and act
   await indexFolder(project, home);
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
 
   let requestCount = 0;

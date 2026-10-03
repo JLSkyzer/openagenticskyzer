@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -21,7 +22,7 @@ function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> 
 
 test('worker::migrate-data-dir moves the real settings/folders files to the new directory', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-datadir-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   const newDir = join(root, 'new-data-home');
@@ -30,7 +31,7 @@ test('worker::migrate-data-dir moves the real settings/folders files to the new 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   // Produce some real data first: a saved setting and a recorded folder.
   await callWorker(worker, 'save-global-settings', { patch: { theme: 'light' } });
@@ -54,14 +55,14 @@ test('worker::migrate-data-dir moves the real settings/folders files to the new 
 
 test('worker::migrate-data-dir rejects a relative path with the real, precise error', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-datadir-bad-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   await mkdir(home);
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   await assert.rejects(callWorker(worker, 'migrate-data-dir', { newDir: 'not-absolute' }), /absolu/);
 });

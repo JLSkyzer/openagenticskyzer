@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload?: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -21,7 +22,7 @@ function callWorker(worker: Worker, op: string, payload?: unknown): Promise<any>
 
 async function setup(t: { after(fn: () => unknown): void }) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-onboarding-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   await mkdir(home);
   // A machine running the tests may have the neutralising variable set: every case sets it itself.
@@ -30,7 +31,7 @@ async function setup(t: { after(fn: () => unknown): void }) {
     const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
       env: { ...inherited, OPENAGENT_HOME: home, ...(skip ? { OPENAGENT_SKIP_ONBOARDING: '1' } : {}) },
     });
-    t.after(() => worker.terminate());
+    terminateAtEnd(t, worker);
     return worker;
   };
   return { start };
@@ -66,12 +67,12 @@ test('OPENAGENT_SKIP_ONBOARDING=1 reports the wizard as done WITHOUT writing any
 
 test('the skip variable only ever means "done": any other value is ignored', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-onboarding-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   await mkdir(home);
   for (const value of ['0', 'false', '', 'yes']) {
     const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home, OPENAGENT_SKIP_ONBOARDING: value } });
-    t.after(() => worker.terminate());
+    terminateAtEnd(t, worker);
     assert.equal((await callWorker(worker, 'global-settings')).onboarding_done, false, `value ${JSON.stringify(value)}`);
   }
 });

@@ -7,10 +7,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
 import { readProjectMemory, MEMORY_DISPLAY_LIMIT } from '../core/project-memory.mts';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 async function project(t: { after(fn: () => unknown): void }) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-project-memory-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const folder = join(root, 'projet');
   await mkdir(join(folder, '.openagent'), { recursive: true });
   return { root, folder };
@@ -90,7 +91,7 @@ test('worker::read-project-memory serves the memory of the folder', async t => {
   const { root, folder } = await project(t);
   await writeFile(join(folder, '.openagent', 'memory.md'), 'un fait');
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: join(root, 'home') } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   assert.deepEqual(await callWorker(worker, 'read-project-memory', { folder }), { content: 'un fait', truncated: false });
 });
 
@@ -120,7 +121,7 @@ async function fakeModel(t: { after(fn: () => unknown): void }) {
 test('worker::clear-history is refused while an agent run holds the folder, then accepted', async t => {
   const { root, folder } = await project(t);
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: join(root, 'home') } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   const model = await fakeModel(t);
   await callWorker(worker, 'save-messages', { folder, branchId: 'main', messages: [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }] });
   const held = model.nextHeld();
@@ -139,7 +140,7 @@ test('worker::clear-history is refused while an agent run holds the folder, then
 test('worker::clear-history is refused while a compaction holds the folder', async t => {
   const { root, folder } = await project(t);
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: join(root, 'home') } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   const model = await fakeModel(t);
   const messages = Array.from({ length: 5 }, (_, i) => [{ role: 'user', content: `q${i}` }, { role: 'assistant', content: `r${i}` }]).flat();
   await callWorker(worker, 'save-messages', { folder, branchId: 'main', messages });

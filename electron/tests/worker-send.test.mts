@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -37,7 +38,7 @@ async function waitUntilDone(events: any[]) {
 
 test('worker::send runs a real agent turn: streams events, executes create_file, and persists the transcript', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-send-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -68,7 +69,7 @@ test('worker::send runs a real agent turn: streams events, executes create_file,
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   // This test is about the turn itself; the write prompt (asked by default since 2026-10-03) is
   // tested in worker-tools.test.mts. The user's own saved choice is respected.
@@ -99,7 +100,7 @@ test('worker::send runs a real agent turn: streams events, executes create_file,
 
 test('worker::send persists whatever was produced so far when the run is stopped mid-turn', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-send-stop-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -117,7 +118,7 @@ test('worker::send persists whatever was produced so far when the run is stopped
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
   const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
@@ -137,7 +138,7 @@ test('worker::send persists whatever was produced so far when the run is stopped
 // at a SCREEN index, so a file one message behind would be cut at the wrong place.
 async function earlyFailureSetup(t: any, prefix: string) {
   const root = await mkdtemp(join(tmpdir(), prefix));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -152,7 +153,7 @@ async function earlyFailureSetup(t: any, prefix: string) {
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
   const send = async (text: string, keep?: number) => {
     const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text, connection, ...(keep === undefined ? {} : { keep }) });
@@ -201,7 +202,7 @@ test('worker::send never rewrites a conversation file it could not read', async 
 test('worker::send asks for no more output than the window leaves beside the real request', async t => {
   const { estimateRequestTokens } = await import('../core/request-context.mts');
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-send-cap-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -219,7 +220,7 @@ test('worker::send asks for no more output than the window leaves beside the rea
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { max_tokens: 8000 } });
   const connection = { provider: 'mistral', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
   const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });

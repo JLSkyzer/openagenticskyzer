@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 // main.cjs only registers IPC and the app lifecycle when it is the Electron entry point, so it
 // can be required as a library (its exported helpers are what is tested here).
@@ -39,8 +40,8 @@ test('stopWorker still terminates a worker that never answers, after the grace p
 
 test('stopWorker on a real worker leaves it terminated', async t => {
   const home = await mkdtemp(join(tmpdir(), 'openagent-main-shutdown-'));
-  t.after(() => rm(home, { recursive: true, force: true }));
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  removeAtEnd(t, home);
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
   await stopWorker(worker, 3000);
   assert.equal(worker.threadId, -1, 'the worker thread is gone');
 });

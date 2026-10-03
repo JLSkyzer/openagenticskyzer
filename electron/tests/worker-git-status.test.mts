@@ -4,9 +4,10 @@ import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 const run = promisify(execFile);
 const sh = async (args: string[], cwd: string) => (await run('git', args, { cwd, env: { ...process.env, LC_ALL: 'C' } })).stdout.trim();
@@ -26,7 +27,7 @@ function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> 
 
 test('worker::git-status returns the real branch and dirty state of the active project', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-git-status-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const repo = join(root, 'repo');
   await Promise.all([mkdir(home), mkdir(repo)]);
@@ -41,7 +42,7 @@ test('worker::git-status returns the real branch and dirty state of the active p
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   const clean = await callWorker(worker, 'git-status', { folder: repo });
   assert.deepEqual(clean, { branch: 'main', dirty: false });
@@ -53,7 +54,7 @@ test('worker::git-status returns the real branch and dirty state of the active p
 
 test('worker::git-status resolves to null (not an error) for a project that is not a git repo', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-git-status-none-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -61,7 +62,7 @@ test('worker::git-status resolves to null (not an error) for a project that is n
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   const result = await callWorker(worker, 'git-status', { folder: project });
   assert.equal(result, null);

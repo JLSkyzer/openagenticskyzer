@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -34,22 +35,17 @@ function indexingSettled(worker: Worker, folder: string): Promise<any> {
 
 test('worker::activate_folder records the folder in history and returns it with the chat history', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-folders-'));
-  let worker: Worker | undefined;
-  // One hook, worker first: after-hooks run in registration order and a throwing one skips the
-  // rest, so a separate rm hook that failed (ENOTEMPTY while the worker was still writing the
-  // index into project/.openagent) left the worker alive and the whole test run never exited.
-  t.after(async () => {
-    try { await worker?.terminate(); } finally { await rm(root, { recursive: true, force: true }); }
-  });
+  // Worker terminated before the dir is removed, in one hook: see teardown.mts.
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
 
   // OPENAGENT_HOME keeps this test from ever touching the real developer's
   // ~/.openagent — see worker.mjs.
-  worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
-  });
+  }));
 
   // activate_folder also starts indexing the folder in the background (it writes
   // project/.openagent/index/codebase.json after replying): wait for it to end, so nothing

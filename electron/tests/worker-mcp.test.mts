@@ -2,10 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 const FAKE_MCP_SERVER = fileURLToPath(new URL('./fixtures/fake-mcp-server.cjs', import.meta.url));
 
@@ -43,11 +44,11 @@ async function approveProject(worker: Worker, folder: string) {
 
 test('worker::mcp-list/add/remove persist real MCP server definitions', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-config-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   await mkdir(home);
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   assert.deepEqual(await callWorker(worker, 'mcp-list', {}), []);
   const afterAdd = await callWorker(worker, 'mcp-add', { commandLine: 'echo hello' });
@@ -59,13 +60,13 @@ test('worker::mcp-list/add/remove persist real MCP server definitions', async t 
 
 test('worker::send registers a real configured MCP server\'s tools and actually calls one', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-send-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   await callWorker(worker, 'mcp-add', { commandLine: `"${process.execPath}" "${FAKE_MCP_SERVER}"` });
   // The permission mode must allow an 'extension' tool without a prompt for this test to run
@@ -113,7 +114,7 @@ test('worker::send registers a real configured MCP server\'s tools and actually 
 
 test('worker::send discovers a real project-scope server from a real .mcp.json and calls it', { timeout: 30000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-project-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -122,7 +123,7 @@ test('worker::send discovers a real project-scope server from a real .mcp.json a
   }));
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
   await approveProject(worker, project);
 
@@ -160,13 +161,13 @@ test('worker::send discovers a real project-scope server from a real .mcp.json a
 
 test('worker::send: a project .mcp.json server overrides a colliding global one (same command+args)', { timeout: 30000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-collision-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
 
   // A global entry AND a project .mcp.json entry both point at the exact same real fake server
@@ -203,13 +204,13 @@ test('worker::send: a project .mcp.json server overrides a colliding global one 
 
 test('worker::send: two DIFFERENT servers exposing the same tool names never fail the turn — the project one wins', { timeout: 30000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-samename-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
 
   // Same fixture, different args: two distinct server identities, so mergeServerConfigs keeps
@@ -258,7 +259,7 @@ test('worker::send: two DIFFERENT servers exposing the same tool names never fai
 
 test('worker::send: an MCP tool with an invalid name is dropped instead of failing the turn', { timeout: 30000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-badname-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -267,7 +268,7 @@ test('worker::send: an MCP tool with an invalid name is dropped instead of faili
   }));
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
   await approveProject(worker, project);
 
@@ -299,7 +300,7 @@ test('worker::send: an MCP tool with an invalid name is dropped instead of faili
 test('worker::mcp-list shows project entries as written (an expanded ${VAR} never reaches the renderer), deduped as a turn would be', { timeout: 30000 }, async t => {
   const SECRET = 'sk-EXPANDED-ARG-SECRET';
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-expand-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -317,7 +318,7 @@ test('worker::mcp-list shows project entries as written (an expanded ${VAR} neve
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home, OA_TEST_SECRET: SECRET, OA_TEST_NODE: process.execPath },
   });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   await approveProject(worker, project);
   // Same command+args as the project's `local` entry ONCE EXPANDED: a turn runs only one of them.
   await callWorker(worker, 'mcp-add', { commandLine: `"${process.execPath}" "${FAKE_MCP_SERVER}"` });
@@ -353,11 +354,11 @@ test('worker::mcp-list shows project entries as written (an expanded ${VAR} neve
 
 test('worker::mcp-add-remote persists a real remote server definition', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-remote-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   await mkdir(home);
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   const result = await callWorker(worker, 'mcp-add-remote', { url: 'https://example.com/mcp', type: 'sse', headers: { Authorization: 'Bearer tok' } });
   assert.equal(result.length, 1);
@@ -377,7 +378,7 @@ test('worker::mcp-* replies never carry a real env/header secret to the renderer
   const SECRET_ENV = 'sk-ENV-SECRET-456';
   const SECRET_PROJECT_HEADER = 'sk-PROJECT-HEADER-789';
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-secrets-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
@@ -392,7 +393,7 @@ test('worker::mcp-* replies never carry a real env/header secret to the renderer
   t.after(() => fake.close());
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
   await approveProject(worker, project);
   const assertNoSecret = (label: string, value: unknown) => {
     const text = JSON.stringify(value);

@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload?: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -21,12 +22,12 @@ function callWorker(worker: Worker, op: string, payload?: unknown): Promise<any>
 
 test('worker::gguf-add/gguf-list/gguf-remove manage the real library on disk through the ops main.cjs routes', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-gguf-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  removeAtEnd(t, root);
   const home = join(root, 'home');
   const model = join(root, 'model.gguf');
   await Promise.all([mkdir(home), writeFile(model, Buffer.alloc(4096))]);
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
-  t.after(() => worker.terminate());
+  terminateAtEnd(t, worker);
 
   assert.deepEqual(await callWorker(worker, 'gguf-list'), []);
   const added = await callWorker(worker, 'gguf-add', { path: model });

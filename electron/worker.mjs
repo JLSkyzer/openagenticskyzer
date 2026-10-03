@@ -44,6 +44,9 @@ const dataHome = process.env.OPENAGENT_HOME ? defaultHome : await resolveDataHom
 // OPENAGENT_LONG_RUN_MS lets tests use a real (not mocked) but fast agent turn instead of
 // waiting out a real 10s — never rely on it outside tests.
 const LONG_RUN_MS = Number(process.env.OPENAGENT_LONG_RUN_MS) || 10_000;
+// OPENAGENT_PROVIDER_IDLE_MS shortens the provider's silence timeout (120 s) so a test can prove the expiry
+// with a real silent server instead of waiting two minutes — never rely on it outside tests.
+const PROVIDER_IDLE_MS = Number(process.env.OPENAGENT_PROVIDER_IDLE_MS) || undefined;
 const settings = new SettingsService(dataHome);
 const trust = new ProjectTrustService(dataHome, settings);
 const conversations = new Conversations();
@@ -303,7 +306,7 @@ const PERMISSION_FIELD = { write: 'files_ask', network: 'search_ask', shell: 'sh
 // never know the difference. An id whose file is gone (removed from the library, or moved) fails clearly,
 // before anything starts.
 async function providerFor(connection, localModel) {
-  if (!localModel) return new ChatProvider();
+  if (!localModel) return new ChatProvider(undefined, { idleTimeoutMs: PROVIDER_IDLE_MS });
   const modelPath = await ggufLibrary.resolve(localModel);
   if (!modelPath) throw new Error('Modèle local introuvable : il a peut-être été retiré de la bibliothèque. Choisis-en un autre.');
   return { complete: options => completeLocal({ modelPath, messages: options.messages, tools: options.tools, signal: options.signal, onDelta: options.onDelta, maxTokens: options.maxTokens }) };
@@ -362,10 +365,10 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
     finish('done', { summary: lastAssistantSummary(result) });
   } catch (error) {
     const aborted = error?.name === 'AbortError';
-    // A Stop mid-stream (before the turn's 'message' event ever fired) would otherwise
-    // discard the text already shown to the user — turn it into a real message, exactly
-    // like a completed turn, so the UI and the saved transcript end up consistent.
-    if (aborted && partialText.trim()) {
+    // Text already streamed is kept whatever ended the turn — a Stop, a provider gone silent (idle
+    // timeout), a cut stream — exactly like a completed message, so the screen and the saved
+    // transcript agree.
+    if (partialText.trim()) {
       const partial = { role: 'assistant', content: partialText };
       accumulated.push(partial);
       post({ kind: 'message', message: partial });

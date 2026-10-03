@@ -69,10 +69,11 @@ export function warmModelPath(): string | null {
 let mintedIds = 0;
 
 // A real HTTP provider's own server enforces some sane generation limit even when we don't ask for one
-// (compactMessages never sets maxTokens, for instance) — here WE are the server, and node-llama-cpp will
-// happily generate until end-of-sequence or the context is full if left unbounded, which on a model that
-// rarely emits a natural stop token means an effectively hung turn. Never left unset.
-const DEFAULT_MAX_TOKENS = 2048;
+// — here WE are the server, and node-llama-cpp will happily generate until end-of-sequence or the context
+// is full if left unbounded, which on a model that rarely emits a natural stop token means an effectively
+// hung turn. The cap is the one Python gave the local HTTP servers (lmstudio, llamacpp:
+// provider.mts::OUTPUT_CAPS); a reply that reaches it is flagged truncated, like finish_reason "length".
+export const LOCAL_OUTPUT_CAP = 8192;
 
 /** Same contract as `ChatProvider.complete()` (provider.mts): agent.mts calls this without knowing the
  * difference. `messages` already has attachments expanded (agent.mts runs toWireMessage first). */
@@ -82,7 +83,7 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
     functions: toGgufFunctions(options.tools ?? []),
     onTextChunk: options.onDelta,
     signal: options.signal,
-    maxTokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
+    maxTokens: options.maxTokens ?? LOCAL_OUTPUT_CAP,
   });
   return responseToMessage(response, () => `local-${++mintedIds}`);
 }

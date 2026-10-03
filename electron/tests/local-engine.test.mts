@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { completeLocal, disposeEngine, warmModelPath } from '../core/local-engine.mts';
+import { completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP } from '../core/local-engine.mts';
 
 // Real node-llama-cpp, real tiny GGUF (llama.cpp's own CI asset, 1.1 MB, stories260K — a toy model: its
 // text is low quality, but the MECHANICS (load, stream, abort, unload) are exactly what a real model uses.
@@ -62,4 +62,8 @@ test('toGgufFunctions rejects nothing real: a genuine tool schema does not crash
   const message = await completeLocal({ modelPath, messages: [{ role: 'user', content: 'Bonjour' }], tools, maxTokens: 16 });
   assert.equal(message.role, 'assistant');
   assert.equal(typeof message.content, 'string');
+});
+
+test('the built-in engine is capped at 8192 output tokens, like the local HTTP servers in Python\'s table', () => {
+  assert.equal(LOCAL_OUTPUT_CAP, 8192);
 });

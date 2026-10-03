@@ -65,7 +65,8 @@ app.whenReady().then(async () => {
         const isSummary = !body.tools && body.messages.length === 1 && String(body.messages[0].content).startsWith('Résume cette conversation');
         requests.push({ body, isSummary });
         const answer = () => {
-          if (isSummary && state.summary === 'fail') { response.writeHead(500, { 'content-type': 'application/json' }); response.end('{"error":"boom"}'); return; }
+          // 400: never retried (a 5xx is, twice), so "the model was really asked" stays exactly one request.
+          if (isSummary && state.summary === 'fail') { response.writeHead(400, { 'content-type': 'application/json' }); response.end('{"error":"boom"}'); return; }
           const content = isSummary ? '- décision : garder la branche A\n- fichier modifié : notes.md' : `réponse ${++state.normalCount}`;
           response.writeHead(200, { 'content-type': 'application/json' });
           response.end(JSON.stringify({ choices: [{ message: { content }, finish_reason: 'stop' }] }));
@@ -275,7 +276,7 @@ app.whenReady().then(async () => {
     const requestsBefore = summaryRequests();
     await click('#oa-compact-btn');
     await waitFor(() => exists('[data-testid="oa-chat-error"]'), { what: 'error shown' });
-    assert.match(await text('[data-testid="oa-chat-error"]'), /Erreur du provider \(500\)/);
+    assert.match(await text('[data-testid="oa-chat-error"]'), /Erreur du provider \(400\) : boom/);
     // The text being in the DOM is not enough: a banner left below the fold is an error nobody sees.
     await pause(300);
     assert.equal(await js(`(() => {

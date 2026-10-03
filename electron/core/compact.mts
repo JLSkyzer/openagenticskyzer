@@ -62,6 +62,8 @@ export async function compactMessages<T extends Stored>(options: {
     messages: [{ role: 'user', content: prompt } satisfies ChatMessage],
     signal: options.signal,
   });
+  // A summary cut by the output limit would replace the head of the conversation with half a summary.
+  if (answer.truncated) throw new Error('Le résumé a été tronqué par la limite de sortie — contexte inchangé.');
   const summary = answer.content.trim();
   if (!summary) throw new Error('Le modèle n’a renvoyé aucun résumé — contexte inchangé.');
   return [{ role: 'assistant', content: SUMMARY_PREFIX + summary }, ...tail];

@@ -32,7 +32,7 @@ function compactionOutcome(worker: Worker, compactionId: string): Promise<any> {
   });
 }
 
-type Mode = 'summary' | 'empty' | 'blank' | 'error' | 'hold';
+type Mode = 'summary' | 'empty' | 'blank' | 'error' | 'truncated' | 'hold';
 
 /** A fake model that records every request body and answers according to a switchable mode. */
 async function fakeModel(t: { after(fn: () => unknown): void }) {
@@ -46,7 +46,14 @@ async function fakeModel(t: { after(fn: () => unknown): void }) {
     request.on('end', () => {
       requests.push(JSON.parse(raw));
       const answer = () => {
-        if (mode === 'error') { response.writeHead(500, { 'content-type': 'application/json' }); response.end('{"error":"boom"}'); return; }
+        // 400: a failure that is not retried, so the test does not wait out the provider's 1 s + 3 s retries.
+        if (mode === 'error') { response.writeHead(400, { 'content-type': 'application/json' }); response.end('{"error":"boom"}'); return; }
+        // A summary cut by the output cap: a real HTTP 200 whose finish_reason is "length".
+        if (mode === 'truncated') {
+          response.writeHead(200, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ choices: [{ message: { content: '- décision : utiliser la bran' }, finish_reason: 'length' }] }));
+          return;
+        }
         const content = mode === 'empty' ? '' : mode === 'blank' ? '  \n ' : '- décision : utiliser la branche A\n- fichier modifié : notes.md';
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ choices: [{ message: { content }, finish_reason: 'stop' }] }));
@@ -198,6 +205,20 @@ test('worker::compact leaves the conversation untouched when the model returns n
   assert.equal(blank.kind, 'compact-failed');
   assert.match(blank.message, /Réponse vide/);
   assert.deepEqual(await stored(), history, 'a blank summary must never replace a real history');
+});
+
+test('worker::compact refuses a summary cut by the output limit: nothing replaced, nothing written to memory', async t => {
+  const { home, project, model, seed, stored, compact } = await setup(t);
+  const history = exchanges(5);
+  await seed(history);
+  model.mode = 'truncated';
+  const done = await (await compact()).outcome;
+  assert.equal(done.kind, 'compact-failed');
+  assert.match(done.message, /tronqué/);
+  assert.deepEqual(await stored(), history, 'a half summary must never replace the start of the conversation');
+  const listing = async (dir: string) => readdir(dir, { recursive: true }).catch(() => [] as string[]);
+  const all = [...await listing(home), ...await listing(join(project, '.openagent'))];
+  assert.equal(all.some(entry => String(entry).endsWith('memory.md')), false, `no memory written: ${JSON.stringify(all)}`);
 });
 
 test('compactMessages has its own guard: a blank summary from any provider is refused', async () => {

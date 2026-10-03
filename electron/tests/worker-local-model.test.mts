@@ -63,12 +63,14 @@ test('worker::send refuses an unknown/removed `localModel` id BEFORE anything st
   assert.deepEqual(await callWorker(worker, 'messages', { folder, branchId: 'main' }), []);
 });
 
-test('worker::compact with `localModel` really calls the local engine (not a remote provider) and replaces the transcript', { timeout: 60000 }, async t => {
+// The fixture is a toy model that never emits an end token: its summary always runs into the 8192-token output
+// cap, which the engine reports as stopReason "maxTokens". compactMessages refuses a summary cut that way, so
+// this is the end-to-end proof that (1) compaction really runs on the local engine, and (2) its truncation flag
+// reaches the guard: the conversation is left untouched instead of losing its head to half a summary.
+test('worker::compact with `localModel` really calls the local engine (not a remote provider); a summary cut at the output cap is refused and the transcript kept', { timeout: 60000 }, async t => {
   const { worker, folder, entry } = await setup(t);
-  await callWorker(worker, 'save-messages', {
-    folder, branchId: 'main',
-    messages: Array.from({ length: 8 }, (_, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content: `message ${i}` })),
-  });
+  const history = Array.from({ length: 8 }, (_, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content: `message ${i}` }));
+  await callWorker(worker, 'save-messages', { folder, branchId: 'main', messages: history });
   const { compactionId } = await callWorker(worker, 'compact', { folder, branchId: 'main', localModel: entry.id });
   const events: any[] = [];
   await new Promise<void>(resolve => {
@@ -77,5 +79,7 @@ test('worker::compact with `localModel` really calls the local engine (not a rem
     };
     worker.on('message', listener);
   });
-  assert.equal(events.at(-1).kind, 'compacted', JSON.stringify(events.at(-1)));
+  assert.equal(events.at(-1).kind, 'compact-failed', JSON.stringify(events.at(-1)));
+  assert.match(events.at(-1).message, /tronqué/);
+  assert.deepEqual(await callWorker(worker, 'messages', { folder, branchId: 'main' }), history);
 });

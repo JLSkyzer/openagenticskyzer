@@ -72,7 +72,9 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
     signal.throwIfAborted();
     emit?.({ type: 'turn', step });
     // `messages` keeps the saved shape (files beside the typed text); the model gets the expanded one, built here.
-    const answer = await provider.complete({ connection, messages: messages.map(message => toWireMessage(message as never) as unknown as ChatMessage), tools: schemas, signal, maxTokens: settings.reserved_tokens,
+    // No maxTokens: the provider applies its own cap (provider.mts::outputCap). reserved_tokens only sizes
+    // the context budget now (H1).
+    const answer = await provider.complete({ connection, messages: messages.map(message => toWireMessage(message as never) as unknown as ChatMessage), tools: schemas, signal,
       onDelta: text => emit?.({ type: 'delta', text }),
     });
     signal.throwIfAborted();

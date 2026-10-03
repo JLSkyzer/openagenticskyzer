@@ -123,3 +123,8 @@ test('a full round trip is stable: a real agent turn (assistant + tool_calls, th
   const history = historyFromMessages(messages);
   assert.deepEqual(history[2], { type: 'model', response: [{ type: 'functionCall', name: 'read_file', params: { path: 'a.txt' }, result: 'CONTENU-A' }] });
 });
+
+test('responseToMessage flags a reply cut at maxTokens as truncated — the engine\'s own finish_reason "length"', () => {
+  assert.deepEqual(responseToMessage({ response: 'abc', metadata: { stopReason: 'maxTokens' } }, () => 'x'), { role: 'assistant', content: 'abc', truncated: true });
+  assert.equal('truncated' in responseToMessage({ response: 'abc', metadata: { stopReason: 'eogToken' } }, () => 'x'), false);
+});

@@ -15,7 +15,12 @@ export type GgufHistoryItem =
   | { type: 'user'; text: string }
   | { type: 'model'; response: Array<string | GgufFunctionCall> };
 export interface GgufFunctionCall { type: 'functionCall'; name: string; params: unknown; result?: unknown }
-export interface GgufResponse { response: string; functionCalls?: readonly { functionName: string; params: unknown }[] }
+export interface GgufResponse {
+  response: string;
+  functionCalls?: readonly { functionName: string; params: unknown }[];
+  // node-llama-cpp 3.x: why generation stopped ("maxTokens" = the output cap was reached).
+  metadata?: { stopReason?: string };
+}
 
 /** OpenAI tool schemas → node-llama-cpp's `functions` option. `undefined` (not `{}`) when there are none:
  * an empty object still turns function-calling grammar ON with nothing to call. */
@@ -72,5 +77,7 @@ export function responseToMessage(response: GgufResponse, mintId: () => string):
   const tool_calls: ToolCall[] = (response.functionCalls ?? []).map(call => ({
     id: mintId(), type: 'function', function: { name: call.functionName, arguments: JSON.stringify(call.params) },
   }));
-  return { role: 'assistant', content: response.response, ...(tool_calls.length ? { tool_calls } : {}) };
+  // The engine's own finish_reason "length": the same flag a ChatProvider sets (provider.mts).
+  const truncated = response.metadata?.stopReason === 'maxTokens';
+  return { role: 'assistant', content: response.response, ...(tool_calls.length ? { tool_calls } : {}), ...(truncated ? { truncated: true } : {}) };
 }

@@ -36,9 +36,11 @@ test('provider decodes split UTF8/SSE and assembles tool arguments before exposi
 test('provider rejects incomplete streams and HTTP errors without echoing secrets', async () => {
   const { ChatProvider } = await import('../core/provider.mts');
   await assert.rejects(new ChatProvider(async () => fragmented(sse([{ choices: [{ delta: { content: 'partial' } }] }]))).complete({ connection, messages: [] }), /interrompu/i);
-  const provider = new ChatProvider(async () => new Response('fake-key echo', { status: 429, headers: { 'retry-after': '3' } }));
+  // A 400 (not retried): the body is shown, the key it echoes is masked. 429/Retry-After: provider-parity.test.mts.
+  const provider = new ChatProvider(async () => new Response('fake-key echo', { status: 400 }));
   await assert.rejects(provider.complete({ connection, messages: [] }), (e: any) => {
-    assert.equal(e.status, 429); assert.equal(e.retryAfter, 3);
+    assert.equal(e.status, 400); assert.equal(e.retryAfter, null);
+    assert.equal(e.message, 'Erreur du provider (400) : *** echo');
     assert.equal(e.message.includes('fake-key'), false); return true;
   });
 });

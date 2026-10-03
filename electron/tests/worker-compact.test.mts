@@ -85,8 +85,8 @@ async function setup(t: { after(fn: () => unknown): void }) {
   const model = await fakeModel(t);
   const seed = (messages: unknown[], branchId = 'main') => callWorker(worker, 'save-messages', { folder: project, branchId, messages });
   const stored = (branchId = 'main') => callWorker(worker, 'messages', { folder: project, branchId });
-  const compact = async (branchId = 'main') => {
-    const { compactionId } = await callWorker(worker, 'compact', { folder: project, branchId, connection: model.connection });
+  const compact = async (branchId = 'main', connection: Record<string, unknown> = model.connection) => {
+    const { compactionId } = await callWorker(worker, 'compact', { folder: project, branchId, connection });
     return { compactionId, outcome: compactionOutcome(worker, compactionId) };
   };
   return { worker, root, home, project, model, seed, stored, compact };
@@ -220,6 +220,75 @@ test('worker::compact refuses a summary cut by the output limit: nothing replace
   const listing = async (dir: string) => readdir(dir, { recursive: true }).catch(() => [] as string[]);
   const all = [...await listing(home), ...await listing(join(project, '.openagent'))];
   assert.equal(all.some(entry => String(entry).endsWith('memory.md')), false, `no memory written: ${JSON.stringify(all)}`);
+});
+
+// M3 for compaction: the summary request must fit its window like an agent request does. mistral has a
+// 16 384-token output cap and a 32 000-token window; the user's max_tokens narrows that window (H3).
+const estimateOf = async (body: any) => {
+  const { estimateRequestTokens } = await import('../core/request-context.mts');
+  return estimateRequestTokens('', body.tools ?? [], body.messages);
+};
+const longExchanges = (count: number) => Array.from({ length: count }, (_, i) => [say('user', `${i} ${'u'.repeat(800)}`), say('assistant', `${i} ${'a'.repeat(800)}`)]).flat();
+
+test('worker::compact lowers max_tokens to the room the window leaves beside the summary prompt', async t => {
+  const { worker, model, seed, compact } = await setup(t);
+  await callWorker(worker, 'save-global-settings', { patch: { max_tokens: 8000 } });
+  await seed(longExchanges(8));
+  const done = await (await compact('main', { ...model.connection, provider: 'mistral' })).outcome;
+  assert.equal(done.kind, 'compacted', JSON.stringify(done));
+  const [body] = model.requests;
+  const estimate = await estimateOf(body);
+  assert.ok(estimate > 2000 && estimate < 6000, `a long prompt (${estimate} tokens)`);
+  assert.equal(body.max_tokens, 8000 - estimate, 'the 16 384 cap lowered to what the 8 000-token window leaves');
+  assert.ok(estimate + body.max_tokens <= 8000, 'prompt + output fit in the window');
+});
+
+test('worker::compact keeps the full output cap when the window has room for it', async t => {
+  const { model, seed, compact } = await setup(t);
+  await seed(exchanges(5));
+  const done = await (await compact('main', { ...model.connection, provider: 'mistral' })).outcome;
+  assert.equal(done.kind, 'compacted');
+  assert.equal(model.requests[0].max_tokens, 16384);
+});
+
+test('worker::compact sends no max_tokens to a provider with no output cap, whatever the window', async t => {
+  const { worker, model, seed, compact } = await setup(t);
+  await callWorker(worker, 'save-global-settings', { patch: { max_tokens: 8000 } });
+  await seed(longExchanges(8));
+  const done = await (await compact('main', { ...model.connection, provider: 'ollama' })).outcome;
+  assert.equal(done.kind, 'compacted', JSON.stringify(done));
+  assert.equal(Object.hasOwn(model.requests[0], 'max_tokens'), false);
+});
+
+test('worker::compact refuses, without calling the provider, a conversation too long for the window; the transcript is byte-identical', async t => {
+  const { worker, project, model, seed, compact } = await setup(t);
+  await callWorker(worker, 'save-global-settings', { patch: { max_tokens: 8000 } });
+  await seed(longExchanges(30));
+  const file = join(project, '.openagent', 'conversations.json');
+  const before = await readFile(file);
+  const done = await (await compact('main', { ...model.connection, provider: 'mistral' })).outcome;
+  assert.equal(done.kind, 'compact-failed');
+  assert.match(done.message, /Contexte plein : la conversation est trop longue pour être compactée avec ce modèle/);
+  assert.equal(model.requests.length, 0, 'no request reached the provider');
+  assert.deepEqual(await readFile(file), before, 'the saved transcript is byte-identical');
+});
+
+test('compactMessages: a window that leaves exactly no room refuses; one token of room asks for one token', async () => {
+  const connection = { provider: 'mistral', model: 'm', base_url: 'http://x', api_key: '' };
+  const seen: any[] = [];
+  const provider = {
+    outputCap: () => 16384,
+    complete: async (options: any) => { seen.push(options); return { role: 'assistant' as const, content: 'ok' }; },
+  };
+  const { estimateRequestTokens } = await import('../core/request-context.mts');
+  const { buildSummaryPrompt, buildHistoryText, planCompaction } = await import('../core/compact.mts');
+  const messages = exchanges(5);
+  const prompt = buildSummaryPrompt(buildHistoryText(planCompaction(messages).head));
+  const estimate = estimateRequestTokens('', [], [{ role: 'user', content: prompt }]);
+  await assert.rejects(compactMessages({ provider, connection, messages, contextWindow: estimate }), /trop longue/);
+  assert.equal(seen.length, 0);
+  await compactMessages({ provider, connection, messages, contextWindow: estimate + 1 });
+  assert.equal(seen[0].maxTokens, 1);
 });
 
 test('compactMessages has its own guard: a blank summary from any provider is refused', async () => {

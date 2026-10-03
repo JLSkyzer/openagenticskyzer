@@ -124,6 +124,15 @@ function compactingIn(folder) {
   return [...active.values()].some(run => run.kind === 'compact' && resolve(String(run.folder)) === target);
 }
 
+/** The window a request must fit in (H3): the built-in engine's real context size (capped by max_tokens when the
+ * user set one), else max_tokens or the provider's table entry (core/context-budget.mts). Shared by agent turns
+ * and compaction, so the two can never size a request differently. */
+async function windowFor(provider, connection, maxTokens) {
+  return provider.contextWindow
+    ? Math.min(await provider.contextWindow(), maxTokens ?? Number.POSITIVE_INFINITY)
+    : contextWindow(connection?.provider ?? null, maxTokens);
+}
+
 /**
  * Summarises a branch in the background and reports through events (like `send`: the IPC round trip
  * is capped at 30 s, a summary is not). Nothing is written unless the model answered AND the branch
@@ -133,7 +142,9 @@ async function runCompaction(compactionId, folder, branchId, before, connection,
   const post = message => parentPort.postMessage({ type: 'event', event: 'agent', runId: compactionId, ...message });
   let outcome;
   try {
-    const after = await compactMessages({ provider, connection, messages: before, signal: active.get(compactionId).controller.signal });
+    // max_tokens is a global setting only (core/settings.mts), so the global config is the whole answer here.
+    const window = await windowFor(provider, connection, (await settings.global()).max_tokens);
+    const after = await compactMessages({ provider, connection, messages: before, contextWindow: window, signal: active.get(compactionId).controller.signal });
     await conversations.replaceIfUnchanged(folder, branchId, before, after);
     // context_bar.py::trigger_compact parity: persist the summary itself into the project's
     // memory so it survives a later clear-history/re-compaction. Awaited (not fire-and-forget)
@@ -361,11 +372,7 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
       signal.addEventListener('abort', () => { pendingPermissions.delete(requestId); reject(signal.reason); }, { once: true });
       post({ kind: 'permission-request', requestId, tool: request.tool, category: toolCategory.get(request.tool), arguments: request.arguments });
     });
-    // The window the request must fit in (H3): the built-in engine's real context size (capped by max_tokens
-    // when the user set one), else max_tokens or the provider's table entry (core/context-budget.mts).
-    const contextTokens = provider.contextWindow
-      ? Math.min(await provider.contextWindow(), effective.max_tokens ?? Number.POSITIVE_INFINITY)
-      : contextWindow(connection?.provider ?? null, effective.max_tokens);
+    const contextTokens = await windowFor(provider, connection, effective.max_tokens);
     const result = await runAgent({
       provider, connection, messages: collected, instructions, tools, contextWindow: contextTokens,
       settings: agentSettings,

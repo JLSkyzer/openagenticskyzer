@@ -115,6 +115,9 @@ async function main() {
     // ── Proof 4: Général / Contexte / Permissions save to the real config.json ─────
     await click('#oa-settings-btn');
     await untilExists('[data-testid="oa-settings-dialog"]');
+    // The panel renders only once the worker has answered global-settings: clicking as soon as the dialog
+    // exists raced it (null.click, 5 runs out of 22 on 2026-10-03).
+    await untilExists('[data-setting="agent_mode"][value="plan"]');
     await click('[data-setting="agent_mode"][value="plan"]');
     await click('[data-setting="animations"]');
     await setValue('[data-setting="hf_token"]', HF);

@@ -7,7 +7,7 @@ import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
 import { FoldersService } from './core/folders.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
-import { completeLocal, engineContextSize } from './core/local-engine.mts';
+import { localProvider } from './core/local-engine.mts';
 import { offeredTools, runAgent, TOOL_NAME_PATTERN } from './core/agent.mts';
 import { basePrompt } from './core/system-prompt.mts';
 import { ChatProvider } from './core/provider.mts';
@@ -299,18 +299,14 @@ function lastAssistantSummary(messages) {
 /** Runs one agent turn to completion, streaming events to the renderer via parentPort. */
 // "réveiller" a .gguf model: `localModel` (a gguf-library id, never a secret — unlike `connection`, which
 // main.cjs never injects when this is set, see main.cjs's resolveSendPayload) resolves to a real file path
-// and gets an object shaped exactly like ChatProvider (a `.complete()` method) — agent.mts/compactMessages
-// never know the difference. An id whose file is gone (removed from the library, or moved) fails clearly,
-// before anything starts.
+// and gets an object shaped like ChatProvider (`.complete()`, `.outputCap()`) — agent.mts/compactMessages
+// never know the difference; its `.contextWindow()` is the engine's real context size (H3). An id whose file
+// is gone (removed from the library, or moved) fails clearly, before anything starts.
 async function providerFor(connection, localModel) {
   if (!localModel) return new ChatProvider(undefined, { idleTimeoutMs: PROVIDER_IDLE_MS });
   const modelPath = await ggufLibrary.resolve(localModel);
   if (!modelPath) throw new Error('Modèle local introuvable : il a peut-être été retiré de la bibliothèque. Choisis-en un autre.');
-  return {
-    complete: options => completeLocal({ modelPath, messages: options.messages, tools: options.tools, signal: options.signal, onDelta: options.onDelta, maxTokens: options.maxTokens }),
-    // The budget of a turn on the built-in engine is its real context size (H3), not a provider table entry.
-    contextWindow: () => engineContextSize(modelPath),
-  };
+  return localProvider(modelPath);
 }
 
 async function runSend(runId, folder, branchId, text, connection, keep, attachments = [], provider) {

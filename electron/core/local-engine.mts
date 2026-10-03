@@ -100,3 +100,16 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
   });
   return responseToMessage(response, mintCallId);
 }
+
+/** The built-in engine shaped like `ChatProvider` for agent.mts (worker.mjs `providerFor`): its window is the
+ * context size it really runs with (H3), its output cap LOCAL_OUTPUT_CAP; the agent lowers the cap to what the
+ * window leaves after the request (M3) and passes it as `maxTokens`. */
+export function localProvider(modelPath: string) {
+  return {
+    complete: (options: Omit<LocalCompletionOptions, 'modelPath'>) => completeLocal({
+      modelPath, messages: options.messages, tools: options.tools, signal: options.signal, onDelta: options.onDelta, maxTokens: options.maxTokens,
+    }),
+    contextWindow: () => engineContextSize(modelPath),
+    outputCap: (): number | undefined => LOCAL_OUTPUT_CAP,
+  };
+}

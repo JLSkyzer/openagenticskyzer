@@ -142,6 +142,11 @@ export class ChatProvider {
     this.retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
   }
 
+  /** The output cap this provider applies to `connection` when the caller sets no maxTokens (OUTPUT_CAPS). */
+  outputCap(connection: ModelConnection): number | undefined {
+    return outputCap(connection.provider);
+  }
+
   async complete(options: CompletionOptions): Promise<ChatMessage & { content: string }> {
     const { connection, messages, tools } = options;
     if (!connection.model.trim()) throw new Error('Choisissez un modèle dans les paramètres de connexion');

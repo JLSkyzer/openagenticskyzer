@@ -1,7 +1,6 @@
-import { ChatProvider } from './provider.mts';
-import type { ChatMessage, ModelConnection } from './provider.mts';
+import type { ChatMessage, CompletionOptions, ModelConnection } from './provider.mts';
 import { object } from './json-store.mts';
-import { fitToBudget, requestMessages } from './request-context.mts';
+import { estimateRequestTokens, fitToBudget, requestMessages } from './request-context.mts';
 import { contextBudget } from './context-budget.mts';
 
 export interface AgentTool {
@@ -14,8 +13,14 @@ export interface AgentSettings {
   mode: 'ask' | 'auto' | 'plan'; permission_mode: 'demander' | 'auto' | 'strict';
   files_ask?: boolean; shell_ask?: boolean; search_ask?: boolean; reserved_tokens?: number;
 }
+/** What the agent needs from a provider: ChatProvider (HTTP) or the built-in engine (local-engine.mts::localProvider). */
+export interface AgentProvider {
+  complete(options: CompletionOptions): Promise<ChatMessage & { content: string }>;
+  // The output cap applied to `connection` when no maxTokens is passed; undefined = none (ollama).
+  outputCap?(connection: ModelConnection): number | undefined;
+}
 export interface AgentOptions {
-  provider: ChatProvider; connection: ModelConnection; messages: ChatMessage[]; instructions: string;
+  provider: AgentProvider; connection: ModelConnection; messages: ChatMessage[]; instructions: string;
   tools: AgentTool[]; settings: AgentSettings; signal?: AbortSignal; maxSteps?: number;
   // The model's context window in tokens (core/context-budget.mts). Absent: no budget is applied.
   contextWindow?: number;
@@ -89,11 +94,17 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
     emit?.({ type: 'turn', step });
     // `messages` keeps the saved shape (files beside the typed text); the request is built here (H3): earlier
     // turns condensed, the turn in progress whole with its files expanded, fitted to the budget — or
-    // CONTEXT_FULL, sending nothing. No maxTokens: the provider applies its own cap (provider.mts::outputCap);
-    // reserved_tokens only sizes the context budget now (H1).
+    // CONTEXT_FULL, sending nothing. reserved_tokens only sizes that budget (H1).
     const outgoing = requestMessages(messages.slice(1));
     const fitted = budgetTokens === undefined ? outgoing : fitToBudget(outgoing, { system: instructions, tools: schemas, budgetTokens });
+    // M3: the output asked for must fit in the window beside the request — the provider's cap (H1), lowered to
+    // what the window leaves after the estimated request, never below 1. No window known, or no cap (ollama):
+    // nothing is passed and the provider does as before.
+    const cap = options.contextWindow === undefined ? undefined : provider.outputCap?.(connection);
+    const maxTokens = cap === undefined ? undefined
+      : Math.max(1, Math.min(cap, options.contextWindow! - estimateRequestTokens(instructions, schemas, fitted)));
     const answer = await provider.complete({ connection, messages: [messages[0], ...fitted], tools: schemas, signal,
+      ...(maxTokens === undefined ? {} : { maxTokens }),
       onDelta: text => emit?.({ type: 'delta', text }),
     });
     signal.throwIfAborted();

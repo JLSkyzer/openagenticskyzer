@@ -177,3 +177,40 @@ test('worker::send never rewrites the saved conversation when the turn fails bef
   const persisted = await callWorker(worker, 'messages', { folder: project, branchId: 'main' });
   assert.deepEqual(persisted.map((m: any) => m.content), ['bonjour', 'salut']);
 });
+
+// M3 through the real worker: the window is the user's max_tokens (H3), the cap mistral's 16 384 (H1); the
+// max_tokens sent is what the window leaves after the request the provider really received.
+test('worker::send asks for no more output than the window leaves beside the real request', async t => {
+  const { estimateRequestTokens } = await import('../core/request-context.mts');
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-send-cap-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  const bodies: any[] = [];
+  const server = createServer((request, response) => {
+    let raw = '';
+    request.on('data', chunk => { raw += chunk; });
+    request.on('end', () => {
+      bodies.push(JSON.parse(raw));
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ choices: [{ message: { content: 'salut' }, finish_reason: 'stop' }] }));
+    });
+  });
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
+  const port = (server.address() as { port: number }).port;
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  t.after(() => worker.terminate());
+  await callWorker(worker, 'save-global-settings', { patch: { max_tokens: 8000 } });
+  const connection = { provider: 'mistral', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const { events, stop } = collectAgentEvents(worker, runId);
+  await waitUntilDone(events);
+  stop();
+  assert.equal(events.at(-1).kind, 'done');
+  const [body] = bodies;
+  const estimate = estimateRequestTokens(body.messages[0].content, body.tools ?? [], body.messages.slice(1));
+  assert.ok(estimate > 1000, `the real system prompt and tool schemas weigh something (${estimate} tokens)`);
+  assert.equal(body.max_tokens, 8000 - estimate, 'the 16 384 cap lowered to the room left in the 8 000-token window');
+});

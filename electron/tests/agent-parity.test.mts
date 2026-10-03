@@ -10,6 +10,7 @@ const { ChatProvider } = await import('../core/provider.mts');
 const { workspaceTools } = await import('../core/workspace.mts');
 const { shellTools } = await import('../core/shell-tool.mts');
 const { defineTool } = await import('../core/tool-kit.mts');
+const { estimateRequestTokens } = await import('../core/request-context.mts');
 
 /** Every assistant tool call's `arguments` that is not a JSON object: what a provider that parses them answers 400 to. */
 function unreadableArguments(body: any): string[] {
@@ -131,4 +132,28 @@ test('tool arguments: lenient numbers, extra keys dropped, and a refusal that na
     'Erreur : Arguments invalides pour run_command : command est requis',
     'Erreur : Arguments invalides pour run_command : JSON illisible',
   ]);
+});
+
+// M3: the output requested is reserved in the window. Without it, a large prompt plus the full cap could exceed
+// the window (mistral: 32 000 window, 16 384 cap) and the provider answered 400.
+test('the max_tokens sent is the output cap, reduced to what the window leaves after the estimated request', async t => {
+  const { bodies, connection } = await scriptedModel(t, () => textAnswer('ok'));
+  const user = [{ role: 'user' as const, content: 'écris' }];
+  const run = (instructions: string, contextWindow?: number, provider = 'openrouter') =>
+    runAgent({ provider: new ChatProvider(), connection: { ...connection, provider }, messages: user, instructions, tools: [], settings: auto, confirm: async () => true, contextWindow });
+  const big = 'x'.repeat(40_000);
+  await run(big, 20_000);
+  const estimate = estimateRequestTokens(big, [], user);
+  assert.ok(estimate > 3_616, 'the prompt leaves less than the 16 384 cap');
+  assert.equal(bodies[0].max_tokens, 20_000 - estimate, 'a large prompt: reduced to the room left in the window');
+  await run('court', 128_000);
+  assert.equal(bodies[1].max_tokens, 16_384, 'a small prompt: the full cap');
+  await run('court', 32_000, 'mistral');
+  assert.equal(bodies[2].max_tokens, 16_384);
+  await run(big, estimateRequestTokens(big, [], user));
+  assert.equal(bodies[3].max_tokens, 1, 'never below 1, even when the request fills the window');
+  await run(big, 20_000, 'ollama');
+  assert.equal('max_tokens' in bodies[4], false, 'no cap for ollama: still nothing sent');
+  await run(big);
+  assert.equal(bodies[5].max_tokens, 16_384, 'no window known: the cap of the provider, as before');
 });

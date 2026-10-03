@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize } from '../core/local-engine.mts';
+import { completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, localProvider } from '../core/local-engine.mts';
+import { runAgent, TRUNCATED_NOTICE } from '../core/agent.mts';
+import { estimateRequestTokens } from '../core/request-context.mts';
 
 // Real node-llama-cpp, real tiny GGUF (llama.cpp's own CI asset, 1.1 MB, stories260K — a toy model: its
 // text is low quality, but the MECHANICS (load, stream, abort, unload) are exactly what a real model uses.
@@ -68,6 +70,26 @@ test('toGgufFunctions rejects nothing real: a genuine tool schema does not crash
 
 test('the built-in engine is capped at 8192 output tokens, like the local HTTP servers in Python\'s table', () => {
   assert.equal(LOCAL_OUTPUT_CAP, 8192);
+});
+
+// M3 on the built-in engine: the output requested is min(8192, window − estimated request). The toy model never
+// ends by itself, so the reply runs to whatever cap it was given: 8192 tokens before the fix, a few dozen here.
+test('a turn on the built-in engine asks for no more output than its window leaves (the provider the worker uses)', { timeout: 180000 }, async t => {
+  t.after(() => disposeEngine());
+  const provider = localProvider(modelPath);
+  assert.equal(provider.outputCap(), LOCAL_OUTPUT_CAP);
+  const messages = [{ role: 'user' as const, content: 'Once upon a time' }];
+  const room = 24;
+  const result = await runAgent({
+    provider, connection: { provider: 'local', model: 'gguf', base_url: '', api_key: '' }, messages, instructions: 'Tu es un conteur.', tools: [],
+    settings: { mode: 'auto', permission_mode: 'auto' }, confirm: async () => true,
+    contextWindow: estimateRequestTokens('Tu es un conteur.', [], messages) + room,
+  });
+  const reply = String(result.at(-1)?.content);
+  assert.ok(reply.endsWith(TRUNCATED_NOTICE), 'cut by the reduced cap');
+  const text = reply.slice(0, -TRUNCATED_NOTICE.length).trimEnd();
+  const longest = 32; // no token of this 512-token vocabulary is longer
+  assert.ok(text.length <= room * longest, `at most ${room} tokens of text, got ${text.length} characters`);
 });
 
 test('engineContextSize loads the model and reports the context size the request budget must use', { timeout: 60000 }, async t => {

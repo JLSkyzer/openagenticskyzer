@@ -33,7 +33,8 @@ function indexingSettled(worker: Worker, folder: string): Promise<any> {
   });
 }
 
-test('worker::activate_folder records the folder in history and returns it with the chat history', async t => {
+// timeout: bounds the wait for the background indexing below, like the index-status tests.
+test('worker::activate_folder records the folder in history and returns it with the chat history', { timeout: 30000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-folders-'));
   // Worker terminated before the dir is removed, in one hook: see teardown.mts.
   removeAtEnd(t, root);

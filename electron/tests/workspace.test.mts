@@ -116,15 +116,53 @@ test('read_file says which lines it shows and where to resume when it does not s
   assert.equal(await invoke('read_file', { path: 'short.txt' }), '1|un\n2|deux\n3|trois', 'a file shown whole is unchanged');
 });
 
-test('read_file resumes at the line it cut when one line alone exceeds the character limit, and after the last whole line otherwise', async t => {
+test('read_file never points back at the line it cut: the resume offset always moves forward, and a cut line is announced', async t => {
   const { a, invoke } = await fixture(t);
   await writeFile(join(a, 'over.txt'), ['court', 'y'.repeat(60000), 'fin'].join('\n'));
   const second = await invoke('read_file', { path: 'over.txt', offset: 2 });
   assert.ok(second.length <= 50000, `the over-long line is shown cut, inside the limit (${second.length})`);
   assert.ok(second.startsWith('[Lignes 2–2 sur 3]\n2|yyyy'), second.slice(0, 40));
-  assert.ok(second.endsWith('[Tronqué : relis avec offset=2]'), 'resume at the cut line, not after it');
+  const rows = second.split('\n');
+  const shownChars = rows[1].length - '2|'.length;
+  assert.ok(shownChars > 0 && shownChars < 60000, String(shownChars));
+  assert.equal(rows.at(-2), `[Ligne 2 coupée : ${shownChars} caractères affichés sur 60000 ; la suite de cette ligne n'est pas lisible avec read_file]`, 'the note comes just before the marker');
+  assert.equal(rows.at(-1), '[Tronqué : relis avec offset=3]', 'moves past the cut line instead of looping on it');
+  assert.equal(second.includes('grep_file'), false);
   const whole = await invoke('read_file', { path: 'over.txt' });
   assert.ok(whole.startsWith('[Lignes 1–1 sur 3]\n1|court\n[Tronqué'), whole.slice(0, 60));
   assert.ok(whole.endsWith('[Tronqué : relis avec offset=2]'), 'the line that did not fit at all is the next one to read');
+  assert.equal(whole.includes('coupée'), false, 'a line that is not shown at all is not announced as cut');
   assert.ok(whole.length < 200, 'the over-long line is not shown when it is not the first');
+  for (const [out, requested] of [[second, 2], [whole, 1]] as const) {
+    assert.ok(Number(/offset=(\d+)\]$/.exec(out)![1]) > requested, 'the marker always moves forward');
+  }
+});
+
+test('read_file: an over-long last line gets the note and no marker, since nothing follows it', async t => {
+  const { a, invoke } = await fixture(t);
+  await writeFile(join(a, 'tail.txt'), ['court', 'z'.repeat(60000)].join('\n'));
+  const out = await invoke('read_file', { path: 'tail.txt', offset: 2 });
+  const rows = out.split('\n');
+  assert.equal(rows[0], '[Lignes 2–2 sur 2]');
+  assert.match(rows.at(-1)!, /^\[Ligne 2 coupée : \d+ caractères affichés sur 60000 ; la suite de cette ligne n'est pas lisible avec read_file\]$/);
+  assert.equal(out.includes('Tronqué'), false, 'no line after it: no resume marker');
+  assert.ok(out.length <= 50000, String(out.length));
+});
+
+test('a final newline does not make a phantom last line, in read_file and view_file', async t => {
+  const { a, invoke } = await fixture(t);
+  const rows = (n: number) => Array.from({ length: n }, (_, i) => `l${i + 1}`).join('\n') + '\n';
+  await writeFile(join(a, 'k1000.txt'), rows(1000));
+  const whole = await invoke('read_file', { path: 'k1000.txt' });
+  assert.ok(whole.startsWith('1|l1\n') && whole.endsWith('\n1000|l1000'), 'read whole: no header, no marker');
+  assert.equal(whole.includes('Tronqué') || whole.includes('[Lignes'), false);
+  await writeFile(join(a, 'k1001.txt'), rows(1001));
+  const part = (await invoke('read_file', { path: 'k1001.txt' })).split('\n');
+  assert.equal(part[0], '[Lignes 1–1000 sur 1001]');
+  assert.equal(part.at(-1), '[Tronqué : relis avec offset=1001]');
+  assert.equal(JSON.parse(await invoke('view_file', { path: 'k1000.txt' })).lines, 1000);
+  await writeFile(join(a, 'one.txt'), 'seul');
+  assert.equal(JSON.parse(await invoke('view_file', { path: 'one.txt' })).lines, 1);
+  await writeFile(join(a, 'empty.txt'), '');
+  assert.equal(await invoke('read_file', { path: 'empty.txt' }), '1|', 'an empty file keeps its single empty line, as before');
 });

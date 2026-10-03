@@ -42,6 +42,12 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
     if (bytes.includes(0)) throw new Error('Fichier binaire');
     return { file, text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), bytes: info.size };
   };
+  /** Lines of a text, without the empty element a final newline would add: "a\nb\n" has 2 lines, not 3. */
+  const splitLines = (text: string) => {
+    const lines = text.split(/\r?\n/);
+    if (lines.length > 1 && lines.at(-1) === '') lines.pop();
+    return lines;
+  };
   const pathField: ParamRule = { type: 'string', description: 'Chemin dans le projet actif' };
   // read_file's cap, header and resume marker included: agent.mts's own 50 000-character cut must never
   // swallow the marker that tells the model where to resume.
@@ -115,21 +121,21 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
     make('read_file', 'Lire un fichier texte avec numéros de lignes.', 'read', { path: pathField, offset: { type: 'integer' }, limit: { type: 'integer' } }, ['path'], async (args, signal) => {
       const { text } = await textFile(args.path as string, signal);
       const offset = Math.max(1, Number(args.offset ?? 1)); const limit = Math.max(1, Number(args.limit ?? 1000));
-      const lines = text.split(/\r?\n/);
+      const lines = splitLines(text);
       const total = lines.length;
       if (offset > total) return `[Le fichier a ${total} lignes : rien à partir de la ligne ${offset}]`;
-      // Room for "[Lignes X–Y sur N]\n" and "\n[Tronqué : relis avec offset=Z]" inside the 50 000 characters.
-      const room = READ_FILE_MAX_CHARS - 120;
+      // Room for "[Lignes X–Y sur N]\n", the cut-line note and "\n[Tronqué : relis avec offset=Z]" inside the 50 000 characters.
+      const room = READ_FILE_MAX_CHARS - 300;
       const shown: string[] = [];
       let size = 0;
       let cut = false;
-      let cutInsideLine = false;
+      let cutLine = 0;
       for (let index = offset - 1; index < Math.min(total, offset - 1 + limit); index++) {
         const line = `${index + 1}|${lines[index]}`;
         const cost = line.length + (shown.length ? 1 : 0);
         if (size + cost > room) {
           // A single line longer than the whole budget is shown cut rather than not at all.
-          if (!shown.length) { shown.push(line.slice(0, room)); cutInsideLine = true; }
+          if (!shown.length) { shown.push(line.slice(0, room)); cutLine = index + 1; }
           cut = true;
           break;
         }
@@ -138,13 +144,17 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
       }
       const last = offset + shown.length - 1;
       if (offset === 1 && last >= total && !cut) return shown.join('\n');
-      // The model must know it did not see everything, and where to go on (audit M3). Resume at the line
-      // that was cut when it was only partly shown, otherwise at the first line not shown.
-      const resume = last < total || cut ? `\n[Tronqué : relis avec offset=${cutInsideLine ? last : last + 1}]` : '';
-      return `[Lignes ${offset}–${last} sur ${total}]\n${shown.join('\n')}${resume}`;
+      // The model must know it did not see everything, and where to go on (audit M3). The resume offset always
+      // moves forward: pointing back at a cut line would return the same prefix, and the rest of an over-long
+      // line is not reachable with the file tools, so the note says so.
+      const note = cutLine
+        ? `\n[Ligne ${cutLine} coupée : ${shown[0].length - `${cutLine}|`.length} caractères affichés sur ${lines[cutLine - 1].length} ; la suite de cette ligne n'est pas lisible avec read_file]`
+        : '';
+      const resume = last < total ? `\n[Tronqué : relis avec offset=${last + 1}]` : '';
+      return `[Lignes ${offset}–${last} sur ${total}]\n${shown.join('\n')}${note}${resume}`;
     }),
     make('view_file', 'Voir la taille, le nombre de lignes et les dix premières lignes.', 'read', { path: pathField }, ['path'], async (args, signal) => {
-      const { text, bytes } = await textFile(args.path as string, signal); const lines = text.split(/\r?\n/);
+      const { text, bytes } = await textFile(args.path as string, signal); const lines = splitLines(text);
       return JSON.stringify({ bytes, lines: lines.length, preview: lines.slice(0, 10).join('\n') });
     }),
     make('list_dir', 'Lister les entrées visibles d’un dossier du projet.', 'read', { path: pathField }, [], async args => {

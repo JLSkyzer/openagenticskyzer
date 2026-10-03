@@ -91,6 +91,7 @@ const EXPECTED_CATEGORIES: Record<string, string> = {
   git_add: 'write', git_commit: 'write', git_checkout: 'write', git_create_branch: 'write', git_stash: 'write', git_stash_pop: 'write',
   // Remote operations always ask (like a shell command), even when file writes are pre-approved.
   git_push: 'shell', git_pull: 'shell',
+  analyze_project_and_init: 'write',
   run_command: 'shell',
   fetch_url: 'network', internet_search: 'network',
 };
@@ -100,9 +101,10 @@ test('every registered workspace tool has a valid, expected permission category'
   t.after(() => rm(root, { recursive: true, force: true }));
   const { memoryTools } = await import('../core/memory-tools.mts');
   const { gitTools } = await import('../core/git-tools.mts');
+  const { projectTools } = await import('../core/project-analyzer.mts');
   const { shellTools } = await import('../core/shell-tool.mts');
   const { webTools } = await import('../core/web-tools.mts');
-  const tools = [...await workspaceTools(root, ''), ...await memoryTools(root, join(root, 'home')), ...await gitTools(root), ...await shellTools(root), ...await webTools()];
+  const tools = [...await workspaceTools(root, ''), ...await memoryTools(root, join(root, 'home')), ...await gitTools(root), ...projectTools(root), ...await shellTools(root), ...await webTools()];
   const valid = ['read', 'write', 'shell', 'network', 'extension'];
   for (const entry of tools) {
     assert.ok(valid.includes(entry.category), `${entry.name} has an unknown category`);

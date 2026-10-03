@@ -62,6 +62,7 @@ import './data-dir.test.mts';
 import './worker-data-dir.test.mts';
 import './project-analyzer.test.mts';
 import './worker-project-analyzer.test.mts';
+import './worker-project-tool.test.mts';
 import './mcp-config.test.mts';
 import './mcp-client.test.mts';
 import './worker-mcp.test.mts';

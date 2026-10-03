@@ -1,6 +1,8 @@
 import { readdir, readFile, open, unlink, rename, stat } from 'node:fs/promises';
 import { join, relative, sep, extname, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { AgentTool } from './agent.mts';
+import { defineTool } from './tool-kit.mts';
 
 const IGNORED_DIRECTORIES = new Set(['.git', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build']);
 const TEST_DIR_NAMES = new Set(['tests', 'test', '__tests__', 'spec']);
@@ -253,4 +255,21 @@ export async function initializeProject(folder: string, overwrite = false): Prom
 
   const languages = analysis.languages.join(', ') || 'Non détecté';
   return { success: true, message: `OPENAGENT.md généré dans ${folder} (${languages}).` };
+}
+
+/**
+ * The agent tool (Python parity: agent.py::analyze_project_and_init). Unlike the Python tool it takes NO
+ * folder: it acts on the active project only, the folder the tools are registered for, so the model can
+ * never write OPENAGENT.md anywhere else (an extra `folder` key is dropped by the argument validation).
+ * initializeProject takes no abort signal: defineTool refuses an already-aborted call, and the scan and
+ * the one small write that follow are not interruptible.
+ */
+export function projectTools(folder: string): AgentTool[] {
+  return [defineTool({
+    name: 'analyze_project_and_init',
+    description: "Analyse le projet actif et ÉCRIT OPENAGENT.md avec les instructions de sa stack. Si OPENAGENT.md existe déjà, demande d'abord à l'utilisateur son accord explicite : n'appelle avec overwrite: true qu'après cet accord. Le nouveau OPENAGENT.md devient prioritaire sur un éventuel CLAUDE.md.",
+    category: 'write',
+    properties: { overwrite: { type: 'boolean', description: "true pour remplacer un OPENAGENT.md existant (seulement après l'accord explicite de l'utilisateur) ; false par défaut" } },
+    execute: async args => (await initializeProject(folder, args.overwrite === true)).message,
+  })];
 }

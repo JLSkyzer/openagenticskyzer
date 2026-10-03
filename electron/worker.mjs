@@ -28,7 +28,7 @@ import { cleanupOldFolders } from './core/cleanup.mts';
 import { gitStatus } from './core/git-status.mts';
 import { testHfToken } from './core/hf-token.mts';
 import { migrateDataDir, resolveDataHome } from './core/data-dir.mts';
-import { initializeProject } from './core/project-analyzer.mts';
+import { initializeProject, projectTools } from './core/project-analyzer.mts';
 import { McpConfigStore, readProjectMcpConfig, mergeServerConfigs, redactSecrets, expandServerPlaceholders } from './core/mcp-config.mts';
 import { mcpTools } from './core/mcp-client.mts';
 import { searchTools } from './core/search-tools.mts';
@@ -188,6 +188,7 @@ async function nonPluginTools(folder, effective, projectTrust) {
     ...await workspaceTools(folder, effective.ignored_patterns),
     ...await memoryTools(folder, dataHome),
     ...await gitTools(folder),
+    ...projectTools(folder),
     ...await shellTools(folder),
     ...await webTools(),
     ...await searchTools(folder, dataHome),

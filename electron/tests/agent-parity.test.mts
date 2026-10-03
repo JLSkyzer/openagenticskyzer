@@ -11,7 +11,21 @@ const { workspaceTools } = await import('../core/workspace.mts');
 const { shellTools } = await import('../core/shell-tool.mts');
 const { defineTool } = await import('../core/tool-kit.mts');
 
-/** A real OpenAI-compatible server: request N is answered with next(N). */
+/** Every assistant tool call's `arguments` that is not a JSON object: what a provider that parses them answers 400 to. */
+function unreadableArguments(body: any): string[] {
+  const bad: string[] = [];
+  for (const message of body.messages ?? []) {
+    for (const call of message.role === 'assistant' ? message.tool_calls ?? [] : []) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(call.function.arguments); } catch { bad.push(call.function.arguments); continue; }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) bad.push(call.function.arguments);
+    }
+  }
+  return bad;
+}
+
+/** A real OpenAI-compatible server: request N is answered with next(N). Like providers that parse the assistant's
+ * tool-call arguments, it refuses (400) a request carrying arguments that are not a JSON object. */
 async function scriptedModel(t: any, next: (index: number) => unknown) {
   const bodies: any[] = [];
   const server = createServer((request, response) => {
@@ -19,6 +33,12 @@ async function scriptedModel(t: any, next: (index: number) => unknown) {
     request.on('data', chunk => { raw += chunk; });
     request.on('end', () => {
       bodies.push(JSON.parse(raw));
+      const bad = unreadableArguments(bodies.at(-1));
+      if (bad.length) {
+        response.writeHead(400, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: { message: `invalid tool call arguments: ${bad[0]}` } }));
+        return;
+      }
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify(next(bodies.length - 1)));
     });
@@ -64,6 +84,11 @@ test('a tool call cut by the output limit is never executed: the model gets the 
   assert.deepEqual(toolResults(bodies[1]), ['Erreur : arguments tronqués par la limite de sortie — découpe le travail en appels plus petits']);
   assert.equal(bodies[1].messages.find((m: any) => m.tool_calls).content, TRUNCATED_NOTICE);
   assert.equal(result.at(-1)?.content, 'Je découpe en plusieurs fichiers.');
+  // Only the request is repaired: the cut call went out as "{}", the transcript (what the worker saves) and the screen keep it as it came.
+  const cut = '{"path":"composant.tsx","content":"export default function';
+  assert.equal(bodies[1].messages.find((m: any) => m.tool_calls).tool_calls[0].function.arguments, '{}');
+  assert.equal(result.find(m => m.tool_calls)?.tool_calls?.[0].function.arguments, cut, 'the saved transcript keeps the original cut arguments');
+  assert.equal(emitted.find(e => e.type === 'message' && e.message.tool_calls).message.tool_calls[0].function.arguments, cut, 'so does the screen');
   assert.equal(carriesFlag(result), false, 'the transcript never holds the flag');
   assert.equal(carriesFlag(bodies[1].messages), false, 'the next request never sends the flag');
   assert.equal(carriesFlag(emitted.filter(e => e.type === 'message').map(e => e.message)), false, 'nor does the screen receive it');

@@ -22,10 +22,29 @@ function withPlaceholders(message: ChatMessage): string {
   return [...files.map(file => `[pièce jointe : ${file.name}]`), textOf(message.content)].filter(Boolean).join('\n');
 }
 
+function isJsonObject(text: string): boolean {
+  try {
+    const value: unknown = JSON.parse(text);
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  } catch { return false; }
+}
+
+/** A call whose arguments are not a JSON object — cut by the output limit, or refused as « JSON illisible » —
+ * goes out with `{}`: providers that parse the assistant's arguments answer 400 to the whole request otherwise.
+ * Its result (the error the model must read) is unchanged. */
+function withSendableArguments(message: ChatMessage): ChatMessage {
+  if (!message.tool_calls?.some(call => !isJsonObject(call.function.arguments))) return message;
+  return {
+    ...message,
+    tool_calls: message.tool_calls.map(call => isJsonObject(call.function.arguments) ? call : { ...call, function: { ...call.function, arguments: '{}' } }),
+  };
+}
+
 /**
  * The messages to send (system message excluded). Earlier turns — before the last user message — keep only
  * the user messages and the TEXT of the assistant ones (tool calls, tool results and text-less assistant
- * messages are dropped, as Python sent them); the turn in progress is sent whole, its attachments expanded.
+ * messages are dropped, as Python sent them); the turn in progress is sent whole, its attachments expanded and
+ * unreadable call arguments replaced by `{}` (in the request only: the saved transcript keeps them).
  */
 export function requestMessages(messages: readonly ChatMessage[]): ChatMessage[] {
   const start = Math.max(0, currentTurnStart(messages));
@@ -34,7 +53,7 @@ export function requestMessages(messages: readonly ChatMessage[]): ChatMessage[]
     if (isUser(message)) earlier.push({ role: 'user', content: withPlaceholders(message) });
     else if (isAssistant(message) && textOf(message.content).trim()) earlier.push({ role: 'assistant', content: textOf(message.content) });
   }
-  const current = messages.slice(start).map(message => toWireMessage(message as never) as unknown as ChatMessage);
+  const current = messages.slice(start).map(message => withSendableArguments(toWireMessage(message as never) as unknown as ChatMessage));
   return [...earlier, ...current];
 }
 

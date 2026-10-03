@@ -33,6 +33,26 @@ test('earlier turns send only user messages and assistant TEXT; the turn in prog
   assert.deepEqual(requestMessages([callMessage('x', 'read', '{}'), result('x', 'r')] as any), [callMessage('x', 'read', '{}'), result('x', 'r')], 'no user message: everything is the current turn');
 });
 
+test('in the turn in progress, call arguments that are not a JSON object go out as {}; the stored messages keep them', () => {
+  const stored: any[] = [
+    { role: 'user', content: 'crée' },
+    { role: 'assistant', content: '', tool_calls: [
+      { id: 'c1', type: 'function', function: { name: 'create_file', arguments: '{"path":"a","content":"export' } },
+      { id: 'c2', type: 'function', function: { name: 'list_dir', arguments: '{"path":"."}' } },
+      { id: 'c3', type: 'function', function: { name: 'list_dir', arguments: 'null' } },
+      { id: 'c4', type: 'function', function: { name: 'list_dir', arguments: '[1]' } },
+    ] },
+    result('c1', 'Erreur : arguments tronqués'),
+  ];
+  const before = structuredClone(stored);
+  const sent = requestMessages(stored);
+  assert.deepEqual(sent[1].tool_calls?.map(call => call.function.arguments), ['{}', '{"path":"."}', '{}', '{}']);
+  assert.deepEqual(sent[1].tool_calls?.map(call => call.id), ['c1', 'c2', 'c3', 'c4']);
+  assert.deepEqual(stored, before, 'only the request changes');
+  const intact: any[] = [{ role: 'user', content: 'x' }, callMessage('c9', 'read_file', '{"path":"b"}')];
+  assert.equal(requestMessages(intact)[1], intact[1], 'a message whose arguments are all readable is sent as is');
+});
+
 test('the estimate counts the system prompt, the tool schemas, texts, call arguments and results', () => {
   const tools = [{ type: 'function' as const, function: { name: 'read_file', description: 'd', parameters: {} } }];
   const messages: any[] = [{ role: 'user', content: 'x'.repeat(40) }, callMessage('c', 'read_file', 'y'.repeat(36)), result('c', 'z'.repeat(80))];

@@ -156,6 +156,7 @@ async function stopWorker(worker, timeoutMs = 3000) {
 }
 let stoppingBackend = null; // the shutdown in progress, so a quit during "Redémarrer maintenant" waits for it
 async function stopBackend() {
+  if (!backend && stoppingBackend) return stoppingBackend; // a second caller waits for the shutdown already running
   const worker = backend;
   backend = undefined;
   stoppingBackend = stopWorker(worker);

@@ -121,8 +121,8 @@ test('run_command never hands the app secrets to the command it runs', async t =
 test('run_command validates its arguments', async t => {
   const { invoke } = await fixture(t);
   await refuses(invoke({ command: '   ' }), /vide/i);
-  await refuses(invoke({ command: 'node -e "0"', timeout: 0 }), /nombre/i);
-  await refuses(invoke({ command: 'node -e "0"', timeout: 601 }), /nombre/i);
+  await refuses(invoke({ command: 'node -e "0"', timeout: 0 }), /timeout doit être un entier entre 1 et 600/);
+  await refuses(invoke({ command: 'node -e "0"', timeout: 601 }), /timeout doit être un entier entre 1 et 600/);
   await refuses(invoke({}), /requis/i);
 });
 

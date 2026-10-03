@@ -181,3 +181,43 @@ test('a silent provider expires after the idle delay; a slow but living stream i
   assert.equal(living.content, '12345', '900 ms in total, never 400 ms without a byte');
   assert.equal(DEFAULT_IDLE_TIMEOUT_MS, 120000);
 });
+
+test('a reply cut inside a parallel call that has only just started drops that fragment: the turn never fails', async t => {
+  const { defineTool } = await import('../core/tool-kit.mts');
+  const stream = (calls: unknown[]) => (_q: IncomingMessage, response: ServerResponse) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.end(sse({ choices: [{ delta: { tool_calls: calls }, finish_reason: 'length' }] }) + 'data: [DONE]\n\n');
+  };
+  const first = { index: 0, id: 'c1', type: 'function', function: { name: 'echo', arguments: '{"text":"a"}' } };
+  // The cap landed in the very first delta of the second call: only its id, only its name, or only an index.
+  for (const started of [{ index: 1, id: 'c2' }, { index: 1, function: { name: 'echo' } }, { index: 1 }]) {
+    const { bodies, connection } = await serve(t, [stream([first, started]), reply('repris')]);
+    const ran: unknown[] = [];
+    const echo = defineTool({ name: 'echo', description: 'écho', category: 'read', properties: { text: { type: 'string' } }, required: ['text'], execute: async args => { ran.push(args); return 'ok'; } });
+    const result = await runAgent({
+      provider: new ChatProvider(), connection: connection(), messages: [{ role: 'user', content: 'x' }], instructions: '', tools: [echo],
+      settings: { mode: 'auto', permission_mode: 'auto' }, confirm: async () => true,
+    });
+    assert.equal(bodies.length, 2, `the turn went on (${JSON.stringify(started)})`);
+    assert.deepEqual(ran, [], 'a truncated call is never run');
+    const sent = bodies[1].messages.find((m: any) => m.tool_calls);
+    assert.deepEqual(sent.tool_calls.map((c: any) => c.id), ['c1'], 'only the complete-looking call is kept');
+    assert.equal(bodies[1].messages.filter((m: any) => m.role === 'tool')[0].content, 'Erreur : arguments tronqués par la limite de sortie — découpe le travail en appels plus petits');
+    assert.equal(result.at(-1)?.content, 'repris');
+  }
+  // Without a truncation the same fragment is still a malformed reply.
+  const { connection } = await serve(t, [(_q, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.end(sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c2' }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n');
+  }]);
+  await assert.rejects(new ChatProvider().complete({ connection: connection(), messages: [] }), { message: 'Appel outil invalide' });
+});
+
+test('Retry-After: decimal seconds are seconds, a negative or unreadable value falls back to the default delay', () => {
+  const now = Date.parse('2026-10-03T10:00:00Z');
+  assert.equal(retryAfterMs('0.5', now), 500);
+  assert.equal(retryAfterMs('1.25', now), 1250);
+  assert.equal(retryAfterMs('0', now), 0);
+  for (const bad of ['-1', '-1.5', '1e3', '2 s', '.5', '5.', '1,5']) assert.equal(retryAfterMs(bad, now), null, bad);
+  assert.equal(retryAfterMs('Sat, 03 Oct 2026 10:00:05 GMT', now), 5000, 'an HTTP date still works');
+});

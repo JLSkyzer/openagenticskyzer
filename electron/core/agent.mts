@@ -23,6 +23,11 @@ export interface AgentOptions {
 /** The one rule for a tool name, from any source. Exported so the plugin loader rejects a bad name
  * up front (one file's error) instead of letting it reach runAgent, which fails the whole turn. */
 export const TOOL_NAME_PATTERN = /^[\w.-]{1,128}$/;
+/** Model calls per turn. Python's recursion_limit of 300 graph steps is about 150 calls (audit H2). */
+export const DEFAULT_MAX_STEPS = 100;
+export const MAX_STEPS_LIMIT = 150;
+export const TRUNCATED_NOTICE = '[Réponse tronquée : limite de sortie atteinte]';
+export const TRUNCATED_ARGUMENTS = 'arguments tronqués par la limite de sortie — découpe le travail en appels plus petits';
 
 async function approval<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted();
@@ -50,8 +55,8 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
   const { provider, connection, instructions, tools, confirm, emit } = options;
   const settings = structuredClone(options.settings);
   if (!['ask', 'auto', 'plan'].includes(settings.mode) || !['demander', 'auto', 'strict'].includes(settings.permission_mode)) throw new Error('Politique agent invalide');
-  const maxSteps = options.maxSteps ?? 24;
-  if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 100) throw new Error('Limite de tours invalide');
+  const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
+  if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > MAX_STEPS_LIMIT) throw new Error('Limite de tours invalide');
   const signal = options.signal ?? new AbortController().signal;
   const messages: ChatMessage[] = [{ role: 'system', content: instructions }, ...structuredClone(options.messages.filter(m => m.role !== 'system'))];
   const registry = new Map<string, AgentTool>();
@@ -78,12 +83,17 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
       onDelta: text => emit?.({ type: 'delta', text }),
     });
     signal.throwIfAborted();
-    messages.push(answer); emit?.({ type: 'message', message: answer });
-    if (!answer.tool_calls?.length) return messages.slice(1);
-    for (const call of answer.tool_calls) {
+    // The cut is the provider's report: the conversation keeps a visible notice, never the flag itself.
+    const { truncated, ...reply } = answer;
+    if (truncated) reply.content = reply.content ? `${reply.content}\n\n${TRUNCATED_NOTICE}` : TRUNCATED_NOTICE;
+    messages.push(reply); emit?.({ type: 'message', message: reply });
+    if (!reply.tool_calls?.length) return messages.slice(1);
+    for (const call of reply.tool_calls) {
       signal.throwIfAborted();
       let output: string;
       try {
+        // A call cut by the output limit has incomplete arguments: never executed, whatever the permissions.
+        if (truncated) throw new Error(TRUNCATED_ARGUMENTS);
         const tool = registry.get(call.function.name);
         if (!tool) throw new Error('Outil inconnu : exécution refusée');
         if (executed.has(call.id)) throw new Error('Appel outil dupliqué : exécution refusée');
@@ -91,9 +101,12 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
         const signature = call.function.name + ':' + call.function.arguments;
         streak = signature === lastSignature ? streak + 1 : 1; lastSignature = signature;
         if (streak > 3) throw new Error('Boucle d’outils détectée : exécution refusée');
+        // The refusal names the field and the rule (tool-kit.mts), so the model can fix its call.
         let args: Record<string, unknown>;
-        try { args = JSON.parse(call.function.arguments); object(args); tool.validate(args); }
-        catch { throw new Error('Arguments outil invalides : exécution refusée'); }
+        try { args = JSON.parse(call.function.arguments); }
+        catch { throw new Error(`Arguments invalides pour ${tool.name} : JSON illisible`); }
+        try { object(args); tool.validate(args); }
+        catch (e) { throw new Error(`Arguments invalides pour ${tool.name} : ${e instanceof Error ? e.message : 'refusés'}`); }
         const decision = policy(tool, settings);
         if (decision === 'deny' || (decision === 'ask' && !await approval(confirm({ tool: tool.name, arguments: structuredClone(args) }, signal), signal))) {
           throw new Error('Exécution refusée par les permissions');
@@ -111,5 +124,5 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
       messages.push(result); emit?.({ type: 'message', message: result });
     }
   }
-  throw new Error('Limite de tours atteinte. La génération a été arrêtée.');
+  throw new Error(`Limite de tours atteinte (${maxSteps} appels au modèle). La génération a été arrêtée — réponds « continue » pour reprendre.`);
 }

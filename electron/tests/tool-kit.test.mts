@@ -21,13 +21,14 @@ test('defineTool publishes a strict JSON schema built from the same rules it val
   });
 });
 
-test('required and unknown arguments are rejected, non-objects too', () => {
+test('a missing required argument is refused by name, an undeclared one is dropped, non-objects are refused', () => {
   const t = tool({ path: { type: 'string' } }, ['path']);
-  assert.throws(() => t.validate({}), /requis/i);
-  assert.throws(() => t.validate({ path: 'a', extra: 1 }), /inconnu/i);
+  assert.throws(() => t.validate({}), { message: 'path est requis' });
+  const args: Record<string, unknown> = { path: 'a', extra: 1, encoding: 'utf8' };
+  t.validate(args);
+  assert.deepEqual(args, { path: 'a' }, 'the tool never sees a key it did not declare');
   assert.throws(() => t.validate(null as any), /objet/i);
   assert.throws(() => t.validate([] as any), /objet/i);
-  t.validate({ path: 'a' });
 });
 
 test('strings must be strings, without NUL and within their limit', () => {
@@ -39,23 +40,27 @@ test('strings must be strings, without NUL and within their limit', () => {
   t.validate({ s: 'x'.repeat(1048576), short: 'abc' });
 });
 
-test('integers default to 1..1000000 and take explicit bounds, floats and strings never pass', () => {
+test('integers default to 1..1000000 and take explicit bounds; a string of digits is read as that integer', () => {
   const t = tool({ n: { type: 'integer' }, zeroOk: { type: 'integer', minimum: 0, maximum: 10 } });
-  assert.throws(() => t.validate({ n: 0 }), /nombre/i);
-  assert.throws(() => t.validate({ n: 1000001 }), /nombre/i);
-  assert.throws(() => t.validate({ n: 1.5 }), /nombre/i);
-  assert.throws(() => t.validate({ n: '3' }), /nombre/i);
-  assert.throws(() => t.validate({ zeroOk: 11 }), /nombre/i);
-  assert.throws(() => t.validate({ zeroOk: -1 }), /nombre/i);
-  t.validate({ n: 1, zeroOk: 0 });
+  assert.throws(() => t.validate({ n: 0 }), { message: 'n doit être un entier entre 1 et 1000000' });
+  assert.throws(() => t.validate({ n: 1000001 }), { message: 'n doit être un entier entre 1 et 1000000' });
+  for (const bad of [1.5, '1.5', 'trois', true]) assert.throws(() => t.validate({ n: bad }), /n doit être un entier/);
+  assert.throws(() => t.validate({ zeroOk: 11 }), { message: 'zeroOk doit être un entier entre 0 et 10' });
+  assert.throws(() => t.validate({ zeroOk: -1 }), /zeroOk doit être un entier/);
+  const coerced: Record<string, unknown> = { n: '3', zeroOk: ' 0 ' };
+  t.validate(coerced);
+  assert.deepEqual(coerced, { n: 3, zeroOk: 0 }, 'the tool receives real integers');
   t.validate({ n: 1000000, zeroOk: 10 });
 });
 
-test('booleans must be real booleans', () => {
+test('booleans: real booleans, or exactly the strings "true" / "false"', () => {
   const t = tool({ flag: { type: 'boolean' } });
-  for (const bad of ['true', 1, 0, null, 'yes']) assert.throws(() => t.validate({ flag: bad }), /booléen/i);
-  t.validate({ flag: true });
-  t.validate({ flag: false });
+  for (const bad of [1, 0, null, 'yes', 'True']) assert.throws(() => t.validate({ flag: bad }), { message: 'flag doit être un booléen (true ou false)' });
+  for (const [given, expected] of [[true, true], [false, false], ['true', true], ['false', false]] as const) {
+    const args: Record<string, unknown> = { flag: given };
+    t.validate(args);
+    assert.equal(args.flag, expected);
+  }
 });
 
 test('an enum only admits its listed values', () => {

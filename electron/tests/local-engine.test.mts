@@ -50,10 +50,11 @@ test('a real AbortSignal really stops generation and rejects — the exact contr
   });
 });
 
-test('completeLocal never hangs when the caller sets no maxTokens at all — unlike a real HTTP provider, nothing else would ever stop it', { timeout: 60000 }, async t => {
+test('completeLocal never hangs when the caller sets no maxTokens at all — unlike a real HTTP provider, nothing else would ever stop it', { timeout: 180000 }, async t => {
   t.after(() => disposeEngine());
   const message = await completeLocal({ modelPath, messages: [{ role: 'user', content: 'Once upon a time' }] });
   assert.equal(typeof message.content, 'string');
+  assert.equal(message.truncated, true, 'the toy model never ends by itself: it was stopped by the 8192-token cap, and says so');
 });
 
 test('toGgufFunctions rejects nothing real: a genuine tool schema does not crash the real engine even on a toy model that never calls it', { timeout: 60000 }, async t => {

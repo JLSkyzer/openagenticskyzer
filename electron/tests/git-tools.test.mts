@@ -127,8 +127,8 @@ test('git_log lists commits, honours n and oneline, and validates n', async t =>
   const detailed = await invoke('git_log', { n: 1, oneline: false });
   assert.match(detailed, /Test/);
   assert.match(detailed, /second/);
-  await refuses(invoke('git_log', { n: 0 }), /nombre/i);
-  await refuses(invoke('git_log', { n: 201 }), /nombre/i);
+  await refuses(invoke('git_log', { n: 0 }), /n doit être un entier entre 1 et/);
+  await refuses(invoke('git_log', { n: 201 }), /n doit être un entier entre 1 et/);
   await refuses(invoke('git_log', { oneline: 'yes' }), /booléen/i);
 });
 
@@ -142,7 +142,7 @@ test('git_blame names the author, supports a line range, and validates it', asyn
   assert.equal(ranged.trim().split('\n').length, 1);
   assert.match(ranged, /l2/);
   await refuses(invoke('git_blame', { file: 'f.txt', start: 3, end: 2 }), /plage/i);
-  await refuses(invoke('git_blame', { file: 'f.txt', start: 0 }), /nombre/i);
+  await refuses(invoke('git_blame', { file: 'f.txt', start: 0 }), /start doit être un entier entre/);
 });
 
 test('git_branch_list shows the branches', async t => {

@@ -23,18 +23,35 @@ const DEFAULT_MAX_LENGTH = 1048576;
 const DEFAULT_MIN = 1;
 const DEFAULT_MAX = 1000000;
 
-function checkValue(rule: ParamRule, value: unknown) {
+/** Python (pydantic) parity: a model that writes "120" for an integer or "true" for a boolean meant it. */
+function coerce(rule: ParamRule, value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const text = value.trim();
+  if (rule.type === 'integer' && /^-?\d+$/.test(text)) return Number(text);
+  if (rule.type === 'boolean' && (text === 'true' || text === 'false')) return text === 'true';
+  return value;
+}
+
+/** Throws a message that names the field and the rule it broke, so the model can correct its call. */
+function checkValue(name: string, rule: ParamRule, value: unknown) {
   if (rule.type === 'string') {
-    if (typeof value !== 'string' || value.length > (rule.maxLength ?? DEFAULT_MAX_LENGTH) || value.includes('\0')) throw new Error('Texte invalide');
-    if (rule.enum && !rule.enum.includes(value)) throw new Error('Valeur non autorisée');
+    if (typeof value !== 'string') throw new Error(`${name} doit être un texte`);
+    if (value.includes('\0')) throw new Error(`${name} : texte invalide (caractère nul)`);
+    const max = rule.maxLength ?? DEFAULT_MAX_LENGTH;
+    if (value.length > max) throw new Error(`${name} : texte trop long (${max} caractères au plus)`);
+    if (rule.enum && !rule.enum.includes(value)) throw new Error(`${name} : valeur non autorisée (valeurs possibles : ${rule.enum.join(', ')})`);
   } else if (rule.type === 'integer') {
-    if (!Number.isInteger(value) || Number(value) < (rule.minimum ?? DEFAULT_MIN) || Number(value) > (rule.maximum ?? DEFAULT_MAX)) throw new Error('Nombre invalide');
-  } else if (typeof value !== 'boolean') throw new Error('Booléen invalide');
+    const min = rule.minimum ?? DEFAULT_MIN;
+    const max = rule.maximum ?? DEFAULT_MAX;
+    if (!Number.isInteger(value) || (value as number) < min || (value as number) > max) throw new Error(`${name} doit être un entier entre ${min} et ${max}`);
+  } else if (typeof value !== 'boolean') throw new Error(`${name} doit être un booléen (true ou false)`);
 }
 
 /**
- * Builds an agent tool whose published schema and argument validation come from the same
- * rules. Anything not declared is refused, so a tool never sees an argument it did not ask for.
+ * Builds an agent tool whose published schema and argument validation come from the same rules.
+ * validate() normalises `args` in place: an undeclared key is dropped (Python parity — the tool still
+ * never sees an argument it did not ask for), and a string that clearly is an integer or a boolean is
+ * converted; anything else that breaks a rule is refused with the field's name and the rule.
  */
 export function defineTool(spec: ToolSpec): AgentTool {
   const required = spec.required ?? [];
@@ -48,11 +65,13 @@ export function defineTool(spec: ToolSpec): AgentTool {
     parameters: { type: 'object', properties: spec.properties, required, additionalProperties: false },
     validate(args) {
       object(args);
-      for (const key of required) if (!Object.hasOwn(args, key)) throw new Error('Argument requis');
+      for (const key of Object.keys(args)) if (!Object.hasOwn(spec.properties, key)) delete args[key];
+      for (const key of required) if (!Object.hasOwn(args, key)) throw new Error(`${key} est requis`);
       for (const [key, value] of Object.entries(args)) {
-        const rule = Object.hasOwn(spec.properties, key) ? spec.properties[key] : undefined;
-        if (!rule) throw new Error('Argument inconnu');
-        checkValue(rule, value);
+        const rule = spec.properties[key];
+        const coerced = coerce(rule, value);
+        checkValue(key, rule, coerced);
+        args[key] = coerced;
       }
     },
     execute: async (args, signal) => {

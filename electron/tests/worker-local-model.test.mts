@@ -44,7 +44,7 @@ async function setup(t: { after(fn: () => unknown): void }) {
   return { worker, folder, entry };
 }
 
-test('worker::send with `localModel` runs a real turn on the real .gguf, WITHOUT any connection at all, and saves it', { timeout: 60000 }, async t => {
+test('worker::send with `localModel` runs a real turn on the real .gguf, WITHOUT any connection at all, and saves it', { timeout: 180000 }, async t => {
   const { worker, folder, entry } = await setup(t);
   const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'Once upon a time', localModel: entry.id });
   const events: any[] = [];
@@ -54,6 +54,8 @@ test('worker::send with `localModel` runs a real turn on the real .gguf, WITHOUT
   assert.equal(saved[0].content, 'Once upon a time');
   assert.equal(saved[1].role, 'assistant');
   assert.ok(saved[1].content.length > 0, 'the real local model produced real text');
+  assert.ok(saved[1].content.endsWith('[Réponse tronquée : limite de sortie atteinte]'), 'the toy model is stopped by the output cap: the saved reply says so');
+  assert.equal(Object.hasOwn(saved[1], 'truncated'), false, 'the flag itself is never saved');
 });
 
 test('worker::send refuses an unknown/removed `localModel` id BEFORE anything starts — no run, nothing saved', { timeout: 20000 }, async t => {
@@ -67,7 +69,7 @@ test('worker::send refuses an unknown/removed `localModel` id BEFORE anything st
 // cap, which the engine reports as stopReason "maxTokens". compactMessages refuses a summary cut that way, so
 // this is the end-to-end proof that (1) compaction really runs on the local engine, and (2) its truncation flag
 // reaches the guard: the conversation is left untouched instead of losing its head to half a summary.
-test('worker::compact with `localModel` really calls the local engine (not a remote provider); a summary cut at the output cap is refused and the transcript kept', { timeout: 60000 }, async t => {
+test('worker::compact with `localModel` really calls the local engine (not a remote provider); a summary cut at the output cap is refused and the transcript kept', { timeout: 180000 }, async t => {
   const { worker, folder, entry } = await setup(t);
   const history = Array.from({ length: 8 }, (_, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content: `message ${i}` }));
   await callWorker(worker, 'save-messages', { folder, branchId: 'main', messages: history });

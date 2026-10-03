@@ -82,3 +82,4 @@ import './updater.test.mts';
 import './release-win.test.mts';
 import './provider-parity.test.mts';
 import './worker-request.test.mts';
+import './agent-parity.test.mts';

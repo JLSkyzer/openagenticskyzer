@@ -55,11 +55,16 @@ function validateCalls(calls: ToolCall[]) {
   }
 }
 
-/** Retry-After in milliseconds (seconds or an HTTP date), capped at 30 s; null when absent or unreadable. */
+/**
+ * Retry-After in milliseconds (seconds or an HTTP date), capped at 30 s; null when absent or unreadable, so the
+ * default delays apply. A number is always seconds: Date.parse would read "0.5" or "-1" as a date in the past,
+ * an immediate retry. Only a value with letters is tried as an HTTP date.
+ */
 export function retryAfterMs(header: string | null, now = Date.now()): number | null {
   if (!header) return null;
   const value = header.trim();
-  if (/^\d+$/.test(value)) return Math.min(Number(value) * 1000, MAX_RETRY_AFTER_MS);
+  if (/^\d+(\.\d+)?$/.test(value)) return Math.min(Number(value) * 1000, MAX_RETRY_AFTER_MS);
+  if (!/[a-z]/i.test(value)) return null;
   const date = Date.parse(value);
   return Number.isNaN(date) ? null : Math.min(Math.max(0, date - now), MAX_RETRY_AFTER_MS);
 }
@@ -251,7 +256,10 @@ export class ChatProvider {
       else flushFrames();
       signal.throwIfAborted();
       if (!done && !finished) throw new Error('Flux interrompu avant la fin de la réponse');
-      const tool_calls = [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call);
+      let tool_calls = [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call);
+      // A cut reply never fails the turn: the cap can land in the first delta of a parallel call, leaving a
+      // fragment with no id or no name. It is dropped; the calls before it are kept (and refused by the agent).
+      if (truncated) tool_calls = tool_calls.filter(call => call.id && call.function.name);
       validateCalls(tool_calls);
       if (!content.trim() && !tool_calls.length && !truncated) throw new Error('Réponse vide du provider');
       return {

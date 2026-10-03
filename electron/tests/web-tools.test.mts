@@ -144,8 +144,8 @@ test('max_chars truncates with an ellipsis and is bounded', async t => {
   const out = json(await fetchUrl({ url: server.url, max_chars: 100 }));
   assert.equal(out.content, 'x'.repeat(100) + '…');
   assert.equal(json(await fetchUrl({ url: server.url })).content.length, 4001, 'default is 4000 characters');
-  await refuses(fetchUrl({ url: server.url, max_chars: 0 }), /nombre/i);
-  await refuses(fetchUrl({ url: server.url, max_chars: 50001 }), /nombre/i);
+  await refuses(fetchUrl({ url: server.url, max_chars: 0 }), /max_chars doit être un entier entre/);
+  await refuses(fetchUrl({ url: server.url, max_chars: 50001 }), /max_chars doit être un entier entre/);
 });
 
 test('an HTTP error status is reported, not returned as content', async t => {
@@ -264,8 +264,8 @@ test('DuckDuckGo throttling is retried, and a persistent failure is reported aft
 test('search arguments are validated', async () => {
   const { search } = await tools({ env: {} });
   await refuses(search({}), /requis/i);
-  await refuses(search({ query: 'x', max_results: 0 }), /nombre/i);
-  await refuses(search({ query: 'x', max_results: 21 }), /nombre/i);
+  await refuses(search({ query: 'x', max_results: 0 }), /max_results doit être un entier entre/);
+  await refuses(search({ query: 'x', max_results: 21 }), /max_results doit être un entier entre/);
   await refuses(search({ query: 'x', topic: 'sports' }), /autoris/i);
   await refuses(search({ query: 'x', include_raw_content: 'yes' }), /booléen/i);
   await refuses(search({ query: '   ' }), /vide/i);

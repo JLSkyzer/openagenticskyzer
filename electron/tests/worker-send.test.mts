@@ -132,13 +132,15 @@ test('worker::send persists whatever was produced so far when the run is stopped
   assert.deepEqual(persisted.map((m: any) => m.content), ['bonjour'], 'the user message survives even though the model never answered');
 });
 
-test('worker::send never rewrites the saved conversation when the turn fails before it started', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-send-early-'));
+// The renderer shows the user message as soon as the send is accepted (send-started). A failure while the tools or
+// the instructions are being read must leave the file holding that message too: edit and regenerate cut the file
+// at a SCREEN index, so a file one message behind would be cut at the wrong place.
+async function earlyFailureSetup(t: any, prefix: string) {
+  const root = await mkdtemp(join(tmpdir(), prefix));
   t.after(() => rm(root, { recursive: true, force: true }));
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
-
   const server = createServer((request, response) => {
     request.on('data', () => {});
     request.on('end', () => {
@@ -152,30 +154,46 @@ test('worker::send never rewrites the saved conversation when the turn fails bef
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
   t.after(() => worker.terminate());
   const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
-  const send = async (text: string) => {
-    const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text, connection });
+  const send = async (text: string, keep?: number) => {
+    const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text, connection, ...(keep === undefined ? {} : { keep }) });
     const { events, stop } = collectAgentEvents(worker, runId);
     await waitUntilDone(events);
     stop();
     return events;
   };
-
-  // A real conversation, saved by a real turn.
+  // A real conversation, saved by two real turns.
   assert.equal((await send('bonjour')).at(-1).kind, 'done');
-  const file = join(project, '.openagent', 'conversations.json');
-  const before = await readFile(file);
-  assert.ok(before.includes('bonjour'), 'the conversation holds the first turn');
+  assert.equal((await send('deux')).at(-1).kind, 'done');
+  return { worker, project, send, file: join(project, '.openagent', 'conversations.json') };
+}
 
-  // The project's own settings become unreadable: building the turn's instructions fails for real,
-  // before the first message of the turn is even assembled.
-  await writeFile(join(project, '.openagent', 'config.json'), '{ ceci n\'est pas du JSON');
+test('worker::send saves the user message when the turn fails while its tools or instructions are read', async t => {
+  const { worker, project, send, file } = await earlyFailureSetup(t, 'openagent-worker-send-early-');
+  // The project's own settings become unreadable: reading the turn's tools and settings fails for real.
+  await writeFile(join(project, '.openagent', 'config.json'), "{ ceci n'est pas du JSON");
   const events = await send('encore');
   const last = events.at(-1);
   assert.equal(last.kind, 'error', 'the failure is reported');
   assert.match(last.message, /JSON illisible/);
-  assert.deepEqual(await readFile(file), before, 'the saved conversation is byte-identical: nothing was emptied or rewritten');
   const persisted = await callWorker(worker, 'messages', { folder: project, branchId: 'main' });
-  assert.deepEqual(persisted.map((m: any) => m.content), ['bonjour', 'salut']);
+  assert.deepEqual(persisted.map((m: any) => m.content), ['bonjour', 'salut', 'deux', 'salut', 'encore'], 'the file ends with the user message, like the screen');
+  // An edit of « deux » (screen index 2): the file is cut at the same place as the screen, then gets the new text.
+  const edited = await send('deux bis', 2);
+  assert.equal(edited.at(-1).kind, 'error');
+  const afterEdit = await callWorker(worker, 'messages', { folder: project, branchId: 'main' });
+  assert.deepEqual(afterEdit.map((m: any) => m.content), ['bonjour', 'salut', 'deux bis'], 'never emptied, cut where the screen was cut');
+  assert.ok((await readFile(file, 'utf8')).includes('deux bis'));
+});
+
+test('worker::send never rewrites a conversation file it could not read', async t => {
+  const { send, file } = await earlyFailureSetup(t, 'openagent-worker-send-unreadable-');
+  // The conversation file itself is unreadable: it was kept on purpose, nothing may overwrite it.
+  await writeFile(file, '{ "version": 1, "branches": [ coupé');
+  const before = await readFile(file);
+  const events = await send('encore');
+  assert.equal(events.at(-1).kind, 'error', 'the failure is reported');
+  assert.match(events.at(-1).message, /JSON illisible/);
+  assert.deepEqual(await readFile(file), before, 'the unreadable conversation file is byte-identical');
 });
 
 // M3 through the real worker: the window is the user's max_tokens (H3), the cap mistral's 16 384 (H1); the

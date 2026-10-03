@@ -328,6 +328,14 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
   // inside the try block) so the catch block below can actually see it.
   let partialText = '';
   try {
+    // The page already shows the user message (send-started), so the turn is assembled FIRST: from here on, any
+    // failure (tools, instructions, the model) saves history + this message, and the file stays aligned with the
+    // screen — edit and regenerate cut both at the same index. Only an unreadable conversation file stops here,
+    // with nothing to save.
+    const saved = await conversations.messages(folder, branchId);
+    const history = (keep === undefined ? saved : saved.slice(0, keep)).map(m => ({ ...m, role: normalizeRole(m.role) }));
+    // What was typed stays in `content`; the files ride beside it and are expanded only when the model is called.
+    collected = [...history, { role: 'user', content: text, ...(attachments.length ? { attachments } : {}) }];
     const { effective, tools } = await registerTools(folder);
     const toolCategory = new Map(tools.map(tool => [tool.name, tool.category]));
     const agentSettings = { mode: effective.agent_mode, permission_mode: effective.permission_mode, files_ask: effective.files_ask, shell_ask: effective.shell_ask, search_ask: effective.search_ask, reserved_tokens: effective.reserved_tokens };
@@ -335,10 +343,6 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
     // Windows, how run_command's shell behaves (core/system-prompt.mts).
     const offered = offeredTools(tools, agentSettings).map(tool => tool.name);
     const { instructions } = await buildInstructions({ folder, home: dataHome, base: basePrompt({ tools: offered, mode: agentSettings.mode, platform: process.platform }) });
-    const saved = await conversations.messages(folder, branchId);
-    const history = (keep === undefined ? saved : saved.slice(0, keep)).map(m => ({ ...m, role: normalizeRole(m.role) }));
-    // What was typed stays in `content`; the files ride beside it and are expanded only when the model is called.
-    collected = [...history, { role: 'user', content: text, ...(attachments.length ? { attachments } : {}) }];
     const emit = event => {
       const { type: kind, ...rest } = event;
       if (kind === 'delta') partialText += rest.text;
@@ -388,10 +392,10 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
       post({ kind: 'message', message: partial });
     }
     // Persist whatever the model/tools actually produced even on Stop/error — losing an
-    // in-flight tool-call's already-emitted messages would silently discard real work. But only once
-    // the turn started (`collected` is assembled): a failure while the tools, the instructions or the
-    // saved history were being read has nothing to persist, and saving [] would empty the branch —
-    // or overwrite a conversation file that was deliberately kept because it could not be read.
+    // in-flight tool-call's already-emitted messages would silently discard real work. A failure after
+    // `collected` is assembled (tools, instructions, the model) saves history + the user message, as the
+    // screen shows them. Only a conversation file that could not be read leaves `collected` empty: saving []
+    // would empty the branch, or overwrite a file deliberately kept because it could not be read.
     if (collected.length) await conversations.save(folder, branchId, [...collected, ...produced]).catch(() => {});
     // A Stop is the user's own action, taken while they're already looking at the app — never
     // worth an OS notification, unlike a completion or a failure reached while they stepped away.

@@ -289,3 +289,21 @@ test('a saved files_ask: false is respected: the write runs without asking', asy
   assert.equal(r.events.some(e => e.kind === 'permission-request'), false);
   assert.equal(await readFile(join(project, 'a.txt'), 'utf8'), 'x');
 });
+
+test('the prompt lists exactly the tools sent, states the mode (ask, plan) and, on Windows, the shell', async t => {
+  const { worker, bodies, send } = await setup(t);
+  for (const mode of ['ask', 'plan', 'auto']) {
+    await callWorker(worker, 'save-global-settings', { patch: { agent_mode: mode } });
+    const r = await send(worker);
+    await until(() => finished(r.events), `the ${mode} run`);
+    r.stop();
+    const body = bodies.at(-1);
+    const system = body.messages[0].content as string;
+    const listed = /Outils disponibles : ([^.]*)\./.exec(system)?.[1].split(', ').sort();
+    assert.deepEqual(listed, body.tools.map((tool: any) => tool.function.name).sort(), `${mode}: the prompt lists exactly the tools sent`);
+    assert.equal(system.includes('Mode question : réponds et explique sans rien modifier.'), mode === 'ask');
+    assert.equal(system.includes("Mode plan : produis un plan détaillé, étape par étape, sans rien modifier ; l'utilisateur passera en mode agent pour l'appliquer."), mode === 'plan');
+    assert.equal(system.includes('passent par cmd.exe'), mode === 'auto' && process.platform === 'win32');
+    if (mode !== 'auto') for (const unsent of ['create_file', 'run_command', 'save_memory', 'git_commit']) assert.equal(system.includes(unsent), false, `${mode}: ${unsent} is not offered, so not named`);
+  }
+});

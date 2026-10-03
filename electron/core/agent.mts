@@ -54,6 +54,12 @@ function policy(tool: AgentTool, settings: AgentSettings): 'allow' | 'ask' | 'de
   return 'ask';
 }
 
+/** The tools the model is offered under these settings: all but what the policy denies outright. The
+ * system prompt lists exactly these (core/system-prompt.mts), so it never names a tool the model lacks. */
+export function offeredTools(tools: readonly AgentTool[], settings: AgentSettings): AgentTool[] {
+  return tools.filter(tool => policy(tool, settings) !== 'deny');
+}
+
 export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
   const { provider, connection, instructions, tools, confirm, emit } = options;
   const settings = structuredClone(options.settings);
@@ -69,7 +75,7 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
     if (!TOOL_NAME_PATTERN.test(tool.name) || registry.has(tool.name)) throw new Error('Nom outil invalide ou dupliqué');
     registry.set(tool.name, tool);
   }
-  const schemas = tools.filter(tool => policy(tool, settings) !== 'deny').map(tool => ({
+  const schemas = offeredTools(tools, settings).map(tool => ({
     type: 'function' as const, function: { name: tool.name, description: tool.description, parameters: tool.parameters },
   }));
   const executed = new Set<string>();

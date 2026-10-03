@@ -27,6 +27,9 @@ app.whenReady().then(async () => {
   const home = join(root, 'home');
   const project = join(root, 'mon-projet');
   await Promise.all([mkdir(home), mkdir(project)]);
+  // This test opens the folder by a deliberate click ("With a real folder active" below) and starts with none
+  // active — it is not about restore_last_folder itself (its own dedicated test covers that).
+  await writeFile(join(home, 'config.json'), JSON.stringify({ restore_last_folder: false }));
   const screenshotDir = process.env.OPENAGENT_SETTINGS_SCREENSHOT_DIR || home;
   let win;
   try {

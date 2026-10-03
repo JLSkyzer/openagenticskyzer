@@ -224,3 +224,28 @@ test('revoke makes a trusted project pending again', async t => {
   await callWorker(worker, 'trust-project', { folder: project, decision: 'trusted', token: shown.token });
   assert.equal((await callWorker(worker, 'trust-project', { folder: project, decision: 'revoke' })).state, 'pending');
 });
+
+test('revoking or ignoring a project\'s trust forgets its session « Toujours »: the next write asks again', { timeout: 60000 }, async t => {
+  for (const [label, forget] of [
+    ['revoke', (worker: Worker, folder: string) => callWorker(worker, 'trust-project', { folder, decision: 'revoke' })],
+    ['ignored', async (worker: Worker, folder: string) => callWorker(worker, 'trust-project', { folder, decision: 'ignored', token: (await callWorker(worker, 'project-trust', { folder })).token })],
+  ] as const) {
+    const { root, project, worker } = await setup(t, `openagent-worker-trust-forget-${label}-`);
+    const other = join(root, 'other');
+    await mkdir(other);
+    await mkdir(join(project, 'tools'));
+    await writeFile(join(project, 'tools', 'a.mjs'), markerPlugin(join(root, 'plugin-ran.txt'), 'a_tool'));
+    let file = 0;
+    const connection = await fakeModel(t, () => ({ name: 'create_file', arguments: { path: `f${++file}.txt`, content: 'ok' } }));
+    const shown = await callWorker(worker, 'project-trust', { folder: project });
+    await callWorker(worker, 'trust-project', { folder: project, decision: 'trusted', token: shown.token });
+
+    assert.ok((await turn(worker, project, connection, { allow: true, always: true })).some(e => e.kind === 'permission-request'), `${label}: the first write asks`);
+    assert.ok((await turn(worker, other, connection, { allow: true, always: true })).some(e => e.kind === 'permission-request'), `${label}: so does the other project's`);
+    assert.equal((await turn(worker, project, connection)).some(e => e.kind === 'permission-request'), false, `${label}: « Toujours » holds in the project`);
+
+    await forget(worker, project);
+    assert.ok((await turn(worker, project, connection)).some(e => e.kind === 'permission-request'), `${label}: the next write asks again`);
+    assert.equal((await turn(worker, other, connection)).some(e => e.kind === 'permission-request'), false, `${label}: another project keeps its « Toujours »`);
+  }
+});

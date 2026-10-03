@@ -93,11 +93,10 @@ function providerMessage(status: number | string, detail: string): string {
 }
 
 export class ProviderError extends Error {
-  status: number; retryAfter: number | null;
-  constructor(status: number, retryAfter: string | null, detail = '') {
+  status: number;
+  constructor(status: number, detail = '') {
     super(providerMessage(status, detail));
     this.status = status;
-    this.retryAfter = retryAfter && /^\d+$/.test(retryAfter.trim()) ? Number(retryAfter.trim()) : null;
   }
 }
 
@@ -190,7 +189,7 @@ export class ChatProvider {
       }
       if (response.ok) return response;
       const retryAfter = response.headers.get('retry-after');
-      const failure = new ProviderError(response.status, retryAfter, errorDetail(await readErrorBody(response), apiKey));
+      const failure = new ProviderError(response.status, errorDetail(await readErrorBody(response), apiKey));
       if (!retryable(response.status) || attempt >= this.retryDelaysMs.length) throw failure;
       quiet();
       await pause(retryAfterMs(retryAfter) ?? this.retryDelaysMs[attempt], userSignal);

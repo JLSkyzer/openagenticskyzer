@@ -308,3 +308,8 @@ test('a registry entry with an invalid decision approves nothing', async t => {
   assert.equal(result.state, 'pending');
   assert.equal(result.contentTrusted, false);
 });
+
+test('the trust banner and the Outils tab name what files_ask covers since 2026-10-03: files, git and memory', async () => {
+  const { FIELD_LABELS } = await import('../renderer-src/src/components/trust-labels.ts');
+  assert.equal(FIELD_LABELS.files_ask, 'confirmation des écritures : fichiers, git, mémoire');
+});

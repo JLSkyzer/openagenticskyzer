@@ -4,7 +4,7 @@ import type { McpServerConfig } from '../ipc/bridge';
 
 export const FIELD_LABELS: Record<string, string> = {
   shell_ask: 'confirmation des commandes shell',
-  files_ask: 'confirmation des écritures de fichiers',
+  files_ask: 'confirmation des écritures : fichiers, git, mémoire',
   search_ask: 'confirmation des recherches web',
   permission_mode: 'mode de permission',
   agent_mode: 'mode de l’agent',

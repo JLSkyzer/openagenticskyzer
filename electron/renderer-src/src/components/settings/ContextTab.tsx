@@ -105,6 +105,9 @@ export function ContextTab({ draft, activeFolder }: { draft: SettingsDraft; acti
               <option value={0}>Indéfiniment</option>
             </select>
           </Row>
+          <p data-testid="oa-retention-note" className="px-4 pb-3 text-xs text-gray-600">
+            L’historique d’un projet inutilisé au-delà de cette durée est archivé dans le dossier de données (retention-archive), jamais supprimé.
+          </p>
         </Group>
       </div>
     </div>

@@ -86,3 +86,4 @@ import './worker-request.test.mts';
 import './agent-parity.test.mts';
 import './request-context.test.mts';
 import './system-prompt.test.mts';
+import './safe-move.test.mts';

@@ -108,6 +108,11 @@ app.whenReady().then(async () => {
     assert.match(await js(`document.querySelector('[data-testid="oa-threshold-label"]').textContent`), /Seuil auto-compact : 80%/);
     await click(q('show_context_bar'));
     await setValue(q('session_retention_days'), 90);
+    assert.equal(
+      await js(`document.querySelector('[data-testid="oa-retention-note"]')?.textContent`),
+      'L’historique d’un projet inutilisé au-delà de cette durée est archivé dans le dossier de données (retention-archive), jamais supprimé.',
+      'the retention choice says history is archived, not deleted (R2)',
+    );
 
     // ── Permissions ───────────────────────────────────────────────────────────────
     await openTab('permissions');

@@ -2,10 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { localDay } from './fs-helpers.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -24,7 +26,7 @@ function daysAgo(n: number) {
   return new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
 }
 
-test('worker startup wipes conversation data of a project unused beyond the configured retention', async t => {
+test('worker startup ARCHIVES (never deletes) the conversation data of a project unused beyond the configured retention', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-cleanup-'));
   removeAtEnd(t, root);
   const home = join(root, 'home');
@@ -33,6 +35,8 @@ test('worker startup wipes conversation data of a project unused beyond the conf
   await writeFile(join(home, 'folders.json'), JSON.stringify([{ path: old, last_used: daysAgo(400) }], null, 2));
   await mkdir(join(old, '.openagent'), { recursive: true });
   await writeFile(join(old, '.openagent', 'conversations.json'), JSON.stringify({ version: 1, branches: [{ id: 'main', label: 'Principale', messages: [{ role: 'user', content: 'vieux message' }], created_at: new Date().toISOString() }] }, null, 2));
+  const original = await readFile(join(old, '.openagent', 'conversations.json'));
+  const canonical = await realpath(old);
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
@@ -43,7 +47,9 @@ test('worker startup wipes conversation data of a project unused beyond the conf
   // (awaited) startup cleanup before answering.
   const list = await callWorker(worker, 'list_folders', {});
   assert.equal(list.length, 1, 'the folder history entry itself must survive the cleanup');
-  await assert.rejects(readFile(join(old, '.openagent', 'conversations.json')));
+  await assert.rejects(readFile(join(old, '.openagent', 'conversations.json')), /ENOENT/);
+  const archived = join(home, 'retention-archive', localDay(new Date()), `old-project-${createHash('sha256').update(canonical).digest('hex').slice(0, 8)}`, 'conversations.json');
+  assert.deepEqual(await readFile(archived), original, 'moved into the archive of the data home, byte for byte');
 });
 
 test('worker startup leaves conversation data alone when session_retention_days is 0', async t => {

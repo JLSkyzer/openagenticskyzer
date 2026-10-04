@@ -83,10 +83,10 @@ async function triggerIndexing(folder) {
     postIndexEvent(folder, { state: 'error', current: undefined, total: undefined, message: error instanceof Error ? error.message : 'Erreur interne' });
   }
 }
-// Wipes conversation data of projects unused beyond session_retention_days (0 = keep forever).
-// Run once at startup, before the worker starts taking requests — mirrors the previous NiceGUI
-// app's own synchronous startup cleanup. Never let a corrupt config/folders file crash the worker.
-await cleanupOldFolders(folders, (await settings.global().catch(() => ({ session_retention_days: 0 }))).session_retention_days).catch(() => {});
+// Archives (core/cleanup.mts: moves into <dataHome>/retention-archive/, never deletes) the conversation history of
+// projects unused beyond session_retention_days (0 = keep forever). Run once at startup, before the worker starts
+// taking requests. Never let a corrupt config/folders file crash the worker.
+await cleanupOldFolders(folders, (await settings.global().catch(() => ({ session_retention_days: 0 }))).session_retention_days, dataHome).catch(() => {});
 // index_status parity: main.py sets state.active_folder to the last-used folder at startup when
 // restore_last_folder is on, and a background thread indexes it from there. This worker mirrors
 // that for the INDEX only (pre-warms it) — it does not select a folder as "active" in the renderer,

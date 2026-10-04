@@ -2,11 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { createRequire } from 'node:module';
+
+// main.cjs as a library: the very function the app runs on quit (worker 'shutdown', then terminate).
+const { stopWorker } = createRequire(import.meta.url)('../main.cjs');
 
 const FAKE_MCP_SERVER = fileURLToPath(new URL('./fixtures/fake-mcp-server.cjs', import.meta.url));
 
@@ -435,4 +439,189 @@ test('worker::mcp-* replies never carry a real env/header secret to the renderer
   assert.equal(events.at(-1).kind, 'done');
   const init = fake.receivedRequests.find(r => r.message.method === 'initialize');
   assert.equal(init?.headers.authorization, SECRET_HEADER, 'the remote server really received the real, unredacted header');
+});
+
+async function exists(file: string) {
+  try { await readFile(file); return true; } catch { return false; }
+}
+function isAlive(pid: number) {
+  try { process.kill(pid, 0); return true; } catch (error: any) { return error.code === 'EPERM'; }
+}
+async function until(check: () => boolean | Promise<boolean>, what: string, timeout = 15000) {
+  const start = Date.now();
+  while (!(await check())) {
+    if (Date.now() - start > timeout) throw new Error(`timed out waiting for ${what}`);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+}
+/** A real model: request 1 asks for mcp_echo when `callTool`, every other request ends the turn. Records the tool
+ * names each request offered. */
+async function model(t: any, callTool: boolean) {
+  let count = 0;
+  const offered: string[][] = [];
+  const server = createServer((request, response) => {
+    count++;
+    let body = '';
+    request.on('data', chunk => { body += chunk; });
+    request.on('end', () => {
+      offered.push((JSON.parse(body).tools ?? []).map((tool: any) => tool.function.name));
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(callTool && count === 1
+        ? { choices: [{ message: { content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'mcp_echo', arguments: JSON.stringify({ text: 'x' }) } }] }, finish_reason: 'tool_calls' }] }
+        : { choices: [{ message: { content: 'Fait.' }, finish_reason: 'stop' }] }));
+    });
+  });
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(() => resolve(undefined)); }));
+  const port = (server.address() as { port: number }).port;
+  return { offered, connection: { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' } };
+}
+/** One whole turn in `folder`; returns its events. */
+async function runTurn(worker: Worker, folder: string, connection: unknown) {
+  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'bonjour', connection });
+  const { events, stop } = collectAgentEvents(worker, runId);
+  await waitUntilDone(events);
+  stop();
+  return events;
+}
+const entry = (list: any[], scope: string) => list.find(server => server.scope === scope);
+
+test('the Outils tab never starts an MCP server: plugin-list and mcp-list leave it stopped; a turn starts it and its tools are remembered', { timeout: 30000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-not-started-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  const marker = join(root, 'mcp-started.txt');
+  await writeFile(join(home, 'mcp.json'), JSON.stringify([{ id: 'fake', command: process.execPath, args: [FAKE_MCP_SERVER], env: { FAKE_MCP_MARKER: marker }, added_at: new Date().toISOString() }]));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
+  await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
+
+  await callWorker(worker, 'plugin-list', { folder: project });
+  await callWorker(worker, 'plugin-list', { folder: null });
+  const before = await callWorker(worker, 'mcp-list', { folder: project });
+  assert.equal(await exists(marker), false, 'neither plugin-list nor mcp-list started the server');
+  assert.equal(before[0].tools, null, 'not started: no tools to show yet');
+  assert.equal(before[0].error, null, 'not started: no error either, so « non démarré »');
+
+  const { connection } = await model(t, false);
+  const events = await runTurn(worker, project, connection);
+  assert.equal(events.at(-1).kind, 'done', JSON.stringify(events.at(-1)));
+  assert.equal(await exists(marker), true, 'the turn started it');
+  assert.deepEqual((await callWorker(worker, 'mcp-list', { folder: project }))[0].tools, ['mcp_echo', 'mcp_boom']);
+  assert.deepEqual((await callWorker(worker, 'mcp-list', {}))[0].tools, ['mcp_echo', 'mcp_boom'], 'the same server, no active folder');
+
+  await rm(marker);
+  await callWorker(worker, 'plugin-list', { folder: project });
+  await callWorker(worker, 'mcp-list', { folder: project });
+  assert.equal(await exists(marker), false, 'showing the remembered tools never restarts the server');
+});
+
+test('a server whose last discovery failed shows its error in mcp-list, not « non démarré », and an expanded ${VAR} is never in it', { timeout: 30000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-failed-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  await writeFile(join(home, 'mcp.json'), JSON.stringify([{ id: 'crash', command: process.execPath, args: [FAKE_MCP_SERVER], env: { FAKE_MCP_CRASH: '1' }, added_at: new Date().toISOString() }]));
+  // A remote project server whose URL is a placeholder: its expanded value is a secret, and the discovery error
+  // (« Failed to parse URL from <url> ») would carry it.
+  await writeFile(join(project, '.mcp.json'), JSON.stringify({ mcpServers: { distant: { type: 'http', url: '${OA_TEST_MCP_URL}' } } }));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home, OA_TEST_MCP_URL: 'pas-une-url-secret-4242' } }));
+  await approveProject(worker, project);
+
+  const before = await callWorker(worker, 'mcp-list', { folder: project });
+  for (const scope of ['global', 'project']) {
+    assert.equal(entry(before, scope).tools, null, `${scope}: not started`);
+    assert.equal(entry(before, scope).error, null, `${scope}: never started, so no error, « non démarré »`);
+  }
+
+  const { connection } = await model(t, false);
+  assert.equal((await runTurn(worker, project, connection)).at(-1).kind, 'done', 'a failing server never fails the turn');
+  const after = await callWorker(worker, 'mcp-list', { folder: project });
+  assert.equal(entry(after, 'global').tools, null);
+  assert.match(entry(after, 'global').error, /serveur MCP terminé/, 'the crash is shown');
+  assert.equal(entry(after, 'project').tools, null);
+  assert.match(entry(after, 'project').error, /Failed to parse URL from \$\{OA_TEST_MCP_URL\}/, 'the error, with the URL as written');
+  assert.doesNotMatch(JSON.stringify(after), /secret-4242/, 'the expanded secret never reaches the renderer');
+  assert.match((await callWorker(worker, 'mcp-list', {}))[0].error, /serveur MCP terminé/, 'the same global server, no active folder');
+});
+
+test('the tool names listed are those a turn offers: an invalid name, or one another server already took, is not listed', { timeout: 30000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-offered-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  // Two identities (different args), both exposing echo/boom: the project server, listed first, wins them.
+  await writeFile(join(home, 'mcp.json'), JSON.stringify([{ id: 'g', command: process.execPath, args: [FAKE_MCP_SERVER, 'global'], env: { FAKE_MCP_EXTRA_TOOL_NAME: 'propre' }, added_at: new Date().toISOString() }]));
+  await writeFile(join(project, '.mcp.json'), JSON.stringify({ mcpServers: { p: { command: process.execPath, args: [FAKE_MCP_SERVER, 'project'], env: { FAKE_MCP_EXTRA_TOOL_NAME: 'nom avec espaces' } } } }));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
+  await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
+  await approveProject(worker, project);
+
+  const { connection, offered } = await model(t, false);
+  assert.equal((await runTurn(worker, project, connection)).at(-1).kind, 'done');
+  const listed = await callWorker(worker, 'mcp-list', { folder: project });
+  assert.deepEqual(entry(listed, 'project').tools, ['mcp_echo', 'mcp_boom'], 'its invalid « mcp_nom avec espaces » is not listed');
+  assert.deepEqual(entry(listed, 'global').tools, ['mcp_propre'], 'its echo/boom went to the project server');
+  assert.deepEqual([...entry(listed, 'project').tools, ...entry(listed, 'global').tools].sort(), offered[0].filter(name => name.startsWith('mcp_')).sort(), 'exactly what the turn offered');
+  // No active folder: no project server takes echo/boom, so what a turn without project servers would offer.
+  assert.deepEqual((await callWorker(worker, 'mcp-list', {}))[0].tools, ['mcp_echo', 'mcp_boom', 'mcp_propre']);
+});
+
+test('a project server\'s remembered tools are shown for that project only, never for another project running the same server', { timeout: 30000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-per-project-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const alpha = join(root, 'alpha');
+  const beta = join(root, 'beta');
+  await Promise.all([mkdir(home), mkdir(alpha), mkdir(beta)]);
+  const betaMarker = join(root, 'beta-started.txt');
+  // The same command + args (one server identity) in both projects.
+  await writeFile(join(alpha, '.mcp.json'), JSON.stringify({ mcpServers: { fake: { command: process.execPath, args: [FAKE_MCP_SERVER] } } }));
+  await writeFile(join(beta, '.mcp.json'), JSON.stringify({ mcpServers: { fake: { command: process.execPath, args: [FAKE_MCP_SERVER], env: { FAKE_MCP_MARKER: betaMarker } } } }));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
+  await approveProject(worker, alpha);
+  await approveProject(worker, beta);
+
+  const { connection } = await model(t, false);
+  assert.equal((await runTurn(worker, alpha, connection)).at(-1).kind, 'done');
+  assert.deepEqual(entry(await callWorker(worker, 'mcp-list', { folder: alpha }), 'project').tools, ['mcp_echo', 'mcp_boom']);
+  const inBeta = entry(await callWorker(worker, 'mcp-list', { folder: beta }), 'project');
+  assert.equal(inBeta.tools, null, 'beta\'s server was never started: alpha\'s discovery is not beta\'s');
+  assert.equal(inBeta.error, null);
+  await callWorker(worker, 'plugin-list', { folder: beta });
+  assert.equal(await exists(betaMarker), false, 'nor started by beta\'s Outils tab');
+  assert.deepEqual(await callWorker(worker, 'mcp-list', {}), [], 'no active folder: no project server at all');
+});
+
+test('quitting the app (main.cjs::stopWorker) stops the MCP server a turn left in the middle of a call', { timeout: 60000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-quit-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  const pidFile = join(root, 'mcp-pids.txt');
+  await writeFile(join(home, 'mcp.json'), JSON.stringify([{
+    id: 'slow', command: process.execPath, args: [FAKE_MCP_SERVER],
+    env: { FAKE_MCP_PID_FILE: pidFile, FAKE_MCP_CALL_DELAY_MS: '60000' }, added_at: new Date().toISOString(),
+  }]));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
+  await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
+  const pids = async () => {
+    try { return (await readFile(pidFile, 'utf8')).split('\n').filter(Boolean).map(Number); } catch { return []; }
+  };
+
+  const { connection } = await model(t, true);
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'appelle mcp_echo', connection });
+  const { events, stop } = collectAgentEvents(worker, runId);
+  t.after(stop);
+  // One process for the discovery (closed right after it), one for the call, still running: the call takes 60 s.
+  await until(async () => events.some(e => e.kind === 'tool-start') && (await pids()).length >= 2, 'the MCP call in flight');
+  const started = await pids();
+  assert.ok(started.some(isAlive), `the server answering the call runs before the quit (pids ${started.join(', ')})`);
+
+  await stopWorker(worker, 3000);
+  await until(() => started.every(pid => !isAlive(pid)), `every MCP process gone after the quit (pids ${started.join(', ')})`, 10000);
 });

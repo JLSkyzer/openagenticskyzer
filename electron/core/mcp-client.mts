@@ -210,39 +210,50 @@ interface McpRemoteTool {
   inputSchema?: Record<string, unknown>;
 }
 
+/** One configured server's discovery: the tools it exposed, or why it failed (the bare reason — the caller knows
+ * which server it is). worker.mjs remembers it for the Outils tab, which never starts a server itself (parity row 33). */
+export interface McpServerOutcome {
+  target: McpTarget;
+  tools: AgentTool[] | null;
+  error: string | null;
+}
+
 /** Discovers every configured server's tools in parallel, isolating a broken/slow/crashing server
  * from the rest — one bad entry in the MCP config must never keep the others from loading, the
  * same isolation agent.py's own try/except-per-server already had. Works identically for stdio and
- * remote (sse/http) targets. */
+ * remote (sse/http) targets. `servers` holds one outcome per target, in `targets` order; a server's
+ * `tools` are the very objects listed in `tools`. */
 export async function mcpTools(
   targets: McpTarget[],
   options: { discoveryTimeoutMs?: number; callTimeoutMs?: number } = {},
-): Promise<{ tools: AgentTool[]; errors: string[] }> {
+): Promise<{ tools: AgentTool[]; errors: string[]; servers: McpServerOutcome[] }> {
   const discoveryTimeoutMs = options.discoveryTimeoutMs ?? DISCOVERY_TIMEOUT_MS;
   const callTimeoutMs = options.callTimeoutMs ?? CALL_TIMEOUT_MS;
   const errors: string[] = [];
-  const perServer = await Promise.all(targets.map(async target => {
+  const servers = await Promise.all(targets.map(async (target): Promise<McpServerOutcome> => {
+    const failed = (reason: string, label = targetLabel(target)) => {
+      errors.push(`MCP ${label}: ${reason}`);
+      return { target, tools: null, error: reason };
+    };
     const missing = isRemoteTarget(target) ? !target.url?.trim() : !target.command?.trim();
-    if (missing) { errors.push(`MCP : ${isRemoteTarget(target) ? 'URL' : 'commande'} absente`); return []; }
+    if (missing) return failed(`${isRemoteTarget(target) ? 'URL' : 'commande'} absente`, '');
     let session: Session;
     try {
       session = await initialize(target, discoveryTimeoutMs);
     } catch (error) {
-      errors.push(`MCP ${targetLabel(target)}: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
+      return failed(error instanceof Error ? error.message : String(error));
     }
     try {
       const result = await session.request('tools/list', {});
       const remote: McpRemoteTool[] = Array.isArray(result?.tools) ? result.tools : [];
-      return remote.filter(t => typeof t.name === 'string' && t.name).map(t => toAgentTool(target, t, callTimeoutMs));
+      return { target, tools: remote.filter(t => typeof t.name === 'string' && t.name).map(t => toAgentTool(target, t, callTimeoutMs)), error: null };
     } catch (error) {
-      errors.push(`MCP ${targetLabel(target)}: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
+      return failed(error instanceof Error ? error.message : String(error));
     } finally {
       await session.close();
     }
   }));
-  return { tools: perServer.flat(), errors };
+  return { tools: servers.flatMap(server => server.tools ?? []), errors, servers };
 }
 
 function toAgentTool(target: McpTarget, remote: McpRemoteTool, callTimeoutMs: number): AgentTool {

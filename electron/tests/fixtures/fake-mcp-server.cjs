@@ -6,6 +6,8 @@
 if (process.env.FAKE_MCP_CRASH === '1') process.exit(1);
 // Opt-in: proves a server really was (or was never) started — written before anything else runs.
 if (process.env.FAKE_MCP_MARKER) require('node:fs').writeFileSync(process.env.FAKE_MCP_MARKER, 'started');
+// Opt-in: one line per started process, its PID — lets a test check every process this server ever ran is gone.
+if (process.env.FAKE_MCP_PID_FILE) require('node:fs').appendFileSync(process.env.FAKE_MCP_PID_FILE, `${process.pid}\n`);
 
 let buffer = '';
 process.stdin.on('data', chunk => {
@@ -44,6 +46,9 @@ async function handle(line) {
       ],
     });
   } else if (method === 'tools/call') {
+    // Opt-in: a call that takes this long (discovery stays fast) — a call still in flight when the app quits.
+    const callDelay = Number(process.env.FAKE_MCP_CALL_DELAY_MS || 0);
+    if (callDelay) await new Promise(resolve => setTimeout(resolve, callDelay));
     const name = params?.name;
     const args = params?.arguments || {};
     // An optional first CLI argument tags the echo, so a test can run two instances of this same

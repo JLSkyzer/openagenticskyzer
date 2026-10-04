@@ -88,6 +88,7 @@ app.whenReady().then(async () => {
     await click('#oa-mcp-add-btn');
     await waitFor(async () => (await js(`document.querySelectorAll('[data-testid="oa-mcp-entry"]').length`)) === 1, { what: 'server appears in the list' });
     assert.match(await text('[data-testid="oa-mcp-entry"]'), /npx.*server-filesystem/);
+    assert.equal(await text('[data-testid="oa-mcp-not-started"]'), 'non démarré — ses outils seront chargés au prochain message', 'listed without being started (parity row 33)');
     const onDisk = JSON.parse(await readFile(join(home, 'mcp.json'), 'utf8'));
     assert.equal(onDisk.length, 1);
     assert.equal(onDisk[0].command, 'npx');
@@ -117,6 +118,7 @@ app.whenReady().then(async () => {
     await waitFor(() => exists('[data-testid="oa-mcp-project-badge"]'), { what: 'project badge shown for the .mcp.json server' });
     const projectEntryRemoveDisabled = await js(`document.querySelector('[data-testid="oa-mcp-entry"][data-scope="project"] [data-testid="oa-mcp-remove"]').disabled`);
     assert.equal(projectEntryRemoveDisabled, true, 'a project-scope server cannot be removed from the UI');
+    assert.equal(await exists('[data-testid="oa-mcp-entry"][data-scope="project"] [data-testid="oa-mcp-not-started"]'), false, 'an unapproved project server is « non approuvé », not « non démarré »: no message will start it');
     await writeFile(join(screenshotDir, 'mcp-3-project-badge.png'), await capturePng(win));
 
     // ── A real click adds a real remote server definition, persisted to the real mcp.json ───────
@@ -137,7 +139,75 @@ app.whenReady().then(async () => {
     assert.match(await text('[data-testid="oa-mcp-entry"][data-scope="project"]'), /teamserver|npx.*some-pkg/, 'the surviving project entry is really teamserver, not a stale/empty node');
     await writeFile(join(screenshotDir, 'mcp-4-remote-added.png'), await capturePng(win));
 
-    process.stdout.write(`PASS mcp tab: real add/remove through the real worker, real mcp.json (Electron ${process.versions.electron})\n`);
+    // ── Parity row 33: the Outils tab never starts a server; a real turn does, and the tab then shows what it learned ──
+    // Two real stdio servers (the test fixture, run by this Electron binary as Node): one healthy whose start writes a
+    // witness file, one that crashes at startup. They replace the remote example.com entry: no turn may reach it.
+    const fixture = path.join(__dirname, 'fixtures', 'fake-mcp-server.cjs');
+    const witness = join(root, 'mcp-started.txt');
+    const asNode = { ELECTRON_RUN_AS_NODE: '1' };
+    await writeFile(join(home, 'mcp.json'), JSON.stringify([
+      { id: 'fake-ok', command: process.execPath, args: [fixture, 'ok'], env: { ...asNode, FAKE_MCP_MARKER: witness }, added_at: '2026-10-04T10:00:02.000Z' },
+      { id: 'fake-crash', command: process.execPath, args: [fixture, 'crash'], env: { ...asNode, FAKE_MCP_CRASH: '1' }, added_at: '2026-10-04T10:00:01.000Z' },
+    ]));
+    const reopenTools = async () => {
+      await click('[data-testid="oa-settings-tab"][data-tab="general"]');
+      await click('[data-testid="oa-settings-tab"][data-tab="tools"]');
+    };
+    const globalStatus = () => js(`[...document.querySelectorAll('[data-testid="oa-mcp-entry"][data-scope="global"]')].map(e => e.querySelector('[data-testid="oa-mcp-tools"], [data-testid="oa-mcp-error"], [data-testid="oa-mcp-not-started"]')?.dataset.testid + ':' + e.querySelector('[data-testid="oa-mcp-tools"], [data-testid="oa-mcp-error"], [data-testid="oa-mcp-not-started"]')?.textContent)`);
+    await reopenTools();
+    await waitFor(async () => (await globalStatus()).length === 2, { what: 'the two fixture servers listed' });
+    assert.deepEqual(await globalStatus(), [
+      'oa-mcp-not-started:non démarré — ses outils seront chargés au prochain message',
+      'oa-mcp-not-started:non démarré — ses outils seront chargés au prochain message',
+    ]);
+    await pause(500);
+    assert.equal(await (await import('node:fs/promises')).access(witness).then(() => true, () => false), false, 'opening the Outils tab started no server');
+
+    // A real turn in alpha, through the real worker, with a real local model server that just answers.
+    const modelServer = require('node:http').createServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ choices: [{ message: { content: 'Fait.' }, finish_reason: 'stop' }] }));
+      });
+    });
+    await new Promise((resolve, reject) => { modelServer.once('error', reject); modelServer.listen(0, '127.0.0.1', resolve); });
+    try {
+      const connection = { provider: 'test', base_url: `http://127.0.0.1:${modelServer.address().port}/v1`, model: 'test-model', api_key: 'fake' };
+      const runId = await new Promise((resolve, reject) => {
+        const id = `turn-${Math.random()}`;
+        pending.set(id, { resolve: result => resolve(result.runId), reject });
+        worker.postMessage({ id, op: 'send', payload: { folder: alpha, branchId: 'main', text: 'bonjour', connection } });
+      });
+      const end = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('the turn did not end within 30 s')), 30000);
+        worker.on('message', function onEnd(message) {
+          if (message?.type !== 'event' || message.event !== 'agent' || message.runId !== runId || !['done', 'error', 'stopped'].includes(message.kind)) return;
+          clearTimeout(timer);
+          worker.off('message', onEnd);
+          resolve(message);
+        });
+      });
+      assert.equal(end.kind, 'done', `the turn ended: ${JSON.stringify(end)}`);
+    } finally {
+      modelServer.closeAllConnections();
+      await new Promise(resolve => modelServer.close(resolve));
+    }
+    assert.equal(await (await import('node:fs/promises')).access(witness).then(() => true, () => false), true, 'the turn started the healthy server');
+
+    await reopenTools();
+    // Both entries present: right after the remount the list is empty, and `every` holds on an empty list.
+    await waitFor(async () => {
+      const statuses = await globalStatus();
+      return statuses.length === 2 && statuses.every(status => !status.startsWith('oa-mcp-not-started'));
+    }, { what: 'the tab shows what the turn learned' });
+    const [okStatus, crashStatus] = await globalStatus();
+    assert.equal(okStatus, 'oa-mcp-tools:mcp_echo, mcp_boom', 'the healthy server shows the tools the turn offered');
+    assert.match(crashStatus, /^oa-mcp-error:.*serveur MCP terminé/, 'the crashed server shows its error, not « non démarré »');
+    assert.equal(await exists('[data-testid="oa-mcp-entry"][data-scope="project"] [data-testid="oa-mcp-tools"], [data-testid="oa-mcp-entry"][data-scope="project"] [data-testid="oa-mcp-error"], [data-testid="oa-mcp-entry"][data-scope="project"] [data-testid="oa-mcp-not-started"]'), false, 'the unapproved project server still shows no status');
+    await writeFile(join(screenshotDir, 'mcp-5-after-turn.png'), await capturePng(win));
+
+    process.stdout.write(`PASS mcp tab: real add/remove through the real worker, real mcp.json, servers listed without being started, then their tools and error after a real turn (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshots: ${screenshotDir}\n`);
   } catch (error) {
     try {

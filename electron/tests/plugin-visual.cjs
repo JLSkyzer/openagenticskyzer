@@ -39,6 +39,7 @@ app.whenReady().then(async () => {
   await mkdir(join(home, 'tools'), { recursive: true });
   await writeFile(join(home, 'tools', 'good.mjs'), `export function getTools() { return [{ name: 'greet_plugin', description: 'ok', category: 'read', properties: {}, execute: async () => 'ok' }]; }`);
   await writeFile(join(home, 'tools', 'broken.mjs'), `export const notGetTools = true;`);
+  await writeFile(join(home, 'tools', 'legacy.py'), 'def get_tools():\n    return []\n');
   await writeFile(join(home, 'folders.json'), JSON.stringify([{ path: alpha, last_used: new Date().toISOString() }]));
 
   const screenshotDir = process.env.OPENAGENT_PLUGIN_SCREENSHOT_DIR || home;
@@ -89,11 +90,14 @@ app.whenReady().then(async () => {
     await click('[data-testid="oa-settings-tab"][data-tab="tools"]');
     await waitFor(() => exists('[data-testid="oa-plugin-entry"]'), { what: 'the real plugin is listed' });
     assert.match(await text('[data-testid="oa-plugin-entry"]'), /greet_plugin/);
-    await waitFor(() => exists('[data-testid="oa-plugin-error"]'), { what: 'the broken plugin error is shown' });
-    assert.match(await text('[data-testid="oa-plugin-error"]'), /broken\.mjs/);
+    await waitFor(async () => (await js(`document.querySelectorAll('[data-testid="oa-plugin-error"]').length`)) === 2, { what: 'the broken plugin and the legacy .py are both reported' });
+    const pluginErrors = await js(`[...document.querySelectorAll('[data-testid="oa-plugin-error"]')].map(e => e.textContent)`);
+    assert.ok(pluginErrors.some(error => /broken\.mjs/.test(error)), `the broken .mjs is reported — got ${JSON.stringify(pluginErrors)}`);
+    assert.ok(pluginErrors.some(error => error.endsWith('Plugin Python non pris en charge : legacy.py — à réécrire en .mjs')), `the legacy .py is reported as to port — got ${JSON.stringify(pluginErrors)}`);
+    assert.equal(await js(`[...document.querySelectorAll('[data-testid="oa-plugin-entry"]')].some(e => e.textContent.includes('legacy'))`), false, 'and never loaded');
     await writeFile(join(screenshotDir, 'plugin-1-list.png'), await capturePng(win));
 
-    process.stdout.write(`PASS plugin section: real plugin file listed, real broken-plugin error shown (Electron ${process.versions.electron})\n`);
+    process.stdout.write(`PASS plugin section: real plugin file listed, real broken-plugin error and legacy .py to port shown (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshots: ${screenshotDir}\n`);
   } finally {
     win?.destroy();

@@ -229,22 +229,35 @@ export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
             ) : (
               <div className="flex flex-col gap-1">
                 {servers.map(server => (
-                  <div key={server.id} data-testid="oa-mcp-entry" data-scope={server.scope} className={`flex items-center justify-between gap-2 rounded px-2 py-1 ${server.trusted === false ? 'opacity-50' : ''}`} style={{ background: '#0a0a1a', border: '1px solid #1e1e3a' }}>
-                    <span className="truncate font-mono text-xs text-blue-400">
-                      {server.scope === 'project' && <span data-testid="oa-mcp-project-badge" className="mr-1 rounded bg-purple-900 px-1 text-[10px] text-purple-300">projet</span>}
-                      {server.trusted === false && <span data-testid="oa-mcp-untrusted-badge" className="mr-1 rounded bg-gray-800 px-1 text-[10px] text-gray-400">non approuvé</span>}
-                      {serverLabel(server)}
-                      {secretNames(server) && <span data-testid="oa-mcp-secret-names" className="ml-2 font-sans text-[10px] text-gray-500">{secretNames(server)}</span>}
-                    </span>
-                    <button
-                      data-testid="oa-mcp-remove"
-                      onClick={() => void handleRemove(server.id)}
-                      disabled={server.scope === 'project'}
-                      className="shrink-0 text-xs text-gray-500 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-30"
-                      title={server.scope === 'project' ? 'Géré par .mcp.json, pas depuis l’app' : 'Retirer'}
-                    >
-                      ✕
-                    </button>
+                  <div key={server.id} data-testid="oa-mcp-entry" data-scope={server.scope} className={`flex flex-col gap-1 rounded px-2 py-1 ${server.trusted === false ? 'opacity-50' : ''}`} style={{ background: '#0a0a1a', border: '1px solid #1e1e3a' }}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate font-mono text-xs text-blue-400">
+                        {server.scope === 'project' && <span data-testid="oa-mcp-project-badge" className="mr-1 rounded bg-purple-900 px-1 text-[10px] text-purple-300">projet</span>}
+                        {server.trusted === false && <span data-testid="oa-mcp-untrusted-badge" className="mr-1 rounded bg-gray-800 px-1 text-[10px] text-gray-400">non approuvé</span>}
+                        {serverLabel(server)}
+                        {secretNames(server) && <span data-testid="oa-mcp-secret-names" className="ml-2 font-sans text-[10px] text-gray-500">{secretNames(server)}</span>}
+                      </span>
+                      <button
+                        data-testid="oa-mcp-remove"
+                        onClick={() => void handleRemove(server.id)}
+                        disabled={server.scope === 'project'}
+                        className="shrink-0 text-xs text-gray-500 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-30"
+                        title={server.scope === 'project' ? 'Géré par .mcp.json, pas depuis l’app' : 'Retirer'}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    {/* Opening this tab never starts a server: what the last turn learned of it, if a turn started it. An
+                        unapproved project server stays « non approuvé »: no message will start it. */}
+                    {server.trusted !== false && (Array.isArray(server.tools) ? (
+                      <span data-testid="oa-mcp-tools" className="truncate font-mono text-[10px] text-gray-400">
+                        {server.tools.length ? server.tools.join(', ') : 'aucun outil'}
+                      </span>
+                    ) : server.error ? (
+                      <span data-testid="oa-mcp-error" className="font-mono text-[10px] text-yellow-600">⚠️ {server.error}</span>
+                    ) : (
+                      <span data-testid="oa-mcp-not-started" className="text-[10px] text-gray-500">non démarré — ses outils seront chargés au prochain message</span>
+                    ))}
                   </div>
                 ))}
               </div>

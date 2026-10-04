@@ -122,9 +122,16 @@ test('nothing a project brings runs before approval — not on evaluation, Outil
   assert.deepEqual(trusted.tools, ['marker_tool']);
   assert.deepEqual(trusted.untrusted, []);
   const trustedServers = await callWorker(worker, 'mcp-list', { folder: project });
-  assert.equal(trustedServers.find((server: any) => server.scope === 'project').trusted, true, 'the project entry is listed as trusted once approved');
+  const projectEntry = trustedServers.find((server: any) => server.scope === 'project');
+  assert.equal(projectEntry.trusted, true, 'the project entry is listed as trusted once approved');
+  assert.equal(projectEntry.tools, null, 'listed, not started: no turn has run it yet');
   assert.equal(await exists(pluginMarker), true, 'loaded once trusted');
-  assert.equal(await exists(mcpMarker), true, 'started once trusted');
+  assert.equal(await exists(mcpMarker), false, 'the Outils tab (plugin-list, mcp-list) never starts an MCP server, even once trusted');
+  const afterTrust = await turn(worker, project, connection);
+  assert.equal(afterTrust.at(-1).kind, 'done');
+  assert.equal(await exists(mcpMarker), true, 'started by the next turn, once trusted');
+  const listedAfterTurn = await callWorker(worker, 'mcp-list', { folder: project });
+  assert.deepEqual(listedAfterTurn.find((server: any) => server.scope === 'project').tools, ['mcp_echo', 'mcp_boom'], 'its tools are shown once a turn discovered them');
 });
 
 test('a plugin added after approval is not loaded until the project is approved again', { timeout: 30000 }, async t => {

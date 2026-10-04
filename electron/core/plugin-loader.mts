@@ -1,5 +1,5 @@
 import { readdir, realpath, stat } from 'node:fs/promises';
-import { isAbsolute, join, extname } from 'node:path';
+import { basename, isAbsolute, join, extname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { TOOL_NAME_PATTERN, type AgentTool } from './agent.mts';
 import { metadataDirectory } from './json-store.mts';
@@ -35,14 +35,30 @@ async function pluginDirectories(folder: string | null, home: string): Promise<s
   return dirs;
 }
 
-async function pluginFiles(dir: string): Promise<string[]> {
-  let entries: import('node:fs').Dirent[];
-  try { entries = await readdir(dir, { withFileTypes: true }); }
+/** The files of `dir` a plugin can be: no hidden file, no __init__* (a missing directory is just empty). */
+async function directoryFiles(dir: string): Promise<import('node:fs').Dirent[]> {
+  try { return (await readdir(dir, { withFileTypes: true })).filter(entry => entry.isFile() && !entry.name.startsWith('.') && !entry.name.startsWith('__init__')); }
   catch { return []; }
-  return entries
-    .filter(entry => entry.isFile() && PLUGIN_EXTENSIONS.has(extname(entry.name)) && !entry.name.startsWith('.') && !entry.name.startsWith('__init__'))
+}
+
+async function pluginFiles(dir: string): Promise<string[]> {
+  return (await directoryFiles(dir))
+    .filter(entry => PLUGIN_EXTENSIONS.has(extname(entry.name)))
     .map(entry => join(dir, entry.name))
     .sort();
+}
+
+/** The previous app's Python plugins in `dir`, selected like the .mjs ones — never imported, never executed: only
+ * reported so the user knows they must be ported (parity row 32). */
+async function pythonPluginFiles(dir: string): Promise<string[]> {
+  return (await directoryFiles(dir))
+    .filter(entry => extname(entry.name).toLowerCase() === '.py')
+    .map(entry => join(dir, entry.name))
+    .sort();
+}
+
+export function pythonPluginError(name: string): string {
+  return `Plugin Python non pris en charge : ${name} — à réécrire en .mjs`;
 }
 
 /** A name runAgent would refuse must fail HERE, as this file's own error: runAgent refuses the
@@ -111,6 +127,7 @@ export async function loadPlugins(
         errors.push(`${file}: ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
       }
     }
+    for (const file of await pythonPluginFiles(dir)) errors.push(pythonPluginError(basename(file)));
   }
   return { tools, errors };
 }
@@ -119,8 +136,17 @@ export async function loadPlugins(
  * loadPlugins selects them and listed WITHOUT importing anything — what core/project-trust.mts
  * fingerprints and shows. A project directory that is physically <home>/tools is global content. */
 export async function projectPluginFiles(folder: string, home: string): Promise<string[]> {
+  return (await Promise.all((await projectDirectories(folder, home)).map(pluginFiles))).flat();
+}
+
+/** The legacy .py plugins a project brings, from the same directories — what the Outils tab lists, like a .mjs, as not
+ * loaded while the project is not approved. Never fingerprinted by core/project-trust.mts: a .py never runs. */
+export async function projectPythonPluginFiles(folder: string, home: string): Promise<string[]> {
+  return (await Promise.all((await projectDirectories(folder, home)).map(pythonPluginFiles))).flat();
+}
+
+async function projectDirectories(folder: string, home: string): Promise<string[]> {
   if (!isAbsolute(home) || !isAbsolute(folder)) throw new Error('Chemins absolus requis');
   const globalDir = join(home, 'tools');
-  const dirs = (await pluginDirectories(folder, home)).filter(dir => dir !== globalDir);
-  return (await Promise.all(dirs.map(pluginFiles))).flat();
+  return (await pluginDirectories(folder, home)).filter(dir => dir !== globalDir);
 }

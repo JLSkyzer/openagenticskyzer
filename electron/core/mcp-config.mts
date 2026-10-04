@@ -228,8 +228,9 @@ export function parseProjectMcpConfig(raw: string, path: string, { expandEnv = t
 }
 
 /** A server's identity for merge purposes: command+args (stdio) or url (remote) — not `name`,
- * since global entries (added via the UI's single command-line field) have none. */
-function serverIdentity(server: McpServerConfig): string {
+ * since global entries (added via the UI's single command-line field) have none. Also part of the key under which
+ * worker.mjs remembers what a turn discovered on a server (the Outils tab never starts one). */
+export function serverIdentity(server: { command: string; args: string[] } | { url: string }): string {
   return 'command' in server ? `stdio:${server.command}:${JSON.stringify(server.args)}` : `remote:${server.url}`;
 }
 

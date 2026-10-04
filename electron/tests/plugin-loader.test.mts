@@ -275,3 +275,41 @@ test('projectPluginFiles treats <project>/.openagent/tools as global when it IS 
   const { projectPluginFiles } = await import('../core/plugin-loader.mts');
   assert.deepEqual(await projectPluginFiles(project, home), []);
 });
+
+test('a legacy .py plugin is reported in each of the three directories by its file name, and never loaded', async t => {
+  const { home, project } = await fixture(t);
+  await mkdir(join(home, 'tools'), { recursive: true });
+  await writeFile(join(home, 'tools', 'echo.mjs'), VALID_PLUGIN);
+  await writeFile(join(home, 'tools', 'meteo.py'), 'def get_tools():\n    return []\n');
+  await writeFile(join(home, 'tools', '__init__.py'), '');
+  await writeFile(join(home, 'tools', '.cache.py'), '');
+  await mkdir(join(project, 'tools'), { recursive: true });
+  await writeFile(join(project, 'tools', 'projet.py'), 'def get_tools():\n    return []\n');
+  await mkdir(join(project, '.openagent', 'tools'), { recursive: true });
+  await writeFile(join(project, '.openagent', 'tools', 'interne.py'), 'def get_tools():\n    return []\n');
+
+  const { loadPlugins } = await import('../core/plugin-loader.mts');
+  const { tools, errors } = await loadPlugins(project, home);
+  assert.deepEqual(tools.map(tool => tool.name), ['echo_plugin']);
+  // Exactly these errors: no import was even attempted (Node would add an "Unknown file extension" error of its own).
+  assert.deepEqual(errors, [
+    'Plugin Python non pris en charge : meteo.py — à réécrire en .mjs',
+    'Plugin Python non pris en charge : projet.py — à réécrire en .mjs',
+    'Plugin Python non pris en charge : interne.py — à réécrire en .mjs',
+  ]);
+});
+
+test('a .py of an untrusted project is not reported — its folders are not scanned, as for a .mjs — but listed like one; a global one is reported', async t => {
+  const { home, project } = await fixture(t);
+  await mkdir(join(home, 'tools'), { recursive: true });
+  await writeFile(join(home, 'tools', 'meteo.py'), '');
+  await mkdir(join(project, 'tools'), { recursive: true });
+  await writeFile(join(project, 'tools', 'projet.py'), '');
+  await writeFile(join(project, 'tools', '__init__.py'), '');
+  await writeFile(join(project, 'tools', '.cache.py'), '');
+  const { loadPlugins, projectPythonPluginFiles } = await import('../core/plugin-loader.mts');
+  const { errors } = await loadPlugins(project, home, { includeProject: false });
+  assert.deepEqual(errors, ['Plugin Python non pris en charge : meteo.py — à réécrire en .mjs']);
+  // What the Outils tab lists as « non chargé (projet non approuvé) », selected like projectPluginFiles selects a .mjs.
+  assert.deepEqual(await projectPythonPluginFiles(project, home), [join(project, 'tools', 'projet.py')]);
+});

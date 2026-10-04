@@ -1,5 +1,5 @@
 import { parentPort } from 'node:worker_threads';
-import { join, resolve, isAbsolute } from 'node:path';
+import { join, resolve, isAbsolute, relative, sep } from 'node:path';
 import { writeFile, realpath, lstat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { SettingsService } from './core/settings.mts';
@@ -29,11 +29,11 @@ import { testHfToken } from './core/hf-token.mts';
 import { migrateDataDir } from './core/data-dir.mts';
 import { resolveHomes } from './core/data-home.cjs';
 import { initializeProject, projectTools } from './core/project-analyzer.mts';
-import { McpConfigStore, readProjectMcpConfig, mergeServerConfigs, redactSecrets, expandServerPlaceholders } from './core/mcp-config.mts';
+import { McpConfigStore, readProjectMcpConfig, mergeServerConfigs, redactSecrets, expandServerPlaceholders, serverIdentity } from './core/mcp-config.mts';
 import { mcpTools } from './core/mcp-client.mts';
 import { searchTools } from './core/search-tools.mts';
 import { indexFolder } from './core/semantic-index.mts';
-import { loadPlugins } from './core/plugin-loader.mts';
+import { loadPlugins, projectPythonPluginFiles } from './core/plugin-loader.mts';
 import { ProjectTrustService } from './core/project-trust.mts';
 import { addFileToKnowledge, listSources as listKnowledgeSources, removeSource as removeKnowledgeSource } from './core/knowledge-base.mts';
 
@@ -109,6 +109,13 @@ const allowKey = (folder, tool) => `${folder}\0${tool}`;
 function forgetSessionAllowed(folder) {
   for (const key of sessionAllowed) if (key.startsWith(`${folder}\0`)) sessionAllowed.delete(key);
 }
+// Parity row 33: what the last TURN learned of each MCP server, under mcpDiscoveryKey: { names } (every tool it exposed,
+// before any filtering) or { error } (why its discovery failed). Only a turn starts a server; the Outils tab
+// (plugin-list, mcp-list) only reads this map, through rememberedMcpStatus.
+const mcpDiscoveries = new Map();
+/** A project server's discovery belongs to that project alone — another project may run the same command, with its
+ * own env; a global server is the same server in every folder. The identity is the config as a turn runs it. */
+const mcpDiscoveryKey = (folder, server) => JSON.stringify([server.scope === 'project' ? resolve(String(folder)) : null, serverIdentity(server)]);
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
 const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-add-remote', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'project-trust', 'trust-project', 'shutdown']);
@@ -174,16 +181,16 @@ async function registerTools(folder) {
   return { effective, tools: [...others, ...pluginTools] };
 }
 
-/** Built-in + MCP tools for a real project folder — the project's .mcp.json servers only once the
- * project is trusted (never started or contacted before). */
-async function nonPluginTools(folder, effective, projectTrust) {
+/** The MCP servers a turn in `folder` runs, in its order: the project's .mcp.json ones only once the project is
+ * trusted (never started or contacted before), then the global ones. Reading the config starts nothing. */
+async function mcpServersFor(folder, projectTrust) {
   const projectServers = projectTrust.contentTrusted ? await readProjectMcpConfig(folder) : [];
-  const merged = mergeServerConfigs(await mcpConfig.list(), projectServers);
-  const { tools: mcpDiscovered, errors: mcpErrors } = await mcpTools(merged);
-  // A broken/unreachable MCP server never blocks the turn or surfaces to the chat — same
-  // server-log-only isolation agent.py's own logging.getLogger("openagentic.mcp").warning had.
-  for (const error of mcpErrors) console.error(`[mcp] ${error}`);
-  const builtIn = [
+  return mergeServerConfigs(await mcpConfig.list(), projectServers);
+}
+
+/** The built-in tools for a real project folder — building them starts no process. */
+async function builtInTools(folder, effective) {
+  return [
     ...await workspaceTools(folder, effective.ignored_patterns),
     ...await memoryTools(folder, dataHome),
     ...await gitTools(folder),
@@ -192,6 +199,18 @@ async function nonPluginTools(folder, effective, projectTrust) {
     ...await webTools(),
     ...await searchTools(folder, dataHome),
   ];
+}
+
+/** Built-in + MCP tools for a turn: the MCP servers are started here, and only here, to discover their tools. */
+async function nonPluginTools(folder, effective, projectTrust) {
+  const { tools: mcpDiscovered, errors: mcpErrors, servers } = await mcpTools(await mcpServersFor(folder, projectTrust));
+  for (const { target, tools, error } of servers) {
+    mcpDiscoveries.set(mcpDiscoveryKey(folder, target), tools ? { names: tools.map(tool => tool.name) } : { error });
+  }
+  // A broken/unreachable MCP server never blocks the turn or surfaces to the chat — same
+  // server-log-only isolation agent.py's own logging.getLogger("openagentic.mcp").warning had.
+  for (const error of mcpErrors) console.error(`[mcp] ${error}`);
+  const builtIn = await builtInTools(folder, effective);
   return [...builtIn, ...mcpToolsBeside(mcpDiscovered, builtIn)];
 }
 
@@ -200,15 +219,38 @@ async function nonPluginTools(folder, effective, projectTrust) {
  * easily expose the same tool name, and runAgent refuses a duplicated or invalid name for the
  * WHOLE turn. First registered wins; mergeServerConfigs lists project servers first, so a project
  * server's tool wins over a global one's. Same idiom as pluginToolsBeside, logged like mcpErrors. */
-function mcpToolsBeside(discovered, others) {
+function mcpToolsBeside(discovered, others, log = message => console.error(`[mcp] ${message}`)) {
   const taken = new Set(others.map(tool => tool.name));
   const kept = [];
   for (const tool of discovered) {
-    if (!TOOL_NAME_PATTERN.test(tool.name)) console.error(`[mcp] ${tool.name}: nom d’outil invalide, ignoré`);
-    else if (taken.has(tool.name)) console.error(`[mcp] ${tool.name}: nom déjà utilisé par un autre outil, ignoré`);
+    if (!TOOL_NAME_PATTERN.test(tool.name)) log(`${tool.name}: nom d’outil invalide, ignoré`);
+    else if (taken.has(tool.name)) log(`${tool.name}: nom déjà utilisé par un autre outil, ignoré`);
     else { taken.add(tool.name); kept.push(tool); }
   }
   return kept;
+}
+
+/** For each of `servers` (what a turn in `folder` runs, in its order), what the Outils tab shows WITHOUT starting it:
+ * `tools`, the names a turn would offer from the last discovery — filtered by mcpToolsBeside against `builtIn`, exactly
+ * as the turn filters them — or `error`, why that discovery failed; both null when no turn has started it. */
+function rememberedMcpStatus(folder, servers, builtIn) {
+  const statuses = servers.map(server => {
+    const last = mcpDiscoveries.get(mcpDiscoveryKey(folder, server));
+    return { names: last?.names ?? [], tools: last?.names ? [] : null, error: last?.error ?? null };
+  });
+  const discovered = statuses.flatMap(status => status.names.map(name => ({ name, status })));
+  for (const { name, status } of mcpToolsBeside(discovered, builtIn, () => {})) status.tools.push(name);
+  return statuses.map(({ tools, error }) => ({ tools, error }));
+}
+
+/** A discovery error shown beside a project entry displayed as written: each expanded field value (command, args, url)
+ * is put back as written — an expanded ${VAR} is typically a secret and never reaches the renderer. */
+function errorAsWritten(error, expanded, written) {
+  if (!error) return null;
+  const pairs = 'url' in expanded
+    ? [[expanded.url, written.url]]
+    : [[expanded.command, written.command], ...expanded.args.map((arg, i) => [arg, written.args?.[i] ?? ''])];
+  return pairs.reduce((text, [value, raw]) => (value && value !== raw ? text.split(value).join(raw) : text), error);
 }
 
 /** The merged server list for the Outils tab. Trusted project: merged exactly as a turn merges it
@@ -219,16 +261,45 @@ function mcpToolsBeside(discovered, others) {
  * cannot be evaluated (invalid .openagent/config.json, folder gone) is untrusted — never a reason to
  * hide the global servers. */
 async function mcpServersForDisplay(folder) {
+  // Every entry carries `tools` and `error` (rememberedMcpStatus): never started here, only what a turn learned.
   const global = await mcpConfig.list();
-  if (!folder) return global;
-  let contentTrusted = false;
-  try { contentTrusted = (await trust.evaluate(folder)).contentTrusted; }
+  const withStatus = (servers, statuses) => servers.map((server, i) => ({ ...server, ...statuses[i] }));
+  // No active folder: no turn here, no built-in tool to collide with — the global servers as a turn without project
+  // servers would offer them.
+  if (!folder) return withStatus(global, rememberedMcpStatus(null, global, []));
+  let projectTrust = null;
+  try { projectTrust = await trust.evaluate(folder); }
   catch (error) { console.error(`[trust] ${folder} : confiance non évaluable, traité comme non approuvé : ${error instanceof Error ? error.message : error}`); }
+  // Built-in tools only matter here as names an MCP tool could collide with; a folder whose settings or path cannot be
+  // read gets none (a turn there would fail anyway).
+  const builtIn = projectTrust
+    ? await settings.effective(folder, { approvedRelaxations: projectTrust.approvedRelaxations }).then(effective => builtInTools(folder, effective)).catch(() => [])
+    : [];
   const asWritten = await readProjectMcpConfig(folder, { expandEnv: false }).catch(() => []);
-  if (!contentTrusted) return [...global, ...asWritten.map(server => ({ ...server, trusted: false }))];
+  if (!projectTrust?.contentTrusted) {
+    // A turn runs only the global servers; the project's are listed « non approuvé », with no status.
+    return [...withStatus(global, rememberedMcpStatus(folder, global, builtIn)), ...asWritten.map(server => ({ ...server, trusted: false, tools: null, error: null }))];
+  }
   const byId = new Map(asWritten.map(server => [server.id, server]));
   const merged = mergeServerConfigs(global, asWritten.map(server => expandServerPlaceholders(server)));
-  return merged.map(server => (server.scope === 'project' ? { ...(byId.get(server.id) ?? server), trusted: true } : server));
+  // The status is looked up on the EXPANDED entry (what a turn runs); a project entry is shown as written.
+  const statuses = rememberedMcpStatus(folder, merged, builtIn);
+  return merged.map((server, i) => {
+    if (server.scope !== 'project') return { ...server, ...statuses[i] };
+    const written = byId.get(server.id) ?? server;
+    return { ...written, trusted: true, tools: statuses[i].tools, error: errorAsWritten(statuses[i].error, server, written) };
+  });
+}
+
+/** The project's legacy .py plugins, listed beside its .mjs while the project is not approved — relative to the
+ * project, as core/project-trust.mts lists the .mjs. Listing a directory runs nothing. */
+async function projectPythonListing(folder) {
+  try {
+    const root = await realpath(folder);
+    return (await projectPythonPluginFiles(root, dataHome)).map(file => relative(root, file).split(sep).join('/'));
+  } catch {
+    return [];
+  }
 }
 
 /** The folder's plugin tools minus any whose name `others` already uses: runAgent refuses a
@@ -443,8 +514,14 @@ async function handle(message) {
       } else {
         const projectTrust = await trust.evaluate(folder);
         const effective = await settings.effective(folder, { approvedRelaxations: projectTrust.approvedRelaxations });
-        const { tools, errors } = await pluginToolsBeside(folder, await nonPluginTools(folder, effective, projectTrust), projectTrust);
-        result = { tools: tools.map(t => t.name), errors, untrusted: projectTrust.contentTrusted ? [] : projectTrust.inventory.plugins };
+        // Parity row 33: the Outils tab never starts an MCP server. Plugin names are checked against the built-in tools
+        // and the MCP names a turn would offer from what it last discovered — a server not started has none yet.
+        const builtIn = await builtInTools(folder, effective);
+        const remembered = rememberedMcpStatus(folder, await mcpServersFor(folder, projectTrust), builtIn).flatMap(status => status.tools ?? []);
+        const { tools, errors } = await pluginToolsBeside(folder, [...builtIn, ...remembered.map(name => ({ name }))], projectTrust);
+        // Parity row 32: an untrusted project's .py is listed like its .mjs: not loaded, not reported (folders unscanned).
+        const untrusted = projectTrust.contentTrusted ? [] : [...projectTrust.inventory.plugins, ...await projectPythonListing(folder)];
+        result = { tools: tools.map(t => t.name), errors, untrusted };
       }
     }
     if (op === 'project-trust') result = trustView(await trust.evaluate(payload.folder));

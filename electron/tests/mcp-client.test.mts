@@ -170,3 +170,22 @@ test('a remote server that sends headers but stalls the body times out instead o
   assert.equal(errors.length, 1);
   assert.match(errors[0], /délai|timeout/i);
 });
+
+test('mcpTools also reports each server\'s own outcome, in config order: the tools it exposed, or why its discovery failed', async () => {
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  const crashed = config({ FAKE_MCP_CRASH: '1' });
+  const good = config();
+  const empty = { command: '', args: [] };
+  const { tools, servers, errors } = await mcpTools([crashed, good, empty]);
+  assert.equal(errors.length, 2);
+  assert.equal(servers.length, 3, 'one outcome per configured server');
+  assert.equal(servers[0].target, crashed);
+  assert.equal(servers[0].tools, null);
+  assert.match(servers[0].error!, /serveur MCP terminé/);
+  assert.equal(servers[1].target, good);
+  assert.equal(servers[1].error, null);
+  assert.deepEqual(servers[1].tools!.map(tool => tool.name), ['mcp_echo', 'mcp_boom']);
+  assert.ok(servers[1].tools!.every(tool => tools.includes(tool)), 'the very tool objects the turn gets, so a caller can tell which server a kept tool came from');
+  assert.equal(servers[2].tools, null);
+  assert.match(servers[2].error!, /commande absente/);
+});

@@ -182,8 +182,10 @@ export function listPlugins(folder: string | null): Promise<PluginListResult> {
   return request('plugin-list', { folder });
 }
 
-export interface StdioServerConfig { id: string; name?: string; scope: 'global' | 'project'; command: string; args: string[]; env?: Record<string, string>; added_at?: string; trusted?: boolean }
-export interface RemoteServerConfig { id: string; name?: string; scope: 'global' | 'project'; type: 'sse' | 'http'; url: string; headers?: Record<string, string>; added_at?: string; trusted?: boolean }
+// `tools` / `error` (mcp-list only): what the last turn learned of this server — the tool names it offers, or why its
+// discovery failed; both null when no turn has started it. The Outils tab never starts a server.
+export interface StdioServerConfig { id: string; name?: string; scope: 'global' | 'project'; command: string; args: string[]; env?: Record<string, string>; added_at?: string; trusted?: boolean; tools?: string[] | null; error?: string | null }
+export interface RemoteServerConfig { id: string; name?: string; scope: 'global' | 'project'; type: 'sse' | 'http'; url: string; headers?: Record<string, string>; added_at?: string; trusted?: boolean; tools?: string[] | null; error?: string | null }
 export type McpServerConfig = StdioServerConfig | RemoteServerConfig;
 
 export type TrustRelaxationStatus = 'approved' | 'ignored' | 'pending';

@@ -228,3 +228,50 @@ test('worker::send — a plugin declaring category read still asks permission in
   const messages = await callWorker(worker, 'messages', { folder: project, branchId: 'main' });
   assert.match(messages.find((m: any) => m.role === 'tool').content, /refusée par les permissions/);
 });
+
+test('worker::plugin-list reports a legacy .py plugin of the data home as an error to port, and never loads it', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-plugin-py-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  await mkdir(join(home, 'tools'), { recursive: true });
+  await writeFile(join(home, 'tools', 'good.mjs'), `export function getTools() { return [{ name: 'good_tool', description: 'ok', category: 'read', properties: {}, execute: async () => 'ok' }]; }`);
+  await writeFile(join(home, 'tools', 'meteo.py'), 'def get_tools():\n    return []\n');
+
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  terminateAtEnd(t, worker);
+
+  for (const folder of [project, null]) {
+    const result = await callWorker(worker, 'plugin-list', { folder });
+    assert.deepEqual(result.tools, ['good_tool'], `folder=${folder}`);
+    assert.deepEqual(result.errors, ['Plugin Python non pris en charge : meteo.py — à réécrire en .mjs'], `folder=${folder}`);
+  }
+});
+
+test('worker::plugin-list: an untrusted project\'s .py is listed beside its .mjs as not loaded, and reported as to port once the project is trusted', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-plugin-py-trust-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  await mkdir(join(project, 'tools'), { recursive: true });
+  await writeFile(join(project, 'tools', 'outil.mjs'), `export function getTools() { return [{ name: 'projet_tool', description: 'ok', properties: {}, execute: async () => 'ok' }]; }`);
+  await writeFile(join(project, 'tools', 'projet.py'), 'def get_tools():\n    return []\n');
+
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  terminateAtEnd(t, worker);
+
+  const shown = await callWorker(worker, 'project-trust', { folder: project });
+  assert.deepEqual(shown.plugins, ['tools/outil.mjs'], 'a .py is never part of what is approved: it never runs');
+  const before = await callWorker(worker, 'plugin-list', { folder: project });
+  assert.deepEqual(before.tools, []);
+  assert.deepEqual(before.errors, [], 'an untrusted project\'s folders are not scanned for errors');
+  assert.deepEqual(before.untrusted, ['tools/outil.mjs', 'tools/projet.py'], 'listed like the .mjs: not loaded, project not approved');
+
+  await callWorker(worker, 'trust-project', { folder: project, decision: 'trusted', token: shown.token });
+  const after = await callWorker(worker, 'plugin-list', { folder: project });
+  assert.deepEqual(after.tools, ['projet_tool']);
+  assert.deepEqual(after.errors, ['Plugin Python non pris en charge : projet.py — à réécrire en .mjs']);
+  assert.deepEqual(after.untrusted, []);
+});

@@ -3,7 +3,8 @@ import { copyFile, cp, lstat, readdir, rename, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
-async function exists(path: string): Promise<boolean> {
+/** True when something (file, folder or link) is at `path`; only "not found" is false, any other error is thrown. */
+export async function exists(path: string): Promise<boolean> {
   try { await lstat(path); return true; }
   catch (error: any) { if (error.code === 'ENOENT') return false; throw error; }
 }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { removeAtEnd } from './teardown.mts';
 import { seedTree, snapshot } from './fs-helpers.mts';
 
@@ -50,6 +51,16 @@ test('copyThenRemove — the path a move to another drive takes — copies every
   await writeFile(join(root, 'taken.txt'), 'pris');
   await assert.rejects(copyThenRemove(join(root, 'one.txt'), join(root, 'taken.txt')), /la destination existe déjà/);
   assert.equal(await readFile(join(root, 'one.txt'), 'utf8'), 'un', 'a refused copy keeps its source');
+});
+
+test('copyThenRemove moves a single file — the path every retention move takes when the project and the data home are on different drives — byte for byte, leaving nothing behind', async t => {
+  const root = await fixture(t);
+  const src = join(root, 'conversations.json');
+  const bytes = Buffer.concat([Buffer.from('{"version":1}\n'), randomBytes(200_000)]);
+  await writeFile(src, bytes);
+  await copyThenRemove(src, join(root, 'archive.json'));
+  assert.deepEqual(await readFile(join(root, 'archive.json')), bytes);
+  await assert.rejects(readFile(src), /ENOENT/);
 });
 
 test('sameContent tells a faithful copy from one with a changed byte or a missing file', async t => {

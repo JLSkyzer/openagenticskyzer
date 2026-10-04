@@ -2,12 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, writeFile, readFile, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
-import { localDay } from './fs-helpers.mts';
+import { expectedArchive } from './fs-helpers.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -36,7 +35,6 @@ test('worker startup ARCHIVES (never deletes) the conversation data of a project
   await mkdir(join(old, '.openagent'), { recursive: true });
   await writeFile(join(old, '.openagent', 'conversations.json'), JSON.stringify({ version: 1, branches: [{ id: 'main', label: 'Principale', messages: [{ role: 'user', content: 'vieux message' }], created_at: new Date().toISOString() }] }, null, 2));
   const original = await readFile(join(old, '.openagent', 'conversations.json'));
-  const canonical = await realpath(old);
 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
     env: { ...process.env, OPENAGENT_HOME: home },
@@ -48,7 +46,7 @@ test('worker startup ARCHIVES (never deletes) the conversation data of a project
   const list = await callWorker(worker, 'list_folders', {});
   assert.equal(list.length, 1, 'the folder history entry itself must survive the cleanup');
   await assert.rejects(readFile(join(old, '.openagent', 'conversations.json')), /ENOENT/);
-  const archived = join(home, 'retention-archive', localDay(new Date()), `old-project-${createHash('sha256').update(canonical).digest('hex').slice(0, 8)}`, 'conversations.json');
+  const archived = join(await expectedArchive(home, old, new Date()), 'conversations.json');
   assert.deepEqual(await readFile(archived), original, 'moved into the archive of the data home, byte for byte');
 });
 

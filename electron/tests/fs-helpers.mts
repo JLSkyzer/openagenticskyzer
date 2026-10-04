@@ -1,8 +1,9 @@
 // File-system helpers shared by several test files (not a test file: tests/all.mts does not import it).
-// Used by safe-move.test.mts and cleanup.test.mts (R1/R2), and meant for the data-dir migration tests (R4).
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+// Users: safe-move.test.mts (seedTree, snapshot), cleanup.test.mts (localDay, expectedArchive),
+// worker-cleanup.test.mts (expectedArchive); meant for the data-dir migration tests (R4: seedTree, snapshot).
+import { mkdir, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 /** A small tree with a binary file large enough to span several read chunks. */
 export async function seedTree(dir: string): Promise<void> {
@@ -28,4 +29,12 @@ export async function snapshot(dir: string): Promise<Record<string, string>> {
 export function localDay(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** <home>/retention-archive/<AAAA-MM-JJ>/<nom>-<8 premiers caractères du SHA-256 du chemin canonique>, computed here
+ * independently of core/cleanup.mts (for a folder whose name needs no sanitising). */
+export async function expectedArchive(home: string, folder: string, now: Date): Promise<string> {
+  const canonical = await realpath(folder);
+  const hash = createHash('sha256').update(canonical).digest('hex').slice(0, 8);
+  return join(home, 'retention-archive', localDay(now), `${canonical.split(/[\\/]/).pop()}-${hash}`);
 }

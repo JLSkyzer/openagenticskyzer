@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { removeAtEnd } from './teardown.mts';
-import { localDay } from './fs-helpers.mts';
+import { localDay, expectedArchive } from './fs-helpers.mts';
 
 async function fixture(t: any) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-cleanup-'));
@@ -19,13 +19,6 @@ async function fixture(t: any) {
 
 function daysAgo(n: number) {
   return new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
-}
-/** <home>/retention-archive/<AAAA-MM-JJ>/<nom>-<8 premiers caractères du SHA-256 du chemin canonique>, computed here
- * independently of the module under test. */
-async function expectedArchive(home: string, folder: string, now: Date) {
-  const canonical = await realpath(folder);
-  const hash = createHash('sha256').update(canonical).digest('hex').slice(0, 8);
-  return join(home, 'retention-archive', localDay(now), `${canonical.split(/[\\/]/).pop()}-${hash}`);
 }
 async function absent(path: string) {
   await assert.rejects(lstat(path), /ENOENT/, `${path} must not exist`);
@@ -158,6 +151,20 @@ test('R2: a project whose last_used cannot be read as a date is "unknown" and is
   assert.deepEqual(result, { cleaned: 0, failed: 0 });
   assert.deepEqual(await readFile(join(old, '.openagent', 'conversations.json')), before);
   await absent(join(home, 'retention-archive'));
+});
+
+test('R2: a project at a drive root (D:\\) or with a name a file name cannot hold still gets a valid archive folder', async t => {
+  const { home } = await fixture(t);
+  const now = new Date();
+  const sha8 = (path: string) => createHash('sha256').update(path).digest('hex').slice(0, 8);
+  const day = join(home, 'retention-archive', localDay(now));
+  const { archiveDirectory } = await import('../core/cleanup.mts');
+  assert.equal(archiveDirectory(home, 'D:\\', now), join(day, `D_-${sha8('D:\\')}`), 'the drive letter, its colon replaced');
+  assert.equal(archiveDirectory(home, '/srv/a<b>c:d"e|f?g*h\u0001i', now), join(day, `a_b_c_d_e_f_g_h_i-${sha8('/srv/a<b>c:d"e|f?g*h\u0001i')}`));
+  assert.equal(archiveDirectory(home, '/', now), join(day, `projet-${sha8('/')}`), 'an empty name falls back to « projet »');
+  // The folder really can be created, which the raw `D:` segment could not be under Windows.
+  await mkdir(archiveDirectory(home, 'D:\\', now), { recursive: true });
+  assert.ok((await lstat(archiveDirectory(home, 'D:\\', now))).isDirectory());
 });
 
 test('cleanupOldFolders is a no-op when retentionDays is 0 (never)', async t => {

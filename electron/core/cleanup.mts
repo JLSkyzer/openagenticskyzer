@@ -1,8 +1,8 @@
-import { lstat, mkdir } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { metadataDirectory } from './json-store.mts';
-import { moveEntry } from './safe-move.mts';
+import { exists, moveEntry } from './safe-move.mts';
 import { lastUsedTime, type FoldersService } from './folders.mts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -19,16 +19,13 @@ function localDay(date: Date): string {
 }
 
 /** `<home>/retention-archive/<AAAA-MM-JJ>/<nom du projet>-<8 premiers caractères du SHA-256 du chemin canonique>`.
- * The day is local (the cleanup's own day); the hash keeps two projects of the same name apart. */
+ * The day is local (the cleanup's own day); the hash keeps two projects of the same name apart. The name is made a
+ * valid Windows file name: a project at a drive root (`D:\`) would otherwise give `D:`, a folder that cannot exist. */
 export function archiveDirectory(home: string, canonicalPath: string, date: Date): string {
-  const name = canonicalPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'projet';
+  const last = canonicalPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+  const name = last.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_') || 'projet';
   const hash = createHash('sha256').update(canonicalPath).digest('hex').slice(0, 8);
   return join(home, ARCHIVE_DIR, localDay(date), `${name}-${hash}`);
-}
-
-async function present(file: string): Promise<boolean> {
-  try { await lstat(file); return true; }
-  catch (error: any) { if (error.code === 'ENOENT') return false; throw error; }
 }
 
 /**
@@ -38,7 +35,8 @@ async function present(file: string): Promise<boolean> {
  * existing file). A move that fails leaves the file where it was, is logged, and stops that project's archiving.
  * A `last_used` that is not a date is unknown and never expires. The folder-history entry itself is never touched,
  * and nothing ever empties retention-archive/. `retentionDays <= 0` means "keep forever" (no-op), the setting's `0`.
- * Returns the projects with at least one file archived, and the files that could not be.
+ * Returns `cleaned`, the projects with at least one file archived, and `failed`, the projects whose archiving
+ * stopped on a move that failed — at most one per project, since a failure stops that project.
  */
 export async function cleanupOldFolders(folders: FoldersService, retentionDays: number, home: string, now: Date = new Date()): Promise<{ cleaned: number; failed: number }> {
   if (!Number.isFinite(retentionDays) || retentionDays <= 0) return { cleaned: 0, failed: 0 };
@@ -56,7 +54,7 @@ export async function cleanupOldFolders(folders: FoldersService, retentionDays: 
     for (const name of HISTORY_FILES) {
       const file = join(dir, name);
       try {
-        if (!(await present(file))) continue;
+        if (!(await exists(file))) continue;
         await mkdir(target, { recursive: true });
         await moveEntry(file, join(target, name));
         moved++;

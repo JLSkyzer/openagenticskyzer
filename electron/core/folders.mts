@@ -52,11 +52,13 @@ function byMostRecent(a: FolderEntry, b: FolderEntry): number {
 }
 
 /** One entry per folder: duplicates are merged on the canonical key, keeping the canonical path and the most recent
- * last_used (as a time; a known date beats an unknown one). First occurrence order is kept. */
+ * last_used (as a time; a known date beats an unknown one). First occurrence order is kept. The (up to 50) realpath
+ * calls run together, not one after another: one slow path (an offline network share) no longer delays every other. */
 export async function mergeFolderEntries(entries: FolderEntry[]): Promise<FolderEntry[]> {
+  const canonical = await Promise.all(entries.map(entry => canonicalFolderPath(entry.path)));
   const byKey = new Map<string, FolderEntry>();
-  for (const entry of entries) {
-    const path = await canonicalFolderPath(entry.path);
+  for (const [index, entry] of entries.entries()) {
+    const path = canonical[index];
     const key = folderKey(path);
     const seen = byKey.get(key);
     if (!seen) byKey.set(key, { path, last_used: entry.last_used });

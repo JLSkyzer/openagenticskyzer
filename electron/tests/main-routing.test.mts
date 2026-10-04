@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 const main = require('../main.cjs');
 
 // Answered by main.cjs itself (dialog + encrypted vault), before the allow-list.
-const HANDLED_BY_MAIN = ['open-folder', 'connection-snapshot', 'save-connection', 'open-export', 'artifact-put', 'pick-gguf', 'pick-data-dir', 'pick-knowledge-file', 'update-status', 'update-check', 'update-install-now'];
+const HANDLED_BY_MAIN = ['open-folder', 'connection-snapshot', 'save-connection', 'open-export', 'artifact-put', 'pick-gguf', 'pick-data-dir', 'pick-knowledge-file', 'update-status', 'update-check', 'update-install-now', 'restart-app'];
 
 test('every operation the renderer bridge calls is known to main.cjs', async () => {
   // A new bridge function whose op was forgotten in main.cjs only fails at runtime, with "Opération IPC
@@ -19,6 +19,15 @@ test('every operation the renderer bridge calls is known to main.cjs', async () 
   for (const known of ['send', 'fork', 'messages', 'connection-snapshot']) assert.ok(ops.includes(known), `the bridge scan found "${known}"`);
   const unknown = ops.filter(op => !HANDLED_BY_MAIN.includes(op) && !main.isBackendOp(op));
   assert.deepEqual(unknown, [], 'operations called by the renderer but refused by main.cjs');
+});
+
+test('restart-app (« Redémarrer maintenant » after a data-folder migration) is called by the bridge and answered by main.cjs itself, never forwarded to the worker', async () => {
+  const source = await readFile(fileURLToPath(new URL('../renderer-src/src/ipc/bridge.ts', import.meta.url)), 'utf8');
+  assert.match(source, /\brequest(?:<[^>(]*>)?\('restart-app'/, 'the bridge calls it');
+  assert.equal(main.isBackendOp('restart-app'), false, 'the worker never receives it: the main process restarts the app');
+  const mainSource = await readFile(fileURLToPath(new URL('../main.cjs', import.meta.url)), 'utf8');
+  assert.match(mainSource, /request\.op === 'restart-app'\) return restartApp\(\)/, 'main.cjs answers it with restartApp()');
+  assert.equal(typeof main.restartApp, 'function');
 });
 
 test('compact and send carry the resolved connection; nothing else does', () => {

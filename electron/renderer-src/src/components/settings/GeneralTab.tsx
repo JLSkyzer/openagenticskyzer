@@ -1,10 +1,15 @@
 import { useEffect, useState } from 'react';
 import type { SettingsDraft } from './useSettingsDraft';
 import { Group, Row, Section, Toggle } from './parts';
-import { checkForUpdates, getUpdateStatus, migrateDataDir, onUpdateStatus, pickDataDir, testHfToken, type UpdateStatus } from '../../ipc/bridge';
+import { checkForUpdates, getUpdateStatus, migrateDataDir, onUpdateStatus, pickDataDir, restartApp, testHfToken, type UpdateStatus } from '../../ipc/bridge';
 import { useToast } from '../../state/ToastProvider';
+import { migrationSummary } from '../../state/data-dir';
 
 const button = 'self-start rounded-lg border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs text-gray-300';
+
+// A migration wrote the redirect: the new folder is used only after a real restart (both processes resolve the data
+// home at startup). Kept at module level, not in the tab's state, so closing and reopening Réglages still offers it.
+let restartPending = false;
 
 function updateText(update: UpdateStatus): string {
   if (!update.enabled) return update.packaged ? 'Mises à jour désactivées' : 'Mises à jour désactivées (version de développement)';
@@ -13,7 +18,7 @@ function updateText(update: UpdateStatus): string {
     case 'checking': return 'Vérification…';
     case 'available': return `Version ${update.version} disponible — téléchargement…`;
     case 'downloading': return `Téléchargement : ${update.percent ?? 0} %`;
-    case 'ready': return `Version ${update.version} prête — elle s’installera à la fermeture`;
+    case 'ready': return `Version ${update.version} prête — elle s’installera quand l’app quittera (« Quitter » dans l’icône de notification)`;
     case 'up-to-date': return 'À jour';
     case 'error': return `Échec : ${update.message ?? 'erreur inconnue'}`;
   }
@@ -26,6 +31,8 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
   const [editingDataDir, setEditingDataDir] = useState(false);
   const [newDataDir, setNewDataDir] = useState('');
   const [migrating, setMigrating] = useState(false);
+  const [needsRestart, setNeedsRestart] = useState(restartPending);
+  const [restarting, setRestarting] = useState(false);
   const { notify } = useToast();
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [checking, setChecking] = useState(false);
@@ -58,15 +65,24 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
     setMigrating(true);
     try {
       const result = await migrateDataDir(target);
-      const summary = result.errors.length
-        ? `⚠️ ${result.moved} fichier(s) migré(s), ${result.errors.length} erreur(s).`
-        : `✅ ${result.moved} fichier(s) migré(s).`;
-      notify(`${summary} Redémarrez l’app pour appliquer.`, result.errors.length ? 'warning' : 'positive');
+      const summary = migrationSummary(result);
+      notify(summary.text, summary.kind);
+      restartPending = true;
+      setNeedsRestart(true);
       setEditingDataDir(false);
     } catch (error) {
       notify(`Impossible de migrer : ${error instanceof Error ? error.message : 'erreur inconnue'}`, 'negative');
     } finally {
       setMigrating(false);
+    }
+  };
+
+  const restartNow = async () => {
+    setRestarting(true);
+    try { await restartApp(); }
+    catch (error) {
+      notify(`Redémarrage impossible : ${error instanceof Error ? error.message : 'erreur inconnue'}`, 'negative');
+      setRestarting(false);
     }
   };
 
@@ -131,6 +147,21 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
             >
               {dataHome || '~/.openagent'}
             </div>
+            {needsRestart && (
+              <div data-testid="oa-restart-pending" className="flex flex-col gap-2 rounded border border-yellow-900 p-2" style={{ background: '#1a1200' }}>
+                <span className="text-xs text-yellow-600">
+                  Le nouveau dossier sera utilisé au prochain démarrage. Fermer la fenêtre ne suffit pas : l’app reste dans la zone de notification.
+                </span>
+                <button
+                  id="oa-restart-now-btn"
+                  onClick={() => void restartNow()}
+                  disabled={restarting}
+                  className="self-start rounded-lg bg-purple-600 px-3 py-1.5 text-xs text-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {restarting ? 'Redémarrage…' : 'Redémarrer maintenant'}
+                </button>
+              </div>
+            )}
             {!editingDataDir ? (
               <button id="oa-data-dir-open-btn" onClick={startEditingDataDir} className={button}>
                 📁 Changer le dossier…
@@ -152,7 +183,9 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
                 </div>
                 <div className="flex items-start gap-2 rounded border border-yellow-900 p-2" style={{ background: '#1a1200' }}>
                   <span className="text-sm">⚠️</span>
-                  <span className="text-xs text-yellow-600">Redémarrez l’app après le changement pour que tout soit pris en compte.</span>
+                  <span className="text-xs text-yellow-600">
+                    Le dossier choisi doit être vide. Après la migration, « Redémarrer maintenant » relance l’app sur le nouveau dossier.
+                  </span>
                 </div>
                 <div className="flex gap-2">
                   <button

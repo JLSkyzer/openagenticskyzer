@@ -35,14 +35,34 @@ function isInside(inner: string, outer: string): boolean {
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
+/** How many entries a refusal names before it only counts the rest. */
+const NAMED_ENTRIES = 10;
+
+/** Throws, naming them, when `newDir` holds any entry that is data: everything but the redirect pointer and the
+ * current or default home itself (a new folder chosen as the parent of the home). */
+async function refuseOccupiedTarget(newDir: string, currentHome: string, defaultHome: string): Promise<void> {
+  const occupied = (await readdir(newDir)).filter(name => {
+    if (name === REDIRECT_FILE) return false;
+    const entry = join(newDir, name);
+    return ![currentHome, defaultHome].some(home => samePath(entry, home) || isInside(home, entry));
+  }).sort();
+  if (occupied.length === 0) return;
+  const named = occupied.slice(0, NAMED_ENTRIES).join(', ');
+  const more = occupied.length > NAMED_ENTRIES ? ` et ${occupied.length - NAMED_ENTRIES} autre(s)` : '';
+  throw new Error(`Le dossier ${newDir} contient déjà : ${named}${more}. Choisissez un dossier vide : rien n’a été déplacé.`);
+}
+
 /**
  * Moves EVERYTHING in `currentHome` — files and folders (knowledge/, tools/, caches, retention-archive/…) — into
  * `newDir` (created if needed), each entry through core/safe-move.mts (one rename on the same drive; across drives a
  * copy checked byte for byte before the source is removed; never over an existing entry), then points the fixed
  * redirect at `defaultHome` to `newDir`, so the next start (worker AND main process) finds it there. An entry that
- * cannot move is listed in `errors` with the reason: an existing destination keeps both, a new folder chosen inside
- * an entry leaves that entry where it is. `moved` counts top-level entries, a folder counting as one. A restart is
- * required, as before.
+ * cannot move is listed in `errors`, named, with the reason (a folder held by another program, a new folder chosen
+ * inside that entry). `moved` counts top-level entries, a folder counting as one. A restart is required, as before.
+ *
+ * Refused as a whole, before anything moves and before the redirect is written, when `newDir` already holds anything
+ * but redirect.json (and the current or default home itself, when `newDir` contains it): pointing the next start at a
+ * folder that already holds data would make that copy — possibly a stale folders.json or config.json — the live one.
  */
 export async function migrateDataDir(currentHome: string, defaultHome: string, newDir: string): Promise<MigrationResult> {
   if (!isAbsolute(newDir)) throw new Error('Chemin absolu requis');
@@ -50,6 +70,7 @@ export async function migrateDataDir(currentHome: string, defaultHome: string, n
   let moved = 0;
   const errors: string[] = [];
   if (!samePath(newDir, currentHome)) {
+    await refuseOccupiedTarget(newDir, currentHome, defaultHome);
     let entries: string[] = [];
     // Only a home that does not exist is empty. Any other failure (EPERM, EACCES, ENOTDIR…) stops here, BEFORE the
     // redirect is written: pointing at a new folder that received nothing would make the data look lost.

@@ -12,6 +12,7 @@
     "test": "node --experimental-strip-types --test tests/all.mts",
     "test:vault": "node tests/run-os-vault.cjs",
     "test:preload": "node tests/run-preload-bridge.cjs",
+    "test:restart": "node tests/run-restart-app.cjs",
     "test:theme": "node tests/run-theme-visual.cjs",
     "test:sidebar": "node tests/run-sidebar-visual.cjs",
     "test:chat": "node tests/run-chat-visual.cjs",

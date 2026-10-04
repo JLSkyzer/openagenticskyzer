@@ -171,6 +171,11 @@ export interface DataDirMigrationResult { moved: number; errors: string[] }
 export function migrateDataDir(newDir: string): Promise<DataDirMigrationResult> {
   return request('migrate-data-dir', { newDir });
 }
+// Answered by the main process: the app quits (the worker is stopped first, as for any quit) and starts again, so both
+// processes resolve the data home anew. The window's cross only hides the app, it cannot do this.
+export function restartApp(): Promise<{ restarting: boolean }> {
+  return request('restart-app');
+}
 
 export interface ProjectInitResult { success: boolean; message: string }
 export function initProject(folder: string, overwrite: boolean): Promise<ProjectInitResult> {

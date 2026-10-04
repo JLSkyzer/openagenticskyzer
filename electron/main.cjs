@@ -90,8 +90,8 @@ function createWindow() {
   mainWindow.webContents.on('will-navigate', event => event.preventDefault());
   // The cross hides the window instead of quitting, as the NiceGUI app did: the app, its worker (a running turn goes
   // on) and the tray icon keep running. Only a real quit closes it — the tray's « Quitter » (app.quit), « Redémarrer
-  // maintenant » (electron-updater's quitAndInstall calls app.quit) and CDP Browser.close (Electron's Browser::Quit)
-  // all emit 'before-quit' first, which sets appQuitting. A Windows session end never emits 'close' (Electron emits
+  // maintenant » (electron-updater's quitAndInstall calls app.quit; after a data-folder migration, restartApp below)
+  // and CDP Browser.close (Electron's Browser::Quit) all emit 'before-quit' first, which sets appQuitting. A Windows session end never emits 'close' (Electron emits
   // 'session-end', then ends the process itself); the flag is set there too, so nothing could ever hold it back.
   const win = mainWindow;
   win.on('session-end', () => { appQuitting = true; });
@@ -219,6 +219,19 @@ async function resolveSendPayload(connectionsService, request) {
   return { ...request, payload: { ...request.payload, connection } };
 }
 
+/**
+ * « Redémarrer maintenant » (Réglages › Général, after a data-folder migration): both processes resolve the data home
+ * only at startup, and the window's cross now only hides the app (createWindow), so a real restart is the one way to
+ * use the new folder. app.quit() takes the normal quit path — 'before-quit' sets appQuitting and stops the worker
+ * first — and app.relaunch() starts the new instance once this one has exited (the single-instance lock is free by
+ * then). Deferred by a tick so the answer reaches the page before the quit starts. Proven headless, through
+ * handleBackendRequest, by tests/restart-app.cjs.
+ */
+function restartApp() {
+  setImmediate(() => { app.relaunch(); app.quit(); });
+  return { restarting: true };
+}
+
 async function handleBackendRequest(event, request) {
   if (event.sender !== mainWindow?.webContents || !request || typeof request.op !== 'string') throw new Error('Requête IPC invalide');
   if (request.op === 'open-folder') { const picked = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] }); return picked.canceled ? null : picked.filePaths[0]; }
@@ -261,6 +274,7 @@ async function handleBackendRequest(event, request) {
     if (!installUpdateNow) throw new Error(NOT_READY);
     return installUpdateNow();
   }
+  if (request.op === 'restart-app') return restartApp();
   if (!allowed.has(request.op)) throw new Error('Opération IPC inconnue');
   if (!backend) throw new Error('Moteur Node indisponible');
   if (needsConnection(request.op)) request = await resolveSendPayload(connections, request);
@@ -339,4 +353,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { resolveSendPayload, createConnections, resolveMainDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection, isExportFilename, notificationBodyFor };
+module.exports = { restartApp, resolveSendPayload, createConnections, resolveMainDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection, isExportFilename, notificationBodyFor };

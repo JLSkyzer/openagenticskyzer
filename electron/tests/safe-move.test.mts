@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { removeAtEnd } from './teardown.mts';
+import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 import { seedTree, snapshot } from './fs-helpers.mts';
 
 const { moveEntry, copyThenRemove, sameContent } = await import('../core/safe-move.mts');
@@ -76,4 +78,48 @@ test('sameContent tells a faithful copy from one with a changed byte or a missin
   assert.equal(await sameContent(a, b), true);
   await writeFile(join(a, 'extra.txt'), 'x');
   assert.equal(await sameContent(a, b), false, 'a file missing from the copy is a difference');
+});
+
+/** A real second process running `code`, killed when the test ends — BEFORE the test's temp dirs are removed. */
+async function realProcess(t: any, code: string, cwd?: string): Promise<ChildProcess> {
+  const child = spawn(process.execPath, ['-e', code], { cwd, stdio: 'ignore' });
+  terminateAtEnd(t, { terminate: async () => { if (child.exitCode === null && child.signalCode === null) { const exited = once(child, 'exit'); child.kill(); await exited; } } });
+  await once(child, 'spawn');
+  return child;
+}
+
+test('copyThenRemove checks the WHOLE directory copy before removing anything: a file still being written makes the copy differ, the copy is removed and the source untouched', async t => {
+  const root = await fixture(t);
+  const src = join(root, 'tree');
+  await seedTree(src);
+  const before = await snapshot(src);
+  await mkdir(join(src, 'logs'));
+  const log = join(src, 'logs', 'live.log');
+  // A real writer appending without pause, like a log still open during a migration.
+  await realProcess(t, `const fs = require('fs'); const fd = fs.openSync(${JSON.stringify(log)}, 'a'); const b = Buffer.alloc(64, 120); for (;;) fs.writeSync(fd, b);`);
+  while (!(await stat(log).catch(() => null))?.size) await new Promise(resolve => setTimeout(resolve, 20));
+  const dst = join(root, 'copy');
+  await assert.rejects(copyThenRemove(src, dst), /copie différente de l’original/);
+  await assert.rejects(readdir(dst), /ENOENT/, 'the faulty copy is removed');
+  const after = await snapshot(src);
+  delete after[`${sep}logs${sep}live.log`];
+  assert.deepEqual(after, before, 'not one source file was removed');
+});
+
+test('copyThenRemove: when removing the source fails PARTWAY, the error says the copy is complete and the source partially removed — never that it is intact', { skip: process.platform !== 'win32' && 'the lock used here, a process current directory, is a Windows one' }, async t => {
+  const root = await fixture(t);
+  const src = join(root, 'tree');
+  await seedTree(src);
+  await mkdir(join(src, 'busy'));
+  await writeFile(join(src, 'busy', 'held.txt'), 'tenu');
+  const before = await snapshot(src);
+  // A real lock: a running process whose current directory is src/busy — Windows refuses to remove that directory.
+  await realProcess(t, 'setInterval(() => {}, 1000);', join(src, 'busy'));
+  const dst = join(root, 'copy');
+  const error = await copyThenRemove(src, dst).then(() => null, (e: Error) => e);
+  assert.ok(error, 'the failed removal is reported');
+  assert.ok(error.message.startsWith(`copie complète dans ${dst}, source partiellement supprimée`), error.message);
+  assert.deepEqual(await snapshot(dst), before, 'the copy holds every byte');
+  await assert.rejects(stat(join(src, 'a.json')), /ENOENT/, 'the source really is partially removed');
+  assert.ok((await stat(join(src, 'busy'))).isDirectory(), 'what could not be removed is still there');
 });

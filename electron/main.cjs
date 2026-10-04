@@ -5,6 +5,7 @@ const { Worker } = require('node:worker_threads');
 const artifactProtocol = require('./artifact-protocol.cjs');
 const { buildDiamondIconPng } = require('./tray-icon.cjs');
 const { createUpdater, createInstallNow, canInstallNow, NOT_READY } = require('./updater.cjs');
+const { resolveHomes } = require('./core/data-home.cjs');
 
 // What "artifact-put" (below) fills and the oa-artifact: protocol serves — see artifact-protocol.cjs.
 const artifacts = artifactProtocol.createArtifactStore();
@@ -163,15 +164,20 @@ async function stopBackend() {
   try { await stoppingBackend; } finally { stoppingBackend = null; }
 }
 
-// Mirrors worker.mjs's OPENAGENT_HOME override — lets integration tests point the whole
-// data layer at a temp directory instead of the real user's ~/.openagent.
-function dataHome() {
-  return process.env.OPENAGENT_HOME || path.join(homedir(), '.openagent');
+/**
+ * The data home, resolved by core/data-home.cjs exactly as worker.mjs resolves it: ~/.openagent followed through its
+ * redirect.json (Réglages › Général › Répertoire de données) — the connections vault must live where the rest of the
+ * data went (R4). OPENAGENT_HOME (tests only) replaces ~/.openagent. `env` and `userHome` are parameters for tests only.
+ */
+async function resolveMainDataHome(env = process.env, userHome = homedir()) {
+  return (await resolveHomes(env, userHome)).dataHome;
 }
 
-async function createConnections() {
+/** The connections vault of the data home. main.cjs calls it with no argument; a test passes a temporary user home,
+ * its own environment and a real cipher in place of the OS safeStorage, and goes through this very path. */
+async function createConnections({ env = process.env, userHome = homedir(), cipher = safeStorage } = {}) {
   const { Connections } = await import('./core/connections.mts');
-  return new Connections({ home: dataHome(), cipher: safeStorage, environment: process.env });
+  return new Connections({ home: await resolveMainDataHome(env, userHome), cipher, environment: env });
 }
 
 /**
@@ -292,4 +298,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { resolveSendPayload, createConnections, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection, isExportFilename, notificationBodyFor };
+module.exports = { resolveSendPayload, createConnections, resolveMainDataHome, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection, isExportFilename, notificationBodyFor };

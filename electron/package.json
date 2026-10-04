@@ -46,6 +46,7 @@
     "package:win": "npm run renderer:build && electron-builder --win nsis --publish never",
     "release:win": "node scripts/release-win.cjs",
     "test:package": "node tests/package-smoke.cjs",
+    "test:package-datahome": "node tests/package-data-home.cjs",
     "test:update": "node tests/update-e2e.cjs",
     "test:install": "node tests/install-e2e.cjs",
     "test:final-e2e": "node tests/final-e2e.cjs",

@@ -1,5 +1,4 @@
 import { parentPort } from 'node:worker_threads';
-import { homedir } from 'node:os';
 import { join, resolve, isAbsolute } from 'node:path';
 import { writeFile, realpath, lstat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -27,7 +26,8 @@ import { buildHtml, buildJson, buildMarkdown, exportFilename, renderEntries } fr
 import { cleanupOldFolders } from './core/cleanup.mts';
 import { gitStatus } from './core/git-status.mts';
 import { testHfToken } from './core/hf-token.mts';
-import { migrateDataDir, resolveDataHome } from './core/data-dir.mts';
+import { migrateDataDir } from './core/data-dir.mts';
+import { resolveHomes } from './core/data-home.cjs';
 import { initializeProject, projectTools } from './core/project-analyzer.mts';
 import { McpConfigStore, readProjectMcpConfig, mergeServerConfigs, redactSecrets, expandServerPlaceholders } from './core/mcp-config.mts';
 import { mcpTools } from './core/mcp-client.mts';
@@ -37,11 +37,10 @@ import { loadPlugins } from './core/plugin-loader.mts';
 import { ProjectTrustService } from './core/project-trust.mts';
 import { addFileToKnowledge, listSources as listKnowledgeSources, removeSource as removeKnowledgeSource } from './core/knowledge-base.mts';
 
-// OPENAGENT_HOME lets integration tests point the whole data layer at a temp directory
-// instead of the real user's ~/.openagent — never rely on the default outside tests, and it
-// always bypasses the redirect below so a test never touches the real developer's data home.
-const defaultHome = process.env.OPENAGENT_HOME || join(homedir(), '.openagent');
-const dataHome = process.env.OPENAGENT_HOME ? defaultHome : await resolveDataHome(defaultHome);
+// The data home, resolved by core/data-home.cjs exactly as main.cjs resolves it (the connections vault must live
+// where the rest of the data is): ~/.openagent followed through its redirect.json. OPENAGENT_HOME lets integration
+// tests replace ~/.openagent with a temp directory — its own redirect.json is followed, the real one is never read.
+const { defaultHome, dataHome } = await resolveHomes();
 // A send turn finishing at or beyond this duration is flagged 'longRunning' so main.cjs can
 // raise a native OS notification (mirrors the previous NiceGUI app's notifier.py threshold).
 // OPENAGENT_LONG_RUN_MS lets tests use a real (not mocked) but fast agent turn instead of
@@ -152,7 +151,7 @@ async function runCompaction(compactionId, folder, branchId, before, connection,
     // appendCompactionSummary itself never throws (a memory-write failure never turns an
     // already-successful compaction into a reported failure).
     await appendCompactionSummary(folder, dataHome, after[0].content.slice(SUMMARY_PREFIX.length));
-    outcome = { kind: 'compacted', messages: after };
+    outcome = { kind: 'compacted', messages: servedMessages(after) };
   } catch (error) {
     const aborted = error?.name === 'AbortError';
     outcome = { kind: 'compact-failed', message: aborted ? 'Compaction interrompue.' : error instanceof Error ? error.message : 'Erreur interne' };
@@ -298,6 +297,12 @@ function normalizeRole(role) {
   if (role === 'human') return 'user';
   return role;
 }
+/** R3: the Python app saved `ai`/`human`; the screen and the model request only know `assistant`/`user`. Applied
+ * wherever a history is served (folder activation, branch load, a finished compaction, a turn) — never written back
+ * by a read, so the file stays exactly as the Python app left it until the next real save. */
+function servedMessages(messages) {
+  return messages.map(message => ({ ...message, role: normalizeRole(message.role) }));
+}
 
 function lastAssistantSummary(messages) {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -345,7 +350,7 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
     // screen — edit and regenerate cut both at the same index. Only an unreadable conversation file stops here,
     // with nothing to save.
     const saved = await conversations.messages(folder, branchId);
-    const history = (keep === undefined ? saved : saved.slice(0, keep)).map(m => ({ ...m, role: normalizeRole(m.role) }));
+    const history = servedMessages(keep === undefined ? saved : saved.slice(0, keep));
     // What was typed stays in `content`; the files ride beside it and are expanded only when the model is called.
     collected = [...history, { role: 'user', content: text, ...(attachments.length ? { attachments } : {}) }];
     const { effective, tools } = await registerTools(folder);
@@ -461,7 +466,8 @@ async function handle(message) {
     if (op === 'knowledge-remove') result = await removeKnowledgeSource(payload.source, dataHome);
     if (op === 'activate_folder') {
       const list = await folders.recordOpened(payload.folder);
-      result = { history: await conversations.messages(payload.folder, 'main').catch(() => []), folders: list };
+      const history = await conversations.messages(payload.folder, 'main').catch(() => []);
+      result = { history: servedMessages(history), folders: list };
       void triggerIndexing(payload.folder);
     }
     if (op === 'settings') result = payload.folder ? await settings.project(payload.folder) : await settings.publicGlobal();
@@ -559,7 +565,7 @@ async function handle(message) {
     if (op === 'read-project-memory') result = await readProjectMemory(payload.folder);
     if (op === 'export-conversation') result = await exportConversation(payload.folder, payload.branchId || 'main', payload.format, payload.provider || '', payload.model || '');
     if (op === 'list-branches') result = await conversations.list(payload.folder);
-    if (op === 'messages') result = await conversations.messages(payload.folder, payload.branchId || 'main');
+    if (op === 'messages') result = servedMessages(await conversations.messages(payload.folder, payload.branchId || 'main'));
     if (op === 'save-messages') result = await conversations.save(payload.folder, payload.branchId || 'main', payload.messages);
     if (op === 'fork') {
       // The transcript on disk is only complete once the run ended: forking mid-run would cut

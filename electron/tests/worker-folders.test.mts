@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
@@ -62,4 +62,31 @@ test('worker::activate_folder records the folder in history and returns it with 
   assert.equal(listed[0].name, 'project');
 
   assert.equal((await indexed).state, 'ready');
+});
+
+test('R3: a history saved by the Python app (roles human/ai) is served as user/assistant, and a read writes nothing', { timeout: 30000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-legacy-roles-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(join(project, '.openagent'), { recursive: true })]);
+  const legacy = JSON.stringify([
+    { role: 'human', content: 'question posée à l’ancienne app' },
+    { role: 'ai', content: 'réponse de l’ancienne app' },
+    { role: 'tool', content: 'sortie' },
+  ]);
+  await writeFile(join(project, '.openagent', 'chat_history.json'), legacy);
+
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
+    env: { ...process.env, OPENAGENT_HOME: home },
+  }));
+  const indexed = indexingSettled(worker, project);
+  const activated = await callWorker(worker, 'activate_folder', { folder: project });
+  assert.deepEqual(activated.history.map((m: any) => m.role), ['user', 'assistant', 'tool'], 'activation');
+  const loaded = await callWorker(worker, 'messages', { folder: project, branchId: 'main' });
+  assert.deepEqual(loaded.map((m: any) => m.role), ['user', 'assistant', 'tool'], 'branch load');
+  assert.equal(loaded[1].content, 'réponse de l’ancienne app');
+  assert.equal(await readFile(join(project, '.openagent', 'chat_history.json'), 'utf8'), legacy, 'the Python file is not rewritten by a read');
+  await assert.rejects(readFile(join(project, '.openagent', 'conversations.json')), /ENOENT/, 'and no new file is written by a read');
+  await indexed;
 });

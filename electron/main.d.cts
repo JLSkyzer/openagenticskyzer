@@ -7,7 +7,13 @@ export function resolveSendPayload(
   request: { op: string; payload?: Record<string, unknown> },
 ): Promise<{ op: string; payload: Record<string, unknown> }>;
 
-export function createConnections(): Promise<unknown>;
+export function createConnections(options?: {
+  env?: Record<string, string | undefined>;
+  userHome?: string;
+  cipher?: { isEncryptionAvailable(): boolean; encryptString(value: string): Buffer; decryptString(value: Buffer): string };
+}): Promise<unknown>;
+
+export function resolveMainDataHome(env?: Record<string, string | undefined>, userHome?: string): Promise<string>;
 
 export function buildCsp(isPackaged: boolean): string;
 

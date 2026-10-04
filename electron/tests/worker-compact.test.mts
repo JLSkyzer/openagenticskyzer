@@ -376,3 +376,11 @@ test('worker::compact works on a fork too, and leaves main untouched', async t =
   assert.equal((await stored(fork.id)).length, 3);
   assert.deepEqual(await stored(), mainBefore);
 });
+
+test('R3: compacting a Python-era history (human/ai) announces user/assistant roles, like every place that serves a history', async t => {
+  const { seed, compact } = await setup(t);
+  await seed(Array.from({ length: 4 }, (_, i) => [say('human', `question ${i + 1}`), say('ai', `réponse ${i + 1}`)]).flat());
+  const done = await (await compact()).outcome;
+  assert.equal(done.kind, 'compacted', JSON.stringify(done));
+  assert.deepEqual(done.messages.map((m: any) => m.role), ['assistant', 'user', 'assistant']);
+});

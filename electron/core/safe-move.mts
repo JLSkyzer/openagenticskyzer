@@ -50,11 +50,25 @@ export async function copyThenRemove(src: string, dst: string): Promise<void> {
     if (error?.code !== 'EEXIST' && error?.code !== 'ERR_FS_CP_EEXIST') await rm(dst, { recursive: true, force: true });
     throw error;
   }
-  await rm(src, { recursive: true });
+  // Only now, the whole copy checked, is anything removed. A removal can still stop partway (a file or folder held
+  // by another program): the error then says exactly what is where — never that the source is intact when it is not.
+  try {
+    await rm(src, { recursive: true });
+  } catch (error: any) {
+    const reason = error instanceof Error ? error.message : String(error);
+    let left: boolean;
+    try { left = await exists(src); } catch { left = true; }
+    if (!left) return; // gone after all: the move is complete
+    let untouched: boolean;
+    try { untouched = await sameContent(src, dst); } catch { untouched = false; }
+    throw new Error(`copie complète dans ${dst}, ${untouched ? 'source non supprimée (les deux sont conservés)' : 'source partiellement supprimée'} : ${reason}`);
+  }
 }
 
 /** Moves a file or a whole directory, never over something already at `dst` (fs.rename would replace a file under
- * Windows). Same drive: one rename. Another drive (EXDEV): copyThenRemove. When it throws, `src` is still in place. */
+ * Windows). Same drive: one rename. Another drive (EXDEV): copyThenRemove. When it throws, either `src` is still in
+ * place, or — only when removing the source of a complete, checked copy failed — the message says so precisely
+ * (« copie complète dans <dst>, source … »). */
 export async function moveEntry(src: string, dst: string): Promise<void> {
   if (await exists(dst)) throw new Error('la destination existe déjà');
   try {

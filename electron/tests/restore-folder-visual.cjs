@@ -9,7 +9,7 @@ app.disableHardwareAcceleration();
 app.on('window-all-closed', () => {});
 const { Worker } = require('node:worker_threads');
 const path = require('node:path');
-const { mkdtemp, rm, mkdir, writeFile, rm: rmPath } = require('node:fs/promises');
+const { mkdtemp, rm, mkdir, writeFile, realpath, rm: rmPath } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
@@ -156,7 +156,33 @@ app.whenReady().then(async () => {
       } finally { await teardown(session); }
     }
 
-    process.stdout.write(`PASS restore last folder: real restore on cold start, disabled by setting, safe on a deleted folder, never overrides a manual click (Electron ${process.versions.electron})\n`);
+    // ── E. data left by the Python app: folders.json holds the project as C:/… (Python, old) AND C:\… (this app,
+    //       recent), and its chat_history.json has roles "human"/"ai" — one sidebar entry, and the old answers shown ──
+    {
+      const home = join(root, 'home-e');
+      const legacy = join(root, 'legacy-e');
+      await Promise.all([mkdir(home), mkdir(join(legacy, '.openagent'), { recursive: true })]);
+      const real = await realpath(legacy);
+      await writeFile(join(home, 'folders.json'), JSON.stringify([
+        { path: real.replaceAll('\\', '/'), last_used: '2026-01-15T09:30:00.123456' },
+        { path: real, last_used: new Date().toISOString() },
+      ]));
+      await writeFile(join(legacy, '.openagent', 'chat_history.json'), JSON.stringify([
+        { role: 'human', content: 'question posée à l’ancienne app' },
+        { role: 'ai', content: 'réponse de l’ancienne app' },
+      ]));
+      const session = await bootSession(home);
+      try {
+        await session.win.loadFile(path.join(__dirname, '..', 'renderer-dist', 'index.html'));
+        await waitFor(() => js(session.win, `!!document.querySelector('[data-testid="oa-folder-entry"][data-active="true"]')`), { what: 'the legacy project is restored' });
+        assert.equal(await js(session.win, `document.querySelectorAll('[data-testid="oa-folder-entry"]').length`), 1, 'one sidebar entry for the two spellings (R1)');
+        await waitFor(() => js(session.win, `[...document.querySelectorAll('[data-testid="oa-assistant-bubble"]')].some(e => e.textContent.includes(${JSON.stringify('réponse de l’ancienne app')}))`), { what: 'the Python reply (role "ai") is shown (R3)' });
+        assert.equal(await js(session.win, `[...document.querySelectorAll('[data-testid="oa-user-bubble"]')].some(e => e.textContent.includes(${JSON.stringify('question posée à l’ancienne app')}))`), true, 'the Python question (role "human") is shown');
+        await writeFile(join(screenshotDir, 'restore-e-legacy.png'), await capturePng(session.win));
+      } finally { await teardown(session); }
+    }
+
+    process.stdout.write(`PASS restore last folder: real restore on cold start, disabled by setting, safe on a deleted folder, never overrides a manual click, Python-era data shown once with its answers (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshots: ${screenshotDir}\n`);
   } finally {
     if (!process.env.OPENAGENT_RESTORE_SCREENSHOT_DIR) await rm(root, { recursive: true, force: true });

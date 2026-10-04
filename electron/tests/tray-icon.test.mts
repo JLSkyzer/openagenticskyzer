@@ -43,3 +43,13 @@ test('buildDiamondIconPng draws something: not every pixel is fully transparent'
   assert.ok(opaquePixels > 0, 'at least some pixels must be opaque, or the tray icon would be invisible');
   assert.ok(opaquePixels < 32 * 32, 'the corners (outside the circle) must stay transparent');
 });
+
+test('trayMenuTemplate: « Ouvrir openagent » calls the open function it is given, « Quitter » the quit function it is given', () => {
+  const { trayMenuTemplate } = require('../tray-icon.cjs');
+  const open = () => {};
+  const quit = () => {};
+  const template = trayMenuTemplate({ open, quit });
+  assert.deepEqual(template.map((item: any) => item.label ?? item.type), ['Ouvrir openagent', 'separator', 'Quitter']);
+  assert.equal(template[0].click, open);
+  assert.equal(template[2].click, quit);
+});

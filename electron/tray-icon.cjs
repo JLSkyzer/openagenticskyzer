@@ -65,4 +65,14 @@ function buildDiamondIconPng(size = 32) {
   return encodePng(size, size, diamondRgba(size));
 }
 
-module.exports = { buildDiamondIconPng, diamondRgba, encodePng };
+/** The tray's context menu, as a template for Menu.buildFromTemplate. Pure, so a test can check which function each
+ * item calls — a native tray menu cannot be clicked from a test. main.cjs passes showMainWindow and app.quit. */
+function trayMenuTemplate({ open, quit }) {
+  return [
+    { label: 'Ouvrir openagent', click: open },
+    { type: 'separator' },
+    { label: 'Quitter', click: quit },
+  ];
+}
+
+module.exports = { buildDiamondIconPng, diamondRgba, encodePng, trayMenuTemplate };

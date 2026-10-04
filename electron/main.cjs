@@ -4,7 +4,7 @@ const { homedir } = require('node:os');
 const { writeFileSync } = require('node:fs');
 const { Worker } = require('node:worker_threads');
 const artifactProtocol = require('./artifact-protocol.cjs');
-const { buildDiamondIconPng } = require('./tray-icon.cjs');
+const { buildDiamondIconPng, trayMenuTemplate } = require('./tray-icon.cjs');
 const { createUpdater, createInstallNow, canInstallNow, NOT_READY } = require('./updater.cjs');
 const { resolveHomes } = require('./core/data-home.cjs');
 
@@ -17,6 +17,9 @@ let backend;
 let connections;
 let updater;
 let installUpdateNow;
+// Set by 'before-quit' (see the app lifecycle below) and by a Windows session end: from then on, closing the window
+// really closes it.
+let appQuitting = false;
 const pending = new Map();
 const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','git-status','test-hf-token','migrate-data-dir','init-project','mcp-list','mcp-add','mcp-add-remote','mcp-remove','index-status','knowledge-list','knowledge-add','knowledge-remove','plugin-list','project-trust','trust-project']);
 
@@ -85,6 +88,18 @@ function createWindow() {
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', event => event.preventDefault());
+  // The cross hides the window instead of quitting, as the NiceGUI app did: the app, its worker (a running turn goes
+  // on) and the tray icon keep running. Only a real quit closes it — the tray's « Quitter » (app.quit), « Redémarrer
+  // maintenant » (electron-updater's quitAndInstall calls app.quit) and CDP Browser.close (Electron's Browser::Quit)
+  // all emit 'before-quit' first, which sets appQuitting. A Windows session end never emits 'close' (Electron emits
+  // 'session-end', then ends the process itself); the flag is set there too, so nothing could ever hold it back.
+  const win = mainWindow;
+  win.on('session-end', () => { appQuitting = true; });
+  win.on('close', event => {
+    if (appQuitting) return;
+    event.preventDefault();
+    win.hide();
+  });
 }
 
 function showMainWindow() {
@@ -94,17 +109,14 @@ function showMainWindow() {
   mainWindow.focus();
 }
 
-// A system-tray icon so the app can keep running in the background after the window is closed,
-// like the previous NiceGUI app's pystray-based tray. Kept alive on the module-level `tray`
-// variable — Electron garbage-collects (and silently hides) a Tray with no other reference.
+// The system-tray icon. The window's cross only hides the window (createWindow): the app, its worker and this icon
+// keep running, like the previous NiceGUI app's pystray-based tray. « Ouvrir openagent » or a click on the icon
+// shows the window again; « Quitter » is the real quit. Kept alive on the module-level `tray` variable — Electron
+// garbage-collects (and silently hides) a Tray with no other reference.
 function createTray() {
   tray = new Tray(nativeImage.createFromBuffer(buildDiamondIconPng(32)));
   tray.setToolTip('◈ openagent');
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Ouvrir openagent', click: showMainWindow },
-    { type: 'separator' },
-    { label: 'Quitter', click: () => app.quit() },
-  ]));
+  tray.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate({ open: showMainWindow, quit: () => app.quit() })));
   tray.on('click', showMainWindow);
 }
 
@@ -311,13 +323,18 @@ if (require.main === module) {
     });
     // Whatever way the app quits, the worker is shut down properly first so no dev server outlives it.
     // After "Redémarrer maintenant" the worker is already stopped (backend undefined): the quit goes straight on.
+    // appQuitting is set FIRST, before the early return: that quit path (no worker left) must close the window too.
+    // A Windows session end does not come through here: Electron 44 emits 'session-end' on the window, then ends the
+    // process itself (native_window_views_win.cc, WM_ENDSESSION) — no 'close' event, so the hide never holds it back.
     let quitting = false;
     app.on('before-quit', event => {
+      appQuitting = true;
       if (quitting || (!backend && !stoppingBackend)) return;
       event.preventDefault();
       quitting = true;
       (backend ? stopBackend() : stoppingBackend).finally(() => app.quit());
     });
+    // Only reached once a real quit closed the window: the cross alone never closes it any more.
     app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
   }
 }

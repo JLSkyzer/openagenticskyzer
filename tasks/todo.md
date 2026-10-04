@@ -6,13 +6,13 @@
 - [x] Relever les surfaces NiceGUI et les écarts statiques du prototype ; matrice `docs/superpowers/plans/2026-09-14-electron-parity.md`.
 - [x] Remplacer la conception contradictoire avec pont Python par `docs/superpowers/specs/2026-09-14-electron-autonomous-design.md`.
 - [x] Relire/valider la nouvelle spécification écrite, notamment données Chroma et plugins Python personnalisés (utilisateur : « go »).
-- [ ] Stockage Node : migrations sauvegardées, settings globaux/projet distincts, secrets, isolation de projets et branches ; tests temporaires.
-- [ ] Moteur Node : providers, streaming, outils, permissions, annulation, contexte et mémoire ; serveurs simulés.
+- [ ] Stockage Node : migrations sauvegardées, settings globaux/projet distincts, secrets, isolation de projets et branches ; tests temporaires. — reste : aucun bilan ne prouve la ligne entière. La sauvegarde avant transformation n'est prouvée que par les tâches de tests du lot « services de données Node » (16 tests, cb48ff4, section sans bilan), et aucun bilan ne mentionne une conversion vérifiée des fichiers de données Python existants (spec, « sauvegarder avant toute transformation »). Les autres éléments sont couverts séparément (réglages global/projet : Bilan du lot — confiance par projet (2026-10-02) ; secrets non renvoyés au renderer : Bilan du lot — MCP enrichi (2026-10-01) ; branches : Bilan du lot « branches »), sans bilan qui les réunisse.
+- [x] Moteur Node : providers, streaming, outils, permissions, annulation, contexte et mémoire ; serveurs simulés. — preuve : Bilan du lot — cœur agent : écarts avec Python corrigés (2026-10-03) (providers, streaming, outils, permissions, annulation, contexte ; serveur HTTP local compatible OpenAI, vrai worker, vrai moteur GGUF ; suite 712/712 puis 717/717) ; Bilan du lot — audit indépendant + persistance du résumé de compaction (2026-10-01) (mémoire projet) ; Bilan du lot « outils du moteur » (Tâches 20-27, titre sans date) (outils mémoire, Stop réel).
 - [x] Interface Electron : navigation et paramètres complets, conversation et panneaux ; tests de clic et rendu réel.
-- [ ] Modèles locaux, téléchargements, index/BDC, extensions et MCP sans Python ; tests de chaque contrat.
-- [ ] Vérifier chaque ligne de la matrice de parité, corriger les régressions.
-- [ ] Packager et tester Windows sans Python, supprimer les anciens chemins actifs, documenter npm/exécutable.
-- [ ] Commit/push des changements propres et preuves de validation.
+- [ ] Modèles locaux, téléchargements, index/BDC, extensions et MCP sans Python ; tests de chaque contrat. — reste : « téléchargements » n'est pas livré tel qu'écrit. Le catalogue HuggingFace, les téléchargements de modèles et la gestion Ollama / LM Studio / llama.cpp externes ont été écartés par décision de l'utilisateur (lot « fournisseur local intégré », 2026-09-27 ; Bilan du lot — écarts réels restants NiceGUI → Electron (2026-09-27 → 2026-09-30)), remplacés par l'import de fichiers `.gguf` ; la ligne n'a pas été réécrite pour refléter ce changement. Les autres éléments sont prouvés : modèles locaux (Bilan du lot fournisseur local `.gguf`, 2026-09-27), index/BDC (Bilan du lot — `index_status` …, 2026-09-30 → 2026-10-01), extensions (Bilan du lot — système de plugins Node, 2026-10-01), MCP (Bilan du lot — MCP enrichi, 2026-10-01).
+- [ ] Vérifier chaque ligne de la matrice de parité, corriger les régressions. — reste : la matrice `docs/superpowers/plans/2026-09-14-electron-parity.md` n'a jamais été relue ligne par ligne (elle porte toujours « à porter/tester » comme statut initial, sans statut par ligne). La parité a été vérifiée par lots et par audits (audit du 2026-09-27, audit indépendant du 2026-10-01, audit cœur agent du 2026-10-03), dont les bilans disent eux-mêmes ne pas couvrir tout (par exemple `graph/nodes.py`), et plusieurs lignes (Modèles Ollama, LM Studio, llama.cpp, catalogue HF, téléchargements) ont été écartées, pas portées. Les sources historiques citées par la matrice ne sont plus sur master : tag `python-final`.
+- [x] Packager et tester Windows sans Python, supprimer les anciens chemins actifs, documenter npm/exécutable. — preuve : Bilan du lot — bascule finale sans Python (2026-10-04) (`package:win` puis `test:package` PASS sur ce HEAD ; application Python retirée, commit 2109f99 ; README et CONTRIBUTING réécrits, commit 2bc3ad4) ; Bilan du lot — installeur Windows et mises à jour (2026-10-02) (installeur NSIS, `test:install` PASS).
+- [ ] Commit/push des changements propres et preuves de validation. — reste : ce lot a poussé ses propres commits (2109f99, 2bc3ad4, ce bilan), mais la migration n'est pas close tant que les lignes ci-dessus restent ouvertes, et le dépôt garde des modifications de docs non commitées de l'utilisateur, volontairement laissées en l'état.
 
 Le shell Electron/pont Python précédent existe encore ; ses anciennes cases cochées
 ne prouvaient ni la parité ni l'autonomie. Ne pas annoncer la migration terminée.
@@ -3209,3 +3209,50 @@ Corrige les 5 écarts graves et 8 moyens retenus de l'audit du 2026-10-03 (`docs
 **Hors scope (inchangé)** : M4 (appels d'outils écrits en texte par un modèle HTTP local), M5 (recherche web forcée pour les modèles locaux), M10 (fusion du prompt système pour LM Studio), M11 (démarrage automatique d'Ollama / LM Studio / llama.cpp — rejoint le refus des serveurs externes), L1–L5 ; détecteur de boucle, modes ask/plan en lecture seule (décisions déjà documentées) ; aucun réglage utilisateur pour la limite de sortie ou le nombre d'appels.
 
 **Suite (2026-10-03, 0ee47ff)** : `analyze_project_and_init` est maintenant un outil agent (la limite « pas un outil agent » des Tâche 85 et « hors scope » ci-dessus ne tient plus). Catégorie `write` (demande en mode « demander », refusé en ask/plan/strict), un seul paramètre `overwrite` (booléen, faux par défaut), **aucun paramètre dossier** : il n'agit que sur le dossier du projet actif, jamais ailleurs (l'outil Python acceptait n'importe quel dossier ; une clé `folder` envoyée par le modèle est retirée par la validation). `initializeProject` n'accepte pas de signal d'arrêt : seul un appel déjà annulé est refusé avant l'exécution. Tests : `tests/worker-project-tool.test.mts` (7, vrai worker + faux serveur de modèle HTTP).
+
+### Bilan du lot — bascule finale sans Python (2026-10-04)
+
+Conception : `docs/superpowers/specs/2026-10-04-python-removal-design.md` ; plan : `docs/superpowers/plans/2026-10-04-python-removal.md`. L'application Electron devient la seule application du dépôt ; l'application Python (interface NiceGUI, commande `openagent`, ses tests et son packaging) n'est plus sur master, mais reste atteignable.
+
+**Archive, avant toute suppression (Tâche 1) :**
+- branche `archive/native-desktop-attempt` = `e70c838` : elle contient les 4 fichiers Python modifiés par l'utilisateur et non commités, plus 8 fichiers sous `openagenticskyzer/desktop/` (tentative de GUI native). Vérifiée ARCHIVE-IDENTICAL : contenu comparé à la copie de travail avec fins de ligne normalisées ;
+- tag annoté `python-final` = objet `ffd16fe`, qui pointe sur le commit `ce49688` (dernier état de master avec l'application Python) ;
+- `git ls-remote origin refs/tags/python-final refs/heads/archive/native-desktop-attempt` relu en fin de lot : le tag (`ffd16fe`) et la branche (`e70c838`) sont sur origin.
+
+**Retiré (Tâche 2, commit `2109f99`)** : 97 fichiers, 16 584 suppressions de lignes — `openagenticskyzer/` 65 fichiers, `tests/` (suite Python) 28 fichiers, `pyproject.toml`, `requirements.txt`, `scratchpad_base_context_bar.py`, `install.bat`. Rien d'autre : `electron/`, `docs/`, `tasks/`, `.claude`, `.gitignore`, `app_launcher.bat`, `app_launcher.ps1` et les dossiers locaux non suivis n'ont pas été touchés.
+
+**Classement du `git grep` dans `electron/` (aucune dépendance au code Python)** — les mentions restantes sont :
+- `core/project-analyzer.mts` : détection de `requirements.txt` / `pyproject.toml` dans les projets des utilisateurs (fonction de l'app, sans lien avec l'ancienne application) ;
+- test `project-init-visual.cjs` : écrit un `requirements.txt` dans un faux projet ;
+- nom du dépôt GitHub `openagenticskyzer` dans `package.json` (`build.publish`) et `release-win.test.mts` : c'est le nom du dépôt, pas du dossier Python ;
+- un commentaire de `renderer-src/src/theme/theme.css` qui cite l'ancien fichier de thème Python.
+
+**Vérifications après la suppression et à la fin du lot (depuis `electron/`)** :
+- suite complète `tests/all.mts` : **726/726** passent (relevé après le retrait, puis refait dans un clone vierge pendant la Tâche 3) ;
+- `tsc --noEmit -p tsconfig.core.json` : les 5 erreurs préexistantes seulement ; `tsc --noEmit -p renderer-src/tsconfig.json` : 0 ;
+- `npm run package:win` : sortie 0 (build Vite du renderer, installeur NSIS `openagent-Setup-0.2.0.exe`) ; puis `npm run test:package`, lancé **une seule fois** : **PASS** « packaged executable launches outside npm start and loads the real UI » (statut de l'updater `error net::ERR_CONNECTION_REFUSED` attendu, `update-install-now` refusé sans mise à jour prête, le worker répond à `list_folders`). `tests/package-smoke.cjs` ne mentionne pas Python : il prouve que l'exécutable packagé démarre hors de `npm start` et charge l'interface, pas qu'aucun Python n'est présent (voir la limite en fin de bilan).
+- Non relancés dans ce lot : `test:install`, les tests visuels et e2e autres que `test:package`.
+
+**Documentation (Tâche 3, commit `2bc3ad4`)** : README et CONTRIBUTING ne décrivent plus que l'application Electron (installation, développement, publication) ; l'application Python est signalée au tag `python-final`. 26 affirmations du README ont été vérifiées contre le code, 24 gardées, 2 corrigées (libellé des permissions : écritures, commandes et outils d'extension demandent confirmation, la recherche web non par défaut ; données dans `~/.openagent` par défaut car le dossier est relocalisable). Un clone vierge a fait `npm ci`, `renderer:build` et la suite : 726/726. Module par fonctionnalité :
+- fournisseurs et connexions : `core/connections.mts` ; moteur `.gguf` : `core/local-engine.mts`, `core/local-provider.mts`, `core/gguf-library.mts` ;
+- modes et permissions : `core/agent.mts`, `core/settings.mts`, « Toujours » de session dans `worker.mjs` ;
+- outils : `core/workspace.mts` (fichiers, recherche de code), `core/git-tools.mts`, `core/shell-tool.mts`, `core/web-tools.mts`, `core/memory-tools.mts`, `core/project-analyzer.mts`, `core/search-tools.mts` ;
+- extensions : `core/mcp-config.mts`, `core/mcp-client.mts`, `core/plugin-loader.mts`, `core/project-trust.mts` ;
+- conversation : `core/conversations.mts` (branches), `core/attachments.mts`, `core/compact.mts`, `core/context-budget.mts`, `core/export.mts`, `core/prompts.mts`, `core/folders.mts`, `core/semantic-index.mts`, `core/knowledge-base.mts` ;
+- installation et mises à jour : `package.json` (`build.nsis`, `build.publish`), `updater.cjs`, `scripts/release-win.cjs`.
+Limite : « Node.js 24 » est la version testée (celle de la machine et d'Electron 44.4.2), pas un minimum prouvé.
+
+**Reste sur le disque de l'utilisateur, non suivi, jamais supprimé par ce lot** (à supprimer si l'utilisateur le souhaite) : `.venv`, `openagentic_ai/`, `openagenticskyzer.egg-info`, `.pytest_cache`, les dossiers `__pycache__` laissés dans les anciens `openagenticskyzer/` et `tests/` (ignorés par git), et toute installation Python ancienne hors du dépôt. `~/.openagent` n'a pas été touché.
+
+**Abandonné : la commande `openagent` (CLI Python).** Elle n'a pas d'équivalent dans l'application Electron et n'est plus livrée ; elle reste atteignable au tag `python-final` (`git show python-final:<chemin>`, ou `git checkout python-final` dans un dossier séparé).
+
+**Résultat de la liste de migration (`tasks/todo.md`, lignes 9 à 15), avec preuve ou reste pour chaque ligne :**
+- cochée : « Moteur Node » (Bilan cœur agent 2026-10-03 ; Bilan audit + compaction 2026-10-01 ; Bilan « outils du moteur ») ;
+- cochée : « Packager et tester Windows sans Python, supprimer les anciens chemins actifs, documenter npm/exécutable » (ce bilan ; Bilan installeur Windows 2026-10-02) ;
+- ouverte : « Stockage Node » — aucun bilan ne prouve la ligne entière (sauvegarde avant transformation seulement dans une section de lot sans bilan ; aucune conversion vérifiée des données Python existantes) ;
+- ouverte : « Modèles locaux, téléchargements, index/BDC, extensions et MCP » — les téléchargements et la gestion de serveurs externes ont été écartés par l'utilisateur (2026-09-27), la ligne n'a pas été réécrite ; le reste est prouvé ;
+- ouverte : « Vérifier chaque ligne de la matrice de parité » — jamais fait ligne par ligne ; couvert par des audits qui disent eux-mêmes ne pas tout couvrir ;
+- ouverte : « Commit/push des changements propres… » — la migration n'est pas close tant que les lignes ci-dessus restent ouvertes, et des modifications de docs de l'utilisateur sont volontairement restées non commitées.
+Les cases déjà cochées avant ce lot (lignes 5 à 8 et « Interface Electron ») n'ont pas été modifiées. Le titre de section (« CONCEPTION, NON LIVRÉE ») et le paragraphe qui suit la liste (« Le shell Electron/pont Python précédent existe encore… ») n'ont pas été réécrits : ils sont périmés sur le pont Python (retiré) mais l'interdiction d'annoncer la migration terminée reste vraie tant que quatre lignes sont ouvertes.
+
+**Ce que cette vérification ne couvre PAS** : le comportement de l'application empaquetée au-delà de `test:package` (aucun test visuel ou e2e relancé, `test:install` non relancé) ; aucune exécution sur une machine propre sans Python n'a eu lieu : `test:package` lance l'exécutable depuis la machine de développement et ne prouve donc pas, à lui seul, l'absence de toute dépendance à un Python installé (seul le `git grep` dans `electron/` ci-dessus l'établit, pour le code). Les avertissements « signing with signtool.exe » du build n'ont pas été examinés : l'installeur est tenu pour non signé d'après le bilan du 2026-10-02, non re-vérifié ici.

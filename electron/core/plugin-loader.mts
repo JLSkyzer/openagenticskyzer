@@ -94,7 +94,7 @@ async function freshImport(file: string) {
 export async function loadPlugins(
   folder: string | null,
   home: string,
-  { includeProject = true }: { includeProject?: boolean } = {},
+  { includeProject = true, projectPython = includeProject }: { includeProject?: boolean; projectPython?: boolean } = {},
 ): Promise<PluginLoadResult> {
   if (!isAbsolute(home)) throw new Error('Chemins absolus requis');
   if (folder !== null && !isAbsolute(folder)) throw new Error('Chemins absolus requis');
@@ -103,9 +103,12 @@ export async function loadPlugins(
   const registered = new Set<string>();
   // A project not approved yet (core/project-trust.mts): its directories are not even scanned —
   // importing a file runs its top-level code.
-  const dirs = includeProject ? await pluginDirectories(folder, home) : [join(home, 'tools')];
-  for (const dir of dirs) {
-    for (const file of await pluginFiles(dir)) {
+  // `projectPython`: the project's folders are still LISTED for .py files to report — never imported, never run.
+  const allDirs = includeProject || projectPython ? await pluginDirectories(folder, home) : [join(home, 'tools')];
+  const globalDir = join(home, 'tools');
+  for (const dir of allDirs) {
+    const imported = includeProject || dir === globalDir;
+    for (const file of imported ? await pluginFiles(dir) : []) {
       try {
         const module = await freshImport(file);
         if (typeof module.getTools !== 'function') throw new Error('pas de fonction getTools()');

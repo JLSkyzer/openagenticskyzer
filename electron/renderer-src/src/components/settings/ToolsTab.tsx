@@ -209,8 +209,8 @@ export function ToolsTab({ activeFolder }: { activeFolder: string | null }) {
                 ⏸ {path} — non chargé (projet non approuvé)
               </span>
             ))}
-            {plugins.errors.map(error => (
-              <span key={error} data-testid="oa-plugin-error" className="font-mono text-xs text-yellow-600">
+            {plugins.errors.map((error, index) => (
+              <span key={`${index}-${error}`} data-testid="oa-plugin-error" className="font-mono text-xs text-yellow-600">
                 ⚠️ {error}
               </span>
             ))}

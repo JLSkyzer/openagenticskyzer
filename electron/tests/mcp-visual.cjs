@@ -199,7 +199,7 @@ app.whenReady().then(async () => {
     // Both entries present: right after the remount the list is empty, and `every` holds on an empty list.
     await waitFor(async () => {
       const statuses = await globalStatus();
-      return statuses.length === 2 && statuses.every(status => !status.startsWith('oa-mcp-not-started'));
+      return statuses.length === 2 && statuses.every(status => /^oa-mcp-(tools|error):/.test(status));
     }, { what: 'the tab shows what the turn learned' });
     const [okStatus, crashStatus] = await globalStatus();
     assert.equal(okStatus, 'oa-mcp-tools:mcp_echo, mcp_boom', 'the healthy server shows the tools the turn offered');

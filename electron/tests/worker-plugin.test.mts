@@ -275,3 +275,28 @@ test('worker::plugin-list: an untrusted project\'s .py is listed beside its .mjs
   assert.deepEqual(after.errors, ['Plugin Python non pris en charge : projet.py — à réécrire en .mjs']);
   assert.deepEqual(after.untrusted, []);
 });
+
+test('worker::plugin-list: a project bringing only .py files has nothing to approve — they are reported as to port, never « non approuvé »', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-plugin-py-only-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  await mkdir(join(project, 'tools'), { recursive: true });
+  await mkdir(join(project, '.openagent', 'tools'), { recursive: true });
+  await writeFile(join(project, 'tools', 'meteo.py'), 'def get_tools():\n    return []\n');
+  await writeFile(join(project, '.openagent', 'tools', 'meteo.py'), 'def get_tools():\n    return []\n');
+
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  terminateAtEnd(t, worker);
+
+  const shown = await callWorker(worker, 'project-trust', { folder: project });
+  assert.equal(shown.contentStatus, 'none', 'a .py is never something to approve');
+  const result = await callWorker(worker, 'plugin-list', { folder: project });
+  assert.deepEqual(result.tools, []);
+  assert.deepEqual(result.untrusted, [], 'nothing to approve: never listed « non approuvé »');
+  assert.deepEqual(result.errors, [
+    'Plugin Python non pris en charge : meteo.py — à réécrire en .mjs',
+    'Plugin Python non pris en charge : meteo.py — à réécrire en .mjs',
+  ], 'both folders are listed (a readdir, nothing imported): two same-named files, two errors');
+});

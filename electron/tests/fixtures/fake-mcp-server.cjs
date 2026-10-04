@@ -35,6 +35,10 @@ async function handle(line) {
   if (delay) await new Promise(resolve => setTimeout(resolve, delay));
 
   if (method === 'initialize') {
+    // Opt-in: a discovery that takes this long, the process staying alive meanwhile even once its stdin is closed (like
+    // real servers and `npx` wrappers that ignore stdin EOF) — the app quitting in the middle of a discovery.
+    const initDelay = Number(process.env.FAKE_MCP_INIT_DELAY_MS || 0);
+    if (initDelay) await new Promise(resolve => setTimeout(resolve, initDelay));
     reply(id, { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'fake-mcp', version: '1.0' } });
   } else if (method === 'tools/list') {
     reply(id, {

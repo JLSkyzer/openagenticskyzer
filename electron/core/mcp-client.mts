@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { object } from './json-store.mts';
 import { killTree } from './process.mts';
@@ -33,6 +33,18 @@ interface Session {
   close(): Promise<void>;
 }
 
+// Every stdio MCP process still running — a discovery or a call in flight — so the app can stop them when it quits: a
+// worker thread's termination does not end the processes it spawned, and a server that ignores its stdin closing (some
+// real servers, `npx` wrappers) would outlive the app.
+const liveChildren = new Set<ChildProcess>();
+
+/** Kills every MCP process still running, whole process trees included — worker.mjs's 'shutdown' calls it. */
+export async function stopAllMcpServers(): Promise<void> {
+  const children = [...liveChildren];
+  liveChildren.clear();
+  await Promise.all(children.map(child => killTree(child).catch(() => {})));
+}
+
 /** A short-lived JSON-RPC 2.0 session over stdio — one per discovery, one per call, exactly like
  * mcp_client/adapter.py's own _discover/_invoke (never a persistent connection). */
 function openStdioSession(target: McpServerTarget, timeoutMs: number): Session {
@@ -41,6 +53,9 @@ function openStdioSession(target: McpServerTarget, timeoutMs: number): Session {
     env: { ...process.env, ...target.env },
     windowsHide: true,
   });
+  liveChildren.add(child);
+  child.on('exit', () => liveChildren.delete(child));
+  child.on('error', () => liveChildren.delete(child));
   const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   let buffer = '';
   let startupError: Error | null = null;

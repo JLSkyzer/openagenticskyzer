@@ -30,7 +30,7 @@ import { migrateDataDir } from './core/data-dir.mts';
 import { resolveHomes } from './core/data-home.cjs';
 import { initializeProject, projectTools } from './core/project-analyzer.mts';
 import { McpConfigStore, readProjectMcpConfig, mergeServerConfigs, redactSecrets, expandServerPlaceholders, serverIdentity } from './core/mcp-config.mts';
-import { mcpTools } from './core/mcp-client.mts';
+import { mcpTools, stopAllMcpServers } from './core/mcp-client.mts';
 import { searchTools } from './core/search-tools.mts';
 import { indexFolder } from './core/semantic-index.mts';
 import { loadPlugins, projectPythonPluginFiles } from './core/plugin-loader.mts';
@@ -233,14 +233,27 @@ function mcpToolsBeside(discovered, others, log = message => console.error(`[mcp
 /** For each of `servers` (what a turn in `folder` runs, in its order), what the Outils tab shows WITHOUT starting it:
  * `tools`, the names a turn would offer from the last discovery — filtered by mcpToolsBeside against `builtIn`, exactly
  * as the turn filters them — or `error`, why that discovery failed; both null when no turn has started it. */
-function rememberedMcpStatus(folder, servers, builtIn) {
+function rememberedMcpStatus(folder, servers, builtIn, agentSettings = null) {
   const statuses = servers.map(server => {
     const last = mcpDiscoveries.get(mcpDiscoveryKey(folder, server));
     return { names: last?.names ?? [], tools: last?.names ? [] : null, error: last?.error ?? null };
   });
-  const discovered = statuses.flatMap(status => status.names.map(name => ({ name, status })));
-  for (const { name, status } of mcpToolsBeside(discovered, builtIn, () => {})) status.tools.push(name);
+  // Every MCP tool is an 'extension' (core/mcp-client.mts::toAgentTool): registered as such, then offered or not by
+  // the agent mode exactly as runSend's offeredTools decides.
+  const discovered = statuses.flatMap(status => status.names.map(name => ({ name, category: 'extension', status })));
+  const registered = mcpToolsBeside(discovered, builtIn, () => {});
+  for (const { name, status } of agentSettings ? offeredTools(registered, agentSettings) : registered) status.tools.push(name);
   return statuses.map(({ tools, error }) => ({ tools, error }));
+}
+
+/** The agent settings a turn runs under, from its effective settings — the same object runSend gives runAgent. */
+function agentSettingsOf(effective) {
+  return { mode: effective.agent_mode, permission_mode: effective.permission_mode, files_ask: effective.files_ask, shell_ask: effective.shell_ask, search_ask: effective.search_ask, reserved_tokens: effective.reserved_tokens };
+}
+
+/** The global mode, for a list shown with no readable folder settings; null (names unfiltered by mode) if unreadable. */
+function globalAgentSettings() {
+  return settings.global().then(agentSettingsOf, () => null);
 }
 
 /** A discovery error shown beside a project entry displayed as written: each expanded field value (command, args, url)
@@ -266,24 +279,31 @@ async function mcpServersForDisplay(folder) {
   const withStatus = (servers, statuses) => servers.map((server, i) => ({ ...server, ...statuses[i] }));
   // No active folder: no turn here, no built-in tool to collide with — the global servers as a turn without project
   // servers would offer them.
-  if (!folder) return withStatus(global, rememberedMcpStatus(null, global, []));
+  if (!folder) return withStatus(global, rememberedMcpStatus(null, global, [], await globalAgentSettings()));
   let projectTrust = null;
   try { projectTrust = await trust.evaluate(folder); }
   catch (error) { console.error(`[trust] ${folder} : confiance non évaluable, traité comme non approuvé : ${error instanceof Error ? error.message : error}`); }
   // Built-in tools only matter here as names an MCP tool could collide with; a folder whose settings or path cannot be
   // read gets none (a turn there would fail anyway).
-  const builtIn = projectTrust
-    ? await settings.effective(folder, { approvedRelaxations: projectTrust.approvedRelaxations }).then(effective => builtInTools(folder, effective)).catch(() => [])
-    : [];
+  // The agent mode decides what is offered: the folder's effective settings, else the global ones.
+  let builtIn = [];
+  let agentSettings = await globalAgentSettings();
+  if (projectTrust) {
+    try {
+      const effective = await settings.effective(folder, { approvedRelaxations: projectTrust.approvedRelaxations });
+      agentSettings = agentSettingsOf(effective);
+      builtIn = await builtInTools(folder, effective);
+    } catch { /* unreadable settings or path: the global mode, no built-in names */ }
+  }
   const asWritten = await readProjectMcpConfig(folder, { expandEnv: false }).catch(() => []);
   if (!projectTrust?.contentTrusted) {
     // A turn runs only the global servers; the project's are listed « non approuvé », with no status.
-    return [...withStatus(global, rememberedMcpStatus(folder, global, builtIn)), ...asWritten.map(server => ({ ...server, trusted: false, tools: null, error: null }))];
+    return [...withStatus(global, rememberedMcpStatus(folder, global, builtIn, agentSettings)), ...asWritten.map(server => ({ ...server, trusted: false, tools: null, error: null }))];
   }
   const byId = new Map(asWritten.map(server => [server.id, server]));
   const merged = mergeServerConfigs(global, asWritten.map(server => expandServerPlaceholders(server)));
   // The status is looked up on the EXPANDED entry (what a turn runs); a project entry is shown as written.
-  const statuses = rememberedMcpStatus(folder, merged, builtIn);
+  const statuses = rememberedMcpStatus(folder, merged, builtIn, agentSettings);
   return merged.map((server, i) => {
     if (server.scope !== 'project') return { ...server, ...statuses[i] };
     const written = byId.get(server.id) ?? server;
@@ -307,7 +327,12 @@ async function projectPythonListing(folder) {
  * every turn. The project's own plugins only once it is trusted — not even imported before.
  * Shared by registerTools and plugin-list, so the Outils tab shows exactly what a turn gets. */
 async function pluginToolsBeside(folder, others, projectTrust) {
-  const { tools, errors } = await loadPlugins(folder, dataHome, { includeProject: projectTrust.contentTrusted });
+  // A project with nothing to approve (contentStatus 'none': no plugin to run, no .mcp.json server) still has its .py
+  // reported as to port — listing a folder runs nothing.
+  const { tools, errors } = await loadPlugins(folder, dataHome, {
+    includeProject: projectTrust.contentTrusted,
+    projectPython: projectTrust.contentTrusted || projectTrust.contentStatus === 'none',
+  });
   const taken = new Set(others.map(tool => tool.name));
   const kept = [];
   for (const tool of tools) {
@@ -426,7 +451,7 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
     collected = [...history, { role: 'user', content: text, ...(attachments.length ? { attachments } : {}) }];
     const { effective, tools } = await registerTools(folder);
     const toolCategory = new Map(tools.map(tool => [tool.name, tool.category]));
-    const agentSettings = { mode: effective.agent_mode, permission_mode: effective.permission_mode, files_ask: effective.files_ask, shell_ask: effective.shell_ask, search_ask: effective.search_ask, reserved_tokens: effective.reserved_tokens };
+    const agentSettings = agentSettingsOf(effective);
     // The prompt names exactly the tools offered this turn, adds the mode's instruction and, under
     // Windows, how run_command's shell behaves (core/system-prompt.mts).
     const offered = offeredTools(tools, agentSettings).map(tool => tool.name);
@@ -519,8 +544,10 @@ async function handle(message) {
         const builtIn = await builtInTools(folder, effective);
         const remembered = rememberedMcpStatus(folder, await mcpServersFor(folder, projectTrust), builtIn).flatMap(status => status.tools ?? []);
         const { tools, errors } = await pluginToolsBeside(folder, [...builtIn, ...remembered.map(name => ({ name }))], projectTrust);
-        // Parity row 32: an untrusted project's .py is listed like its .mjs: not loaded, not reported (folders unscanned).
-        const untrusted = projectTrust.contentTrusted ? [] : [...projectTrust.inventory.plugins, ...await projectPythonListing(folder)];
+        // Parity row 32: a project awaiting a decision has its .py listed like its .mjs (not loaded, not reported); one with
+        // nothing to approve has them reported (pluginToolsBeside), never listed « non approuvé ».
+        const awaitingDecision = !projectTrust.contentTrusted && projectTrust.contentStatus !== 'none';
+        const untrusted = awaitingDecision ? [...projectTrust.inventory.plugins, ...await projectPythonListing(folder)] : [];
         result = { tools: tools.map(t => t.name), errors, untrusted };
       }
     }
@@ -535,7 +562,14 @@ async function handle(message) {
     if (op === 'mcp-list') result = redactSecrets(await mcpServersForDisplay(payload.folder ?? null));
     if (op === 'mcp-add') result = redactSecrets(await mcpConfig.add(payload.commandLine));
     if (op === 'mcp-add-remote') result = redactSecrets(await mcpConfig.addRemote(payload.url, payload.type, payload.headers));
-    if (op === 'mcp-remove') result = redactSecrets(await mcpConfig.remove(payload.id));
+    if (op === 'mcp-remove') {
+      // What the turns learned of it goes with it: added again later, it is « non démarré » until a turn starts it.
+      const removed = (await mcpConfig.list()).find(server => server.id === payload.id);
+      result = redactSecrets(await mcpConfig.remove(payload.id));
+      // Kept while another global entry runs that same server (same identity, same key).
+      const key = removed && mcpDiscoveryKey(null, removed);
+      if (key && !result.some(server => mcpDiscoveryKey(null, server) === key)) mcpDiscoveries.delete(key);
+    }
     if (op === 'list_folders') result = await folders.list();
     if (op === 'index-status') result = indexStatus.get(resolve(String(payload.folder))) ?? { state: 'idle' };
     if (op === 'knowledge-list') result = await listKnowledgeSources(dataHome);
@@ -608,7 +642,8 @@ async function handle(message) {
       // The app is closing: abort what is running and stop every dev server run_command started,
       // whole process trees included — terminating this thread would leave them running.
       for (const run of active.values()) run.controller.abort();
-      await stopAllServers();
+      // MCP processes too: a discovery has no abort signal, and a call's session only closes once it unwinds.
+      await Promise.all([stopAllServers(), stopAllMcpServers()]);
       result = { stopped: true };
     }
     if (op === 'permission-decision') {

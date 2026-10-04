@@ -313,3 +313,16 @@ test('a .py of an untrusted project is not reported — its folders are not scan
   // What the Outils tab lists as « non chargé (projet non approuvé) », selected like projectPluginFiles selects a .mjs.
   assert.deepEqual(await projectPythonPluginFiles(project, home), [join(project, 'tools', 'projet.py')]);
 });
+
+test('projectPython: the project folders are only listed for .py to report — a project .mjs is still never imported', async t => {
+  const { root, home, project } = await fixture(t);
+  const marker = join(root, 'project-plugin-ran.txt');
+  await mkdir(join(project, 'tools'), { recursive: true });
+  await writeFile(join(project, 'tools', 'marker.mjs'), markerPlugin(marker, 'project_tool'));
+  await writeFile(join(project, 'tools', 'projet.py'), '');
+  const { loadPlugins } = await import('../core/plugin-loader.mts');
+  const { tools, errors } = await loadPlugins(project, home, { includeProject: false, projectPython: true });
+  assert.deepEqual(tools, []);
+  assert.deepEqual(errors, ['Plugin Python non pris en charge : projet.py — à réécrire en .mjs']);
+  await assert.rejects(readFile(marker), /ENOENT/, 'the project plugin top-level code never ran');
+});

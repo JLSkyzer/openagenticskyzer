@@ -625,3 +625,80 @@ test('quitting the app (main.cjs::stopWorker) stops the MCP server a turn left i
   await stopWorker(worker, 3000);
   await until(() => started.every(pid => !isAlive(pid)), `every MCP process gone after the quit (pids ${started.join(', ')})`, 10000);
 });
+
+test('quitting the app (main.cjs::stopWorker) during an MCP discovery stops that server too', { timeout: 60000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-quit-discovery-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  const pidFile = join(root, 'mcp-pids.txt');
+  // Its initialize answer takes 60 s, and it stays alive meanwhile even once its stdin is closed.
+  await writeFile(join(home, 'mcp.json'), JSON.stringify([{
+    id: 'slow-start', command: process.execPath, args: [FAKE_MCP_SERVER],
+    env: { FAKE_MCP_PID_FILE: pidFile, FAKE_MCP_INIT_DELAY_MS: '60000' }, added_at: new Date().toISOString(),
+  }]));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
+  const pids = async () => {
+    try { return (await readFile(pidFile, 'utf8')).split('\n').filter(Boolean).map(Number); } catch { return []; }
+  };
+
+  const { connection } = await model(t, false);
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const { stop } = collectAgentEvents(worker, runId);
+  t.after(stop);
+  await until(async () => (await pids()).length >= 1, 'the discovery process started');
+  const started = await pids();
+  assert.ok(started.every(isAlive), `the server being discovered runs before the quit (pids ${started.join(', ')})`);
+
+  await stopWorker(worker, 3000);
+  // Well under the 10 s discovery timeout, which died with the worker anyway.
+  await until(() => started.every(pid => !isAlive(pid)), `every MCP process gone after the quit (pids ${started.join(', ')})`, 5000);
+});
+
+test('the tool names listed follow the agent mode: a mode that never offers MCP tools lists none', { timeout: 30000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-mode-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  await writeFile(join(home, 'mcp.json'), JSON.stringify([{ id: 'fake', command: process.execPath, args: [FAKE_MCP_SERVER], added_at: new Date().toISOString() }]));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
+  await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'demander' } });
+
+  const { connection, offered } = await model(t, false);
+  assert.equal((await runTurn(worker, project, connection)).at(-1).kind, 'done');
+  assert.ok(offered[0].includes('mcp_echo'), 'auto + demander: the model is offered the MCP tools');
+  assert.deepEqual((await callWorker(worker, 'mcp-list', { folder: project }))[0].tools, ['mcp_echo', 'mcp_boom']);
+
+  for (const patch of [{ agent_mode: 'plan', permission_mode: 'demander' }, { agent_mode: 'ask', permission_mode: 'demander' }, { agent_mode: 'auto', permission_mode: 'strict' }]) {
+    await callWorker(worker, 'save-global-settings', { patch });
+    assert.deepEqual((await callWorker(worker, 'mcp-list', { folder: project }))[0].tools, [], `${JSON.stringify(patch)}: the model would get none`);
+    assert.deepEqual((await callWorker(worker, 'mcp-list', {}))[0].tools, [], `${JSON.stringify(patch)}, no active folder: none either`);
+  }
+  // And it is what a turn in that mode really offers.
+  const before = offered.length;
+  assert.equal((await runTurn(worker, project, connection)).at(-1).kind, 'done');
+  assert.ok(!offered[before].some(name => name.startsWith('mcp_')), `auto + strict: no MCP tool offered (got ${offered[before].join(',')})`);
+});
+
+test('mcp-remove forgets what the turns learned of that server: re-added, it is « non démarré » again', { timeout: 30000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-remove-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
+  const commandLine = `"${process.execPath}" "${FAKE_MCP_SERVER}"`;
+  const [added] = await callWorker(worker, 'mcp-add', { commandLine });
+
+  const { connection } = await model(t, false);
+  assert.equal((await runTurn(worker, project, connection)).at(-1).kind, 'done');
+  assert.deepEqual((await callWorker(worker, 'mcp-list', { folder: project }))[0].tools, ['mcp_echo', 'mcp_boom']);
+
+  await callWorker(worker, 'mcp-remove', { id: added.id });
+  await callWorker(worker, 'mcp-add', { commandLine });
+  const [again] = await callWorker(worker, 'mcp-list', { folder: project });
+  assert.equal(again.tools, null, 'the same command, added again: not started since');
+  assert.equal(again.error, null);
+});

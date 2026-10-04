@@ -153,7 +153,7 @@ def main():
     args = parser.parse_args()
 
     if args.app:
-        from openagenticskyzer.app.main import launch_app
+        from openagenticskyzer.desktop.electron_launcher import main as launch_app
         launch_app()
         return
 

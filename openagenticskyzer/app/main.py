@@ -603,8 +603,11 @@ def _run_nicegui() -> None:
     _nga.on_startup(_patch_sio_timeout)
 
     ui.run(
-        native=False,
-        show=False,
+        # Use pywebview's native desktop window instead of opening a browser tab.
+        # NiceGUI still serves the local UI internally, but the user sees only
+        # the OpenAgent window.
+        native=True,
+        show=True,
         host="127.0.0.1",
         port=8765,
         title="openagent",

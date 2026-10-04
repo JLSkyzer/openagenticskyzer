@@ -334,7 +334,10 @@ def _render_knowledge_section():
     except ImportError:
         return
     with ui.expansion("📚 Base de connaissances", value=False).classes("w-full"):
-        sources = list_sources()
+        try:
+            sources = list_sources()
+        except Exception:
+            sources = []
         if not sources:
             ui.label("Aucun document").classes("text-xs text-gray-600 px-2")
         for source in sources:

@@ -46,7 +46,11 @@ def search_knowledge(query: str, n: int = 5) -> list[dict]:
 
 
 def list_sources() -> list[str]:
-    collection = _get_knowledge_db()
+    try:
+        collection = _get_knowledge_db()
+    except (ImportError, OSError, RuntimeError):
+        # ChromaDB is optional; a broken native wheel must not take down the UI.
+        return []
     if collection.count() <= 0:
         return []
     return sorted({meta["source"] for meta in collection.get(include=["metadatas"])["metadatas"]})

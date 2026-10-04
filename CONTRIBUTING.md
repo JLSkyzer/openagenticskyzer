@@ -1,58 +1,39 @@
-# Contributing to openagentic-ai
+# Contribuer à openagent
 
-## Setup
+## Mise en place
 
-```bash
-git clone https://github.com/HcodeQ/openagentic-ai
-cd openagentic-ai
-pip install -e ".[all]"
-pip install pytest deepeval
-```
-
-## Running the tests
+Prérequis : Windows, Node.js 24, git 2.44 ou plus récent.
 
 ```bash
-# All unit tests (no LLM required)
-pytest tests/ -v -m "not llm_eval"
-
-# A specific file
-pytest tests/test_loop_detector.py -v
-pytest tests/test_messages.py -v
-pytest tests/test_persistence.py -v
-pytest tests/test_nodes.py -v
-pytest tests/test_utils.py -v
+git clone https://github.com/JLSkyzer/openagenticskyzer.git
+cd openagenticskyzer/electron
+npm ci
+npm run renderer:build
 ```
 
-## LLM quality tests (DeepEval)
+## Structure
 
-These tests use an LLM judge to evaluate prompt and response quality.
-They require an OpenAI API key (used by DeepEval as the evaluator).
+- `electron/main.cjs` — processus principal (fenêtre, coffre des clés, mises à jour).
+- `electron/worker.mjs` — moteur (agent, outils, stockage), dans un `worker_threads`.
+- `electron/core/*.mts` — modules du moteur, sans dépendance à Electron.
+- `electron/renderer-src/` — interface React (Vite).
+- `electron/tests/` — tests ; `tests/all.mts` les enregistre tous.
+
+## Tests
 
 ```bash
-export OPENAI_API_KEY=sk-...
-pytest tests/test_deepeval_quality.py -v
+cd electron
+node --experimental-strip-types --test tests/all.mts
+npx tsc --noEmit -p tsconfig.core.json
+npx tsc --noEmit -p renderer-src/tsconfig.json
 ```
 
-To run everything at once:
+Les tests `npm run test:*` ouvrent une vraie fenêtre de l'application : lance-les un par un, une fois.
 
-```bash
-pytest tests/ -v
-```
+## Règles
 
-## Test structure
-
-| File | What it covers |
-|---|---|
-| `test_loop_detector.py` | Loop detection (same call, 2-step cycle, same file edits) |
-| `test_messages.py` | `trim_message_history`, `clean_messages` |
-| `test_utils.py` | `mode_router`, `parse_mentions`, `_detect_provider` |
-| `test_persistence.py` | Session save / load / list |
-| `test_nodes.py` | `route_after_agent`, `make_agent_node` |
-| `test_deepeval_quality.py` | Prompt and response quality (LLM judge) |
-
-## Submitting changes
-
-1. Fork the repo and create a branch
-2. Make your changes
-3. Run `pytest tests/ -v -m "not llm_eval"` and make sure all tests pass
-4. Open a pull request
+- Tests d'abord : écrire le test, le voir échouer, puis implémenter.
+- Tests réels : vrais fichiers, vrai worker, vrai serveur HTTP de test ; pas de mocks.
+- Un commit par modification terminée et vérifiée, avec les seuls fichiers modifiés (pas de `git add -A`).
+- Tout nouveau fichier chargé par le processus principal va dans `build.files` de `electron/package.json` dans le même commit.
+- Les suivis et bilans de lots sont dans `tasks/todo.md` ; les leçons dans `tasks/lessons.md`.

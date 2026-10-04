@@ -15,6 +15,8 @@ export function createConnections(options?: {
 
 export function resolveMainDataHome(env?: Record<string, string | undefined>, userHome?: string): Promise<string>;
 
+export function startupFailure(error: unknown): { title: string; message: string };
+
 export function buildCsp(isPackaged: boolean): string;
 
 export function chooseLoadTarget(options: {

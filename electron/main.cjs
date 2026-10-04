@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, session, protocol, Notification, Tray, Menu, nativeImage } = require('electron');
 const path = require('node:path');
 const { homedir } = require('node:os');
+const { writeFileSync } = require('node:fs');
 const { Worker } = require('node:worker_threads');
 const artifactProtocol = require('./artifact-protocol.cjs');
 const { buildDiamondIconPng } = require('./tray-icon.cjs');
@@ -173,6 +174,16 @@ async function resolveMainDataHome(env = process.env, userHome = homedir()) {
   return (await resolveHomes(env, userHome)).dataHome;
 }
 
+/** What the user is told when the startup fails before anything opened: the redirect file to fix when the data home
+ * cannot be resolved (core/data-home.cjs sets `redirectFile`), the bare reason otherwise. */
+function startupFailure(error) {
+  const reason = error instanceof Error ? error.message : String(error);
+  if (error && typeof error.redirectFile === 'string') {
+    return { title: 'openagent — dossier de données illisible', message: `${reason}\n\nCorrige ou supprime ${error.redirectFile}, puis relance openagent.` };
+  }
+  return { title: 'openagent — démarrage impossible', message: reason };
+}
+
 /** The connections vault of the data home. main.cjs calls it with no argument; a test passes a temporary user home,
  * its own environment and a real cipher in place of the OS safeStorage, and goes through this very path. */
 async function createConnections({ env = process.env, userHome = homedir(), cipher = safeStorage } = {}) {
@@ -269,7 +280,20 @@ if (require.main === module) {
     app.whenReady().then(async () => {
       artifactProtocol.installHandler(protocol, artifacts);
       installCsp();
-      connections = await createConnections();
+      try {
+        connections = await createConnections();
+      } catch (error) {
+        // Nothing has started yet (no window, no worker, no tray): say why, then exit at once with a non-zero code,
+        // which also releases the single-instance lock — otherwise every relaunch would hand off to an invisible
+        // process. Never fall back to the default home: the vault would be written in the wrong folder.
+        const { title, message } = startupFailure(error);
+        // Test-only: the native box blocks until dismissed, so a packaged test reads the text from this file instead.
+        // Never set outside tests.
+        if (process.env.OPENAGENT_STARTUP_ERROR_FILE) writeFileSync(process.env.OPENAGENT_STARTUP_ERROR_FILE, `${title}\n${message}\n`);
+        else dialog.showErrorBox(title, message);
+        app.exit(1);
+        return;
+      }
       createWindow();
       updater = createUpdater({
         app,
@@ -298,4 +322,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { resolveSendPayload, createConnections, resolveMainDataHome, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection, isExportFilename, notificationBodyFor };
+module.exports = { resolveSendPayload, createConnections, resolveMainDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection, isExportFilename, notificationBodyFor };

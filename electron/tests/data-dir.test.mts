@@ -153,3 +153,23 @@ test('R4: a new folder that CONTAINS the current home (its parent) receives ever
   assert.deepEqual(Object.fromEntries(Object.entries(moved).filter(([name]) => !name.includes('redirect.json'))), before);
   assert.equal(await resolveDataHome(home), outer);
 });
+
+test('R4: a current home that cannot be listed (here a FILE, readdir fails with ENOTDIR) stops the migration BEFORE the redirect is written — it would point at an empty folder', async t => {
+  const { root, home } = await fixture(t);
+  const notAFolder = join(root, 'not-a-folder');
+  await writeFile(notAFolder, 'contenu');
+  const newDir = join(root, 'new-home');
+  const { migrateDataDir, resolveDataHome } = await import('../core/data-dir.mts');
+  await assert.rejects(migrateDataDir(notAFolder, home, newDir), /ENOTDIR/);
+  await assert.rejects(readFile(join(home, 'redirect.json')), /ENOENT/, 'no redirect written');
+  assert.equal(await resolveDataHome(home), home);
+  assert.equal(await readFile(notAFolder, 'utf8'), 'contenu');
+});
+
+test('R4: a current home that does not exist (nothing to move) still writes the redirect, as before', async t => {
+  const { root, home } = await fixture(t);
+  const newDir = join(root, 'new-home');
+  const { migrateDataDir, resolveDataHome } = await import('../core/data-dir.mts');
+  assert.deepEqual(await migrateDataDir(join(root, 'absent'), home, newDir), { moved: 0, errors: [] });
+  assert.equal(await resolveDataHome(home), newDir);
+});

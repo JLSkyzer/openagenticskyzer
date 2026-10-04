@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -11,7 +11,8 @@ import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 // main.cjs only registers IPC and the app lifecycle when it is the Electron entry point: as a library, its helpers run.
 // Every call below passes an explicit temporary user home: the real ~/.openagent is never read.
-const { resolveMainDataHome, createConnections } = createRequire(import.meta.url)('../main.cjs');
+const { resolveMainDataHome, createConnections, startupFailure } = createRequire(import.meta.url)('../main.cjs');
+const { resolveHomes } = createRequire(import.meta.url)('../core/data-home.cjs');
 
 // Real authenticated encryption in place of the OS safeStorage, as in connections.test.mts.
 function encryption() {
@@ -107,4 +108,35 @@ test('R4: after a real migrate-data-dir, the vault main.cjs::createConnections o
   assert.ok((await readFile(join(newDir, 'connections.v1.json'))).length > 0, 'it is read from the new folder');
   await assert.rejects(readFile(join(defaultHome, 'connections.v1.json')), /ENOENT/, 'nothing left in the old folder');
   assert.equal(await readFile(join(newDir, 'knowledge', 'store.json'), 'utf8'), '{"chunks":[]}', 'sub-folders followed too');
+});
+
+test('a corrupt redirect.json, or a directory in its place, is an error that names the file — never a silent fallback to the default home', async t => {
+  const userHome = await mkdtemp(join(tmpdir(), 'openagent-main-home-bad-redirect-'));
+  removeAtEnd(t, userHome);
+  const home = join(userHome, 'home');
+  const file = join(home, 'redirect.json');
+  await mkdir(home);
+  await writeFile(file, '{"data_dir": "coupé au milieu');
+  const corrupt = await resolveHomes({ OPENAGENT_HOME: home }, userHome).then(() => null, (e: any) => e);
+  assert.ok(corrupt, 'corrupt JSON is refused');
+  assert.ok(corrupt.message.includes(file), corrupt.message);
+  assert.equal(corrupt.redirectFile, file, 'the error carries the file to fix');
+  await rm(file);
+  await mkdir(file);
+  const directory = await resolveHomes({ OPENAGENT_HOME: home }, userHome).then(() => null, (e: any) => e);
+  assert.ok(directory, 'a directory named redirect.json is refused');
+  assert.equal(directory.message, `Fichier de données non régulier : ${file}`);
+  assert.equal(directory.redirectFile, file);
+});
+
+test('a startup that fails on redirect.json tells the user which file to fix; any other startup failure says so plainly', () => {
+  const file = join(tmpdir(), 'x', 'redirect.json');
+  const error = Object.assign(new Error(`JSON illisible : ${file}. Le fichier est conservé.`), { redirectFile: file });
+  assert.deepEqual(startupFailure(error), {
+    title: 'openagent — dossier de données illisible',
+    message: `JSON illisible : ${file}. Le fichier est conservé.
+
+Corrige ou supprime ${file}, puis relance openagent.`,
+  });
+  assert.deepEqual(startupFailure(new Error('boom')), { title: 'openagent — démarrage impossible', message: 'boom' });
 });

@@ -22,15 +22,16 @@ function redirectPath(defaultHome: string): string {
   return join(defaultHome, REDIRECT_FILE);
 }
 
-/** Path identity: resolved, and case-insensitive under Windows. */
+/** A path's identity: resolved, and case-insensitive under Windows. */
+function pathKey(p: string): string {
+  return process.platform === 'win32' ? resolve(p).toLowerCase() : resolve(p);
+}
 function samePath(a: string, b: string): boolean {
-  const key = (p: string) => (process.platform === 'win32' ? resolve(p).toLowerCase() : resolve(p));
-  return key(a) === key(b);
+  return pathKey(a) === pathKey(b);
 }
 /** True when `inner` lies strictly below `outer`. */
 function isInside(inner: string, outer: string): boolean {
-  const key = (p: string) => (process.platform === 'win32' ? resolve(p).toLowerCase() : resolve(p));
-  const rel = relative(key(outer), key(inner));
+  const rel = relative(pathKey(outer), pathKey(inner));
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
@@ -50,7 +51,10 @@ export async function migrateDataDir(currentHome: string, defaultHome: string, n
   const errors: string[] = [];
   if (!samePath(newDir, currentHome)) {
     let entries: string[] = [];
-    try { entries = await readdir(currentHome); } catch { entries = []; }
+    // Only a home that does not exist is empty. Any other failure (EPERM, EACCES, ENOTDIR…) stops here, BEFORE the
+    // redirect is written: pointing at a new folder that received nothing would make the data look lost.
+    try { entries = await readdir(currentHome); }
+    catch (error: any) { if (error?.code !== 'ENOENT') throw error; }
     for (const name of entries) {
       if (name === REDIRECT_FILE) continue; // the pointer itself never moves with the data
       const src = join(currentHome, name);

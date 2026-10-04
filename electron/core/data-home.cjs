@@ -9,27 +9,34 @@ const { homedir } = require('node:os');
 
 const REDIRECT_FILE = 'redirect.json';
 
+/** An error about the redirect file itself; `redirectFile` lets main.cjs tell the user exactly which file to fix. */
+function redirectError(file, error) {
+  const result = error instanceof Error ? error : new Error(String(error));
+  result.redirectFile = file;
+  return result;
+}
+
 /**
  * The real data home behind the fixed default location: the absolute `data_dir` of `<defaultHome>/redirect.json`
  * (written by core/data-dir.mts::migrateDataDir, Réglages › Général › Répertoire de données), or `defaultHome`
  * itself when there is no redirect. Reads the pointer as core/json-store.mts reads any data file: a missing file is
- * "no redirect"; a non-regular file or unreadable JSON is an error, never silently replaced by the default — a
- * vault or a history written to the wrong folder would look like lost data.
+ * "no redirect"; a non-regular file or unreadable JSON is an error naming the file (`error.redirectFile`), never
+ * silently replaced by the default — a vault or a history written to the wrong folder would look like lost data.
  */
 async function resolveDataHome(defaultHome) {
   const file = path.join(defaultHome, REDIRECT_FILE);
   let raw;
   try {
     const info = await lstat(file);
-    if (!info.isFile() || info.isSymbolicLink()) throw new Error('Fichier de données non régulier');
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error(`Fichier de données non régulier : ${file}`);
     raw = await readFile(file, 'utf8');
   } catch (error) {
     if (error && error.code === 'ENOENT') return defaultHome;
-    throw error;
+    throw redirectError(file, error);
   }
   let pointer;
-  try { pointer = JSON.parse(raw.replace(/^﻿/, '')); }
-  catch { throw new Error(`JSON illisible : ${file}. Le fichier est conservé.`); }
+  try { pointer = JSON.parse(raw.replace(/^\uFEFF/, '')); }
+  catch { throw redirectError(file, new Error(`JSON illisible : ${file}. Le fichier est conservé.`)); }
   const dataDir = pointer && typeof pointer === 'object' && typeof pointer.data_dir === 'string' ? pointer.data_dir : '';
   return dataDir && path.isAbsolute(dataDir) ? dataDir : defaultHome;
 }

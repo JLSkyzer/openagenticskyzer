@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 async function fixture(t: any) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-workspace-'));
@@ -190,4 +191,45 @@ test('read_file, view_file, grep_file and edit_file refuse key material by name 
   await writeFile(join(a, 'secrets.ts'), 'export const x = 1;');
   assert.equal(await invoke('read_file', { path: 'secrets.ts' }), '1|export const x = 1;');
   assert.match(await invoke('list_dir', {}), /^secrets\.json$/m, 'list_dir is unchanged: the name stays listed');
+});
+
+/** Windows' 8.3 short name of an existing file (cmd's %~sI), or null when the volume gives it none. */
+function shortName(path: string): string | null {
+  if (process.platform !== 'win32') return null;
+  const result = spawnSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${path}") do @echo %~sI"`], { encoding: 'utf8', windowsVerbatimArguments: true });
+  const name = result.status === 0 ? basename(result.stdout.trim()) : '';
+  return name && name !== basename(path) ? name : null;
+}
+
+test('the content tools check the name on disk, not only the typed one: an 8.3 short name never reaches a secret or protected file', async t => {
+  const { a, invoke } = await fixture(t);
+  const files: Record<string, string> = { 'secrets.json': '{"api_key": "SECRET-SHORT-1"}', '.env': 'TOKEN=SECRET-SHORT-2' };
+  for (const [name, content] of Object.entries(files)) await writeFile(join(a, name), content);
+  const aliases = Object.keys(files).map(name => [name, shortName(join(a, name))] as const);
+  if (aliases.some(([, alias]) => !alias)) { t.skip('no 8.3 short names on this volume'); return; }
+  for (const [name, alias] of aliases) {
+    for (const [tool, args] of [['read_file', { path: alias! }], ['view_file', { path: alias! }], ['grep_file', { path: alias!, pattern: 'SECRET' }],
+      ['edit_file', { path: alias!, old_string: 'SECRET', new_string: 'LEAKED' }]] as const) {
+      await assert.rejects(invoke(tool, args), (error: Error) => {
+        assert.match(error.message, /^(Fichier secret|Fichier ignoré ou protégé)/, `${tool} ${alias} (${name})`);
+        assert.equal(error.message.includes('SECRET-SHORT'), false, `${tool} ${alias}`);
+        return true;
+      });
+    }
+    assert.equal(await readFile(join(a, name), 'utf8'), files[name], `${name} is unchanged`);
+  }
+});
+
+test("the content tools match the project's ignored patterns against the on-disk case: PRIVATE/notes.md is private/notes.md", async t => {
+  const { a } = await fixture(t);
+  await mkdir(join(a, 'private'));
+  await writeFile(join(a, 'private', 'notes.md'), 'SECRET-CASE');
+  const { workspaceTools } = await import('../core/workspace.mts');
+  const tools = await workspaceTools(a, 'private/**');
+  const read = tools.find(tool => tool.name === 'read_file')!;
+  await assert.rejects(read.execute({ path: 'private/notes.md' }, new AbortController().signal), /Fichier ignoré ou protégé/);
+  await assert.rejects(read.execute({ path: 'PRIVATE/notes.md' }, new AbortController().signal), (error: Error) => {
+    assert.match(error.message, /^Fichier ignoré ou protégé/);
+    return true;
+  });
 });

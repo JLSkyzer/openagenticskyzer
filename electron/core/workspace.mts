@@ -30,10 +30,17 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
     return file;
   };
   /** Opens a text file for read_file, view_file, grep_file and edit_file: key material by name (core/file-filter.mts)
-   * is refused here, so none of them ever returns or rewrites its content. list_dir still names it. */
+   * is refused here, so none of them ever returns or rewrites its content. list_dir still names it. The typed name is
+   * checked first (a missing secret file is refused by name), then the name on disk: a Windows 8.3 short name
+   * (SECRET~1.JSO, ENV~1) or another case (PRIVATE/ for an ignored private/) reaches the same file under a name the
+   * typed-name checks do not recognise, and realpath gives the real one. `root` is itself a realpath. */
   const textFile = async (path: string, signal: AbortSignal) => {
     const file = await safePath(path);
-    if (isSensitiveFile(file)) throw new Error('Fichier secret (clé ou identifiants) : lecture et modification refusées');
+    const SECRET_REFUSED = 'Fichier secret (clé ou identifiants) : lecture et modification refusées';
+    if (isSensitiveFile(file)) throw new Error(SECRET_REFUSED);
+    const onDisk = await realpath(file);
+    if (blocked(relative(root, onDisk))) throw new Error('Fichier ignoré ou protégé');
+    if (isSensitiveFile(onDisk)) throw new Error(SECRET_REFUSED);
     const info = await lstat(file);
     if (!info.isFile() || info.size > 2 * 1024 * 1024) throw new Error('Fichier non texte ou trop volumineux (2 Mio maximum)');
     const bytes = await readFile(file, { signal });

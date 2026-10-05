@@ -2,9 +2,12 @@ import { posix } from 'node:path';
 
 // The file tools' filter, shared (2026-10-05): the semantic index applies exactly what the file tools' searches apply,
 // so a file the model cannot find with grep_codebase cannot reach it through semantic_search either. Moved here from
-// core/workspace.mts unchanged — never copied.
+// core/workspace.mts unchanged — never copied. isSensitiveFile (added the same day) is the one test of a path against
+// SENSITIVE_FILE: the searches, the index and the content tools of core/workspace.mts all go through it.
 
-/** Key material, by file name: never listed by a search (glob_files, grep_codebase) nor indexed. */
+/** Key material, by file name: never listed by a search (glob_files, grep_codebase) nor indexed, and its content is
+ * refused by the four content tools (read_file, view_file, grep_file, edit_file — checked on the typed name and on
+ * the name on disk). list_dir still names it. */
 export const SENSITIVE_FILE = /^id_(rsa|dsa|ecdsa|ed25519)$|\.(pem|key|p12|pfx)$|^(credentials|secrets)\.json$/i;
 
 /** True when the file name of `path` (relative or absolute, either separator) is key material (SENSITIVE_FILE). The

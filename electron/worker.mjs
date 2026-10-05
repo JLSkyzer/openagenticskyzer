@@ -4,7 +4,7 @@ import { writeFile, realpath, lstat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
-import { FoldersService, canonicalFolderPath } from './core/folders.mts';
+import { FoldersService } from './core/folders.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
 import { localProvider } from './core/local-engine.mts';
 import { offeredTools, runAgent, TOOL_NAME_PATTERN } from './core/agent.mts';
@@ -580,12 +580,11 @@ async function handle(message) {
     if (op === 'knowledge-add') result = await addFileToKnowledge(payload.filePath, dataHome);
     if (op === 'knowledge-remove') result = await removeKnowledgeSource(payload.source, dataHome);
     if (op === 'activate_folder') {
-      const list = await folders.recordOpened(payload.folder);
+      // `folder`: the canonical path the history stores (core/folders.mts) — the Sidebar activates every opened folder
+      // (dialog, history, typed path) under it. The index is keyed on it too: its 'index' events and index-status name
+      // the folder the renderer activates, not `C:/X/PROJ` typed (or a junction picked) for `C:\x\proj`.
+      const { folder: canonical, folders: list } = await folders.open(payload.folder);
       const history = await conversations.messages(payload.folder, 'main').catch(() => []);
-      // `folder`: the spelling the history stores (core/folders.mts) — a typed path is activated under it (Sidebar).
-      // The index is keyed on it too: its 'index' events and index-status name the folder the renderer activates,
-      // not `C:/X/PROJ` typed for `C:\x\proj`.
-      const canonical = await canonicalFolderPath(payload.folder);
       result = { history: servedMessages(history), folders: list, folder: canonical };
       void triggerIndexing(canonical);
     }

@@ -52,12 +52,13 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
   }, [activeFolder]);
 
   const activate = useCallback(
-    async (folder: string, typed = false) => {
+    async (folder: string) => {
       const result = await activateFolder(folder);
       setFolders(result.folders);
-      // A typed path is activated under the spelling the history stores (the worker's canonical path), so its entry
-      // shows as active whatever separators were typed; the dialog and the history entries keep their own path.
-      onActivated(typed ? result.folder : folder, result.history);
+      // Every opened folder (dialog, history, typed path) is activated under the spelling the history stores (the
+      // worker's canonical path): its entry shows as active, and the index events keyed on it reach the indicator,
+      // whatever separators were typed or junction was picked.
+      onActivated(result.folder, result.history);
     },
     [onActivated],
   );
@@ -119,7 +120,7 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
     if (!typed) { notify('Impossible d’ouvrir ce dossier : chemin vide', 'negative'); return; }
     setOpening(true);
     try {
-      await activate(typed, true);
+      await activate(typed);
       input.value = '';
     } catch (error) {
       notify(`Impossible d’ouvrir ce dossier : ${cleanIpcError(error)}`, 'negative');

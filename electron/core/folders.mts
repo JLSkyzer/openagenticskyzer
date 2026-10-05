@@ -112,6 +112,11 @@ export class FoldersService {
     return this.list();
   }
   async recordOpened(folder: string): Promise<FolderListItem[]> {
+    return (await this.open(folder)).folders;
+  }
+  /** recordOpened, plus the canonical path the folder was recorded under (activate_folder answers it). Not `folders[0]`:
+   * the list is sorted by date, and an entry dated later than now (clock moved back, hand-edited file) comes first. */
+  async open(folder: string): Promise<{ folder: string; folders: FolderListItem[] }> {
     if (!isAbsolute(folder)) throw new Error('Dossier absolu requis');
     let canonical: string;
     try {
@@ -127,6 +132,6 @@ export class FoldersService {
       entries.unshift({ path: canonical, last_used: now });
       return entries.slice(0, MAX_ENTRIES);
     });
-    return this.list();
+    return { folder: canonical, folders: await this.list() };
   }
 }

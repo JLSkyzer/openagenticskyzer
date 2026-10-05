@@ -148,7 +148,7 @@ export function removeKnowledgeSource(source: string): Promise<void> {
   return request('knowledge-remove', { source });
 }
 
-// `folder` is the canonical path the history stores (worker.mjs): the Sidebar activates a typed path under it.
+// `folder` is the canonical path the history stores (worker.mjs): the Sidebar activates every opened folder under it.
 export function activateFolder(folder: string): Promise<{ history: ChatMessage[]; folders: FolderListItem[]; folder: string }> {
   return request('activate_folder', { folder });
 }

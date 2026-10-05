@@ -143,3 +143,31 @@ test('worker::activate_folder indexes the folder under its canonical path, not u
   assert.deepEqual([...new Set(events.map(event => event.folder))], [canonical], 'every index event names the canonical folder');
   assert.equal((await callWorker(worker, 'index-status', { folder: canonical })).state, 'ready', 'index-status under the canonical folder');
 });
+
+// Pins the deduplication activate_folder relies on (core/folders.mts): two spellings of one folder are one entry,
+// stored under its canonical path, at the front of the history.
+test('worker::activate_folder keeps one history entry for two spellings of the same folder', { timeout: 30000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-folders-dedup-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  const other = join(root, 'other');
+  await Promise.all([mkdir(home), mkdir(project), mkdir(other)]);
+  const canonical = await realpath(project);
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
+    env: { ...process.env, OPENAGENT_HOME: home },
+  }));
+  // Windows: another case and forward slashes for the second spelling; elsewhere, a trailing separator.
+  const second = process.platform === 'win32' ? canonical.toUpperCase().replaceAll('\\', '/') : `${canonical}/`;
+  for (const folder of [canonical, other, second]) {
+    const indexed = indexingSettled(worker, await realpath(folder));
+    const activated = await callWorker(worker, 'activate_folder', { folder });
+    await indexed;
+    if (folder === second) {
+      assert.equal(activated.folder, canonical);
+      assert.deepEqual(activated.folders.map((entry: any) => entry.path), [canonical, await realpath(other)], 'one entry for the folder, at the front, canonical');
+    }
+  }
+  const listed = await callWorker(worker, 'list_folders', {});
+  assert.deepEqual(listed.map((entry: any) => entry.path), [canonical, await realpath(other)], 'and on disk');
+});

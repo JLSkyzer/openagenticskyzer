@@ -42,7 +42,9 @@ app.whenReady().then(async () => {
     ipcMain.handle('backend-request', async (_event, request) => {
       if (request.op === 'list_folders') return folders.list();
       if (request.op === 'activate_folder') {
-        return { history: [], folders: await folders.recordOpened(request.payload.folder) };
+        // As worker.mjs answers it: the Sidebar activates the folder under `folder`, the canonical path.
+        const { folder, folders: list } = await folders.open(request.payload.folder);
+        return { history: [], folders: list, folder };
       }
       if (request.op === 'open-folder') return project;
       if (request.op === 'global-settings') return settings.publicGlobal();

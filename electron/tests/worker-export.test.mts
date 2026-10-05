@@ -108,7 +108,9 @@ test('worker::export-conversation refuses an invalid format and a missing folder
   const { worker, folder } = await project(t);
   await callWorker(worker, 'save-messages', { folder, branchId: 'main', messages: [{ role: 'user', content: 'a' }] });
   await assert.rejects(callWorker(worker, 'export-conversation', { folder, format: 'exe', provider: 'p', model: 'm' }), /invalide/);
-  await assert.rejects(callWorker(worker, 'export-conversation', { folder: join(folder, 'inexistant'), format: 'md', provider: 'p', model: 'm' }), /ENOENT|introuvable/);
+  // The worker's own reason, exactly — never Node's « ENOENT: no such file or directory, realpath '<absolute path>' »,
+  // which reached the export toast (parity row 14, 2026-10-05). A RegExp is tested against String(error).
+  await assert.rejects(callWorker(worker, 'export-conversation', { folder: join(folder, 'inexistant'), format: 'md', provider: 'p', model: 'm' }), /^Error: Dossier introuvable$/);
   const listing = await readdir(folder);
   assert.equal(listing.some(name => name.startsWith('conversation_')), false, 'nothing was written on a refused request');
 });

@@ -376,7 +376,14 @@ const EXPORT_FORMATS = new Set(['md', 'html', 'json']);
 async function exportConversation(folder, branchId, format, provider, model) {
   if (!EXPORT_FORMATS.has(format)) throw new Error('Format d’export invalide');
   if (!isAbsolute(folder)) throw new Error('Dossier absolu requis');
-  const root = await realpath(folder);
+  // As FoldersService.open (core/folders.mts): a folder realpath cannot resolve is refused with the worker's own reason,
+  // not Node's « ENOENT … realpath '<absolute path>' », which the export toast showed as is (parity row 14, 2026-10-05).
+  let root;
+  try {
+    root = await realpath(folder);
+  } catch {
+    throw new Error('Dossier introuvable');
+  }
   if (!(await lstat(root)).isDirectory()) throw new Error('Dossier introuvable');
   const messages = await conversations.messages(folder, branchId);
   const { tools } = await registerTools(folder);

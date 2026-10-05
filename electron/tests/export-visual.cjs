@@ -12,7 +12,7 @@ app.disableHardwareAcceleration();
 app.on('window-all-closed', () => {});
 const { Worker } = require('node:worker_threads');
 const path = require('node:path');
-const { mkdtemp, rm, mkdir, writeFile, readFile, readdir } = require('node:fs/promises');
+const { mkdtemp, rm, mkdir, writeFile, readFile, readdir, rename } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
@@ -34,6 +34,18 @@ function flush() {
   ]);
 }
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+// Windows refuses to rename a folder while a handle is open in it (EPERM/EBUSY/EACCES): git-status or the index may
+// still hold one for a moment. Bounded: 5 s, then the error is thrown.
+async function renameWhenFree(from, to) {
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    try { await rename(from, to); return; }
+    catch (error) {
+      if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code) || Date.now() > deadline) throw error;
+      await pause(200);
+    }
+  }
+}
 
 app.whenReady().then(async () => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-export-'));
@@ -216,7 +228,24 @@ app.whenReady().then(async () => {
     assert.equal((await readdir(alpha)).filter(name => name.startsWith('conversation_')).length, beforeCount, 'closing without choosing a format wrote nothing new');
     await writeFile(join(screenshotDir, 'export-4-after.png'), await capturePng(win));
 
-    process.stdout.write(`PASS conversation export: real ⬇ click + palette, 3 real files on disk (headers, real tool tags, quoting, escape-once), toasts, refused folder (Electron ${process.versions.electron})\n`);
+    // ── 9. Parity row 14: the folder made unreachable, an export started from ⬇ → « Échec de l'export », nothing written ──
+    // The background indexing activation started must be over before the folder is renamed.
+    await waitFor(async () => (await callWorker('index-status', { folder: alpha })).state !== 'indexing', { timeout: 30000, what: 'indexing finished' });
+    const moved = join(root, 'alpha-deplace');
+    await renameWhenFree(alpha, moved);
+    const openedBefore = opened.length;
+    const entriesBefore = (await readdir(moved)).length;
+    await click('#oa-export-btn');
+    await waitFor(() => exists('[data-testid="oa-export-menu"]'), { what: 'export menu opens' });
+    await click('#oa-export-md');
+    const failure = await waitForNewestToast(/^Échec de l'export : /);
+    assert.equal(failure.kind, 'negative');
+    assert.equal(failure.text.includes('Error invoking remote method'), false, "the worker's own reason, not the IPC wrapper");
+    assert.equal(opened.length, openedBefore, 'nothing was asked to open');
+    assert.equal((await readdir(moved)).length, entriesBefore, 'no file was written in the folder');
+    await writeFile(join(screenshotDir, 'export-5-failure.png'), await capturePng(win));
+
+    process.stdout.write(`PASS conversation export: real ⬇ click + palette, 3 real files on disk (headers, real tool tags, quoting, escape-once), toasts, refused folder, failure toast through the UI (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshots: ${screenshotDir}\n`);
   } catch (error) {
     try {

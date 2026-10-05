@@ -4,7 +4,7 @@ const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 const executable = require('electron');
 const result = spawnSync(executable, [join(__dirname, 'theme-visual.cjs')], {
-  encoding: 'utf8', timeout: 30000, windowsHide: true, env,
+  encoding: 'utf8', timeout: 60000, windowsHide: true, env,
 });
 process.stdout.write(result.stdout || '');
 process.stderr.write(result.stderr || '');

@@ -73,16 +73,26 @@ export function InputBar() {
     void addFiles([...event.dataTransfer.files]);
   };
 
+  // True from the moment a message leaves the box until send() has answered. `state.agentRunning` only turns true once
+  // the worker accepted the turn, and the worker does not refuse a second turn in the same folder: an Enter pressed in
+  // between, the box refilled, started two turns at once (parity row 7, 2026-10-05).
+  const sendingRef = useRef(false);
+
   const handleSend = useCallback(async () => {
     const el = textRef.current;
     // While a summary is being made the transcript is rewritten: a message sent now would be lost in it.
-    // Checked BEFORE the box is emptied, so the typed text stays for when the compaction is over.
-    if (!el || !el.value.trim() || state.agentRunning || state.compacting) return;
+    // Checked BEFORE the box is emptied, so the typed text stays for when the compaction — or the send — is over.
+    if (!el || !el.value.trim() || sendingRef.current || state.agentRunning || state.compacting) return;
     const text = el.value;
     const files = attachments;
+    sendingRef.current = true;
     el.value = '';
     setAttachments([]); // the files leave with the message (state.attached_files.clear())
-    await send(text, files);
+    try {
+      await send(text, files);
+    } finally {
+      sendingRef.current = false;
+    }
   }, [send, state.agentRunning, state.compacting, attachments]);
 
   // The picker hands the filled-in template over. As in prompt_library.py it REPLACES what was typed (the

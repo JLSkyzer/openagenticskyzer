@@ -7,7 +7,7 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 app.disableHardwareAcceleration();
 require('./no-onboarding.cjs'); // side effect: see that file
 const path = require('node:path');
-const { mkdtemp, rm, writeFile } = require('node:fs/promises');
+const { mkdtemp, rm, writeFile, readFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
@@ -19,6 +19,16 @@ function flush() {
     new Promise(resolve => process.stdout.write('', resolve)),
     new Promise(resolve => process.stderr.write('', resolve)),
   ]);
+}
+
+async function waitFor(fn, { timeout = 8000, interval = 50, what = 'condition' } = {}) {
+  const start = Date.now();
+  for (;;) {
+    const value = await fn();
+    if (value) return value;
+    if (Date.now() - start > timeout) throw new Error(`waitFor timed out: ${what}`);
+    await new Promise(resolve => setTimeout(resolve, interval));
+  }
 }
 
 app.whenReady().then(async () => {
@@ -82,7 +92,24 @@ app.whenReady().then(async () => {
     const persisted = await reopened.publicGlobal();
     assert.equal(persisted.theme, 'light', 'the toggle click actually persisted to disk, not just React state');
 
-    process.stdout.write(`PASS theme toggle applies to the DOM/CSS and persists to disk (Electron ${process.versions.electron})\n`);
+    // ── Parity row 16: the accent chosen in Réglages > Apparence — applied to --accent, saved, kept after a reload ──
+    const accentNow = () => win.webContents.executeJavaScript("getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()");
+    await win.webContents.executeJavaScript(`(() => {
+      const input = document.getElementById('oa-accent-input');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '#ff0000');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitFor(async () => (await accentNow()) === '#ff0000', { what: '--accent applied' });
+    await waitFor(async () => (await new SettingsService(home).global()).accent_color === '#ff0000', { what: 'accent saved' });
+    assert.equal(JSON.parse(await readFile(join(home, 'config.json'), 'utf8')).accent_color, '#ff0000', 'written to config.json');
+    await new Promise(resolve => { win.webContents.once('did-finish-load', resolve); win.webContents.reload(); });
+    await waitFor(async () => (await accentNow()) === '#ff0000', { what: 'the accent after a reload' });
+    assert.equal(await win.webContents.executeJavaScript("document.documentElement.getAttribute('data-theme')"), 'light', 'the theme survives the reload too');
+    const accentShot = await win.webContents.capturePage();
+    await writeFile(join(screenshotDir, 'theme-accent.png'), accentShot.toPNG());
+
+    process.stdout.write(`PASS theme toggle applies to the DOM/CSS and persists to disk; accent #ff0000 applied, saved and kept after a reload (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshots: ${join(screenshotDir, 'theme-dark.png')}, ${join(screenshotDir, 'theme-light.png')}\n`);
   } finally {
     win?.destroy();

@@ -325,3 +325,43 @@ test('a saved tool result keeps its tool name and category, and the next request
   assert.equal(sent.length, 1);
   assert.deepEqual(Object.keys(sent[0]).sort(), ['content', 'role', 'tool_call_id']);
 });
+
+// ── row 18: search_ask (2026-10-05) ──────────────────────────────────────────────
+// fetch_url to the loopback is refused by the SSRF policy only WHEN IT RUNS: that error proves the tool ran, and no
+// packet leaves the machine.
+test('search_ask: true asks before a network tool runs — refused, it never runs; approved, it runs — and false (the default) runs it without asking', async t => {
+  const fetch: Step = { tool: { name: 'fetch_url', args: { url: 'http://127.0.0.1:9/page' } } };
+  const { worker, project, send } = await setup(t, [fetch, { text: 'a' }, fetch, { text: 'b' }, fetch, { text: 'c' }]);
+  const RAN = 'Erreur : Adresse réseau interne ou privée refusée';
+  const lastTool = async () => (await callWorker(worker, 'messages', { folder: project, branchId: 'main' })).filter((m: any) => m.role === 'tool').at(-1);
+
+  const byDefault = await send(worker);
+  await until(() => finished(byDefault.events), 'the default run');
+  byDefault.stop();
+  assert.equal(byDefault.events.some(e => e.kind === 'permission-request'), false, 'search_ask is false by default: no prompt');
+  assert.ok(byDefault.events.some(e => e.kind === 'tool-start' && e.tool === 'fetch_url'));
+  assert.equal((await lastTool()).content, RAN);
+
+  await callWorker(worker, 'save-global-settings', { patch: { search_ask: true } });
+  const refused = await send(worker, 'refuse');
+  await until(() => refused.events.some(e => e.kind === 'permission-request'), 'the network prompt');
+  const request = refused.events.find(e => e.kind === 'permission-request');
+  assert.equal(request.tool, 'fetch_url');
+  assert.equal(request.category, 'network');
+  assert.equal(refused.events.some(e => e.kind === 'tool-start'), false, 'not run before the decision');
+  await callWorker(worker, 'permission-decision', { runId: refused.runId, requestId: request.requestId, allow: false, always: false });
+  await until(() => finished(refused.events), 'the refused run');
+  refused.stop();
+  assert.equal(refused.events.some(e => e.kind === 'tool-start'), false, 'a refused network tool never runs');
+  assert.equal((await lastTool()).content, 'Erreur : Exécution refusée par les permissions');
+
+  const approved = await send(worker, 'accepte');
+  await until(() => approved.events.some(e => e.kind === 'permission-request'), 'the second network prompt');
+  const second = approved.events.find(e => e.kind === 'permission-request');
+  assert.equal(approved.events.some(e => e.kind === 'tool-start'), false, 'not run before the decision');
+  await callWorker(worker, 'permission-decision', { runId: approved.runId, requestId: second.requestId, allow: true, always: false });
+  await until(() => finished(approved.events), 'the approved run');
+  approved.stop();
+  assert.ok(approved.events.some(e => e.kind === 'tool-start' && e.tool === 'fetch_url'), 'approved: it runs');
+  assert.equal((await lastTool()).content, RAN);
+});

@@ -72,3 +72,10 @@ test('performExport: a connection read failure is reported as an export failure 
   assert.equal(deps.calls.includes('exportConversation'), false, 'the write is never attempted without a connection');
   assert.equal(deps.calls.includes('openExportedFile'), false);
 });
+
+test("performExport: a refusal relayed by Electron shows the worker's own message, without the IPC wrapper", async () => {
+  const deps = fakeDeps({ exportConversation: async () => { throw new Error("Error invoking remote method 'backend-request': Error: Dossier introuvable"); } });
+  const notices: Array<[string, string]> = [];
+  await performExport(deps, 'D:\proj', 'main', 'md', (text, kind) => notices.push([text, kind ?? 'positive']));
+  assert.deepEqual(notices, [["Échec de l'export : Dossier introuvable", 'negative']]);
+});

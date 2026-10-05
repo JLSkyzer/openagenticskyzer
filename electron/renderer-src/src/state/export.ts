@@ -1,3 +1,4 @@
+import { cleanIpcError } from '../ipc/errors.ts';
 export type ExportFormat = 'md' | 'html' | 'json';
 
 // The subset of the bridge this needs, expressed as an interface so tests can inject a fake — the
@@ -30,7 +31,9 @@ export async function performExport(
     const connection = await deps.getConnection(folder);
     ({ filename } = await deps.exportConversation(folder, branchId, format, connection.provider, connection.model));
   } catch (error) {
-    notify(`Échec de l'export : ${error instanceof Error ? error.message : 'erreur inconnue'}`, 'negative');
+    // A refusal from the worker reaches the page wrapped by Electron (« Error invoking remote method … »): only the
+    // worker's own reason is shown.
+    notify(`Échec de l'export : ${error instanceof Error ? cleanIpcError(error) : 'erreur inconnue'}`, 'negative');
     return;
   }
   notify(`Exporté : ${filename}`, 'positive');

@@ -148,7 +148,8 @@ export function removeKnowledgeSource(source: string): Promise<void> {
   return request('knowledge-remove', { source });
 }
 
-export function activateFolder(folder: string): Promise<{ history: ChatMessage[]; folders: FolderListItem[] }> {
+// `folder` is the canonical path the history stores (worker.mjs): the Sidebar activates a typed path under it.
+export function activateFolder(folder: string): Promise<{ history: ChatMessage[]; folders: FolderListItem[]; folder: string }> {
   return request('activate_folder', { folder });
 }
 

@@ -4,6 +4,7 @@ import { useRegisterAction } from '../state/ActionRegistry';
 import { KnowledgeSection } from './KnowledgeSection';
 import { Modal } from './settings/Modal';
 import { useToast } from '../state/ToastProvider';
+import { cleanIpcError } from '../ipc/errors';
 
 interface SidebarProps {
   activeFolder: string | null;
@@ -51,10 +52,12 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
   }, [activeFolder]);
 
   const activate = useCallback(
-    async (folder: string) => {
+    async (folder: string, typed = false) => {
       const result = await activateFolder(folder);
       setFolders(result.folders);
-      onActivated(folder, result.history);
+      // A typed path is activated under the spelling the history stores (the worker's canonical path), so its entry
+      // shows as active whatever separators were typed; the dialog and the history entries keep their own path.
+      onActivated(typed ? result.folder : folder, result.history);
     },
     [onActivated],
   );
@@ -104,6 +107,27 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
   // "📂 Ouvrir un dossier" of the command palette does exactly what the button does.
   useRegisterAction('open-folder', () => void handleOpenFolder());
 
+  // « Chemin du dossier » + « Ouvrir » (parity row 2, sidebar.py::open_folder_prompt): the same activate() as the dialog
+  // — history, restore, trust. The worker refuses a relative, missing or non-folder path (core/folders.mts); the toast
+  // gives its own reason. Uncontrolled like the message box: Enter reads what is in the field right now.
+  const pathRef = useRef<HTMLInputElement>(null);
+  const handleOpenTyped = useCallback(async () => {
+    const input = pathRef.current;
+    if (!input) return;
+    // Explorer's « Copier en tant que chemin d'accès » wraps the path in double quotes.
+    const typed = input.value.trim().replace(/^"(.*)"$/, '$1').trim();
+    if (!typed) { notify('Impossible d’ouvrir ce dossier : chemin vide', 'negative'); return; }
+    setOpening(true);
+    try {
+      await activate(typed, true);
+      input.value = '';
+    } catch (error) {
+      notify(`Impossible d’ouvrir ce dossier : ${cleanIpcError(error)}`, 'negative');
+    } finally {
+      setOpening(false);
+    }
+  }, [activate, notify]);
+
   const handleInitProject = useCallback(() => {
     if (!activeFolder) { notify("Ouvre un dossier d'abord.", 'warning'); return; }
     setInitConfirm(true);
@@ -140,6 +164,33 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
         >
           {opening ? '…' : '📂 Ouvrir un dossier'}
         </button>
+        <div className="mt-2 flex gap-1">
+          <input
+            id="oa-folder-path-input"
+            ref={pathRef}
+            type="text"
+            placeholder="Chemin du dossier"
+            aria-label="Chemin du dossier"
+            title="Chemin absolu d’un dossier, puis Entrée ou « Ouvrir »"
+            spellCheck={false}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                void handleOpenTyped();
+              }
+            }}
+            className="min-w-0 flex-1 rounded border border-gray-800 bg-gray-900 px-2 py-1 font-mono text-[11px] text-gray-200 outline-none focus:border-purple-600"
+          />
+          <button
+            id="oa-folder-path-open"
+            type="button"
+            onClick={() => void handleOpenTyped()}
+            disabled={opening}
+            className="rounded bg-gray-800 px-2 py-1 text-xs text-gray-200 hover:bg-gray-700 disabled:opacity-60"
+          >
+            Ouvrir
+          </button>
+        </div>
         <button
           id="oa-init-project-btn"
           onClick={handleInitProject}

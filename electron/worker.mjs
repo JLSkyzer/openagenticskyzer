@@ -4,7 +4,7 @@ import { writeFile, realpath, lstat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
-import { FoldersService } from './core/folders.mts';
+import { FoldersService, canonicalFolderPath } from './core/folders.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
 import { localProvider } from './core/local-engine.mts';
 import { offeredTools, runAgent, TOOL_NAME_PATTERN } from './core/agent.mts';
@@ -582,8 +582,12 @@ async function handle(message) {
     if (op === 'activate_folder') {
       const list = await folders.recordOpened(payload.folder);
       const history = await conversations.messages(payload.folder, 'main').catch(() => []);
-      result = { history: servedMessages(history), folders: list };
-      void triggerIndexing(payload.folder);
+      // `folder`: the spelling the history stores (core/folders.mts) — a typed path is activated under it (Sidebar).
+      // The index is keyed on it too: its 'index' events and index-status name the folder the renderer activates,
+      // not `C:/X/PROJ` typed for `C:\x\proj`.
+      const canonical = await canonicalFolderPath(payload.folder);
+      result = { history: servedMessages(history), folders: list, folder: canonical };
+      void triggerIndexing(canonical);
     }
     if (op === 'settings') result = payload.folder ? await settings.project(payload.folder) : await settings.publicGlobal();
     if (op === 'save_settings') {

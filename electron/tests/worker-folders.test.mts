@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
@@ -89,4 +89,57 @@ test('R3: a history saved by the Python app (roles human/ai) is served as user/a
   assert.equal(await readFile(join(project, '.openagent', 'chat_history.json'), 'utf8'), legacy, 'the Python file is not rewritten by a read');
   await assert.rejects(readFile(join(project, '.openagent', 'conversations.json')), /ENOENT/, 'and no new file is written by a read');
   await indexed;
+});
+
+test('worker::activate_folder answers the folder under the spelling the history stores, whatever spelling was typed', { timeout: 30000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-folders-typed-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  const canonical = await realpath(project);
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
+    env: { ...process.env, OPENAGENT_HOME: home },
+  }));
+  const indexed = indexingSettled(worker, canonical);
+  // Forward slashes and a trailing separator: how a path is often typed or pasted.
+  const activated = await callWorker(worker, 'activate_folder', { folder: project.replaceAll('\\', '/') + '/' });
+  assert.equal(activated.folder, canonical);
+  assert.equal(activated.folders[0].path, canonical, 'the folder the history now lists first');
+  await indexed;
+});
+
+// F3: the background index is keyed on the canonical folder too — under the typed spelling (another case under
+// Windows), its 'index' events and index-status would name a folder the renderer never activates.
+test('worker::activate_folder indexes the folder under its canonical path, not under the typed spelling', { timeout: 30000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-folders-canonical-index-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  await writeFile(join(project, 'a.py'), 'def a():\n    return 1\n');
+  const canonical = await realpath(project);
+  // Windows: another case and forward slashes (one folder for its file system, another string for resolve()).
+  // Elsewhere case matters, so only the trailing separator differs (resolve() already drops it).
+  const typed = process.platform === 'win32' ? canonical.toUpperCase().replaceAll('\\', '/') : `${canonical}/`;
+  // resolve() keeps the case: under Windows the typed spelling must really be another string once resolved.
+  if (process.platform === 'win32') assert.notEqual(resolve(typed), canonical, 'the typed spelling differs from the canonical one');
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
+    env: { ...process.env, OPENAGENT_HOME: home },
+  }));
+  // Every 'index' event of this activation, whatever folder it names; the run ends on the first ready/error.
+  const events: any[] = [];
+  const settled = new Promise<any>(resolve => {
+    worker.on('message', (message: any) => {
+      if (message.type !== 'event' || message.event !== 'index') return;
+      events.push(message);
+      if (message.state === 'ready' || message.state === 'error') resolve(message);
+    });
+  });
+  const activated = await callWorker(worker, 'activate_folder', { folder: typed });
+  assert.equal(activated.folder, canonical, 'the reply names the canonical folder');
+  assert.equal((await settled).state, 'ready');
+  assert.ok(events.length >= 2, `indexing then ready: ${JSON.stringify(events)}`);
+  assert.deepEqual([...new Set(events.map(event => event.folder))], [canonical], 'every index event names the canonical folder');
+  assert.equal((await callWorker(worker, 'index-status', { folder: canonical })).state, 'ready', 'index-status under the canonical folder');
 });

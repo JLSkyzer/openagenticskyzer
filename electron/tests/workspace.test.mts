@@ -166,3 +166,28 @@ test('a final newline does not make a phantom last line, in read_file and view_f
   await writeFile(join(a, 'empty.txt'), '');
   assert.equal(await invoke('read_file', { path: 'empty.txt' }), '1|', 'an empty file keeps its single empty line, as before');
 });
+
+test('read_file, view_file, grep_file and edit_file refuse key material by name (core/file-filter.mts), content never returned nor changed; list_dir still names it', async t => {
+  const { a, invoke } = await fixture(t);
+  await mkdir(join(a, 'conf'));
+  const secrets: Record<string, string> = {
+    'secrets.json': '{"api_key": "SECRET-WS-1"}', 'conf/credentials.json': '{"token": "SECRET-WS-2"}',
+    'id_rsa': 'SECRET-WS-3', 'cert.PEM': 'SECRET-WS-4', 'conf/server.key': 'SECRET-WS-5',
+  };
+  for (const [path, content] of Object.entries(secrets)) await writeFile(join(a, path), content);
+  for (const [path, content] of Object.entries(secrets)) {
+    for (const [name, args] of [['read_file', { path }], ['view_file', { path }], ['grep_file', { path, pattern: 'SECRET' }],
+      ['edit_file', { path, old_string: 'SECRET', new_string: 'LEAKED' }]] as const) {
+      await assert.rejects(invoke(name, args), (error: Error) => {
+        assert.match(error.message, /^Fichier secret/, `${name} ${path}`);
+        assert.equal(error.message.includes('SECRET-WS'), false, `${name} ${path}`);
+        return true;
+      });
+    }
+    assert.equal(await readFile(join(a, path), 'utf8'), content, `${path} is unchanged`);
+  }
+  // Only key material by name: a source file whose name merely resembles one is read as before.
+  await writeFile(join(a, 'secrets.ts'), 'export const x = 1;');
+  assert.equal(await invoke('read_file', { path: 'secrets.ts' }), '1|export const x = 1;');
+  assert.match(await invoke('list_dir', {}), /^secrets\.json$/m, 'list_dir is unchanged: the name stays listed');
+});

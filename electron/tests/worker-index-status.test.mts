@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, writeFile, rm, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, access, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
@@ -104,4 +104,30 @@ test('index-status for a folder that was never activated is idle, not an error',
   terminateAtEnd(t, worker);
 
   assert.deepEqual(await callWorker(worker, 'index-status', { folder: join(root, 'never-touched') }), { state: 'idle' });
+});
+
+test("the automatic indexing applies the project's ignored patterns and the secret-file filter, and purges an older index of them", { timeout: 60000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-index-filter-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(join(project, 'private'), { recursive: true }), mkdir(join(project, '.openagent', 'index'), { recursive: true })]);
+  await writeFile(join(project, 'a.py'), 'def a():\n    return 1\n');
+  await writeFile(join(project, 'secrets.json'), '{"key": "SECRET-WORKER-1"}');
+  await writeFile(join(project, 'private', 'notes.md'), 'SECRET-WORKER-2');
+  await writeFile(join(project, '.openagent', 'config.json'), JSON.stringify({ ignored_patterns: 'private/' }));
+  await writeFile(join(project, '.openagent', 'index', 'codebase.json'), JSON.stringify({ version: 1, entries: [
+    { id: 'secrets.json:0', file: 'secrets.json', chunk: 0, text: 'SECRET-WORKER-1', vector: new Array(384).fill(0) },
+  ] }));
+
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  terminateAtEnd(t, worker);
+  await callWorker(worker, 'activate_folder', { folder: project });
+  const status = await untilReady(worker, project);
+  assert.equal(status.state, 'ready', JSON.stringify(status));
+
+  const index = join(project, '.openagent', 'index');
+  const raw = JSON.parse(await readFile(join(index, 'codebase.json'), 'utf8'));
+  assert.deepEqual([...new Set(raw.entries.map((e: any) => e.file))], ['a.py']);
+  assert.deepEqual(await readdir(index), ['codebase.json'], 'no backup copy of the old index is kept');
 });

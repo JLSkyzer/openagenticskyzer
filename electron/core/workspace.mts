@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import type { AgentTool } from './agent.mts';
 import { metadataDirectory } from './json-store.mts';
+import { isSensitiveFile, protectedPathMatcher } from './file-filter.mts';
 import { defineTool, type ParamRule } from './tool-kit.mts';
 
 /** Only the agent's permission gate should call these capability implementations. */
@@ -11,14 +12,8 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
   if (!isAbsolute(folder)) throw new Error('Dossier projet absolu requis');
   const root = await realpath(folder);
   if (!(await lstat(root)).isDirectory()) throw new Error('Dossier projet invalide');
-  const ignored = ignoredPatterns.split(',').map(v => v.trim().replace(/\\/g, '/').replace(/\/+$/, '')).filter(Boolean);
-  const blocked = (rel: string) => {
-    const normalized = rel.replace(/\\/g, '/');
-    const segments = normalized.split('/');
-    if (segments.some(s => /^\.env(?:\.|$)/i.test(s) || ['.git', '.openagent'].includes(s.toLowerCase()))) return true;
-    return ignored.some(pattern => posix.matchesGlob(normalized, pattern) || posix.matchesGlob(normalized, pattern + '/**') ||
-      (!pattern.includes('/') && segments.some(s => posix.matchesGlob(s, pattern))));
-  };
+  // .env*, .git, .openagent and the project's ignored_patterns — core/file-filter.mts, shared with the semantic index.
+  const blocked = protectedPathMatcher(ignoredPatterns);
   const safePath = async (value: string, allowRoot = false) => {
     if (!value || value.includes('\0')) throw new Error('Chemin invalide');
     const file = resolve(root, value.replace(/[\\/]/g, sep));
@@ -34,8 +29,11 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
     }
     return file;
   };
+  /** Opens a text file for read_file, view_file, grep_file and edit_file: key material by name (core/file-filter.mts)
+   * is refused here, so none of them ever returns or rewrites its content. list_dir still names it. */
   const textFile = async (path: string, signal: AbortSignal) => {
     const file = await safePath(path);
+    if (isSensitiveFile(file)) throw new Error('Fichier secret (clé ou identifiants) : lecture et modification refusées');
     const info = await lstat(file);
     if (!info.isFile() || info.size > 2 * 1024 * 1024) throw new Error('Fichier non texte ou trop volumineux (2 Mio maximum)');
     const bytes = await readFile(file, { signal });
@@ -75,7 +73,6 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
   // material is skipped on top of blocked() (.env*, .git, .openagent, ignored patterns) so
   // a broad search cannot hand it to the model.
   const SKIP_DIRS = new Set(['node_modules', '__pycache__', '.git', 'dist', '.next', 'build', 'venv', '.venv', 'env']);
-  const SENSITIVE_FILE = /^id_(rsa|dsa|ecdsa|ed25519)$|\.(pem|key|p12|pfx)$|^(credentials|secrets)\.json$/i;
   const MAX_WALKED = 20000;
   const MAX_FILE_BYTES = 2 * 1024 * 1024;
   /** Regular files under `start`, in name order. Symlinks and junctions are never followed. */
@@ -94,7 +91,7 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
         if (entry.isDirectory()) {
           if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue;
           await visit(abs);
-        } else if (entry.isFile() && !SENSITIVE_FILE.test(entry.name)) found.push({ abs, rel });
+        } else if (entry.isFile() && !isSensitiveFile(entry.name)) found.push({ abs, rel });
       }
     };
     await visit(start);

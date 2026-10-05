@@ -88,3 +88,4 @@ import './request-context.test.mts';
 import './system-prompt.test.mts';
 import './safe-move.test.mts';
 import './main-data-home.test.mts';
+import './file-filter.test.mts';

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -77,4 +77,26 @@ test('both tools reject a call with no query, and accept a custom n', { timeout:
     assert.throws(() => search.validate({}), /requis/);
     assert.doesNotThrow(() => search.validate({ query: 'x', n: 3 }));
   }
+});
+
+test('semantic_search never renders a secret or ignored file, even from an index that still holds one', { timeout: 60000 }, async t => {
+  const { home, folder } = await fixture(t);
+  await writeFile(join(folder, 'sort.py'), 'def sort_list(items):\n    """Sorts a list of items in ascending order."""\n    return sorted(items)\n');
+  const { indexFolder, storePath } = await import('../core/semantic-index.mts');
+  await indexFolder(folder, home);
+  // What an index built before 2026-10-05 could hold, with sort.py's own vector: they would rank as high.
+  const store = JSON.parse(await readFile(await storePath(folder), 'utf8'));
+  const [first] = store.entries;
+  store.entries.push(
+    { ...first, id: 'secrets.json:0', file: 'secrets.json', text: 'SECRET-TOOL-1' },
+    { ...first, id: 'private/notes.md:0', file: 'private/notes.md', text: 'SECRET-TOOL-2' },
+  );
+  await writeFile(await storePath(folder), JSON.stringify(store));
+
+  const { searchTools } = await import('../core/search-tools.mts');
+  const search = tool(await searchTools(folder, home, 'private/'), 'semantic_search');
+  const output = await search.execute({ query: 'trier une liste' }, new AbortController().signal);
+  assert.match(output, /\[sort\.py\]/);
+  assert.equal(output.includes('SECRET-TOOL'), false, output);
+  assert.equal(output.includes('secrets.json') || output.includes('private/'), false, output);
 });

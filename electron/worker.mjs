@@ -76,7 +76,11 @@ async function triggerIndexing(folder) {
   if (indexStatus.get(key)?.state === 'indexing') return;
   postIndexEvent(folder, { state: 'indexing', current: 0, total: 0, message: undefined });
   try {
-    await indexFolder(folder, dataHome, (current, total) => postIndexEvent(folder, { state: 'indexing', current, total }));
+    // The project's ignored_patterns — the value the file tools get (settings.effective keeps it as the project wrote
+    // it): an ignored or secret file is never indexed, and the rebuild purges what an older index held of it. An
+    // unreadable project config ends in 'error' with nothing written.
+    const { ignored_patterns: ignoredPatterns } = await settings.project(folder);
+    await indexFolder(folder, dataHome, (current, total) => postIndexEvent(folder, { state: 'indexing', current, total }), ignoredPatterns);
     postIndexEvent(folder, { state: 'ready', current: undefined, total: undefined, message: undefined });
   } catch (error) {
     postIndexEvent(folder, { state: 'error', current: undefined, total: undefined, message: error instanceof Error ? error.message : 'Erreur interne' });
@@ -197,7 +201,7 @@ async function builtInTools(folder, effective) {
     ...projectTools(folder),
     ...await shellTools(folder),
     ...await webTools(),
-    ...await searchTools(folder, dataHome),
+    ...await searchTools(folder, dataHome, effective.ignored_patterns),
   ];
 }
 

@@ -308,3 +308,20 @@ test('the prompt lists exactly the tools sent, states the mode (ask, plan) and, 
     if (mode !== 'auto') for (const unsent of ['create_file', 'run_command', 'save_memory', 'git_commit']) assert.equal(system.includes(unsent), false, `${mode}: ${unsent} is not offered, so not named`);
   }
 });
+
+// ── row 6: a saved tool result keeps its card (2026-10-05) ──────────────────────────
+test('a saved tool result keeps its tool name and category, and the next request sends neither', async t => {
+  const { worker, project, bodies, send } = await setup(t, [{ tool: { name: 'list_dir', args: { path: '.' } } }, { text: 'vu' }]);
+  const r = await send(worker);
+  await until(() => finished(r.events), 'the run');
+  r.stop();
+  const live = r.events.find(e => e.kind === 'message' && e.message.role === 'tool').message;
+  assert.equal(live.name, 'list_dir');
+  assert.equal(live.category, 'read');
+  const saved = (await callWorker(worker, 'messages', { folder: project, branchId: 'main' })).find((m: any) => m.role === 'tool');
+  assert.equal(saved.name, 'list_dir');
+  assert.equal(saved.category, 'read');
+  const sent = bodies[1].messages.filter((m: any) => m.role === 'tool');
+  assert.equal(sent.length, 1);
+  assert.deepEqual(Object.keys(sent[0]).sort(), ['content', 'role', 'tool_call_id']);
+});

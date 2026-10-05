@@ -40,11 +40,19 @@ function withSendableArguments(message: ChatMessage): ChatMessage {
   };
 }
 
+/** A tool result as the provider receives it: role, tool_call_id and content — the OpenAI format's fields. The `name`
+ * and `category` saved beside it for the screen (agent.mts) never leave. */
+function wireToolResult(message: ChatMessage): ChatMessage {
+  if (message.role !== 'tool') return message;
+  return { role: 'tool', ...(message.tool_call_id === undefined ? {} : { tool_call_id: message.tool_call_id }), content: message.content };
+}
+
 /**
  * The messages to send (system message excluded). Earlier turns — before the last user message — keep only
  * the user messages and the TEXT of the assistant ones (tool calls, tool results and text-less assistant
- * messages are dropped, as Python sent them); the turn in progress is sent whole, its attachments expanded and
- * unreadable call arguments replaced by `{}` (in the request only: the saved transcript keeps them).
+ * messages are dropped, as Python sent them); the turn in progress is sent whole, its attachments expanded,
+ * unreadable call arguments replaced by `{}` and its tool results reduced to the OpenAI fields (in the request
+ * only: the saved transcript keeps everything).
  */
 export function requestMessages(messages: readonly ChatMessage[]): ChatMessage[] {
   const start = Math.max(0, currentTurnStart(messages));
@@ -53,7 +61,7 @@ export function requestMessages(messages: readonly ChatMessage[]): ChatMessage[]
     if (isUser(message)) earlier.push({ role: 'user', content: withPlaceholders(message) });
     else if (isAssistant(message) && textOf(message.content).trim()) earlier.push({ role: 'assistant', content: textOf(message.content) });
   }
-  const current = messages.slice(start).map(message => withSendableArguments(toWireMessage(message as never) as unknown as ChatMessage));
+  const current = messages.slice(start).map(message => wireToolResult(withSendableArguments(toWireMessage(message as never) as unknown as ChatMessage)));
   return [...earlier, ...current];
 }
 

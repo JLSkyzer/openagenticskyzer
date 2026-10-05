@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm';
 import type { AgentTool } from './agent.mts';
 import { metadataDirectory } from './json-store.mts';
 import { isSensitiveFile, protectedPathMatcher } from './file-filter.mts';
+import { boundedDiff, unifiedDiff } from './unified-diff.mts';
 import { defineTool, type ParamRule } from './tool-kit.mts';
 
 /** Only the agent's permission gate should call these capability implementations. */
@@ -194,7 +195,10 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
         if (await readFile(file, 'utf8') !== text) throw new Error('Fichier modifié entre-temps : relire avant de réessayer');
         signal.throwIfAborted(); await rename(temp, file);
       } finally { await rm(temp, { force: true }); }
-      return `Modifié : ${relative(root, file)}\n-${old}\n+${args.new_string}`;
+      // The change as a bounded unified diff (core/unified-diff.mts): coloured on the tool card, read by the model too.
+      const shown = relative(root, file);
+      const diff = boundedDiff(unifiedDiff(shown.split(sep).join('/'), text, next));
+      return diff ? `Modifié : ${shown}\n${diff}` : `Modifié : ${shown}`;
     }),
     make('create_dir', 'Créer un dossier du projet, dossiers parents compris.', 'write', { path: pathField }, ['path'], async args => {
       const dir = await safePath(args.path as string);

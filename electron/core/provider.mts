@@ -13,6 +13,9 @@ export interface ChatMessage {
   // Set on a reply the output limit cut (finish_reason "length"). agent.mts turns it into a visible notice;
   // the flag itself is never stored nor sent back to a provider.
   truncated?: boolean;
+  // A tool result's tool name and category (agent.mts), saved so a reopened conversation shows the same card. Never
+  // sent: request-context.mts sends a tool result as role, tool_call_id and content only.
+  name?: string; category?: string;
 }
 export interface ModelConnection { provider: string; model: string; base_url: string; api_key: string }
 export interface ToolSchema { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }

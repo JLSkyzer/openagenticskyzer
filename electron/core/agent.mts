@@ -115,11 +115,11 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
     if (!reply.tool_calls?.length) return messages.slice(1);
     for (const call of reply.tool_calls) {
       signal.throwIfAborted();
+      const tool = registry.get(call.function.name);
       let output: string;
       try {
         // A call cut by the output limit has incomplete arguments: never executed, whatever the permissions.
         if (truncated) throw new Error(TRUNCATED_ARGUMENTS);
-        const tool = registry.get(call.function.name);
         if (!tool) throw new Error('Outil inconnu : exécution refusée');
         if (executed.has(call.id)) throw new Error('Appel outil dupliqué : exécution refusée');
         executed.add(call.id);
@@ -145,7 +145,9 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
         output = `Erreur : ${e instanceof Error ? e.message : 'échec de l’outil'}`;
       }
       if (output.length > 50000) output = output.slice(0, 50000) + '\n[Sortie tronquée]';
-      const result: ChatMessage = { role: 'tool', tool_call_id: call.id, content: output };
+      // The tool's name and category ride with its result (parity row 6): a reopened conversation shows the same card.
+      // An unknown tool gets no category, never a guessed one. requestMessages never sends either field.
+      const result: ChatMessage = { role: 'tool', tool_call_id: call.id, name: call.function.name, ...(tool ? { category: tool.category } : {}), content: output };
       messages.push(result); emit?.({ type: 'message', message: result });
     }
   }

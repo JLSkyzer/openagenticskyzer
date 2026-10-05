@@ -3,16 +3,17 @@ import type { AgentEvent, Attachment, BranchInfo, ChatMessage } from '../ipc/bri
 // extension-less imports the way Vite does.
 import { extractArtifact, type Artifact } from './artifacts.ts';
 import { lastAssistantIndex } from './editing.ts';
+import { callsById, toolCard, toolDetail, withToolCards, type RenderedMessage } from './tool-cards.ts';
+
+// A message as shown, tool results with their card (name, category, detail): see tool-cards.ts.
+export type { RenderedMessage } from './tool-cards.ts';
 
 export interface ToolMeta {
   tool: string;
   category?: string;
+  // The call's detail (path, command, query, url), read from the assistant message that made the call.
+  detail?: string;
 }
-
-// A tool-role message enriched with the tool name/category correlated from the
-// tool-start event that preceded it (by tool_call_id) — the raw message alone only
-// carries tool_call_id + content, not which tool produced it.
-export type RenderedMessage = ChatMessage & { _tool?: string; _category?: string };
 
 export interface PendingPermission {
   requestId: string;
@@ -90,7 +91,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
     case 'folder-loaded':
       // A new folder always opens on main: its fork list arrives separately ('branches-loaded').
-      return { ...initialChatState, messages: action.messages };
+      return { ...initialChatState, messages: withToolCards(action.messages) };
 
     case 'branches-loaded':
       return { ...state, branches: action.branches };
@@ -103,7 +104,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...state,
         branches: action.branches,
         currentBranchId: action.id,
-        messages: action.messages,
+        messages: withToolCards(action.messages),
         truncatedTo: null,
         error: null,
         notice: `Branche '${action.label}' créée.`,
@@ -114,7 +115,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return {
         ...state,
         currentBranchId: action.id,
-        messages: action.messages,
+        messages: withToolCards(action.messages),
         truncatedTo: null,
         streamingText: '',
         liveToolStarts: {},
@@ -178,7 +179,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       if (event.kind === 'compacted' || event.kind === 'compact-failed') {
         if (!state.compacting || event.runId !== state.compactionId) return state;
         if (event.kind === 'compact-failed') return { ...state, compacting: false, compactionId: null, error: event.message };
-        return { ...state, compacting: false, compactionId: null, messages: event.messages, error: null, notice: 'Contexte compressé avec résumé IA.' };
+        return { ...state, compacting: false, compactionId: null, messages: withToolCards(event.messages), error: null, notice: 'Contexte compressé avec résumé IA.' };
       }
       // A stale event from a run that Stop already superseded — ignore it rather than
       // corrupting the view of the (now different) active run.
@@ -188,11 +189,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           return state;
         case 'delta':
           return { ...state, streamingText: state.streamingText + event.text };
-        case 'tool-start':
+        case 'tool-start': {
+          // tool-start carries no arguments: the detail comes from the assistant message that made the call.
+          const detail = toolDetail(event.tool, callsById(state.messages).get(event.id)?.arguments);
           return {
             ...state,
-            liveToolStarts: { ...state.liveToolStarts, [event.id]: { tool: event.tool, category: event.category } },
+            liveToolStarts: { ...state.liveToolStarts, [event.id]: { tool: event.tool, category: event.category, ...(detail ? { detail } : {}) } },
           };
+        }
         case 'message': {
           const message = event.message;
           if (message.role === 'tool' && message.tool_call_id) {
@@ -200,7 +204,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             const { [message.tool_call_id]: _removed, ...remaining } = state.liveToolStarts;
             return {
               ...state,
-              messages: [...state.messages, { ...message, _tool: meta?.tool, _category: meta?.category }],
+              // The name and category the agent loop saved with it, else its tool-start's (a Stop closing result).
+              messages: [...state.messages, toolCard(message, callsById(state.messages), meta)],
               liveToolStarts: remaining,
             };
           }

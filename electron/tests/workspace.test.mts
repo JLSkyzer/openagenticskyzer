@@ -233,3 +233,20 @@ test("the content tools match the project's ignored patterns against the on-disk
     return true;
   });
 });
+
+test('edit_file answers its success line then a unified diff of the change, bounded with « [diff tronqué] »', async t => {
+  const { a, invoke } = await fixture(t);
+  await invoke('create_file', { path: 'src/app.txt', content: 'un\ndeux\ntrois\n' });
+  const out = await invoke('edit_file', { path: 'src/app.txt', old_string: 'deux', new_string: 'DEUX\nDEUX-BIS' });
+  assert.equal(out, [
+    `Modifié : ${join('src', 'app.txt')}`, '--- a/src/app.txt', '+++ b/src/app.txt', '@@ -1,3 +1,4 @@', ' un', '-deux', '+DEUX', '+DEUX-BIS', ' trois',
+  ].join('\n'));
+
+  await invoke('create_file', { path: 'big.txt', content: 'DEBUT\nFIN\n' });
+  const big = Array.from({ length: 100 }, (_, i) => `ligne ${i}`).join('\n');
+  const lines = (await invoke('edit_file', { path: 'big.txt', old_string: 'DEBUT', new_string: big })).split('\n');
+  assert.equal(lines[0], 'Modifié : big.txt');
+  assert.equal(lines.at(-1), '[diff tronqué]');
+  assert.equal(lines.length - 1, 60, 'the diff part, marker included, is 60 lines');
+  assert.equal(await readFile(join(a, 'big.txt'), 'utf8'), big + '\nFIN\n', 'the whole edit is written: only the shown diff is cut');
+});

@@ -83,12 +83,12 @@ export function ChatView() {
               );
             }
             if (message.role === 'tool') {
-              return <ToolMessage key={index} tool={message._tool} category={message._category} content={message.content} />;
+              return <ToolMessage key={index} tool={message._tool} category={message._category} detail={message._detail} content={message.content} />;
             }
             return null;
           })}
           {pendingTools.map(([id, meta]) => (
-            <ToolMessage key={id} tool={meta.tool} category={meta.category} content="" pending />
+            <ToolMessage key={id} tool={meta.tool} category={meta.category} detail={meta.detail} content="" pending />
           ))}
           {state.agentRunning && state.streamingText && <AssistantBubble content={state.streamingText} streaming />}
           {waitingForFirstToken && (

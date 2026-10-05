@@ -216,3 +216,30 @@ test('real HTTP transport refuses redirects and cancellation closes a streaming 
   await assert.rejects(task, (e: any) => e.name === 'AbortError');
   await disconnected;
 });
+
+test('a tool result is saved with its tool name and category, and neither field is ever sent to the provider', async () => {
+  const { runAgent } = await import('../core/agent.mts');
+  const { ChatProvider } = await import('../core/provider.mts');
+  const requests: any[] = [];
+  const provider = new ChatProvider(async (_url: any, options: any) => {
+    requests.push(JSON.parse(options.body));
+    const calls = [
+      { id: 'k', type: 'function', function: { name: 'look', arguments: '{}' } },
+      { id: 'u', type: 'function', function: { name: 'ghost', arguments: '{}' } },
+    ];
+    return new Response(JSON.stringify({ choices: [{ message: requests.length === 1 ? { content: '', tool_calls: calls } : { content: 'fin' }, finish_reason: requests.length === 1 ? 'tool_calls' : 'stop' }] }), { headers: { 'content-type': 'application/json' } });
+  });
+  const result = await runAgent({ provider, connection, instructions: '', messages: [{ role: 'user', content: 'go' }],
+    settings: { mode: 'auto', permission_mode: 'auto' }, confirm: async () => true,
+    tools: [{ name: 'look', description: '', category: 'read', parameters: { type: 'object' }, validate: () => {}, execute: async () => 'vu' }],
+  });
+  const saved = result.filter(m => m.role === 'tool');
+  assert.deepEqual(saved.map(m => [m.tool_call_id, m.name, m.category, m.content]), [
+    ['k', 'look', 'read', 'vu'],
+    ['u', 'ghost', undefined, 'Erreur : Outil inconnu : exécution refusée'],
+  ]);
+  assert.equal('category' in saved[1], false, 'an unknown tool has no category, never a guessed one');
+  const sent = requests[1].messages.filter((m: any) => m.role === 'tool');
+  assert.equal(sent.length, 2);
+  for (const message of sent) assert.deepEqual(Object.keys(message).sort(), ['content', 'role', 'tool_call_id']);
+});

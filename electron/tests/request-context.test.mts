@@ -108,3 +108,20 @@ test('the shared window table and the 4-characters estimate', () => {
   assert.equal(characters('😀😀'), 2);
   assert.equal(tokensFor(7), 1);
 });
+
+test('a tool result goes out as role, tool_call_id and content only: its saved name and category stay on disk', () => {
+  const stored: any[] = [
+    { role: 'user', content: 'avant' },
+    callMessage('c0', 'read_file', '{"path":"x"}'),
+    { ...result('c0', 'ancien'), name: 'read_file', category: 'read' },
+    { role: 'assistant', content: 'ok' },
+    { role: 'user', content: 'go' },
+    callMessage('c1', 'read_file', '{"path":"a"}'),
+    { ...result('c1', 'lu'), name: 'read_file', category: 'read' },
+  ];
+  const before = structuredClone(stored);
+  const sent = requestMessages(stored);
+  assert.deepEqual(sent.at(-1), result('c1', 'lu'));
+  assert.equal(sent.some(message => 'category' in message || (message.role === 'tool' && 'name' in message)), false);
+  assert.deepEqual(stored, before, 'the saved messages are untouched');
+});

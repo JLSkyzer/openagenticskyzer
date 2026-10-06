@@ -234,6 +234,44 @@ test("the content tools match the project's ignored patterns against the on-disk
   });
 });
 
+test('every workspace tool checks its path on disk (safePath): a short name or another case never opens .git, .openagent or an ignored folder as a start folder or a target', async t => {
+  const { a } = await fixture(t);
+  await mkdir(join(a, '.git', 'hooks'), { recursive: true });
+  await writeFile(join(a, '.git', 'config'), 'MARK-GIT');
+  await mkdir(join(a, '.openagent', 'index'), { recursive: true });
+  await writeFile(join(a, '.openagent', 'index', 'codebase.json.pre-electron.bak'), 'MARK-OPENAGENT');
+  await mkdir(join(a, 'privatestuff', 'sub'), { recursive: true });
+  await writeFile(join(a, 'privatestuff', 'notes.md'), 'MARK-PRIVATE');
+  await mkdir(join(a, 'src'));
+  await writeFile(join(a, 'src', 'app.ts'), 'MARK-OK');
+  const [git, openagent, ignored] = ['.git', '.openagent', 'privatestuff'].map(name => shortName(join(a, name)));
+  if (!git || !openagent || !ignored) { t.skip('no 8.3 short names on this volume'); return; }
+  const { workspaceTools } = await import('../core/workspace.mts');
+  const tools = await workspaceTools(a, 'privatestuff/');
+  const invoke = (name: string, args: Record<string, unknown>) => tools.find(tool => tool.name === name)!.execute(args, new AbortController().signal);
+  const refused = (error: Error) => {
+    assert.equal(error.message, 'Fichier ignoré ou protégé');
+    return true;
+  };
+  for (const path of [git, openagent, ignored, 'PRIVATESTUFF']) {
+    await assert.rejects(invoke('grep_codebase', { pattern: 'MARK', path }), refused, `grep_codebase ${path}`);
+    await assert.rejects(invoke('glob_files', { pattern: '*', path }), refused, `glob_files ${path}`);
+    await assert.rejects(invoke('list_dir', { path }), refused, `list_dir ${path}`);
+  }
+  await assert.rejects(invoke('create_file', { path: `${git}\\hooks\\x`, content: 'MARK-WRITTEN' }), refused, 'create_file into .git/hooks');
+  await assert.rejects(invoke('create_dir', { path: `${ignored}\\made` }), refused, 'create_dir into the ignored folder');
+  await assert.rejects(invoke('delete_file', { path: `${git}\\config` }), refused, 'delete_file .git/config');
+  await assert.rejects(invoke('delete_dir', { path: `PRIVATESTUFF\\sub` }), refused, 'delete_dir in the ignored folder');
+  assert.deepEqual(await readdir(join(a, '.git', 'hooks')), [], 'nothing written into .git/hooks');
+  assert.deepEqual((await readdir(join(a, 'privatestuff'))).sort(), ['notes.md', 'sub'], 'nothing created nor removed in the ignored folder');
+  assert.equal(await readFile(join(a, '.git', 'config'), 'utf8'), 'MARK-GIT', '.git/config left in place');
+  // An allowed folder typed in another case is searched as before, and the paths shown carry the names on disk.
+  assert.equal(await invoke('grep_codebase', { pattern: 'MARK', path: 'SRC' }), 'src/app.ts:1: MARK-OK');
+  assert.equal(await invoke('glob_files', { pattern: '*.ts', path: 'SRC' }), 'src/app.ts\n\n1 file(s) found.');
+  assert.equal(await invoke('list_dir', { path: 'SRC' }), 'app.ts');
+  assert.equal(await invoke('grep_codebase', { pattern: 'MARK' }), 'src/app.ts:1: MARK-OK', 'the root search never reaches the protected or ignored files');
+});
+
 test('edit_file answers its success line then a unified diff of the change, bounded with « [diff tronqué] »', async t => {
   const { a, invoke } = await fixture(t);
   await invoke('create_file', { path: 'src/app.txt', content: 'un\ndeux\ntrois\n' });

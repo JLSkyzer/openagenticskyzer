@@ -15,11 +15,29 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
   if (!(await lstat(root)).isDirectory()) throw new Error('Dossier projet invalide');
   // .env*, .git, .openagent and the project's ignored_patterns — core/file-filter.mts, shared with the semantic index.
   const blocked = protectedPathMatcher(ignoredPatterns);
+  const typedPath = (value: string) => resolve(root, value.replace(/[\\/]/g, sep));
+  const outside = (rel: string, allowRoot: boolean) =>
+    rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel) || rel.includes(':') || (!rel && !allowRoot);
+  /** `file` under the names on disk: the realpath of its longest existing prefix, then the levels not created yet. */
+  const onDiskPath = async (file: string) => {
+    const missing: string[] = [];
+    for (let cursor = file; ; cursor = dirname(cursor)) {
+      try { return join(await realpath(cursor), ...missing); }
+      catch (e: any) { if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') throw e; }
+      if (dirname(cursor) === cursor) throw new Error('Chemin invalide');
+      missing.unshift(basename(cursor));
+    }
+  };
+  /** The one guard of every workspace tool. The typed name is checked first (inside the project, not protected nor
+   * ignored, no ambiguous level, no link or junction on the way), then the name on disk: a Windows 8.3 short name
+   * (GIT~1, OPENAG~1, SECRET~1.JSO) or another case (PRIVATE/ for an ignored private/) reaches the same place under a
+   * name the typed checks do not recognise, and realpath gives the real one. `root` is itself a realpath. Returns the
+   * path on disk, so a search walks — and shows — the real names. */
   const safePath = async (value: string, allowRoot = false) => {
     if (!value || value.includes('\0')) throw new Error('Chemin invalide');
-    const file = resolve(root, value.replace(/[\\/]/g, sep));
+    const file = typedPath(value);
     const rel = relative(root, file);
-    if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel) || rel.includes(':') || (!rel && !allowRoot)) throw new Error('Chemin hors projet ou racine protégée');
+    if (outside(rel, allowRoot)) throw new Error('Chemin hors projet ou racine protégée');
     if (blocked(rel)) throw new Error('Fichier ignoré ou protégé');
     let cursor = root;
     for (const segment of rel.split(sep).filter(Boolean)) {
@@ -28,17 +46,20 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
       try { if ((await lstat(cursor)).isSymbolicLink()) throw new Error('Lien ou jonction refusé'); }
       catch (e: any) { if (e.code !== 'ENOENT') throw e; }
     }
-    return file;
+    const onDisk = await onDiskPath(file);
+    const relOnDisk = relative(root, onDisk);
+    if (outside(relOnDisk, allowRoot)) throw new Error('Chemin hors projet ou racine protégée');
+    if (blocked(relOnDisk)) throw new Error('Fichier ignoré ou protégé');
+    return onDisk;
   };
   /** Opens a text file for read_file, view_file, grep_file and edit_file: key material by name (core/file-filter.mts)
-   * is refused here, so none of them ever returns or rewrites its content. list_dir still names it. The typed name is
-   * checked first (a missing secret file is refused by name), then the name on disk: a Windows 8.3 short name
-   * (SECRET~1.JSO, ENV~1) or another case (PRIVATE/ for an ignored private/) reaches the same file under a name the
-   * typed-name checks do not recognise, and realpath gives the real one. `root` is itself a realpath. */
+   * is refused here, so none of them ever returns or rewrites its content. list_dir still names it. safePath() has
+   * already checked the typed and the on-disk path against the protected and ignored ones; key material is checked on
+   * the typed name (a missing secret file is refused by name) and on the name on disk (SECRET~1.JSO is secrets.json). */
   const textFile = async (path: string, signal: AbortSignal) => {
     const file = await safePath(path);
     const SECRET_REFUSED = 'Fichier secret (clé ou identifiants) : lecture et modification refusées';
-    if (isSensitiveFile(file)) throw new Error(SECRET_REFUSED);
+    if (isSensitiveFile(typedPath(path))) throw new Error(SECRET_REFUSED);
     const onDisk = await realpath(file);
     if (blocked(relative(root, onDisk))) throw new Error('Fichier ignoré ou protégé');
     if (isSensitiveFile(onDisk)) throw new Error(SECRET_REFUSED);
@@ -83,7 +104,8 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
   const SKIP_DIRS = new Set(['node_modules', '__pycache__', '.git', 'dist', '.next', 'build', 'venv', '.venv', 'env']);
   const MAX_WALKED = 20000;
   const MAX_FILE_BYTES = 2 * 1024 * 1024;
-  /** Regular files under `start`, in name order. Symlinks and junctions are never followed. */
+  /** Regular files under `start` (a safePath() result, so on-disk names), in name order. Symlinks and junctions are
+   * never followed. */
   const walkFiles = async (start: string, signal: AbortSignal): Promise<Array<{ abs: string; rel: string }>> => {
     const found: Array<{ abs: string; rel: string }> = [];
     let visited = 0;

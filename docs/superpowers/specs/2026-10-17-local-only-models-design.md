@@ -1,4 +1,4 @@
-# Modèles 100 % locaux : plus aucun fournisseur en ligne, plus d'outil web, plus de Hugging Face
+# Modèles 100 % locaux : la sélection du modèle n'offre plus que des fichiers `.gguf` locaux
 
 Date : 2026-10-17. Statut : conception à valider par l'utilisateur ; non implémentée.
 Relue par un builder (3 questions, tranchées ci-dessous par l'utilisateur ou notées comme
@@ -8,13 +8,19 @@ choix de conception).
 
 Décision de l'utilisateur (2026-10-17) : « je ne veux plus aucun fournisseur en ligne en
 gros ». Les modèles de l'app sont **uniquement** les fichiers `.gguf` de sa bibliothèque,
-chargés par l'app elle-même (node-llama-cpp). Réponses de l'utilisateur aux questions de
-cadrage :
+chargés par l'app elle-même (node-llama-cpp).
 
-- **périmètre** : « Tout, même Hugging Face ». Plus de modèles en ligne, plus d'outils
-  web de l'agent, plus rien qui télécharge depuis Hugging Face. Un `.gguf` ne s'ajoute
-  qu'à partir d'un fichier déjà présent sur le disque, ce qui est déjà le seul chemin
-  existant ;
+Précision de l'utilisateur (2026-10-17), qui borne tout le lot : « On ne retire AUCUN
+outil hein, tout doit être conserver voir ajouté si il en manque même. Quand je parlais
+d'en ligne, je parlais des provider en ligne. en gros dans la sélection du modèle plus de
+provider autre que des fichiers locaux ». Seule la **sélection du modèle** change : le
+coffre des connexions, le client HTTP de chat, le formulaire fournisseur / URL / clé et
+les clés enregistrées partent. Aucun outil et aucun réglage n'est retiré.
+
+Réponses de l'utilisateur aux questions de cadrage :
+
+- **périmètre** : plus de modèles en ligne. Un `.gguf` ne s'ajoute qu'à partir d'un
+  fichier déjà présent sur le disque, ce qui est déjà le seul chemin existant ;
 - **clés API enregistrées** : « Les effacer ». Le coffre des connexions est supprimé au
   premier lancement de la nouvelle version ;
 - **modèle d'embeddings** de la recherche sémantique : « L'inclure dans l'app ». Il est
@@ -49,8 +55,9 @@ lot retire le reste : OpenRouter, Together, Groq, Mistral et Gemini.
 
    **La sauvegarde `config.json.pre-electron.bak`** (copie d'avant Electron) est
    **nettoyée, pas supprimée**, sur décision de l'utilisateur (« Nettoyer seulement ces
-   clés »). On n'y retire que `hf_token`, `current_provider` et `current_model`, et tout
-   le reste reste tel quel.
+   clés »). On n'y retire que `current_provider` et `current_model`, et tout le reste
+   reste tel quel. `hf_token` n'est **jamais** effacé, ni du `config.json` ni de cette
+   sauvegarde : le jeton Hugging Face est gardé (objectif 5).
    - Ce nettoyage, et celui du `config.json` lui-même, ne doit **pas** créer de nouvelle
      sauvegarde contenant encore ces clés. `JsonStore.update` copie le fichier avant sa
      première écriture : il faut donc soit nettoyer après coup, soit écrire sans passer
@@ -61,20 +68,15 @@ lot retire le reste : OpenRouter, Together, Groq, Mistral et Gemini.
    (`core/data-dir.mts`) ne connaît plus ce fichier. Les fichiers `.env` des projets de
    l'utilisateur ne sont **jamais** touchés : ils lui appartiennent. L'app cesse
    simplement de les lire.
-4. **Outils web retirés** : `core/web-tools.mts` (`fetch_url`, `internet_search`,
-   Tavily, DuckDuckGo).
-   - Avec eux partent : la catégorie d'outil `network`, le réglage `search_ask` (retiré
-     des réglages, des règles de confiance du projet et de l'onglet Permissions), le badge
-     SEARCH, les détails de carte, l'étiquette d'export `search` et la phrase du prompt
-     système sur le contenu venant d'Internet.
-   - Un `search_ask` présent dans un ancien `config.json` est ignoré sans erreur.
-   - Un historique de conversation qui contient d'anciens appels `internet_search` /
-     `fetch_url` s'affiche toujours : badge neutre, comme tout outil inconnu depuis la
-     ligne 6.
-5. **Jeton Hugging Face retiré** : `core/hf-token.mts`, l'op `test-hf-token`, le réglage
-   `hf_token`, la section de l'onglet Général et la mention dans l'onglet Danger. Une
-   valeur `hf_token` déjà enregistrée dans `config.json` est effacée au démarrage, comme
-   les clés.
+4. **Outils web de l'agent gardés.** L'utilisateur est revenu sur une première version de
+   cette conception (2026-10-17) : « DONC TOI TU VOIT DE LA LOGIQUE A ENLEVER LES OUTILS
+   LES PLUS IMPORTANT POUR UNE IA ? ». « Plus de fournisseur en ligne » vise les
+   fournisseurs de **modèles** seulement. `fetch_url`, `internet_search` et tout ce qui
+   les accompagne restent inchangés (voir « Hors objectifs »).
+5. **Jeton Hugging Face gardé** : `core/hf-token.mts`, l'op `test-hf-token`, le réglage
+   `hf_token`, la section de l'onglet Général et la mention dans l'onglet Danger restent
+   inchangés, et une valeur `hf_token` enregistrée n'est pas effacée (voir « Hors
+   objectifs »).
 6. **Modèle d'embeddings livré dans l'app.**
    - Décision : on livre la variante **quantifiée** de `Xenova/all-MiniLM-L6-v2` (environ
      23 Mo, estimation à vérifier). La variante fp32 que la bibliothèque charge
@@ -117,11 +119,21 @@ lot retire le reste : OpenRouter, Together, Groq, Mistral et Gemini.
 
 ## Hors objectifs (gardés, car non liés aux modèles)
 
+Aucun outil et aucun réglage n'est retiré (« On ne retire AUCUN outil hein »). Restent
+inchangés :
+
+- **Les outils web de l'agent** (objectif 4) : `core/web-tools.mts` (`fetch_url`,
+  `internet_search`, Tavily, DuckDuckGo), la catégorie d'outil `network`, le réglage
+  `search_ask` et son interrupteur dans l'onglet Permissions, le badge SEARCH, les détails
+  de carte, l'étiquette d'export `search` et la phrase du prompt système sur le contenu
+  venant d'Internet.
+- **Le jeton Hugging Face** (objectif 5) : `core/hf-token.mts` (qui appelle
+  `huggingface.co`), l'op `test-hf-token`, le réglage `hf_token`, la section de l'onglet
+  Général et la mention dans l'onglet Danger.
 - **Les pièces jointes image restent comme aujourd'hui**, sur décision de l'utilisateur. On
   peut toujours en joindre ; le modèle local reçoit la note « image ignorée ». La vision
   arrive au lot suivant, « vision + débordement VRAM vers RAM/CPU » (voir
   `tasks/todo.md`). Ce lot ne doit rien casser de ce chemin.
-
 - Les mises à jour automatiques de l'app (GitHub Releases).
 - `git push` / `git pull`.
 - Les serveurs MCP distants ajoutés par l'utilisateur.
@@ -174,11 +186,14 @@ lot retire le reste : OpenRouter, Together, Groq, Mistral et Gemini.
 - Suite complète, `tsc` du cœur (5 erreurs préexistantes) et du renderer (0), et
   construction du renderer.
 - Un test qui prouve qu'aucun module de production n'importe plus `ChatProvider`, ne
-  référence plus `api.openrouter`, `huggingface.co`, `tavily` ou `duckduckgo`, et
-  qu'`embeddings.mts` ne peut pas télécharger.
+  référence plus `api.openrouter` ni les autres hôtes des fournisseurs de modèles en
+  ligne, et qu'`embeddings.mts` ne peut pas télécharger. Ce test n'interdit ni `tavily`,
+  ni `duckduckgo`, ni `huggingface.co` : les outils web et le jeton Hugging Face sont
+  gardés.
 - Un test de l'effacement au démarrage : un coffre, sa copie `.bak`, et un `config.json`
-  avec des clés et `hf_token` ; après le démarrage, tout cela a disparu, rien d'autre n'a
-  bougé, et un second démarrage ne fait rien.
+  avec `current_provider`, `current_model` et `hf_token` ; après le démarrage, le coffre,
+  ses copies et les deux clés de fournisseur ont disparu, `hf_token` est intact, rien
+  d'autre n'a bougé, et un second démarrage ne fait rien.
 - La recherche sémantique fonctionne hors ligne avec le modèle livré.
 - L'app empaquetée : `package:win` puis `test:package`, lancés une seule fois, et la
   présence du modèle d'embeddings dans le paquet.

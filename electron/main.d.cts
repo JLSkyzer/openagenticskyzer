@@ -4,6 +4,11 @@
 // electron/tests/main-data-home.test.mts.
 export function resolveMainDataHome(env?: Record<string, string | undefined>, userHome?: string): Promise<string>;
 
+export function prepareDataHome(options?: { env?: Record<string, string | undefined>; userHome?: string }): Promise<{
+  dataHome: string;
+  erasure: { removed: string[]; cleaned: string[]; errors: string[] };
+}>;
+
 export function startupFailure(error: unknown): { title: string; message: string };
 
 export function buildCsp(isPackaged: boolean): string;

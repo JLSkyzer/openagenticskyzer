@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -10,7 +10,7 @@ import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 // main.cjs only registers IPC and the app lifecycle when it is the Electron entry point: as a library, its helpers run.
 // Every call below passes an explicit temporary user home: the real ~/.openagent is never read.
-const { resolveMainDataHome, startupFailure } = createRequire(import.meta.url)('../main.cjs');
+const { resolveMainDataHome, startupFailure, prepareDataHome } = createRequire(import.meta.url)('../main.cjs');
 const { resolveHomes } = createRequire(import.meta.url)('../core/data-home.cjs');
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
@@ -63,6 +63,25 @@ test('the worker resolves its data home through the same module: under OPENAGENT
   assert.equal(JSON.parse(await readFile(join(redirected, 'config.json'), 'utf8')).theme, 'light', 'the worker wrote in the redirected folder');
   await assert.rejects(readFile(join(home, 'config.json')), /ENOENT/, 'and nothing in the home that only holds the pointer');
   assert.equal(await resolveMainDataHome({ OPENAGENT_HOME: home }, root), redirected, 'main resolves the very same folder');
+});
+
+test('R4: the startup erasure runs in the redirected data home', { timeout: 30000 }, async t => {
+  const userHome = await mkdtemp(join(tmpdir(), 'openagent-main-home-erasure-'));
+  removeAtEnd(t, userHome);
+  const defaultHome = join(userHome, '.openagent');
+  const newDir = join(userHome, 'donnees-deplacees');
+  await mkdir(defaultHome, { recursive: true });
+  // The worker's data home IS the temporary default home: OPENAGENT_HOME keeps it off the real ~/.openagent.
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: defaultHome } }));
+  const result = await callWorker(worker, 'migrate-data-dir', { newDir });
+  assert.deepEqual(result.errors, []);
+  await writeFile(join(newDir, 'connections.v1.json'), 'garbage-vault');
+
+  // The next start of the main process: only the user home and the environment are the test's.
+  const { dataHome, erasure } = await prepareDataHome({ env: {}, userHome });
+  assert.equal(dataHome, newDir);
+  assert.deepEqual(erasure.removed, ['connections.v1.json']);
+  await assert.rejects(stat(join(newDir, 'connections.v1.json')), /ENOENT/);
 });
 
 test('a corrupt redirect.json, or a directory in its place, is an error that names the file — never a silent fallback to the default home', async t => {

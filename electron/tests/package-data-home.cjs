@@ -1,12 +1,13 @@
 // Plain Node script, run ONCE after `npm run package:win`. Launches the PACKAGED executable
-// (release/win-unpacked/openagent.exe) and proves, in the real packaged main process, that the connections vault
-// follows the data-home redirect (R4) through core/data-home.cjs — the CommonJS module main.cjs requires at
-// startup — exactly where the packaged worker keeps the rest of the data.
+// (release/win-unpacked/openagent.exe) and proves, in the real packaged main process, that the startup erasure of the
+// online-provider secrets (core/online-secrets.mts, through main.cjs::prepareDataHome) runs in the folder the data-home
+// redirect points to (R4) — resolved by core/data-home.cjs, the CommonJS module main.cjs requires at startup — exactly
+// where the packaged worker keeps the rest of the data, and never in the folder that only holds the pointer.
 //
 // Isolation: OPENAGENT_HOME is a temp folder that takes the place of ~/.openagent; its redirect.json points to a
 // second temp folder. userData is a third temp folder (--user-data-dir and OPENAGENT_USERDATA_DIR). The real data
 // home is never read nor written. Updates are switched off: no network. The child gets no *_API_KEY / *_BASE_URL
-// from this shell, so what the vault reports depends on the test's files only.
+// from this shell.
 //
 // Step 0 launches the exe once more on a home whose redirect.json is CORRUPT: it must exit with code 1, at once.
 // OPENAGENT_STARTUP_ERROR_FILE (test-only) makes main.cjs write the error text to a file instead of the native
@@ -41,12 +42,16 @@ async function main() {
   const userData = await mkdtemp(join(tmpdir(), 'openagent-package-datahome-userdata-'));
   const home = await mkdtemp(join(tmpdir(), 'openagent-package-datahome-home-'));
   const redirected = await mkdtemp(join(tmpdir(), 'openagent-package-datahome-redirected-'));
-  // The pointer, as Réglages › Général › Répertoire de données writes it, and a decoy in the pointer's own folder:
-  // a main process that ignored the redirect would report the decoy provider (groq).
+  // The pointer, as Réglages › Général › Répertoire de données writes it. The REDIRECTED folder holds what an earlier
+  // version left: the connections vault and a config.json with both provider keys and the kept Hugging Face token.
+  // Decoys in the pointer's own folder: a main process that erased in the wrong folder would remove or change them.
   await writeFile(join(home, 'redirect.json'), JSON.stringify({ data_dir: redirected }));
-  await writeFile(join(home, 'config.json'), JSON.stringify({ current_provider: 'groq' }));
-  await writeFile(join(redirected, 'config.json'), JSON.stringify({ current_provider: 'mistral' }));
+  await writeFile(join(home, 'config.json'), JSON.stringify({ current_provider: 'groq', current_model: 'llama-leurre', hf_token: 'hf_LEURRE' }));
+  await writeFile(join(home, 'connections.v1.json'), 'leurre-coffre');
+  await writeFile(join(redirected, 'connections.v1.json'), JSON.stringify({ version: 1, payload: 'eA==' }));
+  await writeFile(join(redirected, 'config.json'), JSON.stringify({ current_provider: 'mistral', current_model: 'modele-en-ligne', hf_token: 'hf_GARDE', theme: 'dark' }));
   const homeConfigBefore = await readFile(join(home, 'config.json'), 'utf8');
+  const homeVaultBefore = await readFile(join(home, 'connections.v1.json'), 'utf8');
 
   // 0. A corrupt redirect.json: a clear message and an immediate exit with code 1 — never a process left running
   //    with no window, holding the single-instance lock.
@@ -84,29 +89,24 @@ async function main() {
     assert.match(page.url, /app\.asar[\\/]renderer-dist[\\/]index\.html$/, 'loaded from the packaged asar bundle');
     const ask = request => cdpEvaluate(page.webSocketDebuggerUrl, `window.openagent.request(${JSON.stringify(request)})`);
 
-    // 1. READ: the main process composes the connection from the REDIRECTED folder's config.json.
-    const first = await ask({ op: 'connection-snapshot', payload: { folder: null } });
-    process.stdout.write(`connection-snapshot (before save): ${JSON.stringify(first)}\n`);
-    // (Connections.compose takes `current_provider` from the global config.json; `current_model` only from a project's.)
-    assert.equal(first.provider, 'mistral', 'the provider comes from the redirected folder, not the pointer folder');
+    // 1. The page is up, so the startup erasure (before createWindow) is done: in the REDIRECTED folder the vault is
+    //    gone and both provider keys left config.json; hf_token and the other settings stay.
+    assert.equal(await present(join(redirected, 'connections.v1.json')), false, 'the vault is erased from the redirected folder');
+    const cleaned = JSON.parse(await readFile(join(redirected, 'config.json'), 'utf8'));
+    process.stdout.write(`redirected config.json keys after the start: ${JSON.stringify(Object.keys(cleaned))}\n`);
+    assert.equal('current_provider' in cleaned, false, 'current_provider erased');
+    assert.equal('current_model' in cleaned, false, 'current_model erased');
+    assert.equal(cleaned.hf_token, 'hf_GARDE', 'hf_token is kept');
+    assert.equal(cleaned.theme, 'dark', 'the other settings are kept');
+    // No copy written by the cleaning still holds the keys (JsonStore's one-time backup is skipped for it).
+    if (await present(join(redirected, 'config.json.pre-electron.bak'))) {
+      const backup = await readFile(join(redirected, 'config.json.pre-electron.bak'), 'utf8');
+      assert.equal(/current_provider|current_model|mistral|modele-en-ligne/.test(backup), false, 'no backup holds the erased keys');
+    }
 
-    // 2. WRITE then READ BACK: the vault file lands in the redirected folder, and the next snapshot reads it there.
-    const saved = await ask({ op: 'save-connection', payload: { folder: null, patch: { provider: 'openrouter', model: 'modele-enregistre-dans-le-coffre' } } });
-    assert.equal(saved.model, 'modele-enregistre-dans-le-coffre');
-    assert.equal(await present(join(redirected, 'connections.v1.json')), true, 'the vault is written in the redirected folder');
-    assert.equal(await present(join(home, 'connections.v1.json')), false, 'and never in the folder that only holds the pointer');
-    const vault = JSON.parse(await readFile(join(redirected, 'connections.v1.json'), 'utf8'));
-    assert.equal(vault.version, 1);
-    // Encrypted by the OS: the payload's bytes are neither JSON nor hold the saved model in clear.
-    const payloadBytes = Buffer.from(vault.payload, 'base64');
-    assert.ok(payloadBytes.length > 0, 'the vault holds a payload');
-    assert.equal(payloadBytes.includes(Buffer.from('modele-enregistre-dans-le-coffre')), false, 'the saved model is not readable in the payload');
-    assert.throws(() => JSON.parse(payloadBytes.toString('utf8')), SyntaxError, 'the payload is not plain JSON');
-    const second = await ask({ op: 'connection-snapshot', payload: { folder: null } });
-    process.stdout.write(`connection-snapshot (after save): ${JSON.stringify(second)}\n`);
-    assert.equal(second.provider, 'openrouter');
-    assert.equal(second.model, 'modele-enregistre-dans-le-coffre', 'read back from the vault in the redirected folder');
-    assert.equal(second.model_source, 'global', 'the model comes from the vault itself');
+    // 2. The decoys in the folder that only holds the pointer are untouched.
+    assert.equal(await readFile(join(home, 'connections.v1.json'), 'utf8'), homeVaultBefore, 'the decoy vault is untouched');
+    assert.equal(await readFile(join(home, 'config.json'), 'utf8'), homeConfigBefore, 'the decoy config.json is untouched');
 
     // 3. The packaged worker resolved the very same folder (one module for both processes).
     const globalSettings = await ask({ op: 'global-settings' });
@@ -116,7 +116,7 @@ async function main() {
     assert.equal(JSON.parse(await readFile(join(redirected, 'config.json'), 'utf8')).theme, 'light', 'the worker writes in the redirected folder');
     assert.equal(await readFile(join(home, 'config.json'), 'utf8'), homeConfigBefore, 'the pointer folder is untouched');
 
-    process.stdout.write('PASS packaged data home: main.cjs and the worker follow redirect.json; the vault is read and written in the redirected folder\n');
+    process.stdout.write('PASS packaged data home: main.cjs and the worker follow redirect.json; the startup erasure ran in the redirected folder only, hf_token kept\n');
   } finally {
     child.kill();
     await new Promise(resolve => setTimeout(resolve, 1500)); // let the killed process release its files

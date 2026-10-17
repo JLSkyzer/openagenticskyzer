@@ -193,6 +193,24 @@ async function resolveMainDataHome(env = process.env, userHome = homedir()) {
   return (await resolveHomes(env, userHome)).dataHome;
 }
 
+/**
+ * The startup's data-home step: resolves the home (an unresolvable home throws, into the startup-failure path), then
+ * erases the online-provider secrets earlier versions left there (core/online-secrets.mts: the connections vault and
+ * its copies, current_provider/current_model in config.json and its pre-Electron backup; hf_token is kept). Runs
+ * before the worker starts, so no write is in flight. An erasure error is only logged, never a startup failure: the
+ * files are still there, so the next launch retries. `env` and `userHome` are parameters for tests only.
+ */
+async function prepareDataHome({ env = process.env, userHome = homedir() } = {}) {
+  const dataHome = await resolveMainDataHome(env, userHome);
+  // An ES module (like everything under core/ but data-home.cjs): imported, as worker.mjs imports core/.
+  // eraseOnlineSecrets never throws; the catch only covers the module failing to load, which must not stop the start.
+  let erasure;
+  try { erasure = await (await import('./core/online-secrets.mts')).eraseOnlineSecrets(dataHome); }
+  catch (error) { erasure = { removed: [], cleaned: [], errors: [`core/online-secrets.mts : ${error instanceof Error ? error.message : String(error)}`] }; }
+  for (const line of erasure.errors) console.error('[effacement] ' + line);
+  return { dataHome, erasure };
+}
+
 /** What the user is told when the startup fails before anything opened: the redirect file to fix when the data home
  * cannot be resolved (core/data-home.cjs sets `redirectFile`), the bare reason otherwise. */
 function startupFailure(error) {
@@ -289,7 +307,8 @@ if (require.main === module) {
       installCsp();
       try {
         // The data home is resolved before anything opens: a broken redirect.json stops the start here, with the file to fix.
-        await resolveMainDataHome();
+        // The online-provider secrets are erased there too, before the worker starts (an erasure error never stops it).
+        await prepareDataHome();
       } catch (error) {
         // Nothing has started yet (no window, no worker, no tray): say why, then exit at once with a non-zero code,
         // which also releases the single-instance lock — otherwise every relaunch would hand off to an invisible
@@ -335,4 +354,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { restartApp, workerOptions, resolveMainDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, isExportFilename, notificationBodyFor };
+module.exports = { restartApp, workerOptions, resolveMainDataHome, prepareDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, isExportFilename, notificationBodyFor };

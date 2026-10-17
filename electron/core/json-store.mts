@@ -39,7 +39,10 @@ export class JsonStore {
     catch { throw new Error(`JSON illisible : ${file}. Le fichier est conservé.`); }
   }
 
-  update<T>(file: string, fallback: T, change: (value: T) => T | Promise<T>): Promise<T> {
+  /** `backup: false` skips the one-time `<file>.pre-electron.bak` copy, for a write whose purpose is to make the old
+   * content disappear (core/online-secrets.mts): the copy would keep exactly what is being removed. */
+  update<T>(file: string, fallback: T, change: (value: T) => T | Promise<T>, options: { backup?: boolean } = {}): Promise<T> {
+    const backup = options.backup !== false;
     const resolved = resolve(file);
     const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
     const previous = writes.get(key) ?? Promise.resolve();
@@ -50,9 +53,11 @@ export class JsonStore {
       if (encoded === undefined) throw new Error('Valeur JSON invalide');
       await mkdir(dirname(file), { recursive: true });
       await regularFile(file);
-      await regularFile(file + '.pre-electron.bak');
-      try { await copyFile(file, file + '.pre-electron.bak', constants.COPYFILE_EXCL); }
-      catch (e: any) { if (e.code !== 'ENOENT' && e.code !== 'EEXIST') throw e; }
+      if (backup) {
+        await regularFile(file + '.pre-electron.bak');
+        try { await copyFile(file, file + '.pre-electron.bak', constants.COPYFILE_EXCL); }
+        catch (e: any) { if (e.code !== 'ENOENT' && e.code !== 'EEXIST') throw e; }
+      }
       const temp = file + '.' + randomUUID() + '.tmp';
       try {
         const handle = await open(temp, 'wx', 0o600);

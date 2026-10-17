@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -26,6 +26,18 @@ test('atomic updates preserve every concurrent increment and the original backup
   assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { count: 20 });
   assert.equal(await readFile(file + '.pre-electron.bak', 'utf8'), '{"count":0}');
   assert.deepEqual((await readdir(home)).sort(), ['counter.json', 'counter.json.pre-electron.bak']);
+});
+
+test('JsonStore.update with backup:false writes atomically and never creates <file>.pre-electron.bak', async t => {
+  const { home } = await fixture(t);
+  const { JsonStore } = await import('../core/json-store.mts');
+  const file = join(home, 'config.json');
+  await writeFile(file, '{"current_provider":"groq","theme":"dark"}');
+  const written = await new JsonStore().update<Record<string, unknown>>(file, {}, v => ({ theme: v.theme }), { backup: false });
+  assert.deepEqual(written, { theme: 'dark' });
+  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { theme: 'dark' });
+  await assert.rejects(stat(file + '.pre-electron.bak'), /ENOENT/);
+  assert.deepEqual(await readdir(home), ['config.json'], 'no backup and no temp file left');
 });
 
 test('malformed data refuses updates without altering the damaged original', async t => {

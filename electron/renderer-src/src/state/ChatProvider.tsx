@@ -147,10 +147,6 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
   // (settings dialog, model dialog) — the bridge announces those.
   const [contextSettings, setContextSettings] = useState<ContextSettings>(DEFAULT_CONTEXT_SETTINGS);
   const [settingsVersion, setSettingsVersion] = useState(0);
-  // Which .gguf (if any) is the active model — read from the same global settings as the gauge, alongside
-  // the same "announced after every save" mechanism, so picking one in the model dialog takes effect
-  // immediately. Empty = a remote connection is active instead.
-  const [activeLocalModel, setActiveLocalModel] = useState('');
   useEffect(() => onSettingsChanged(() => setSettingsVersion(version => version + 1)), []);
   useEffect(() => {
     let cancelled = false;
@@ -158,7 +154,6 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
       .then(([global, connection]) => {
         if (cancelled) return;
         setContextSettings(readContextSettings(global, connection.provider));
-        setActiveLocalModel(typeof global.active_local_model === 'string' ? global.active_local_model : '');
       })
       .catch(() => { /* keep what is shown: a gauge that cannot read its settings must not break the chat */ });
     return () => { cancelled = true; };
@@ -202,7 +197,7 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
     const before = stateRef.current;
     if (!folder || before.agentRunning || before.compacting) return;
     try {
-      const { compactionId } = await compactConversation(folder, before.currentBranchId, activeLocalModel || undefined);
+      const { compactionId } = await compactConversation(folder, before.currentBranchId);
       if (activeFolderRef.current !== folder) return;
       dispatch({ type: 'compaction-started', id: compactionId });
       const early = endedCompactions.current.get(compactionId);
@@ -214,7 +209,7 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
       if (options?.auto && /Pas assez de messages/.test(message)) return;
       dispatch({ type: 'show-error', error: message });
     }
-  }, [activeLocalModel]);
+  }, []);
 
   // input_bar.py: after a turn that ended normally, compact when the setting is on and the gauge is at
   // the threshold. One attempt per finished turn — never a loop: if the summary still leaves the gauge
@@ -314,12 +309,12 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
       const text = now.messages[index].content;
       // The message goes again WITH its files (the original lost them, which silently changed the question).
       const attachments = now.messages[index].attachments;
-      const { runId } = await sendMessage(folder, now.currentBranchId, text, index, attachments, activeLocalModel || undefined);
+      const { runId } = await sendMessage(folder, now.currentBranchId, text, index, attachments);
       dispatch({ type: 'send-started', runId, text, keep: index, attachments });
     } catch (error) {
       dispatch({ type: 'show-error', error: error instanceof Error ? error.message : 'Impossible de régénérer la réponse' });
     }
-  }, [viewMatchesSaved, activeLocalModel]);
+  }, [viewMatchesSaved]);
 
   const dismissNotice = useCallback(() => dispatch({ type: 'clear-notice' }), []);
   const closeArtifact = useCallback(() => dispatch({ type: 'artifact-closed' }), []);
@@ -330,7 +325,7 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
       // After ✏️ the view is shorter than what is saved: hand the cut over so the worker applies it.
       const keep = state.truncatedTo ?? undefined;
       try {
-        const { runId } = await sendMessage(activeFolder, state.currentBranchId, text, keep, attachments, activeLocalModel || undefined);
+        const { runId } = await sendMessage(activeFolder, state.currentBranchId, text, keep, attachments);
         dispatch({ type: 'send-started', runId, text, keep, attachments });
       } catch (error) {
         // Without this, a rejected IPC call (e.g. connections.resolve() refusing an
@@ -339,7 +334,7 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
         dispatch({ type: 'send-failed', error: error instanceof Error ? error.message : 'Échec de l’envoi du message' });
       }
     },
-    [activeFolder, state.currentBranchId, state.truncatedTo, activeLocalModel],
+    [activeFolder, state.currentBranchId, state.truncatedTo],
   );
 
   const stopRun = useCallback(async () => {

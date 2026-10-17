@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const { requestMessages, fitToBudget, closeDanglingCalls, estimateRequestTokens, CONTEXT_FULL } = await import('../core/request-context.mts');
-const { CONTEXT_WINDOWS, contextWindow, contextBudget, characters, tokensFor } = await import('../core/context-budget.mts');
+const { CONTEXT_WINDOWS, contextWindow, contextBudget, characters, tokensFor, effectiveWindow, MIN_LOCAL_CONTEXT } = await import('../core/context-budget.mts');
 
 const TEXT = { name: 'notes.txt', content_type: 'text', content: 'FICHIER-SECRET-42', size_kb: 1 };
 const callMessage = (id: string, name: string, args: string, content = '') => ({ role: 'assistant' as const, content, tool_calls: [{ id, type: 'function' as const, function: { name, arguments: args } }] });
@@ -108,6 +108,11 @@ test('the shared window table and the 4-characters estimate', () => {
   assert.equal(contextBudget(100, 5000), 1);
   assert.equal(characters('😀😀'), 2);
   assert.equal(tokensFor(7), 1);
+});
+
+test('effectiveWindow: the engine window, capped by max_tokens', () => {
+  assert.equal(effectiveWindow(16384, null), 16384); assert.equal(effectiveWindow(16384, 8192), 8192); assert.equal(effectiveWindow(16384, 100000), 16384);
+  assert.equal(MIN_LOCAL_CONTEXT, 16384);
 });
 
 test('a tool result goes out as role, tool_call_id and content only: its saved name and category stay on disk', () => {

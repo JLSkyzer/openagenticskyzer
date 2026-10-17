@@ -21,18 +21,16 @@ let installUpdateNow;
 // really closes it.
 let appQuitting = false;
 const pending = new Map();
-const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','git-status','test-hf-token','migrate-data-dir','init-project','mcp-list','mcp-add','mcp-add-remote','mcp-remove','index-status','knowledge-list','knowledge-add','knowledge-remove','plugin-list','project-trust','trust-project']);
+const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','model-status','git-status','test-hf-token','migrate-data-dir','init-project','mcp-list','mcp-add','mcp-add-remote','mcp-remove','index-status','knowledge-list','knowledge-add','knowledge-remove','plugin-list','project-trust','trust-project']);
 
 // Exactly the pattern core/export.mts::exportFilename generates — never a filename supplied as-is
 // by the renderer. Constrains what "open-export" (below) is allowed to open, whatever the folder.
 const EXPORT_FILENAME = /^conversation_\d{8}_\d{6}\.(md|html|json)$/;
 const isExportFilename = name => typeof name === 'string' && EXPORT_FILENAME.test(name);
 
-// Operations that call the model: main.cjs folds the resolved connection (including the API key,
-// which the page never sees) into their payload. Everything else must never receive it.
-const CONNECTION_OPS = new Set(['send', 'compact']);
+// The worker reads the active model itself (core/active-model.mts): main.cjs forwards every allowed op as the
+// page sent it, and folds nothing into a payload.
 const isBackendOp = op => allowed.has(op);
-const needsConnection = op => CONNECTION_OPS.has(op);
 
 /**
  * Content-Security-Policy for the renderer. Strict in a packaged build (no eval, no
@@ -214,22 +212,6 @@ async function createConnections({ env = process.env, userHome = homedir(), ciph
 }
 
 /**
- * Resolves the active connection (provider/model/api_key) and folds it into the payload
- * forwarded to the Node worker for a `send` request — the worker needs the plaintext key
- * to call the provider, but the renderer must never see it (only `connection-snapshot`,
- * which is redacted by `Connections.snapshot()`, is renderer-facing). Exported so tests
- * can exercise this exact logic without a real BrowserWindow/Worker.
- */
-async function resolveSendPayload(connectionsService, request) {
-  // A local .gguf model needs no secret and no remote connection at all — resolving one here would force
-  // the user to have a working remote provider configured just to use a model they already have on disk,
-  // and `connections.resolve()` would reject a 'local' provider outright (its own fixed provider list).
-  if (request.payload?.localModel) return request;
-  const connection = await connectionsService.resolve(request.payload?.folder ?? null);
-  return { ...request, payload: { ...request.payload, connection } };
-}
-
-/**
  * « Redémarrer maintenant » (Réglages › Général, after a data-folder migration): both processes resolve the data home
  * only at startup, and the window's cross now only hides the app (createWindow), so a real restart is the one way to
  * use the new folder. app.quit() takes the normal quit path — 'before-quit' sets appQuitting and stops the worker
@@ -287,7 +269,6 @@ async function handleBackendRequest(event, request) {
   if (request.op === 'restart-app') return restartApp();
   if (!allowed.has(request.op)) throw new Error('Opération IPC inconnue');
   if (!backend) throw new Error('Moteur Node indisponible');
-  if (needsConnection(request.op)) request = await resolveSendPayload(connections, request);
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { pending.delete(id); reject(new Error('Délai IPC dépassé')); }, 30000);
@@ -363,4 +344,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { restartApp, workerOptions, resolveSendPayload, createConnections, resolveMainDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection, isExportFilename, notificationBodyFor };
+module.exports = { restartApp, workerOptions, createConnections, resolveMainDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, isExportFilename, notificationBodyFor };

@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { LOCAL_MODEL_MISSING } from '../core/active-model.mts';
 
 function callWorker(worker: Worker, op: string, payload?: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -42,12 +43,14 @@ async function setup(t: { after(fn: () => unknown): void }) {
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
   terminateAtEnd(t, worker);
   const entry = await callWorker(worker, 'gguf-add', { path: model });
+  // The active model is the saved setting the worker reads itself, never an id in the payload.
+  await callWorker(worker, 'save-global-settings', { patch: { active_local_model: entry.id } });
   return { worker, folder, entry };
 }
 
-test('worker::send with `localModel` runs a real turn on the real .gguf, WITHOUT any connection at all, and saves it', { timeout: 180000 }, async t => {
-  const { worker, folder, entry } = await setup(t);
-  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'Once upon a time', localModel: entry.id });
+test('worker::send with an active_local_model runs a real turn on the real .gguf, WITHOUT any connection at all, and saves it', { timeout: 180000 }, async t => {
+  const { worker, folder } = await setup(t);
+  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'Once upon a time' });
   const events: any[] = [];
   await waitDone(worker, runId, events);
   assert.equal(events.at(-1).kind, 'done', JSON.stringify(events.find(e => e.kind === 'error')));
@@ -59,10 +62,10 @@ test('worker::send with `localModel` runs a real turn on the real .gguf, WITHOUT
   assert.equal(Object.hasOwn(saved[1], 'truncated'), false, 'the flag itself is never saved');
 });
 
-test('worker::send refuses an unknown/removed `localModel` id BEFORE anything starts — no run, nothing saved', { timeout: 20000 }, async t => {
+test('worker::send refuses an active_local_model removed from the library BEFORE anything starts — no run, nothing saved', { timeout: 20000 }, async t => {
   const { worker, folder, entry } = await setup(t);
   await callWorker(worker, 'gguf-remove', { id: entry.id });
-  await assert.rejects(callWorker(worker, 'send', { folder, branchId: 'main', text: 'x', localModel: entry.id }), /introuvable/i);
+  await assert.rejects(callWorker(worker, 'send', { folder, branchId: 'main', text: 'x' }), { message: LOCAL_MODEL_MISSING });
   assert.deepEqual(await callWorker(worker, 'messages', { folder, branchId: 'main' }), []);
 });
 
@@ -70,11 +73,11 @@ test('worker::send refuses an unknown/removed `localModel` id BEFORE anything st
 // cap, which the engine reports as stopReason "maxTokens". compactMessages refuses a summary cut that way, so
 // this is the end-to-end proof that (1) compaction really runs on the local engine, and (2) its truncation flag
 // reaches the guard: the conversation is left untouched instead of losing its head to half a summary.
-test('worker::compact with `localModel` really calls the local engine (not a remote provider); a summary cut at the output cap is refused and the transcript kept', { timeout: 180000 }, async t => {
-  const { worker, folder, entry } = await setup(t);
+test('worker::compact with an active_local_model really calls the local engine; a summary cut at the output cap is refused and the transcript kept', { timeout: 180000 }, async t => {
+  const { worker, folder } = await setup(t);
   const history = Array.from({ length: 8 }, (_, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content: `message ${i}` }));
   await callWorker(worker, 'save-messages', { folder, branchId: 'main', messages: history });
-  const { compactionId } = await callWorker(worker, 'compact', { folder, branchId: 'main', localModel: entry.id });
+  const { compactionId } = await callWorker(worker, 'compact', { folder, branchId: 'main' });
   const events: any[] = [];
   await new Promise<void>(resolve => {
     const listener = (message: any) => {

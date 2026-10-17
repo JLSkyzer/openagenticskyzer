@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatProvider, ModelConnection } from './provider.mts';
+import type { ChatMessage, ModelProvider } from './model-types.mts';
 import { estimateRequestTokens } from './request-context.mts';
 
 /** Same threshold as context_bar.py::trigger_compact. */
@@ -54,14 +54,13 @@ export function buildSummaryPrompt(historyText: string): string {
  * it never writes anything, so a failure leaves the caller's conversation exactly as it was.
  * No tool is offered to the model: what it reads may carry an injection.
  *
- * `contextWindow` (tokens) sizes the request like the agent does (M3): the output asked for is the provider's
+ * `contextWindow` (tokens) sizes the request like the agent does (M3): the output asked for is the model's
  * cap lowered to what the window leaves after the summary prompt, never below 1; a prompt that alone fills the
- * window is refused without calling the provider. No cap (a provider id with no entry): no maxTokens, as before. Without a window,
- * nothing is sized.
+ * window is refused without calling the model. No cap: no maxTokens. Without a window, nothing is sized.
  */
 export async function compactMessages<T extends Stored>(options: {
-  provider: Pick<ChatProvider, 'complete'> & Partial<Pick<ChatProvider, 'outputCap'>>;
-  connection: ModelConnection; messages: readonly T[]; contextWindow?: number; signal?: AbortSignal;
+  provider: Pick<ModelProvider, 'complete' | 'outputCap'>;
+  messages: readonly T[]; contextWindow?: number; signal?: AbortSignal;
 }): Promise<Array<T | Stored>> {
   const { head, tail } = planCompaction(options.messages);
   const prompt = buildSummaryPrompt(buildHistoryText(head));
@@ -70,11 +69,10 @@ export async function compactMessages<T extends Stored>(options: {
   if (options.contextWindow !== undefined) {
     const room = options.contextWindow - estimateRequestTokens('', [], request);
     if (room <= 0) throw new Error(TOO_LONG_TO_COMPACT);
-    const cap = options.provider.outputCap?.(options.connection);
+    const cap = options.provider.outputCap();
     if (cap !== undefined) maxTokens = Math.max(1, Math.min(cap, room));
   }
   const answer = await options.provider.complete({
-    connection: options.connection,
     messages: request,
     signal: options.signal,
     ...(maxTokens === undefined ? {} : { maxTokens }),

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, localProvider } from '../core/local-engine.mts';
+import { completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider } from '../core/local-engine.mts';
 import { runAgent, TRUNCATED_NOTICE } from '../core/agent.mts';
 import { estimateRequestTokens } from '../core/request-context.mts';
 
@@ -81,7 +81,7 @@ test('a turn on the built-in engine asks for no more output than its window leav
   const messages = [{ role: 'user' as const, content: 'Once upon a time' }];
   const room = 24;
   const result = await runAgent({
-    provider, connection: { provider: 'local', model: 'gguf', base_url: '', api_key: '' }, messages, instructions: 'Tu es un conteur.', tools: [],
+    provider, messages, instructions: 'Tu es un conteur.', tools: [],
     settings: { mode: 'auto', permission_mode: 'auto' }, confirm: async () => true,
     contextWindow: estimateRequestTokens('Tu es un conteur.', [], messages) + room,
   });
@@ -94,9 +94,14 @@ test('a turn on the built-in engine asks for no more output than its window leav
 
 test('engineContextSize loads the model and reports the context size the request budget must use', { timeout: 60000 }, async t => {
   t.after(() => disposeEngine());
+  await disposeEngine();
+  assert.equal(loadedContextSize(modelPath), null, 'nothing loaded yet: no size, and reading it loads nothing');
+  assert.equal(warmModelPath(), null);
   const size = await engineContextSize(modelPath);
   assert.ok(Number.isInteger(size) && size >= 16384, `the toy model (trained for 2048) runs with the 16384 floor, got ${size}`);
   assert.equal(warmModelPath(), modelPath, 'loaded once, kept warm for the turn that follows');
+  assert.equal(loadedContextSize(modelPath), size, 'once loaded, the size the engine really runs with');
+  assert.equal(loadedContextSize(`${modelPath}.other`), null, 'another path is not the loaded model');
 });
 
 test('GGUF tool-call ids never repeat across engine restarts (two workers = two app launches)', { timeout: 30000 }, async () => {

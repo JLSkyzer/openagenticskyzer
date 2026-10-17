@@ -10,7 +10,6 @@ import { GgufLibrary } from './core/gguf-library.mts';
 import { localProvider } from './core/local-engine.mts';
 import { offeredTools, runAgent, TOOL_NAME_PATTERN } from './core/agent.mts';
 import { basePrompt } from './core/system-prompt.mts';
-import { ChatProvider } from './core/provider.mts';
 import { workspaceTools } from './core/workspace.mts';
 import { memoryTools, appendCompactionSummary } from './core/memory-tools.mts';
 import { gitTools } from './core/git-tools.mts';
@@ -21,7 +20,8 @@ import { compactMessages, planCompaction, SUMMARY_PREFIX } from './core/compact.
 import { PromptLibrary } from './core/prompts.mts';
 import { readProjectMemory } from './core/project-memory.mts';
 import { validateAttachments } from './core/attachments.mts';
-import { contextWindow } from './core/context-budget.mts';
+import { effectiveWindow } from './core/context-budget.mts';
+import { activeModel, modelStatus, NO_LOCAL_MODEL } from './core/active-model.mts';
 import { closeDanglingCalls } from './core/request-context.mts';
 import { buildHtml, buildJson, buildMarkdown, exportFilename, renderEntries } from './core/export.mts';
 import { cleanupOldFolders } from './core/cleanup.mts';
@@ -47,12 +47,9 @@ const { defaultHome, dataHome } = await resolveHomes();
 // OPENAGENT_LONG_RUN_MS lets tests use a real (not mocked) but fast agent turn instead of
 // waiting out a real 10s — never rely on it outside tests.
 const LONG_RUN_MS = Number(process.env.OPENAGENT_LONG_RUN_MS) || 10_000;
-// OPENAGENT_PROVIDER_IDLE_MS shortens the provider's silence timeout (120 s) so a test can prove the expiry
-// with a real silent server instead of waiting two minutes — never rely on it outside tests.
-const PROVIDER_IDLE_MS = Number(process.env.OPENAGENT_PROVIDER_IDLE_MS) || undefined;
-// TEST SEAM. Only a test passes workerData.testProviderModule (the absolute path of
-// tests/support/test-model-provider.mts); main.cjs never does (its workerOptions, proven by tests/test-seam.test.mts),
-// and tests/** is never packaged. Without it, payload.testModel of send/compact is never read.
+// TEST SEAM. Only a test passes workerData.testProviderModule (the absolute path of the scripted test model client,
+// kept beside the tests); main.cjs never does (its workerOptions, proven by tests/test-seam.test.mts), and tests/**
+// is never packaged. Without it, payload.testModel of send/compact is never read.
 const testSeam = typeof workerData?.testProviderModule === 'string' && workerData.testProviderModule
   ? await import(pathToFileURL(workerData.testProviderModule).href)
   : null;
@@ -129,7 +126,7 @@ const mcpDiscoveries = new Map();
 const mcpDiscoveryKey = (folder, server) => JSON.stringify([server.scope === 'project' ? resolve(String(folder)) : null, serverIdentity(server)]);
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-add-remote', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'project-trust', 'trust-project', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'model-status', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-add-remote', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'project-trust', 'trust-project', 'shutdown']);
 
 // Anything in `active` on this folder — an agent run or a compaction — is writing its transcript.
 function runningIn(folder) {
@@ -141,13 +138,15 @@ function compactingIn(folder) {
   return [...active.values()].some(run => run.kind === 'compact' && resolve(String(run.folder)) === target);
 }
 
-/** The window a request must fit in (H3): the built-in engine's real context size (capped by max_tokens when the
- * user set one), else max_tokens or the provider's table entry (core/context-budget.mts). Shared by agent turns
- * and compaction, so the two can never size a request differently. */
-async function windowFor(provider, connection, maxTokens) {
-  return provider.contextWindow
-    ? Math.min(await provider.contextWindow(), maxTokens ?? Number.POSITIVE_INFINITY)
-    : contextWindow(connection?.provider ?? null, maxTokens);
+/** The window a request must fit in (H3): the engine's real context size, capped by max_tokens when the user set
+ * one (core/context-budget.mts). Shared by agent turns and compaction, so the two can never size a request differently. */
+async function windowFor(provider, maxTokens) {
+  return effectiveWindow(await provider.contextWindow(), maxTokens);
+}
+
+/** Tells the page the active model and the window its engine really runs with — known once windowFor has loaded it. */
+async function postModelStatus() {
+  parentPort.postMessage({ type: 'event', event: 'model', ...(await modelStatus(settings, ggufLibrary)) });
 }
 
 /**
@@ -155,13 +154,14 @@ async function windowFor(provider, connection, maxTokens) {
  * is capped at 30 s, a summary is not). Nothing is written unless the model answered AND the branch
  * is still exactly what it was when the summary was requested.
  */
-async function runCompaction(compactionId, folder, branchId, before, connection, provider) {
+async function runCompaction(compactionId, folder, branchId, before, provider) {
   const post = message => parentPort.postMessage({ type: 'event', event: 'agent', runId: compactionId, ...message });
   let outcome;
   try {
     // max_tokens is a global setting only (core/settings.mts), so the global config is the whole answer here.
-    const window = await windowFor(provider, connection, (await settings.global()).max_tokens);
-    const after = await compactMessages({ provider, connection, messages: before, contextWindow: window, signal: active.get(compactionId).controller.signal });
+    const window = await windowFor(provider, (await settings.global()).max_tokens);
+    await postModelStatus();
+    const after = await compactMessages({ provider, messages: before, contextWindow: window, signal: active.get(compactionId).controller.signal });
     await conversations.replaceIfUnchanged(folder, branchId, before, after);
     // context_bar.py::trigger_compact parity: persist the summary itself into the project's
     // memory so it survives a later clear-history/re-compaction. Awaited (not fire-and-forget)
@@ -427,21 +427,21 @@ function lastAssistantSummary(messages) {
   return 'Tâche terminée';
 }
 
-/** Runs one agent turn to completion, streaming events to the renderer via parentPort. */
-// "réveiller" a .gguf model: `localModel` (a gguf-library id, never a secret — unlike `connection`, which
-// main.cjs never injects when this is set, see main.cjs's resolveSendPayload) resolves to a real file path
-// and gets an object shaped like ChatProvider (`.complete()`, `.outputCap()`) — agent.mts/compactMessages
-// never know the difference; its `.contextWindow()` is the engine's real context size (H3). An id whose file
-// is gone (removed from the library, or moved) fails clearly, before anything starts.
-async function providerFor(connection, localModel, testModel) {
-  if (testSeam && testModel && !localModel) return testSeam.createTestProvider(testModel);
-  if (!localModel) return new ChatProvider(undefined, { idleTimeoutMs: PROVIDER_IDLE_MS });
-  const modelPath = await ggufLibrary.resolve(localModel);
-  if (!modelPath) throw new Error('Modèle local introuvable : il a peut-être été retiré de la bibliothèque. Choisis-en un autre.');
-  return localProvider(modelPath);
+/**
+ * The model of a send or a compaction ("réveiller" the .gguf): the active_local_model the worker reads itself
+ * (core/active-model.mts), never an id or a connection sent by the page. None active: NO_LOCAL_MODEL; one whose
+ * file is gone: LOCAL_MODEL_MISSING — both before anything starts. The test seam answers only when no model is
+ * active. The engine itself is loaded on the first request (windowFor), not here.
+ */
+async function turnProvider(payload) {
+  const model = await activeModel(settings, ggufLibrary);
+  if (model) return localProvider(model.path);
+  if (testSeam && payload.testModel) return testSeam.createTestProvider(payload.testModel);
+  throw new Error(NO_LOCAL_MODEL);
 }
 
-async function runSend(runId, folder, branchId, text, connection, keep, attachments = [], provider) {
+/** Runs one agent turn to completion, streaming events to the renderer via parentPort. */
+async function runSend(runId, folder, branchId, text, keep, attachments = [], provider) {
   const controller = new AbortController();
   const accumulated = [];
   active.set(runId, { controller, folder });
@@ -493,9 +493,10 @@ async function runSend(runId, folder, branchId, text, connection, keep, attachme
       signal.addEventListener('abort', () => { pendingPermissions.delete(requestId); reject(signal.reason); }, { once: true });
       post({ kind: 'permission-request', requestId, tool: request.tool, category: toolCategory.get(request.tool), arguments: request.arguments });
     });
-    const contextTokens = await windowFor(provider, connection, effective.max_tokens);
+    const contextTokens = await windowFor(provider, effective.max_tokens);
+    await postModelStatus();
     const result = await runAgent({
-      provider, connection, messages: collected, instructions, tools, contextWindow: contextTokens,
+      provider, messages: collected, instructions, tools, contextWindow: contextTokens,
       settings: agentSettings,
       signal: controller.signal, confirm, emit,
     });
@@ -543,6 +544,7 @@ async function handle(message) {
     if (op === 'gguf-list') result = await ggufLibrary.list();
     if (op === 'gguf-add') result = await ggufLibrary.add(payload.path);
     if (op === 'gguf-remove') result = await ggufLibrary.remove(payload.id);
+    if (op === 'model-status') result = await modelStatus(settings, ggufLibrary);
     if (op === 'git-status') result = await gitStatus(payload.folder);
     // OPENAGENT_HF_ENDPOINT lets tests point this at a local fake server instead of the real
     // HuggingFace API — never set outside tests.
@@ -625,13 +627,13 @@ async function handle(message) {
       try {
         before = await conversations.messages(folder, branchId);
         planCompaction(before); // too short → refused right away, model never called
-        provider = await providerFor(payload.connection, payload.localModel, testSeam ? payload.testModel : undefined);
+        provider = await turnProvider(payload);
       } catch (error) {
         active.delete(compactionId);
         throw error;
       }
       reply(id, true, { compactionId });
-      void runCompaction(compactionId, folder, branchId, before, payload.connection, provider);
+      void runCompaction(compactionId, folder, branchId, before, provider);
       return;
     }
     if (op === 'send') {
@@ -648,15 +650,15 @@ async function handle(message) {
       // The files of the message (📎 / paste / drop), checked before anything starts like `keep` above: the page is
       // not trusted to send only what its own upload code produced.
       const attachments = validateAttachments(payload.attachments);
-      // Same principle for a local model: an id whose file is gone must be reported synchronously, not as
+      // Same principle for the model: none active, or one whose file is gone, is reported synchronously, not as
       // a run that starts and immediately errors.
-      const provider = await providerFor(payload.connection, payload.localModel, testSeam ? payload.testModel : undefined);
+      const provider = await turnProvider(payload);
       const runId = randomUUID();
       reply(id, true, { runId });
       // Fire-and-forget: the turn's real result streams back as 'event' messages, not
       // as this request's response (main.cjs's 30s IPC timeout could never cover a full
       // multi-step agent run).
-      void runSend(runId, payload.folder, payload.branchId || 'main', payload.text, payload.connection, keep, attachments, provider);
+      void runSend(runId, payload.folder, payload.branchId || 'main', payload.text, keep, attachments, provider);
       return;
     }
     if (op === 'stop') { active.get(payload.runId)?.controller.abort(); result = { stopped: true }; }

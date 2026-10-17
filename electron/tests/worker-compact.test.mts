@@ -296,7 +296,6 @@ test('worker::send and worker::compact size with the same window, the global one
 });
 
 test('compactMessages: a window that leaves exactly no room refuses; one token of room asks for one token', async () => {
-  const connection = { provider: 'mistral', model: 'm', base_url: 'http://x', api_key: '' };
   const seen: any[] = [];
   const provider = {
     outputCap: () => 16384,
@@ -307,18 +306,18 @@ test('compactMessages: a window that leaves exactly no room refuses; one token o
   const messages = exchanges(5);
   const prompt = buildSummaryPrompt(buildHistoryText(planCompaction(messages).head));
   const estimate = estimateRequestTokens('', [], [{ role: 'user', content: prompt }]);
-  await assert.rejects(compactMessages({ provider, connection, messages, contextWindow: estimate }), /trop longue/);
+  await assert.rejects(compactMessages({ provider, messages, contextWindow: estimate }), /trop longue/);
   assert.equal(seen.length, 0);
-  await compactMessages({ provider, connection, messages, contextWindow: estimate + 1 });
+  await compactMessages({ provider, messages, contextWindow: estimate + 1 });
   assert.equal(seen[0].maxTokens, 1);
 });
 
 test('compactMessages has its own guard: a blank summary from any provider is refused', async () => {
   // The real provider already rejects blank answers, so this guard cannot be reached through the worker:
   // it is checked directly, with a provider that lets a blank answer through.
-  const blankProvider = { complete: async () => ({ role: 'assistant' as const, content: '  \n ' }) };
+  const blankProvider = { complete: async () => ({ role: 'assistant' as const, content: '  \n ' }), outputCap: () => undefined };
   await assert.rejects(
-    compactMessages({ provider: blankProvider, connection: { provider: 'test', model: 'm', base_url: 'http://x', api_key: '' }, messages: exchanges(5) }),
+    compactMessages({ provider: blankProvider, messages: exchanges(5) }),
     /aucun résumé/,
   );
 });

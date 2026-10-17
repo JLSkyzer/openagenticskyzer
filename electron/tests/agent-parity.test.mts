@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const { runAgent, TRUNCATED_NOTICE, DEFAULT_MAX_STEPS, MAX_STEPS_LIMIT } = await import('../core/agent.mts');
-const { ChatProvider } = await import('../core/provider.mts');
+const { createTestProvider } = await import('./support/test-model-provider.mts');
 const { workspaceTools } = await import('../core/workspace.mts');
 const { shellTools } = await import('../core/shell-tool.mts');
 const { defineTool } = await import('../core/tool-kit.mts');
@@ -47,7 +47,8 @@ async function scriptedModel(t: any, next: (index: number) => unknown) {
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  return { bodies, connection: { provider: 'openrouter', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake-key' } };
+  const base_url = `http://127.0.0.1:${port}/v1`;
+  return { bodies, base_url, provider: createTestProvider({ base_url }) };
 }
 const callAnswer = (id: string, name: string, args: string, finish = 'tool_calls') =>
   ({ choices: [{ message: { content: '', tool_calls: [{ id, type: 'function', function: { name, arguments: args } }] }, finish_reason: finish }] });
@@ -66,8 +67,8 @@ const step = (count: { runs: number }) => defineTool({
 });
 
 test('a reply cut by the output limit ends the turn with its text and a visible notice', async t => {
-  const { bodies, connection } = await scriptedModel(t, () => textAnswer('Voici le début du composant', 'length'));
-  const result = await runAgent({ provider: new ChatProvider(), connection, messages: [{ role: 'user', content: 'écris un long composant' }], instructions: '', tools: [], settings: auto, confirm: async () => true });
+  const { bodies, provider } = await scriptedModel(t, () => textAnswer('Voici le début du composant', 'length'));
+  const result = await runAgent({ provider, messages: [{ role: 'user', content: 'écris un long composant' }], instructions: '', tools: [], settings: auto, confirm: async () => true });
   assert.equal(bodies.length, 1, 'the turn ended: no new request');
   assert.equal(TRUNCATED_NOTICE, '[Réponse tronquée : limite de sortie atteinte]');
   assert.deepEqual(result.at(-1), { role: 'assistant', content: `Voici le début du composant\n\n${TRUNCATED_NOTICE}` }, 'the flag itself is never stored');
@@ -76,11 +77,11 @@ test('a reply cut by the output limit ends the turn with its text and a visible 
 
 test('a tool call cut by the output limit is never executed: the model gets the error and the turn goes on', async t => {
   const root = await project(t);
-  const { bodies, connection } = await scriptedModel(t, index => index === 0
+  const { bodies, provider } = await scriptedModel(t, index => index === 0
     ? callAnswer('c1', 'create_file', '{"path":"composant.tsx","content":"export default function', 'length')
     : textAnswer('Je découpe en plusieurs fichiers.'));
   const emitted: any[] = [];
-  const result = await runAgent({ provider: new ChatProvider(), connection, messages: [{ role: 'user', content: 'crée le composant' }], instructions: '', tools: await workspaceTools(root, ''), settings: auto, confirm: async () => true, emit: event => emitted.push(event) });
+  const result = await runAgent({ provider, messages: [{ role: 'user', content: 'crée le composant' }], instructions: '', tools: await workspaceTools(root, ''), settings: auto, confirm: async () => true, emit: event => emitted.push(event) });
   await assert.rejects(stat(join(root, 'composant.tsx')), 'nothing was written, even with every permission granted');
   assert.deepEqual(toolResults(bodies[1]), ['Erreur : arguments tronqués par la limite de sortie — découpe le travail en appels plus petits']);
   assert.equal(bodies[1].messages.find((m: any) => m.tool_calls).content, TRUNCATED_NOTICE);
@@ -96,9 +97,9 @@ test('a tool call cut by the output limit is never executed: the model gets the 
 });
 
 test('30 tool calls in one turn complete under the default limit (it was 24)', async t => {
-  const { bodies, connection } = await scriptedModel(t, index => index < 30 ? callAnswer(`c${index}`, 'step', JSON.stringify({ n: index + 1 })) : textAnswer('Fini.'));
+  const { bodies, provider } = await scriptedModel(t, index => index < 30 ? callAnswer(`c${index}`, 'step', JSON.stringify({ n: index + 1 })) : textAnswer('Fini.'));
   const count = { runs: 0 };
-  const result = await runAgent({ provider: new ChatProvider(), connection, messages: [{ role: 'user', content: 'travaille' }], instructions: '', tools: [step(count)], settings: auto, confirm: async () => true });
+  const result = await runAgent({ provider, messages: [{ role: 'user', content: 'travaille' }], instructions: '', tools: [step(count)], settings: auto, confirm: async () => true });
   assert.equal(DEFAULT_MAX_STEPS, 100);
   assert.equal(count.runs, 30);
   assert.equal(bodies.length, 31);
@@ -106,8 +107,8 @@ test('30 tool calls in one turn complete under the default limit (it was 24)', a
 });
 
 test('the limit is accepted up to 150, refused at 151, and reaching it says how to resume', async t => {
-  const { connection } = await scriptedModel(t, index => callAnswer(`c${index}`, 'step', JSON.stringify({ n: index + 1 })));
-  const base = { provider: new ChatProvider(), connection, messages: [{ role: 'user' as const, content: 'x' }], instructions: '', tools: [step({ runs: 0 })], settings: auto, confirm: async () => true };
+  const { provider } = await scriptedModel(t, index => callAnswer(`c${index}`, 'step', JSON.stringify({ n: index + 1 })));
+  const base = { provider, messages: [{ role: 'user' as const, content: 'x' }], instructions: '', tools: [step({ runs: 0 })], settings: auto, confirm: async () => true };
   assert.equal(MAX_STEPS_LIMIT, 150);
   await assert.rejects(runAgent({ ...base, maxSteps: 151 }), { message: 'Limite de tours invalide' });
   await assert.rejects(runAgent({ ...base, maxSteps: 150 }), /^Error: Limite de tours atteinte \(150 appels au modèle\)/);
@@ -124,8 +125,8 @@ test('tool arguments: lenient numbers, extra keys dropped, and a refusal that na
     callAnswer('c4', 'run_command', '{"command": '),
     textAnswer('fin'),
   ];
-  const { bodies, connection } = await scriptedModel(t, index => script[index]);
-  await runAgent({ provider: new ChatProvider(), connection, messages: [{ role: 'user', content: 'lance' }], instructions: '', tools: await shellTools(root), settings: auto, confirm: async () => true });
+  const { bodies, provider } = await scriptedModel(t, index => script[index]);
+  await runAgent({ provider, messages: [{ role: 'user', content: 'lance' }], instructions: '', tools: await shellTools(root), settings: auto, confirm: async () => true });
   assert.deepEqual(toolResults(bodies[4]), [
     'coerce-ok',
     'Erreur : Arguments invalides pour run_command : timeout doit être un entier entre 1 et 600',
@@ -137,10 +138,10 @@ test('tool arguments: lenient numbers, extra keys dropped, and a refusal that na
 // M3: the output requested is reserved in the window. Without it, a large prompt plus the full cap could exceed
 // the window (mistral: 32 000 window, 16 384 cap) and the provider answered 400.
 test('the max_tokens sent is the output cap, reduced to what the window leaves after the estimated request', async t => {
-  const { bodies, connection } = await scriptedModel(t, () => textAnswer('ok'));
+  const { bodies, base_url } = await scriptedModel(t, () => textAnswer('ok'));
   const user = [{ role: 'user' as const, content: 'écris' }];
-  const run = (instructions: string, contextWindow?: number, provider = 'openrouter') =>
-    runAgent({ provider: new ChatProvider(), connection: { ...connection, provider }, messages: user, instructions, tools: [], settings: auto, confirm: async () => true, contextWindow });
+  const run = (instructions: string, contextWindow?: number, outputCap: number | null = 16_384) =>
+    runAgent({ provider: createTestProvider({ base_url, outputCap: outputCap ?? undefined }), messages: user, instructions, tools: [], settings: auto, confirm: async () => true, contextWindow });
   const big = 'x'.repeat(40_000);
   await run(big, 20_000);
   const estimate = estimateRequestTokens(big, [], user);
@@ -148,12 +149,25 @@ test('the max_tokens sent is the output cap, reduced to what the window leaves a
   assert.equal(bodies[0].max_tokens, 20_000 - estimate, 'a large prompt: reduced to the room left in the window');
   await run('court', 128_000);
   assert.equal(bodies[1].max_tokens, 16_384, 'a small prompt: the full cap');
-  await run('court', 32_000, 'mistral');
+  await run('court', 32_000);
   assert.equal(bodies[2].max_tokens, 16_384);
   await run(big, estimateRequestTokens(big, [], user));
   assert.equal(bodies[3].max_tokens, 1, 'never below 1, even when the request fills the window');
-  await run(big, 20_000, 'inconnu');
-  assert.equal('max_tokens' in bodies[4], false, 'a provider id with no cap: still nothing sent');
+  await run(big, 20_000, null);
+  assert.equal('max_tokens' in bodies[4], false, 'a model with no cap: still nothing sent');
   await run(big);
-  assert.equal(bodies[5].max_tokens, 16_384, 'no window known: the cap of the provider, as before');
+  assert.equal(bodies[5].max_tokens, 16_384, 'no window known: the cap of the model, as before');
+});
+
+// Moved from provider-parity.test.mts (the HTTP client's own tests are retired with it): the agent loop's half.
+test('an agent turn sends the provider cap, never reserved_tokens', async t => {
+  const { bodies, base_url } = await scriptedModel(t, () => textAnswer('ok'));
+  const turn = (contextWindow?: number) => runAgent({
+    provider: createTestProvider({ base_url, outputCap: 16_384 }), messages: [{ role: 'user', content: 'x' }], instructions: '', tools: [],
+    settings: { mode: 'auto', permission_mode: 'auto', reserved_tokens: 2048 }, confirm: async () => true, contextWindow,
+  });
+  await turn();
+  assert.equal(bodies[0].max_tokens, 16_384);
+  await turn(128_000);
+  assert.equal(bodies[1].max_tokens, 16_384, 'with a window too: reserved_tokens sizes the request budget, never the output asked for');
 });

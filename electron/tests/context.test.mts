@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:http';
+import { createTestProvider } from './support/test-model-provider.mts';
 
 test('legacy instructions, custom prompt, memory and confirmed learnings reach the actual provider request', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-context-'));
@@ -17,18 +19,26 @@ test('legacy instructions, custom prompt, memory and confirmed learnings reach t
   await writeFile(join(folder, '.openagent/learnings.jsonl'), JSON.stringify({ id: 'same', confirmed: false, mistake: 'NON CONFIRMÉ', correction: 'Non retenu' }) + '\n');
   await writeFile(join(home, 'learnings.jsonl'), JSON.stringify({ id: 'same', confirmed: true, mistake: 'Erreur connue', correction: 'Correction confirmée', tags: [] }) + '\n');
   const { buildInstructions } = await import('../core/context.mts');
-  const { ChatProvider } = await import('../core/provider.mts');
   const { runAgent } = await import('../core/agent.mts');
   const { workspaceTools } = await import('../core/workspace.mts');
   const context = await buildInstructions({ folder, home, base: 'Base agent' });
+  // A real model server on 127.0.0.1, reached through the test seam's client: what it receives is the actual request.
   const payloads: any[] = [];
-  const provider = new ChatProvider(async (_url: any, options: any) => {
-    payloads.push(JSON.parse(options.body));
-    return new Response(JSON.stringify({ choices: [{ message: payloads.length === 1 ? {
-      content: '', tool_calls: [{ id: 'create', type: 'function', function: { name: 'create_file', arguments: '{"path":"hello.txt","content":"created by Node"}' } }],
-    } : { content: 'Créé' }, finish_reason: payloads.length === 1 ? 'tool_calls' : 'stop' }] }), { headers: { 'content-type': 'application/json' } });
+  const server = createServer((request, response) => {
+    let raw = '';
+    request.on('data', chunk => { raw += chunk; });
+    request.on('end', () => {
+      payloads.push(JSON.parse(raw));
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ choices: [{ message: payloads.length === 1 ? {
+        content: '', tool_calls: [{ id: 'create', type: 'function', function: { name: 'create_file', arguments: '{"path":"hello.txt","content":"created by Node"}' } }],
+      } : { content: 'Créé' }, finish_reason: payloads.length === 1 ? 'tool_calls' : 'stop' }] }));
+    });
   });
-  await runAgent({ provider, instructions: context.instructions, connection: { provider: 'openrouter', api_key: 'fake', base_url: 'https://openrouter.ai/api/v1', model: 'fake' },
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  t.after(() => { server.closeAllConnections(); return new Promise<void>(resolve => server.close(() => resolve())); });
+  const provider = createTestProvider({ base_url: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1` });
+  await runAgent({ provider, instructions: context.instructions,
     messages: [{ role: 'user', content: 'create hello' }], tools: await workspaceTools(folder, ''), settings: { mode: 'auto', permission_mode: 'demander', files_ask: true }, confirm: async () => true,
   });
   const system = payloads[0].messages[0].content;

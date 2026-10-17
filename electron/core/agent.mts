@@ -1,4 +1,4 @@
-import type { ChatMessage, CompletionOptions, ModelConnection } from './provider.mts';
+import type { ChatMessage, ModelProvider } from './model-types.mts';
 import { object } from './json-store.mts';
 import { estimateRequestTokens, fitToBudget, requestMessages } from './request-context.mts';
 import { contextBudget } from './context-budget.mts';
@@ -13,14 +13,9 @@ export interface AgentSettings {
   mode: 'ask' | 'auto' | 'plan'; permission_mode: 'demander' | 'auto' | 'strict';
   files_ask?: boolean; shell_ask?: boolean; search_ask?: boolean; reserved_tokens?: number;
 }
-/** What the agent needs from a provider: ChatProvider (HTTP) or the built-in engine (local-engine.mts::localProvider). */
-export interface AgentProvider {
-  complete(options: CompletionOptions): Promise<ChatMessage & { content: string }>;
-  // The output cap applied to `connection` when no maxTokens is passed; undefined = none (a provider id with no cap).
-  outputCap?(connection: ModelConnection): number | undefined;
-}
 export interface AgentOptions {
-  provider: AgentProvider; connection: ModelConnection; messages: ChatMessage[]; instructions: string;
+  // The model: the built-in engine (local-engine.mts::localProvider). The window is passed apart (contextWindow).
+  provider: ModelProvider; messages: ChatMessage[]; instructions: string;
   tools: AgentTool[]; settings: AgentSettings; signal?: AbortSignal; maxSteps?: number;
   // The model's context window in tokens (core/context-budget.mts). Absent: no budget is applied.
   contextWindow?: number;
@@ -66,7 +61,7 @@ export function offeredTools(tools: readonly AgentTool[], settings: AgentSetting
 }
 
 export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
-  const { provider, connection, instructions, tools, confirm, emit } = options;
+  const { provider, instructions, tools, confirm, emit } = options;
   const settings = structuredClone(options.settings);
   if (!['ask', 'auto', 'plan'].includes(settings.mode) || !['demander', 'auto', 'strict'].includes(settings.permission_mode)) throw new Error('Politique agent invalide');
   const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
@@ -97,13 +92,13 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
     // CONTEXT_FULL, sending nothing. reserved_tokens only sizes that budget (H1).
     const outgoing = requestMessages(messages.slice(1));
     const fitted = budgetTokens === undefined ? outgoing : fitToBudget(outgoing, { system: instructions, tools: schemas, budgetTokens });
-    // M3: the output asked for must fit in the window beside the request — the provider's cap (H1), lowered to
-    // what the window leaves after the estimated request, never below 1. No window known, or no cap (a provider
-    // id with no entry): nothing is passed and the provider does as before.
-    const cap = options.contextWindow === undefined ? undefined : provider.outputCap?.(connection);
+    // M3: the output asked for must fit in the window beside the request — the model's cap (H1), lowered to
+    // what the window leaves after the estimated request, never below 1. No window known, or no cap: nothing is
+    // passed and the model applies its own.
+    const cap = options.contextWindow === undefined ? undefined : provider.outputCap();
     const maxTokens = cap === undefined ? undefined
       : Math.max(1, Math.min(cap, options.contextWindow! - estimateRequestTokens(instructions, schemas, fitted)));
-    const answer = await provider.complete({ connection, messages: [messages[0], ...fitted], tools: schemas, signal,
+    const answer = await provider.complete({ messages: [messages[0], ...fitted], tools: schemas, signal,
       ...(maxTokens === undefined ? {} : { maxTokens }),
       onDelta: text => emit?.({ type: 'delta', text }),
     });

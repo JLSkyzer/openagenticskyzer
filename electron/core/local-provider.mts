@@ -1,11 +1,11 @@
-// Pure mapping between our OpenAI-shaped agent messages (provider.mts::ChatMessage/ToolSchema) and
+// Pure mapping between our OpenAI-shaped agent messages (model-types.mts::ChatMessage/ToolSchema) and
 // node-llama-cpp's own chat types (ChatHistoryItem, ChatModelFunctions, LlamaChatResponse). Deliberately
 // has NO import of node-llama-cpp itself — that native binding lives in local-engine.mts, loaded only on
 // first actual use — so every function here is fast and testable with plain fixtures, exactly like
 // pdf-text.ts/pdf-loader.ts. `LlamaChat.generateResponse(history, options)` takes the FULL history on
 // every call (no session state kept between turns), which matches agent.mts's own stateless loop exactly:
 // it rebuilds `messages` fresh every iteration, so there is no session to keep in sync.
-import type { ChatMessage, ToolCall, ToolSchema } from './provider.mts';
+import type { ChatMessage, ToolCall, ToolSchema } from './model-types.mts';
 
 // ── node-llama-cpp's own shapes, declared locally (structural — no runtime import) ──────────────────────
 export interface GgufFunctionSpec { description?: string; params?: unknown }
@@ -70,14 +70,14 @@ export function historyFromMessages(messages: readonly ChatMessage[]): GgufHisto
   return history;
 }
 
-/** node-llama-cpp's response → our ChatMessage, in the exact shape `ChatProvider.complete()` returns: no
+/** node-llama-cpp's response → our ChatMessage, in the exact shape `ModelProvider.complete()` returns: no
  * `tool_calls` key at all when there are none. `mintId` supplies a fresh, unique id per call (node-llama-cpp
  * does not generate one) — the SAME id then correlates the later 'tool' role message back to this call. */
 export function responseToMessage(response: GgufResponse, mintId: () => string): ChatMessage & { content: string } {
   const tool_calls: ToolCall[] = (response.functionCalls ?? []).map(call => ({
     id: mintId(), type: 'function', function: { name: call.functionName, arguments: JSON.stringify(call.params) },
   }));
-  // The engine's own finish_reason "length": the same flag a ChatProvider sets (provider.mts).
+  // The engine's own finish_reason "length": the `truncated` flag of model-types.mts::ChatMessage.
   const truncated = response.metadata?.stopReason === 'maxTokens';
   return { role: 'assistant', content: response.response, ...(tool_calls.length ? { tool_calls } : {}), ...(truncated ? { truncated: true } : {}) };
 }

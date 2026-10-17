@@ -1,9 +1,9 @@
 // TEST-ONLY model client. worker.mjs imports this module only when its workerData carries testProviderModule,
 // which main.cjs never sets (workerOptions, proven by tests/test-seam.test.mts) and tests/** is never packaged.
 // It speaks the OpenAI chat protocol to the tests' own fake servers, and to nothing else: any base_url that is
-// not http://127.0.0.1 is refused.
+// not http://127.0.0.1 is refused. No production module imports it (tests/local-only.test.mts).
 import { fileURLToPath } from 'node:url';
-import { ChatProvider, type ChatMessage, type ToolSchema } from '../../core/provider.mts';
+import type { ChatMessage, CompletionOptions, ModelProvider, ToolCall } from '../../core/model-types.mts';
 
 export interface TestModelSpec {
   base_url: string; model?: string; contextWindow?: number; outputCap?: number;
@@ -14,19 +14,12 @@ export interface TestModelSpec {
 export const TEST_MODEL_DEFAULT_WINDOW = 128_000;
 export const TEST_PROVIDER_MODULE: string = fileURLToPath(import.meta.url);
 
-export function createTestProvider(spec: TestModelSpec) {
-  let url: URL | undefined;
-  try { url = new URL(spec?.base_url); } catch { /* refused below */ }
-  if (!url || url.protocol !== 'http:' || url.hostname !== '127.0.0.1') {
-    throw new Error('Fournisseur de test : seule une adresse http://127.0.0.1 est acceptée');
-  }
-  const client = new ChatProvider(fetch, { idleTimeoutMs: spec.idleTimeoutMs, retryDelaysMs: spec.retryDelaysMs });
-  const connection = { provider: 'test', model: spec.model ?? 'test-model', base_url: spec.base_url, api_key: '' };
+/** The scripted model a worker test asks for in payload.testModel: the client below, plus the window and the cap
+ * the spec gives (no cap by default: max_tokens is then only sent when the agent sizes one). */
+export function createTestProvider(spec: TestModelSpec): ModelProvider {
+  const client = new TestChatClient(spec);
   return {
-    complete(options: { messages: ChatMessage[]; tools?: ToolSchema[]; signal?: AbortSignal; onDelta?: (text: string) => void; maxTokens?: number }): Promise<ChatMessage & { content: string }> {
-      const { messages, tools, signal, onDelta, maxTokens } = options;
-      return client.complete({ connection, messages, tools, signal, onDelta, maxTokens });
-    },
+    complete: (options: CompletionOptions) => client.complete(options),
     contextWindow: async (): Promise<number> => spec.contextWindow ?? TEST_MODEL_DEFAULT_WINDOW,
     outputCap: (): number | undefined => spec.outputCap,
   };
@@ -35,4 +28,251 @@ export function createTestProvider(spec: TestModelSpec) {
 /** Worker options for a test: an isolated data home, plus the seam. */
 export function testWorkerOptions(home: string, env: Record<string, string> = {}): { env: NodeJS.ProcessEnv; workerData: { testProviderModule: string } } {
   return { env: { ...process.env, OPENAGENT_HOME: home, ...env }, workerData: { testProviderModule: TEST_PROVIDER_MODULE } };
+}
+
+/** The only addresses this client calls: http://127.0.0.1, without credentials, query or fragment. */
+function loopbackEndpoint(value: unknown): string {
+  let url: URL | undefined;
+  try { url = new URL(String(value)); } catch { /* refused below */ }
+  if (!url || url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.username || url.password || url.search || url.hash) {
+    throw new Error('Fournisseur de test : seule une adresse http://127.0.0.1 est acceptée');
+  }
+  return url.toString().replace(/\/+$/, '');
+}
+
+const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
+const DEFAULT_RETRY_DELAYS_MS: readonly number[] = Object.freeze([1000, 3000]);
+const MAX_RETRY_AFTER_MS = 30_000;
+const MAX_ERROR_BODY_BYTES = 65_536;
+const MAX_DETAIL_CHARS = 500;
+
+function validateCalls(calls: ToolCall[]) {
+  if (calls.length > 64) throw new Error('Trop d’appels outils dans la réponse');
+  const ids = new Set<string>();
+  for (const call of calls) {
+    if (!call || typeof call.id !== 'string' || !call.id || ids.has(call.id) || call.type !== 'function' ||
+      !call.function || typeof call.function.name !== 'string' || !/^[\w.-]{1,128}$/.test(call.function.name) ||
+      typeof call.function.arguments !== 'string' || call.function.arguments.length > 262144) throw new Error('Appel outil invalide');
+    ids.add(call.id);
+  }
+}
+
+/**
+ * Retry-After in milliseconds (seconds or an HTTP date), capped at 30 s; null when absent or unreadable, so the
+ * default delays apply. A number is always seconds: Date.parse would read "0.5" or "-1" as a date in the past,
+ * an immediate retry. Only a value with letters is tried as an HTTP date.
+ */
+function retryAfterMs(header: string | null, now = Date.now()): number | null {
+  if (!header) return null;
+  const value = header.trim();
+  if (/^\d+(\.\d+)?$/.test(value)) return Math.min(Number(value) * 1000, MAX_RETRY_AFTER_MS);
+  if (!/[a-z]/i.test(value)) return null;
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? null : Math.min(Math.max(0, date - now), MAX_RETRY_AFTER_MS);
+}
+
+const mask = (text: string, apiKey: string) => (apiKey ? text.split(apiKey).join('***') : text);
+
+/**
+ * The provider's own explanation, safe to show: `error.message` of a JSON body (or an `error` that is itself
+ * a string, as some OpenAI-compatible servers send), else the raw text; the connection's API key masked BEFORE the cut, so not even a fragment
+ * of it survives; whitespace collapsed; 500 characters at most.
+ */
+function errorDetail(raw: string, apiKey: string): string {
+  let text = raw;
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.error?.message === 'string') text = parsed.error.message;
+    else if (typeof parsed?.error === 'string') text = parsed.error;
+  } catch { /* not JSON: the raw text is the message */ }
+  return mask(text, apiKey).replace(/\s+/g, ' ').trim().slice(0, MAX_DETAIL_CHARS);
+}
+
+function providerMessage(status: number | string, detail: string): string {
+  const hint = status === 401 ? 'authentification refusée, vérifiez la connexion du projet' : status === 429 ? 'quota ou limite de débit atteint' : '';
+  const text = [detail, hint].filter(Boolean).join(' — ');
+  return text ? `Erreur du provider (${status}) : ${text}` : `Erreur du provider (${status}).`;
+}
+
+class ProviderError extends Error {
+  status: number;
+  constructor(status: number, detail = '') {
+    super(providerMessage(status, detail));
+    this.status = status;
+  }
+}
+
+const retryable = (status: number) => status === 408 || status === 409 || status === 429 || status >= 500;
+// A connection refused, reset or cut before any byte: undici reports a TypeError whose cause carries a system
+// or undici code (ECONNREFUSED, UND_ERR_SOCKET…). A refused redirect (redirect: 'error') has no code: never retried.
+const networkFailure = (error: unknown) =>
+  error instanceof TypeError && typeof (error.cause as { code?: unknown } | undefined)?.code === 'string';
+
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(signal.reason); return; }
+    const stop = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', stop); resolve(); }, ms);
+    signal.addEventListener('abort', stop, { once: true });
+  });
+}
+
+async function readErrorBody(response: Response): Promise<string> {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (size < MAX_ERROR_BODY_BYTES) {
+      const part = await reader.read();
+      if (part.done) break;
+      parts.push(part.value);
+      size += part.value.length;
+    }
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  return Buffer.concat(parts).subarray(0, MAX_ERROR_BODY_BYTES).toString('utf8');
+}
+
+/** The OpenAI chat client the tests' fake servers speak to (the former production client, kept here as test
+ * support only): SSE or JSON replies, retries, the silence watchdog, tool-call assembly. */
+class TestChatClient {
+  private url: string;
+  private model: string;
+  private cap: number | undefined;
+  private idleTimeoutMs: number;
+  private retryDelaysMs: readonly number[];
+  constructor(spec: TestModelSpec) {
+    this.url = loopbackEndpoint(spec?.base_url) + '/chat/completions';
+    this.model = spec.model ?? 'test-model';
+    this.cap = spec.outputCap;
+    this.idleTimeoutMs = spec.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+    this.retryDelaysMs = spec.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
+  }
+
+  async complete(options: CompletionOptions): Promise<ChatMessage & { content: string }> {
+    const { messages, tools } = options;
+    const userSignal = options.signal ?? new AbortController().signal;
+    userSignal.throwIfAborted();
+    // Silence watchdog: re-armed by every byte, so a slow but living stream is never cut (the former fixed
+    // 300 s cap killed long local generations).
+    const idle = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const quiet = () => clearTimeout(timer);
+    const touch = () => { quiet(); timer = setTimeout(() => idle.abort(), this.idleTimeoutMs); };
+    const signal = AbortSignal.any([userSignal, idle.signal]);
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'text/event-stream' };
+    const body: Record<string, unknown> = { model: this.model, messages, stream: true };
+    if (tools?.length) body.tools = tools;
+    const cap = options.maxTokens ?? this.cap;
+    if (cap !== undefined) body.max_tokens = cap;
+    const init: RequestInit = { method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', signal };
+    try {
+      const response = await this.open(this.url, init, userSignal, '', touch, quiet);
+      return await this.read(response, signal, touch, '', options.onDelta);
+    } catch (error) {
+      if (idle.signal.aborted && !userSignal.aborted) throw new Error(`Le fournisseur ne répond plus (${this.idleTimeoutMs / 1000} s)`);
+      throw error;
+    } finally { quiet(); }
+  }
+
+  /** The response, after up to retryDelaysMs.length new attempts on a network failure or a 408/409/429/5xx. */
+  private async open(url: string, init: RequestInit, userSignal: AbortSignal, apiKey: string, touch: () => void, quiet: () => void): Promise<Response> {
+    for (let attempt = 0; ; attempt++) {
+      touch();
+      let response: Response;
+      try {
+        response = await fetch(url, init);
+      } catch (error) {
+        if (!networkFailure(error) || attempt >= this.retryDelaysMs.length) throw error;
+        quiet();
+        await pause(this.retryDelaysMs[attempt], userSignal);
+        continue;
+      }
+      if (response.ok) return response;
+      const retryAfter = response.headers.get('retry-after');
+      const failure = new ProviderError(response.status, errorDetail(await readErrorBody(response), apiKey));
+      if (!retryable(response.status) || attempt >= this.retryDelaysMs.length) throw failure;
+      quiet();
+      await pause(retryAfterMs(retryAfter) ?? this.retryDelaysMs[attempt], userSignal);
+    }
+  }
+
+  private async read(response: Response, signal: AbortSignal, touch: () => void, apiKey: string, onDelta?: (text: string) => void): Promise<ChatMessage & { content: string }> {
+    if (!response.body) throw new Error('Réponse vide du provider');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    const jsonResponse = response.headers.get('content-type')?.includes('application/json');
+    let buffer = ''; let total = 0; let content = ''; let done = false; let finished = false; let truncated = false;
+    const calls = new Map<number, ToolCall>();
+    const reasoning: unknown[] = [];
+    const accept = (data: string) => {
+      if (data.trim() === '[DONE]') { done = true; return; }
+      let chunk: any;
+      try { chunk = JSON.parse(data); } catch { throw new Error('Réponse JSON invalide du provider'); }
+      if (chunk.error) {
+        const code = typeof chunk.error?.code === 'number' || typeof chunk.error?.code === 'string' ? mask(String(chunk.error.code), apiKey).slice(0, 40) : 'flux';
+        throw new Error(providerMessage(code, errorDetail(data, apiKey)));
+      }
+      const choice = chunk.choices?.[0];
+      if (!choice) return; // usage-only chunks and heartbeat metadata
+      if (choice.finish_reason) {
+        // "length" = the output cap was reached: what came so far is returned, flagged. Anything else
+        // that is not a normal end (content_filter, unknown) stays an error.
+        if (choice.finish_reason === 'length') truncated = true;
+        else if (!['stop', 'tool_calls', 'function_call'].includes(choice.finish_reason)) throw new Error(`Réponse interrompue par le provider (${String(choice.finish_reason).slice(0, 40)})`);
+        finished = true;
+      }
+      const delta = choice.delta ?? choice.message;
+      if (!delta) return;
+      if (typeof delta.content === 'string') { content += delta.content; onDelta?.(delta.content); }
+      if (Array.isArray(delta.reasoning_details)) reasoning.push(...delta.reasoning_details);
+      for (const [position, item] of (delta.tool_calls ?? []).entries()) {
+        const index = item.index ?? position;
+        if (!Number.isInteger(index) || index < 0 || index >= 64) throw new Error('Index appel outil invalide');
+        const call = calls.get(index) ?? { id: '', type: 'function', function: { name: '', arguments: '' } };
+        if (item.id) call.id += item.id;
+        if (item.function?.name) call.function.name += item.function.name;
+        if (item.function?.arguments) call.function.arguments += item.function.arguments;
+        // Gemini's compatibility endpoint can attach thought signatures here.
+        if (item.extra_content !== undefined) call.extra_content = item.extra_content;
+        calls.set(index, call);
+      }
+    };
+    const flushFrames = () => {
+      let match: RegExpExecArray | null;
+      while (!done && (match = /\r?\n\r?\n/.exec(buffer))) {
+        const frame = buffer.slice(0, match.index); buffer = buffer.slice(match.index + match[0].length);
+        const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).replace(/^ /, '')).join('\n');
+        if (data) accept(data);
+      }
+    };
+    try {
+      while (!done) {
+        signal.throwIfAborted();
+        const part = await reader.read();
+        if (part.done) { buffer += decoder.decode(); break; }
+        touch();
+        total += part.value.length;
+        if (total > 8 * 1024 * 1024) throw new Error('Réponse provider trop volumineuse');
+        buffer += decoder.decode(part.value, { stream: true });
+        if (!jsonResponse) flushFrames();
+      }
+      if (jsonResponse) accept(buffer);
+      else flushFrames();
+      signal.throwIfAborted();
+      if (!done && !finished) throw new Error('Flux interrompu avant la fin de la réponse');
+      let tool_calls = [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call);
+      // A cut reply never fails the turn: the cap can land in the first delta of a parallel call, leaving a
+      // fragment with no id or no name. It is dropped; the calls before it are kept (and refused by the agent).
+      if (truncated) tool_calls = tool_calls.filter(call => call.id && call.function.name);
+      validateCalls(tool_calls);
+      if (!content.trim() && !tool_calls.length && !truncated) throw new Error('Réponse vide du provider');
+      return {
+        role: 'assistant', content,
+        ...(tool_calls.length ? { tool_calls } : {}),
+        ...(reasoning.length ? { reasoning_details: reasoning } : {}),
+        ...(truncated ? { truncated: true } : {}),
+      };
+    } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  }
 }

@@ -18,6 +18,15 @@ export function contextWindow(provider: string | null, maxTokens: number | null)
   return CONTEXT_WINDOWS[id];
 }
 
+// The context size the built-in engine runs a small model with at least (core/local-engine.mts), and the window
+// assumed for the active .gguf before its engine has loaded (core/active-model.mts::modelStatus).
+export const MIN_LOCAL_CONTEXT = 16_384;
+
+/** The window a request must fit in: the engine's real context size, capped by the user's max_tokens when set. */
+export function effectiveWindow(engineWindow: number, maxTokens: number | null): number {
+  return maxTokens ? Math.min(engineWindow, maxTokens) : engineWindow;
+}
+
 /** What a request may use: the window minus reserved_tokens (kept free for the answer), never below 1. */
 export function contextBudget(window: number, reservedTokens: number): number {
   return Math.max(1, window - reservedTokens);

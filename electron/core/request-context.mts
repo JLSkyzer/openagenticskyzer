@@ -2,7 +2,7 @@
 // saved and displayed conversation never changes; only the request does.
 import { toWireMessage, type Attachment } from './attachments.mts';
 import { characters, tokensFor } from './context-budget.mts';
-import type { ChatMessage, ToolSchema } from './provider.mts';
+import type { ChatMessage, ToolSchema } from './model-types.mts';
 
 export const CONTEXT_FULL = 'Contexte plein : compacte ou efface la conversation';
 

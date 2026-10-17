@@ -30,12 +30,9 @@ test('restart-app (« Redémarrer maintenant » after a data-folder migration) i
   assert.equal(typeof main.restartApp, 'function');
 });
 
-test('compact and send carry the resolved connection; nothing else does', () => {
-  assert.equal(main.needsConnection('send'), true);
-  assert.equal(main.needsConnection('compact'), true, 'the summary is a model call: it needs the key, which only main.cjs may read');
-  for (const op of ['messages', 'fork', 'list-branches', 'stop', 'clear-history', 'save-global-settings']) {
-    assert.equal(main.needsConnection(op), false, `${op} must not receive the API key`);
-  }
+test('main folds nothing into a payload: no connection resolution is left', () => {
+  assert.equal(main.resolveSendPayload, undefined); assert.equal(main.needsConnection, undefined);
+  assert.equal(main.isBackendOp('model-status'), true);
 });
 
 test('isExportFilename accepts exactly the pattern the exporter itself generates, nothing else', () => {

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { testWorkerOptions } from './support/test-model-provider.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -57,7 +58,7 @@ async function fakeModel(t: { after(fn: () => unknown): void }) {
   t.after(() => new Promise(resolve => { for (const h of held) h.response.destroy(); server.close(() => resolve(undefined)); }));
   const port = (server.address() as { port: number }).port;
   return {
-    connection: { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' },
+    testModel: { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' },
     holdNext() { hold = true; return new Promise<void>(resolve => { onHeld = resolve; }); },
     release() { hold = false; for (const h of held.splice(0)) h.answer(); },
   };
@@ -69,13 +70,11 @@ async function setup(t: { after(fn: () => unknown): void }) {
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
-    env: { ...process.env, OPENAGENT_HOME: home },
-  });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   const model = await fakeModel(t);
   const turn = async (branchId: string, text: string) => {
-    const { runId } = await callWorker(worker, 'send', { folder: project, branchId, text, connection: model.connection });
+    const { runId } = await callWorker(worker, 'send', { folder: project, branchId, text, testModel: model.testModel });
     const { events, stop } = collectAgentEvents(worker, runId);
     await waitUntilDone(events);
     stop();
@@ -120,7 +119,7 @@ test('worker::fork is refused while a run is in flight on that folder, and accep
   const { worker, project, model, turn } = await setup(t);
   await turn('main', 'un');
   const held = model.holdNext();
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'deux', connection: model.connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'deux', testModel: model.testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await held;
 
@@ -141,7 +140,7 @@ test('worker::fork is only refused for the folder that is running, not for anoth
   const other = join(root, 'autre');
   await mkdir(other);
   const held = model.holdNext();
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'deux', connection: model.connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'deux', testModel: model.testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await held;
   await callWorker(worker, 'save-messages', { folder: other, branchId: 'main', messages: [{ role: 'user', content: 'x' }] });

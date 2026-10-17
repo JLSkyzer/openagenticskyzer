@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 import { createRequire } from 'node:module';
+import { testWorkerOptions } from './support/test-model-provider.mts';
 
 // main.cjs as a library: the very function the app runs on quit (worker 'shutdown', then terminate).
 const { stopWorker } = createRequire(import.meta.url)('../main.cjs');
@@ -51,7 +52,7 @@ test('worker::mcp-list/add/remove persist real MCP server definitions', async t 
   removeAtEnd(t, root);
   const home = join(root, 'home');
   await mkdir(home);
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
 
   assert.deepEqual(await callWorker(worker, 'mcp-list', {}), []);
@@ -69,7 +70,7 @@ test('worker::send registers a real configured MCP server\'s tools and actually 
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
 
   await callWorker(worker, 'mcp-add', { commandLine: `"${process.execPath}" "${FAKE_MCP_SERVER}"` });
@@ -99,9 +100,9 @@ test('worker::send registers a real configured MCP server\'s tools and actually 
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
 
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'utilise le serveur MCP', connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'utilise le serveur MCP', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await waitUntilDone(events);
   stop();
@@ -126,7 +127,7 @@ test('worker::send discovers a real project-scope server from a real .mcp.json a
     mcpServers: { fake: { command: process.execPath, args: [FAKE_MCP_SERVER] } },
   }));
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
   await approveProject(worker, project);
@@ -150,9 +151,9 @@ test('worker::send discovers a real project-scope server from a real .mcp.json a
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
 
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'utilise le serveur du projet', connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'utilise le serveur du projet', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await waitUntilDone(events);
   stop();
@@ -170,7 +171,7 @@ test('worker::send: a project .mcp.json server overrides a colliding global one 
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
 
@@ -197,9 +198,9 @@ test('worker::send: a project .mcp.json server overrides a colliding global one 
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
 
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await waitUntilDone(events);
   stop();
@@ -213,7 +214,7 @@ test('worker::send: two DIFFERENT servers exposing the same tool names never fai
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
 
@@ -245,9 +246,9 @@ test('worker::send: two DIFFERENT servers exposing the same tool names never fai
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
 
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'utilise echo', connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'utilise echo', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await waitUntilDone(events);
   stop();
@@ -271,7 +272,7 @@ test('worker::send: an MCP tool with an invalid name is dropped instead of faili
     mcpServers: { fake: { command: process.execPath, args: [FAKE_MCP_SERVER], env: { FAKE_MCP_EXTRA_TOOL_NAME: 'nom avec espaces' } } },
   }));
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
   await approveProject(worker, project);
@@ -289,9 +290,9 @@ test('worker::send: an MCP tool with an invalid name is dropped instead of faili
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
 
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await waitUntilDone(events);
   stop();
@@ -319,9 +320,7 @@ test('worker::mcp-list shows project entries as written (an expanded ${VAR} neve
       distant: { type: 'http', url: distantUrl, headers: { Authorization: 'Bearer ${OA_TEST_SECRET}' } },
     },
   }));
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
-    env: { ...process.env, OPENAGENT_HOME: home, OA_TEST_SECRET: SECRET, OA_TEST_NODE: process.execPath },
-  });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home, { OA_TEST_SECRET: SECRET, OA_TEST_NODE: process.execPath }));
   terminateAtEnd(t, worker);
   await approveProject(worker, project);
   // Same command+args as the project's `local` entry ONCE EXPANDED: a turn runs only one of them.
@@ -346,8 +345,8 @@ test('worker::mcp-list shows project entries as written (an expanded ${VAR} neve
   await new Promise<void>((resolve, reject) => { llm.once('error', reject); llm.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => llm.close(() => resolve(undefined))));
   const port = (llm.address() as { port: number }).port;
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await waitUntilDone(events);
   stop();
@@ -361,7 +360,7 @@ test('worker::mcp-add-remote persists a real remote server definition', async t 
   removeAtEnd(t, root);
   const home = join(root, 'home');
   await mkdir(home);
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
 
   const result = await callWorker(worker, 'mcp-add-remote', { url: 'https://example.com/mcp', type: 'sse', headers: { Authorization: 'Bearer tok' } });
@@ -396,7 +395,7 @@ test('worker::mcp-* replies never carry a real env/header secret to the renderer
   const fake = await startFakeMcpHttpServer({ mode: 'json' });
   t.after(() => fake.close());
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   await approveProject(worker, project);
   const assertNoSecret = (label: string, value: unknown) => {
@@ -431,8 +430,8 @@ test('worker::mcp-* replies never carry a real env/header secret to the renderer
   await new Promise<void>((resolve, reject) => { llm.once('error', reject); llm.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => llm.close(() => resolve(undefined))));
   const port = (llm.address() as { port: number }).port;
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await waitUntilDone(events);
   stop();
@@ -474,11 +473,11 @@ async function model(t: any, callTool: boolean) {
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(() => resolve(undefined)); }));
   const port = (server.address() as { port: number }).port;
-  return { offered, connection: { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' } };
+  return { offered, testModel: { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' } };
 }
 /** One whole turn in `folder`; returns its events. */
-async function runTurn(worker: Worker, folder: string, connection: unknown) {
-  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'bonjour', connection });
+async function runTurn(worker: Worker, folder: string, testModel: unknown) {
+  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'bonjour', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await waitUntilDone(events);
   stop();
@@ -494,7 +493,7 @@ test('the Outils tab never starts an MCP server: plugin-list and mcp-list leave 
   await Promise.all([mkdir(home), mkdir(project)]);
   const marker = join(root, 'mcp-started.txt');
   await writeFile(join(home, 'mcp.json'), JSON.stringify([{ id: 'fake', command: process.execPath, args: [FAKE_MCP_SERVER], env: { FAKE_MCP_MARKER: marker }, added_at: new Date().toISOString() }]));
-  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home)));
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
 
   await callWorker(worker, 'plugin-list', { folder: project });
@@ -504,8 +503,8 @@ test('the Outils tab never starts an MCP server: plugin-list and mcp-list leave 
   assert.equal(before[0].tools, null, 'not started: no tools to show yet');
   assert.equal(before[0].error, null, 'not started: no error either, so « non démarré »');
 
-  const { connection } = await model(t, false);
-  const events = await runTurn(worker, project, connection);
+  const { testModel } = await model(t, false);
+  const events = await runTurn(worker, project, testModel);
   assert.equal(events.at(-1).kind, 'done', JSON.stringify(events.at(-1)));
   assert.equal(await exists(marker), true, 'the turn started it');
   assert.deepEqual((await callWorker(worker, 'mcp-list', { folder: project }))[0].tools, ['mcp_echo', 'mcp_boom']);
@@ -527,7 +526,7 @@ test('a server whose last discovery failed shows its error in mcp-list, not « n
   // A remote project server whose URL is a placeholder: its expanded value is a secret, and the discovery error
   // (« Failed to parse URL from <url> ») would carry it.
   await writeFile(join(project, '.mcp.json'), JSON.stringify({ mcpServers: { distant: { type: 'http', url: '${OA_TEST_MCP_URL}' } } }));
-  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home, OA_TEST_MCP_URL: 'pas-une-url-secret-4242' } }));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home, { OA_TEST_MCP_URL: 'pas-une-url-secret-4242' })));
   await approveProject(worker, project);
 
   const before = await callWorker(worker, 'mcp-list', { folder: project });
@@ -536,8 +535,8 @@ test('a server whose last discovery failed shows its error in mcp-list, not « n
     assert.equal(entry(before, scope).error, null, `${scope}: never started, so no error, « non démarré »`);
   }
 
-  const { connection } = await model(t, false);
-  assert.equal((await runTurn(worker, project, connection)).at(-1).kind, 'done', 'a failing server never fails the turn');
+  const { testModel } = await model(t, false);
+  assert.equal((await runTurn(worker, project, testModel)).at(-1).kind, 'done', 'a failing server never fails the turn');
   const after = await callWorker(worker, 'mcp-list', { folder: project });
   assert.equal(entry(after, 'global').tools, null);
   assert.match(entry(after, 'global').error, /serveur MCP terminé/, 'the crash is shown');
@@ -556,12 +555,12 @@ test('the tool names listed are those a turn offers: an invalid name, or one ano
   // Two identities (different args), both exposing echo/boom: the project server, listed first, wins them.
   await writeFile(join(home, 'mcp.json'), JSON.stringify([{ id: 'g', command: process.execPath, args: [FAKE_MCP_SERVER, 'global'], env: { FAKE_MCP_EXTRA_TOOL_NAME: 'propre' }, added_at: new Date().toISOString() }]));
   await writeFile(join(project, '.mcp.json'), JSON.stringify({ mcpServers: { p: { command: process.execPath, args: [FAKE_MCP_SERVER, 'project'], env: { FAKE_MCP_EXTRA_TOOL_NAME: 'nom avec espaces' } } } }));
-  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home)));
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
   await approveProject(worker, project);
 
-  const { connection, offered } = await model(t, false);
-  assert.equal((await runTurn(worker, project, connection)).at(-1).kind, 'done');
+  const { testModel, offered } = await model(t, false);
+  assert.equal((await runTurn(worker, project, testModel)).at(-1).kind, 'done');
   const listed = await callWorker(worker, 'mcp-list', { folder: project });
   assert.deepEqual(entry(listed, 'project').tools, ['mcp_echo', 'mcp_boom'], 'its invalid « mcp_nom avec espaces » is not listed');
   assert.deepEqual(entry(listed, 'global').tools, ['mcp_propre'], 'its echo/boom went to the project server');
@@ -581,12 +580,12 @@ test('a project server\'s remembered tools are shown for that project only, neve
   // The same command + args (one server identity) in both projects.
   await writeFile(join(alpha, '.mcp.json'), JSON.stringify({ mcpServers: { fake: { command: process.execPath, args: [FAKE_MCP_SERVER] } } }));
   await writeFile(join(beta, '.mcp.json'), JSON.stringify({ mcpServers: { fake: { command: process.execPath, args: [FAKE_MCP_SERVER], env: { FAKE_MCP_MARKER: betaMarker } } } }));
-  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home)));
   await approveProject(worker, alpha);
   await approveProject(worker, beta);
 
-  const { connection } = await model(t, false);
-  assert.equal((await runTurn(worker, alpha, connection)).at(-1).kind, 'done');
+  const { testModel } = await model(t, false);
+  assert.equal((await runTurn(worker, alpha, testModel)).at(-1).kind, 'done');
   assert.deepEqual(entry(await callWorker(worker, 'mcp-list', { folder: alpha }), 'project').tools, ['mcp_echo', 'mcp_boom']);
   const inBeta = entry(await callWorker(worker, 'mcp-list', { folder: beta }), 'project');
   assert.equal(inBeta.tools, null, 'beta\'s server was never started: alpha\'s discovery is not beta\'s');
@@ -607,14 +606,14 @@ test('quitting the app (main.cjs::stopWorker) stops the MCP server a turn left i
     id: 'slow', command: process.execPath, args: [FAKE_MCP_SERVER],
     env: { FAKE_MCP_PID_FILE: pidFile, FAKE_MCP_CALL_DELAY_MS: '60000' }, added_at: new Date().toISOString(),
   }]));
-  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home)));
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
   const pids = async () => {
     try { return (await readFile(pidFile, 'utf8')).split('\n').filter(Boolean).map(Number); } catch { return []; }
   };
 
-  const { connection } = await model(t, true);
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'appelle mcp_echo', connection });
+  const { testModel } = await model(t, true);
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'appelle mcp_echo', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   t.after(stop);
   // One process for the discovery (closed right after it), one for the call, still running: the call takes 60 s.
@@ -638,13 +637,13 @@ test('quitting the app (main.cjs::stopWorker) during an MCP discovery stops that
     id: 'slow-start', command: process.execPath, args: [FAKE_MCP_SERVER],
     env: { FAKE_MCP_PID_FILE: pidFile, FAKE_MCP_INIT_DELAY_MS: '60000' }, added_at: new Date().toISOString(),
   }]));
-  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home)));
   const pids = async () => {
     try { return (await readFile(pidFile, 'utf8')).split('\n').filter(Boolean).map(Number); } catch { return []; }
   };
 
-  const { connection } = await model(t, false);
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const { testModel } = await model(t, false);
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
   const { stop } = collectAgentEvents(worker, runId);
   t.after(stop);
   await until(async () => (await pids()).length >= 1, 'the discovery process started');
@@ -663,11 +662,11 @@ test('the tool names listed follow the agent mode: a mode that never offers MCP 
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
   await writeFile(join(home, 'mcp.json'), JSON.stringify([{ id: 'fake', command: process.execPath, args: [FAKE_MCP_SERVER], added_at: new Date().toISOString() }]));
-  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home)));
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'demander' } });
 
-  const { connection, offered } = await model(t, false);
-  assert.equal((await runTurn(worker, project, connection)).at(-1).kind, 'done');
+  const { testModel, offered } = await model(t, false);
+  assert.equal((await runTurn(worker, project, testModel)).at(-1).kind, 'done');
   assert.ok(offered[0].includes('mcp_echo'), 'auto + demander: the model is offered the MCP tools');
   assert.deepEqual((await callWorker(worker, 'mcp-list', { folder: project }))[0].tools, ['mcp_echo', 'mcp_boom']);
 
@@ -678,7 +677,7 @@ test('the tool names listed follow the agent mode: a mode that never offers MCP 
   }
   // And it is what a turn in that mode really offers.
   const before = offered.length;
-  assert.equal((await runTurn(worker, project, connection)).at(-1).kind, 'done');
+  assert.equal((await runTurn(worker, project, testModel)).at(-1).kind, 'done');
   assert.ok(!offered[before].some(name => name.startsWith('mcp_')), `auto + strict: no MCP tool offered (got ${offered[before].join(',')})`);
 });
 
@@ -688,12 +687,12 @@ test('mcp-remove forgets what the turns learned of that server: re-added, it is 
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
-  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } }));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home)));
   const commandLine = `"${process.execPath}" "${FAKE_MCP_SERVER}"`;
   const [added] = await callWorker(worker, 'mcp-add', { commandLine });
 
-  const { connection } = await model(t, false);
-  assert.equal((await runTurn(worker, project, connection)).at(-1).kind, 'done');
+  const { testModel } = await model(t, false);
+  assert.equal((await runTurn(worker, project, testModel)).at(-1).kind, 'done');
   assert.deepEqual((await callWorker(worker, 'mcp-list', { folder: project }))[0].tools, ['mcp_echo', 'mcp_boom']);
 
   await callWorker(worker, 'mcp-remove', { id: added.id });

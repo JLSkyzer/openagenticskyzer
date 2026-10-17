@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { testWorkerOptions } from './support/test-model-provider.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -47,7 +48,7 @@ test('worker::send registers real semantic_search/knowledge_search tools and act
   const { indexFolder } = await import('../core/semantic-index.mts');
   await indexFolder(project, home);
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
 
@@ -73,9 +74,9 @@ test('worker::send registers real semantic_search/knowledge_search tools and act
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
 
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'cherche comment trier une liste', connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'cherche comment trier une liste', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await waitUntilDone(events);
   stop();
@@ -110,7 +111,7 @@ test("worker::semantic_search applies the project's ignored patterns and hides s
   await writeFile(await storePath(project), JSON.stringify(store));
   await writeFile(join(project, '.openagent', 'config.json'), JSON.stringify({ ignored_patterns: 'private/' }));
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
 
@@ -129,9 +130,9 @@ test("worker::semantic_search applies the project's ignored patterns and hides s
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
 
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'cherche comment trier', connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'cherche comment trier', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await waitUntilDone(events);
   stop();

@@ -41,7 +41,7 @@ app.whenReady().then(async () => {
   let win;
   let worker;
   try {
-    worker = new Worker(path.join(__dirname, '..', 'worker.mjs'), { env: { ...process.env, OPENAGENT_HOME: home } });
+    worker = new Worker(path.join(__dirname, '..', 'worker.mjs'), { env: { ...process.env, OPENAGENT_HOME: home }, workerData: { testProviderModule: path.join(__dirname, 'support', 'test-model-provider.mts') } });
     const pending = new Map();
     worker.on('message', message => {
       const done = pending.get(message.id);
@@ -173,11 +173,11 @@ app.whenReady().then(async () => {
     });
     await new Promise((resolve, reject) => { modelServer.once('error', reject); modelServer.listen(0, '127.0.0.1', resolve); });
     try {
-      const connection = { provider: 'test', base_url: `http://127.0.0.1:${modelServer.address().port}/v1`, model: 'test-model', api_key: 'fake' };
+      const testModel = { base_url: `http://127.0.0.1:${modelServer.address().port}/v1`, model: 'test-model', contextWindow: 16384 };
       const runId = await new Promise((resolve, reject) => {
         const id = `turn-${Math.random()}`;
         pending.set(id, { resolve: result => resolve(result.runId), reject });
-        worker.postMessage({ id, op: 'send', payload: { folder: alpha, branchId: 'main', text: 'bonjour', connection } });
+        worker.postMessage({ id, op: 'send', payload: { folder: alpha, branchId: 'main', text: 'bonjour', testModel } });
       });
       const end = await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('the turn did not end within 30 s')), 30000);

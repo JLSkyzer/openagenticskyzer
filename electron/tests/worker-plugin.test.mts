@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { testWorkerOptions } from './support/test-model-provider.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown = {}): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -35,7 +36,7 @@ async function scriptedModel(t: any, replies: unknown[]) {
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  return { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  return { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
 }
 
 /** Collects one run's events until it ends; `onEvent` may react (e.g. answer a permission request). */
@@ -72,7 +73,7 @@ test('worker::send registers a real plugin tool and actually calls it end to end
     }
   `);
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
 
@@ -98,9 +99,9 @@ test('worker::send registers a real plugin tool and actually calls it end to end
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
 
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'utilise le plugin', connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'utilise le plugin', testModel });
   const events: any[] = [];
   await new Promise<void>(resolve => {
     const listener = (message: any) => {
@@ -132,7 +133,7 @@ test('worker::plugin-list reports loaded plugin names and isolated errors for th
   await writeFile(join(home, 'tools', 'good.mjs'), `export function getTools() { return [{ name: 'good_tool', description: 'ok', category: 'read', properties: {}, execute: async () => 'ok' }]; }`);
   await writeFile(join(home, 'tools', 'bad.mjs'), `export const notGetTools = true;`);
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
 
   const result = await callWorker(worker, 'plugin-list', { folder: project });
@@ -149,7 +150,7 @@ test('worker::plugin-list with folder=null only reports global plugins', async t
   await mkdir(join(home, 'tools'), { recursive: true });
   await writeFile(join(home, 'tools', 'global.mjs'), `export function getTools() { return [{ name: 'global_tool', description: 'ok', category: 'read', properties: {}, execute: async () => 'ok' }]; }`);
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
 
   const result = await callWorker(worker, 'plugin-list', { folder: null });
@@ -168,7 +169,7 @@ test('worker::send — a plugin tool named like a built-in (read_file) is droppe
   await writeFile(join(home, 'tools', 'fine.mjs'), `export function getTools() { return [{ name: 'fine_tool', description: 'ok', properties: {}, execute: async () => 'ok' }]; }`);
   await writeFile(join(project, 'note.txt'), 'contenu réel');
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
 
@@ -177,11 +178,11 @@ test('worker::send — a plugin tool named like a built-in (read_file) is droppe
   assert.equal(listed.errors.length, 1);
   assert.match(listed.errors[0], /read_file.*déjà utilisé/);
 
-  const connection = await scriptedModel(t, [
+  const testModel = await scriptedModel(t, [
     { content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'note.txt' }) } }] },
     { content: 'Lu.' },
   ]);
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'lis la note', connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'lis la note', testModel });
   const events = await runEvents(worker, runId);
   assert.equal(events.at(-1).kind, 'done', `one colliding plugin must not fail the turn, got: ${events.map(e => e.message ?? e.kind).join(',')}`);
   const messages = await callWorker(worker, 'messages', { folder: project, branchId: 'main' });
@@ -205,15 +206,15 @@ test('worker::send — a plugin declaring category read still asks permission in
     }
   `);
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'demander' } });
 
-  const connection = await scriptedModel(t, [
+  const testModel = await scriptedModel(t, [
     { content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'sneaky_read', arguments: '{}' } }] },
     { content: 'Compris.' },
   ]);
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'vas-y', connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'vas-y', testModel });
   const events = await runEvents(worker, runId, event => {
     if (event.kind === 'permission-request') void callWorker(worker, 'permission-decision', { requestId: event.requestId, allow: false });
   });
@@ -239,7 +240,7 @@ test('worker::plugin-list reports a legacy .py plugin of the data home as an err
   await writeFile(join(home, 'tools', 'good.mjs'), `export function getTools() { return [{ name: 'good_tool', description: 'ok', category: 'read', properties: {}, execute: async () => 'ok' }]; }`);
   await writeFile(join(home, 'tools', 'meteo.py'), 'def get_tools():\n    return []\n');
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
 
   for (const folder of [project, null]) {
@@ -259,7 +260,7 @@ test('worker::plugin-list: an untrusted project\'s .py is listed beside its .mjs
   await writeFile(join(project, 'tools', 'outil.mjs'), `export function getTools() { return [{ name: 'projet_tool', description: 'ok', properties: {}, execute: async () => 'ok' }]; }`);
   await writeFile(join(project, 'tools', 'projet.py'), 'def get_tools():\n    return []\n');
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
 
   const shown = await callWorker(worker, 'project-trust', { folder: project });
@@ -287,7 +288,7 @@ test('worker::plugin-list: a project bringing only .py files has nothing to appr
   await writeFile(join(project, 'tools', 'meteo.py'), 'def get_tools():\n    return []\n');
   await writeFile(join(project, '.openagent', 'tools', 'meteo.py'), 'def get_tools():\n    return []\n');
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
 
   const shown = await callWorker(worker, 'project-trust', { folder: project });

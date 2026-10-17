@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { testWorkerOptions } from './support/test-model-provider.mts';
 
 const TOOL = 'analyze_project_and_init';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -70,11 +71,11 @@ async function setup(t: any, steps: Step[], toolArgs?: (dirs: { root: string; ot
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   const send = async () => {
-    const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'go', connection });
+    const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'go', testModel });
     return { runId, ...collect(worker, runId) };
   };
   const toolResults = async () => (await callWorker(worker, 'messages', { folder: project, branchId: 'main' })).filter((m: any) => m.role === 'tool').map((m: any) => m.content as string);

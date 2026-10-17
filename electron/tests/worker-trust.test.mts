@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { testWorkerOptions } from './support/test-model-provider.mts';
 
 const FAKE_MCP_SERVER = fileURLToPath(new URL('./fixtures/fake-mcp-server.cjs', import.meta.url));
 
@@ -45,7 +46,7 @@ async function setup(t: any, prefix: string) {
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   return { root, home, project, worker };
 }
@@ -69,12 +70,12 @@ async function fakeModel(t: any, toolCall?: () => { name: string; arguments: Rec
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  return { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  return { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
 }
 
 /** Runs one turn; answers every permission request with `allow`/`always`. */
-async function turn(worker: Worker, folder: string, connection: unknown, decision = { allow: true, always: false }) {
-  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'vas-y', connection });
+async function turn(worker: Worker, folder: string, testModel: unknown, decision = { allow: true, always: false }) {
+  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'vas-y', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   const answered = new Set<string>();
   while (!events.some(e => ['done', 'error', 'stopped'].includes(e.kind))) {
@@ -99,7 +100,7 @@ test('nothing a project brings runs before approval — not on evaluation, Outil
   await writeFile(join(project, '.mcp.json'), JSON.stringify({
     mcpServers: { fake: { command: process.execPath, args: [FAKE_MCP_SERVER], env: { FAKE_MCP_MARKER: mcpMarker } } },
   }));
-  const connection = await fakeModel(t);
+  const testModel = await fakeModel(t);
 
   const shown = await callWorker(worker, 'project-trust', { folder: project });
   assert.equal(shown.state, 'pending');
@@ -112,7 +113,7 @@ test('nothing a project brings runs before approval — not on evaluation, Outil
   assert.deepEqual(plugins.untrusted, ['tools/marker.mjs']);
   const servers = await callWorker(worker, 'mcp-list', { folder: project });
   assert.equal(servers.find((server: any) => server.scope === 'project').trusted, false);
-  const events = await turn(worker, project, connection);
+  const events = await turn(worker, project, testModel);
   assert.equal(events.at(-1).kind, 'done');
   assert.equal(await exists(pluginMarker), false, 'the project plugin never ran');
   assert.equal(await exists(mcpMarker), false, 'the project MCP server never started');
@@ -127,7 +128,7 @@ test('nothing a project brings runs before approval — not on evaluation, Outil
   assert.equal(projectEntry.tools, null, 'listed, not started: no turn has run it yet');
   assert.equal(await exists(pluginMarker), true, 'loaded once trusted');
   assert.equal(await exists(mcpMarker), false, 'the Outils tab (plugin-list, mcp-list) never starts an MCP server, even once trusted');
-  const afterTrust = await turn(worker, project, connection);
+  const afterTrust = await turn(worker, project, testModel);
   assert.equal(afterTrust.at(-1).kind, 'done');
   assert.equal(await exists(mcpMarker), true, 'started by the next turn, once trusted');
   const listedAfterTurn = await callWorker(worker, 'mcp-list', { folder: project });
@@ -164,26 +165,26 @@ test('a repo-shipped shell_ask:false is ignored until the project is trusted', {
   const { project, worker } = await setup(t, 'openagent-worker-trust-shell-');
   await mkdir(join(project, '.openagent'));
   await writeFile(join(project, '.openagent', 'config.json'), JSON.stringify({ override_permissions: true, shell_ask: false }));
-  const connection = await fakeModel(t, () => ({ name: 'run_command', arguments: { command: 'echo confiance' } }));
+  const testModel = await fakeModel(t, () => ({ name: 'run_command', arguments: { command: 'echo confiance' } }));
 
-  const refused = await turn(worker, project, connection, { allow: false, always: false });
+  const refused = await turn(worker, project, testModel, { allow: false, always: false });
   assert.ok(refused.some(e => e.kind === 'permission-request'), 'still asks: the shipped relaxation is not applied');
 
   const shown = await callWorker(worker, 'project-trust', { folder: project });
   assert.deepEqual(shown.relaxations, { shell_ask: { project: false, global: true } });
   await callWorker(worker, 'trust-project', { folder: project, decision: 'trusted', token: shown.token });
-  const trusted = await turn(worker, project, connection);
+  const trusted = await turn(worker, project, testModel);
   assert.equal(trusted.some(e => e.kind === 'permission-request'), false, 'applied once approved');
 });
 
 test('"Toujours" on a file write works at once and writes nothing to the project (session only)', { timeout: 30000 }, async t => {
   const { project, worker } = await setup(t, 'openagent-worker-trust-always-');
   let file = 0;
-  const connection = await fakeModel(t, () => ({ name: 'create_file', arguments: { path: `f${++file}.txt`, content: 'ok' } }));
+  const testModel = await fakeModel(t, () => ({ name: 'create_file', arguments: { path: `f${++file}.txt`, content: 'ok' } }));
 
-  const first = await turn(worker, project, connection, { allow: true, always: true });
+  const first = await turn(worker, project, testModel, { allow: true, always: true });
   assert.ok(first.some(e => e.kind === 'permission-request'), 'the default asks for a write');
-  const second = await turn(worker, project, connection);
+  const second = await turn(worker, project, testModel);
   assert.equal(second.some(e => e.kind === 'permission-request'), false, '"Toujours" is effective right away');
   assert.equal(await exists(join(project, '.openagent', 'config.json')), false, 'no project config is written');
   const view = await callWorker(worker, 'project-trust', { folder: project });
@@ -244,16 +245,16 @@ test('revoking or ignoring a project\'s trust forgets its session « Toujours »
     await mkdir(join(project, 'tools'));
     await writeFile(join(project, 'tools', 'a.mjs'), markerPlugin(join(root, 'plugin-ran.txt'), 'a_tool'));
     let file = 0;
-    const connection = await fakeModel(t, () => ({ name: 'create_file', arguments: { path: `f${++file}.txt`, content: 'ok' } }));
+    const testModel = await fakeModel(t, () => ({ name: 'create_file', arguments: { path: `f${++file}.txt`, content: 'ok' } }));
     const shown = await callWorker(worker, 'project-trust', { folder: project });
     await callWorker(worker, 'trust-project', { folder: project, decision: 'trusted', token: shown.token });
 
-    assert.ok((await turn(worker, project, connection, { allow: true, always: true })).some(e => e.kind === 'permission-request'), `${label}: the first write asks`);
-    assert.ok((await turn(worker, other, connection, { allow: true, always: true })).some(e => e.kind === 'permission-request'), `${label}: so does the other project's`);
-    assert.equal((await turn(worker, project, connection)).some(e => e.kind === 'permission-request'), false, `${label}: « Toujours » holds in the project`);
+    assert.ok((await turn(worker, project, testModel, { allow: true, always: true })).some(e => e.kind === 'permission-request'), `${label}: the first write asks`);
+    assert.ok((await turn(worker, other, testModel, { allow: true, always: true })).some(e => e.kind === 'permission-request'), `${label}: so does the other project's`);
+    assert.equal((await turn(worker, project, testModel)).some(e => e.kind === 'permission-request'), false, `${label}: « Toujours » holds in the project`);
 
     await forget(worker, project);
-    assert.ok((await turn(worker, project, connection)).some(e => e.kind === 'permission-request'), `${label}: the next write asks again`);
-    assert.equal((await turn(worker, other, connection)).some(e => e.kind === 'permission-request'), false, `${label}: another project keeps its « Toujours »`);
+    assert.ok((await turn(worker, project, testModel)).some(e => e.kind === 'permission-request'), `${label}: the next write asks again`);
+    assert.equal((await turn(worker, other, testModel)).some(e => e.kind === 'permission-request'), false, `${label}: another project keeps its « Toujours »`);
   }
 });

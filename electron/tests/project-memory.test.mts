@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
 import { readProjectMemory, MEMORY_DISPLAY_LIMIT } from '../core/project-memory.mts';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { testWorkerOptions } from './support/test-model-provider.mts';
 
 async function project(t: { after(fn: () => unknown): void }) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-project-memory-'));
@@ -90,7 +91,7 @@ function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> 
 test('worker::read-project-memory serves the memory of the folder', async t => {
   const { root, folder } = await project(t);
   await writeFile(join(folder, '.openagent', 'memory.md'), 'un fait');
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: join(root, 'home') } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(join(root, 'home')));
   terminateAtEnd(t, worker);
   assert.deepEqual(await callWorker(worker, 'read-project-memory', { folder }), { content: 'un fait', truncated: false });
 });
@@ -112,7 +113,7 @@ async function fakeModel(t: { after(fn: () => unknown): void }) {
   t.after(() => new Promise(resolve => { for (const h of held) h.response.destroy(); server.closeAllConnections?.(); server.close(() => resolve(undefined)); }));
   const port = (server.address() as { port: number }).port;
   return {
-    connection: { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'm', api_key: 'fake' },
+    testModel: { base_url: `http://127.0.0.1:${port}/v1`, model: 'm' },
     nextHeld: () => new Promise<void>(resolve => { onHeld = resolve; }),
     release: () => { for (const h of held.splice(0)) h.answer(); },
   };
@@ -120,12 +121,12 @@ async function fakeModel(t: { after(fn: () => unknown): void }) {
 
 test('worker::clear-history is refused while an agent run holds the folder, then accepted', async t => {
   const { root, folder } = await project(t);
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: join(root, 'home') } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(join(root, 'home')));
   terminateAtEnd(t, worker);
   const model = await fakeModel(t);
   await callWorker(worker, 'save-messages', { folder, branchId: 'main', messages: [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }] });
   const held = model.nextHeld();
-  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'en cours', connection: model.connection });
+  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'en cours', testModel: model.testModel });
   await held;
   await assert.rejects(callWorker(worker, 'clear-history', { folder }), /en cours/);
   assert.equal((await callWorker(worker, 'messages', { folder, branchId: 'main' })).length, 2, 'the refused clear removed nothing');
@@ -139,7 +140,7 @@ test('worker::clear-history is refused while an agent run holds the folder, then
 
 test('worker::clear-history is refused while a compaction holds the folder', async t => {
   const { root, folder } = await project(t);
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: join(root, 'home') } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(join(root, 'home')));
   terminateAtEnd(t, worker);
   const model = await fakeModel(t);
   const messages = Array.from({ length: 5 }, (_, i) => [{ role: 'user', content: `q${i}` }, { role: 'assistant', content: `r${i}` }]).flat();
@@ -149,7 +150,7 @@ test('worker::clear-history is refused while a compaction holds the folder', asy
     const listener = (message: any) => { if (message?.event === 'agent' && (message.kind === 'compacted' || message.kind === 'compact-failed')) { worker.off('message', listener); resolve(); } };
     worker.on('message', listener);
   });
-  await callWorker(worker, 'compact', { folder, branchId: 'main', connection: model.connection });
+  await callWorker(worker, 'compact', { folder, branchId: 'main', testModel: model.testModel });
   await held;
   await assert.rejects(callWorker(worker, 'clear-history', { folder }), /en cours/);
   model.release();

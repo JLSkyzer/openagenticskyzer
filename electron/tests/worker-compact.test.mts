@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
 import { compactMessages } from '../core/compact.mts';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { testWorkerOptions } from './support/test-model-provider.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -67,7 +68,7 @@ async function fakeModel(t: { after(fn: () => unknown): void }) {
   const port = (server.address() as { port: number }).port;
   return {
     requests,
-    connection: { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' },
+    testModel: { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' },
     set mode(value: Mode) { mode = value; },
     nextHeld() { return new Promise<void>(resolve => { onHeld = resolve; }); },
     release() { mode = 'summary'; for (const h of held.splice(0)) h.answer(); },
@@ -80,13 +81,13 @@ async function setup(t: { after(fn: () => unknown): void }) {
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   const model = await fakeModel(t);
   const seed = (messages: unknown[], branchId = 'main') => callWorker(worker, 'save-messages', { folder: project, branchId, messages });
   const stored = (branchId = 'main') => callWorker(worker, 'messages', { folder: project, branchId });
-  const compact = async (branchId = 'main', connection: Record<string, unknown> = model.connection) => {
-    const { compactionId } = await callWorker(worker, 'compact', { folder: project, branchId, connection });
+  const compact = async (branchId = 'main', testModel: Record<string, unknown> = model.testModel) => {
+    const { compactionId } = await callWorker(worker, 'compact', { folder: project, branchId, testModel });
     return { compactionId, outcome: compactionOutcome(worker, compactionId) };
   };
   return { worker, root, home, project, model, seed, stored, compact };
@@ -151,11 +152,11 @@ test('worker::compact keeps a tool call together with its result: the kept part 
 test('worker::compact refuses a conversation that is too short, or a single long exchange, and changes nothing', async t => {
   const { worker, project, model, seed, stored } = await setup(t);
   await seed(exchanges(2));
-  await assert.rejects(callWorker(worker, 'compact', { folder: project, branchId: 'main', connection: model.connection }), /Pas assez de messages/);
+  await assert.rejects(callWorker(worker, 'compact', { folder: project, branchId: 'main', testModel: model.testModel }), /Pas assez de messages/);
   const toolCall = { role: 'assistant', content: '', tool_calls: [{ id: 'c', type: 'function', function: { name: 'read_file', arguments: '{}' } }] };
   const single = [say('user', 'fais tout'), toolCall, say('tool', 'a'), toolCall, say('tool', 'b'), say('assistant', 'fini')];
   await seed(single);
-  await assert.rejects(callWorker(worker, 'compact', { folder: project, branchId: 'main', connection: model.connection }), /Pas assez de messages/, 'six messages but one single exchange: nothing to summarise');
+  await assert.rejects(callWorker(worker, 'compact', { folder: project, branchId: 'main', testModel: model.testModel }), /Pas assez de messages/, 'six messages but one single exchange: nothing to summarise');
   assert.deepEqual(await stored(), single);
   assert.equal(model.requests.length, 0, 'the model was never called');
 });
@@ -234,7 +235,7 @@ test('worker::compact lowers max_tokens to the room the window leaves beside the
   const { worker, model, seed, compact } = await setup(t);
   await callWorker(worker, 'save-global-settings', { patch: { max_tokens: 8000 } });
   await seed(longExchanges(8));
-  const done = await (await compact('main', { ...model.connection, provider: 'mistral' })).outcome;
+  const done = await (await compact('main', { ...model.testModel, contextWindow: 32_000, outputCap: 16_384 })).outcome;
   assert.equal(done.kind, 'compacted', JSON.stringify(done));
   const [body] = model.requests;
   const estimate = await estimateOf(body);
@@ -246,7 +247,7 @@ test('worker::compact lowers max_tokens to the room the window leaves beside the
 test('worker::compact keeps the full output cap when the window has room for it', async t => {
   const { model, seed, compact } = await setup(t);
   await seed(exchanges(5));
-  const done = await (await compact('main', { ...model.connection, provider: 'mistral' })).outcome;
+  const done = await (await compact('main', { ...model.testModel, contextWindow: 32_000, outputCap: 16_384 })).outcome;
   assert.equal(done.kind, 'compacted');
   assert.equal(model.requests[0].max_tokens, 16384);
 });
@@ -255,7 +256,7 @@ test('worker::compact sends no max_tokens to a provider with no output cap, what
   const { worker, model, seed, compact } = await setup(t);
   await callWorker(worker, 'save-global-settings', { patch: { max_tokens: 8000 } });
   await seed(longExchanges(8));
-  const done = await (await compact('main', { ...model.connection, provider: 'inconnu' })).outcome;
+  const done = await (await compact('main', model.testModel)).outcome;
   assert.equal(done.kind, 'compacted', JSON.stringify(done));
   assert.equal(Object.hasOwn(model.requests[0], 'max_tokens'), false);
 });
@@ -266,7 +267,7 @@ test('worker::compact refuses, without calling the provider, a conversation too 
   await seed(longExchanges(30));
   const file = join(project, '.openagent', 'conversations.json');
   const before = await readFile(file);
-  const done = await (await compact('main', { ...model.connection, provider: 'mistral' })).outcome;
+  const done = await (await compact('main', { ...model.testModel, contextWindow: 32_000, outputCap: 16_384 })).outcome;
   assert.equal(done.kind, 'compact-failed');
   assert.match(done.message, /Contexte plein : la conversation est trop longue pour être compactée avec ce modèle/);
   assert.equal(model.requests.length, 0, 'no request reached the provider');
@@ -278,10 +279,10 @@ test('worker::send and worker::compact size with the same window, the global one
   await callWorker(worker, 'save-global-settings', { patch: { max_tokens: 8000 } });
   await mkdir(join(project, '.openagent'), { recursive: true });
   await writeFile(join(project, '.openagent', 'config.json'), JSON.stringify({ max_tokens: 4096, reserved_tokens: 1, inconnue: 1 }));
-  const connection = { ...model.connection, provider: 'mistral' };
+  const testModel = { ...model.testModel, contextWindow: 32_000, outputCap: 16_384 };
   await seed(longExchanges(8));
-  assert.equal((await (await compact('main', connection)).outcome).kind, 'compacted');
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  assert.equal((await (await compact('main', testModel)).outcome).kind, 'compacted');
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
   await new Promise<void>(resolve => {
     const listener = (message: any) => {
       if (message?.type === 'event' && message.runId === runId && ['done', 'error', 'stopped'].includes(message.kind)) { worker.off('message', listener); resolve(); }
@@ -347,8 +348,8 @@ test('worker::compact is refused while another compaction runs on the folder, an
   const held = model.nextHeld();
   const { outcome } = await compact();
   await held;
-  await assert.rejects(callWorker(worker, 'compact', { folder: project, branchId: 'main', connection: model.connection }), /déjà en cours/);
-  await assert.rejects(callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'salut', connection: model.connection }), /compaction est en cours/);
+  await assert.rejects(callWorker(worker, 'compact', { folder: project, branchId: 'main', testModel: model.testModel }), /déjà en cours/);
+  await assert.rejects(callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'salut', testModel: model.testModel }), /compaction est en cours/);
   await assert.rejects(callWorker(worker, 'fork', { folder: project, source: 'main', count: 1, label: 'Trop tôt' }), /en cours/);
   model.release();
   assert.equal((await outcome).kind, 'compacted');
@@ -361,9 +362,9 @@ test('worker::compact is refused while an agent run is in flight on the folder',
   await seed(exchanges(5));
   model.mode = 'hold';
   const held = model.nextHeld();
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'en cours', connection: model.connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'en cours', testModel: model.testModel });
   await held;
-  await assert.rejects(callWorker(worker, 'compact', { folder: project, branchId: 'main', connection: model.connection }), /en cours/);
+  await assert.rejects(callWorker(worker, 'compact', { folder: project, branchId: 'main', testModel: model.testModel }), /en cours/);
   await callWorker(worker, 'stop', { runId });
 });
 

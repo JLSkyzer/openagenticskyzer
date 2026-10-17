@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { testWorkerOptions } from './support/test-model-provider.mts';
 
 function callWorker(worker: Worker, op: string, payload?: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -51,11 +52,11 @@ async function setup(t: { after(fn: () => unknown): void }) {
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'm', api_key: 'fake' };
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'm' };
   const send = async (payload: Record<string, unknown>) => {
-    const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', connection, ...payload });
+    const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', testModel, ...payload });
     await waitDone(worker, runId);
   };
   const saved = () => callWorker(worker, 'messages', { folder, branchId: 'main' });
@@ -102,7 +103,7 @@ test('a message without attachments is saved and sent exactly as before (no atta
 
 test('bad attachments are refused BEFORE anything starts: no model call, nothing saved', async t => {
   const { worker, folder, seen, saved } = await setup(t);
-  const attempt = (attachments: unknown) => callWorker(worker, 'send', { folder, branchId: 'main', text: 'x', attachments, connection: { provider: 'test', base_url: 'http://127.0.0.1:1/v1', model: 'm', api_key: 'k' } });
+  const attempt = (attachments: unknown) => callWorker(worker, 'send', { folder, branchId: 'main', text: 'x', attachments, testModel: { base_url: 'http://127.0.0.1:1/v1', model: 'm' } });
   await assert.rejects(attempt('pas une liste'), /Pièces? jointes? invalides?/);
   await assert.rejects(attempt([{ ...TEXT, content_type: 'exe' }]), /Pièce jointe invalide/);
   await assert.rejects(attempt([{ ...IMAGE, content: 'http://169.254.169.254/latest/meta-data' }]), /Pièce jointe invalide/, 'an image URL the provider would fetch is refused');

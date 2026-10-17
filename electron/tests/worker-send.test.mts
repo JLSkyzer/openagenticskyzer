@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { testWorkerOptions } from './support/test-model-provider.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -66,16 +67,14 @@ test('worker::send runs a real agent turn: streams events, executes create_file,
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
-    env: { ...process.env, OPENAGENT_HOME: home },
-  });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
 
   // This test is about the turn itself; the write prompt (asked by default since 2026-10-03) is
   // tested in worker-tools.test.mts. The user's own saved choice is respected.
   await callWorker(worker, 'save-global-settings', { patch: { files_ask: false } });
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'crée un fichier notes.md', connection });
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'crée un fichier notes.md', testModel });
   assert.match(runId, /.+/);
 
   const { events, stop } = collectAgentEvents(worker, runId);
@@ -115,13 +114,11 @@ test('worker::send persists whatever was produced so far when the run is stopped
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
-    env: { ...process.env, OPENAGENT_HOME: home },
-  });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
 
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await providerCalled;
   await callWorker(worker, 'stop', { runId });
@@ -152,11 +149,11 @@ async function earlyFailureSetup(t: any, prefix: string) {
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
   const send = async (text: string, keep?: number) => {
-    const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text, connection, ...(keep === undefined ? {} : { keep }) });
+    const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text, testModel, ...(keep === undefined ? {} : { keep }) });
     const { events, stop } = collectAgentEvents(worker, runId);
     await waitUntilDone(events);
     stop();
@@ -219,11 +216,11 @@ test('worker::send asks for no more output than the window leaves beside the rea
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { max_tokens: 8000 } });
-  const connection = { provider: 'mistral', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', contextWindow: 32_000, outputCap: 16_384 };
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await waitUntilDone(events);
   stop();

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { testWorkerOptions } from './support/test-model-provider.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -59,16 +60,16 @@ async function setup(t: { after(fn: () => unknown): void }) {
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   await callWorker(worker, 'save-messages', { folder, branchId: 'main', messages: HISTORY });
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'm', api_key: 'fake' };
-  return { worker, folder, connection, seen };
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'm' };
+  return { worker, folder, testModel, seen };
 }
 
 test('worker::send with `keep` cuts the saved history there before the turn: the model never sees the cut part', async t => {
-  const { worker, folder, connection, seen } = await setup(t);
-  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'second (édité)', keep: 2, connection });
+  const { worker, folder, testModel, seen } = await setup(t);
+  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'second (édité)', keep: 2, testModel });
   await waitDone(worker, runId);
   const sent = JSON.stringify(seen[0].messages);
   assert.equal(sent.includes('réponse 2'), false, 'the cut assistant reply was not sent to the model');
@@ -81,31 +82,31 @@ test('worker::send with `keep` cuts the saved history there before the turn: the
 });
 
 test('worker::send with keep = 0 starts the conversation over (editing the very first message)', async t => {
-  const { worker, folder, connection } = await setup(t);
-  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'autre début', keep: 0, connection });
+  const { worker, folder, testModel } = await setup(t);
+  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'autre début', keep: 0, testModel });
   await waitDone(worker, runId);
   const saved = await callWorker(worker, 'messages', { folder, branchId: 'main' });
   assert.deepEqual(saved.map((m: any) => m.content), ['autre début', 'nouvelle réponse']);
 });
 
 test('worker::send refuses a `keep` longer than what is saved, and loses nothing', async t => {
-  const { worker, folder, connection, seen } = await setup(t);
-  await assert.rejects(callWorker(worker, 'send', { folder, branchId: 'main', text: 'x', keep: 9, connection }), /plus court|enregistr/i);
+  const { worker, folder, testModel, seen } = await setup(t);
+  await assert.rejects(callWorker(worker, 'send', { folder, branchId: 'main', text: 'x', keep: 9, testModel }), /plus court|enregistr/i);
   assert.equal(seen.length, 0, 'no turn was started');
   const saved = await callWorker(worker, 'messages', { folder, branchId: 'main' });
   assert.equal(saved.length, HISTORY.length, 'the saved history is untouched');
 });
 
 test('worker::send refuses a `keep` that is not a non-negative integer', async t => {
-  const { worker, folder, connection } = await setup(t);
+  const { worker, folder, testModel } = await setup(t);
   for (const keep of [-1, 1.5, '2', null]) {
-    await assert.rejects(callWorker(worker, 'send', { folder, branchId: 'main', text: 'x', keep, connection }), /keep|invalide/i, `keep=${JSON.stringify(keep)}`);
+    await assert.rejects(callWorker(worker, 'send', { folder, branchId: 'main', text: 'x', keep, testModel }), /keep|invalide/i, `keep=${JSON.stringify(keep)}`);
   }
 });
 
 test('worker::send without `keep` behaves as before: the turn is appended', async t => {
-  const { worker, folder, connection } = await setup(t);
-  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'suite', connection });
+  const { worker, folder, testModel } = await setup(t);
+  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'suite', testModel });
   await waitDone(worker, runId);
   const saved = await callWorker(worker, 'messages', { folder, branchId: 'main' });
   assert.equal(saved.length, HISTORY.length + 2);

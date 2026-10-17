@@ -91,9 +91,9 @@ app.whenReady().then(async () => {
     });
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     const port = server.address().port;
-    const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+    const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', contextWindow: 16384 };
 
-    worker = new Worker(path.join(__dirname, '..', 'worker.mjs'), { env: { ...process.env, OPENAGENT_HOME: home } });
+    worker = new Worker(path.join(__dirname, '..', 'worker.mjs'), { env: { ...process.env, OPENAGENT_HOME: home }, workerData: { testProviderModule: path.join(__dirname, 'support', 'test-model-provider.mts') } });
     const pending = new Map();
     worker.on('message', message => {
       const done = pending.get(message.id);
@@ -112,7 +112,7 @@ app.whenReady().then(async () => {
       if (request.op === 'open-folder') return dialogAnswer;
       if (request.op === 'global-settings') return { theme: 'dark', accent_color: '#3b82f6', onboarding_done: true };
       if (request.op === 'save-global-settings') return {};
-      const payload = request.op === 'send' ? { ...request.payload, connection } : request.payload;
+      const payload = request.op === 'send' ? { ...request.payload, testModel } : request.payload;
       return callWorker(request.op, payload);
     });
 

@@ -81,10 +81,10 @@ app.whenReady().then(async () => {
     });
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     const port = server.address().port;
-    const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+    const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', contextWindow: 16384 };
     const summaryRequests = () => requests.filter(r => r.isSummary).length;
 
-    worker = new Worker(path.join(__dirname, '..', 'worker.mjs'), { env: { ...process.env, OPENAGENT_HOME: home } });
+    worker = new Worker(path.join(__dirname, '..', 'worker.mjs'), { env: { ...process.env, OPENAGENT_HOME: home }, workerData: { testProviderModule: path.join(__dirname, 'support', 'test-model-provider.mts') } });
     const pending = new Map();
     worker.on('message', message => {
       const done = pending.get(message.id);
@@ -100,9 +100,9 @@ app.whenReady().then(async () => {
       if (request.op === 'connection-snapshot') {
         return { provider: 'openrouter', model: 'm', base_url: 'https://openrouter.ai/api/v1', key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: false };
       }
-      // Same routing as main.cjs: the operations that call the model receive the resolved connection.
+      // Same routing as main.cjs: the operations that call the model receive the test model (the seam main.cjs never enables).
       const needsConnection = request.op === 'send' || request.op === 'compact';
-      return callWorker(request.op, needsConnection ? { ...request.payload, connection } : request.payload);
+      return callWorker(request.op, needsConnection ? { ...request.payload, testModel } : request.payload);
     });
 
     win = new BrowserWindow({

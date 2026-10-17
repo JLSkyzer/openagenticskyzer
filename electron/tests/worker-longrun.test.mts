@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { testWorkerOptions } from './support/test-model-provider.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -44,7 +45,7 @@ async function fakeProviderRoot(t: any) {
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  return { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  return { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
 }
 
 test('a real turn finishing above OPENAGENT_LONG_RUN_MS is flagged longRunning with a summary', async t => {
@@ -53,15 +54,13 @@ test('a real turn finishing above OPENAGENT_LONG_RUN_MS is flagged longRunning w
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
-  const connection = await fakeProviderRoot(t);
+  const testModel = await fakeProviderRoot(t);
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
-    // 1ms threshold: even this fast, fully real (not mocked) HTTP round-trip clears it.
-    env: { ...process.env, OPENAGENT_HOME: home, OPENAGENT_LONG_RUN_MS: '1' },
-  });
+  // 1ms threshold: even this fast, fully real (not mocked) HTTP round-trip clears it.
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home, { OPENAGENT_LONG_RUN_MS: '1' }));
   terminateAtEnd(t, worker);
 
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await waitUntilDone(events);
   stop();
@@ -79,14 +78,12 @@ test('the same fast turn is NOT flagged longRunning under the real 10s default t
   const home = join(root, 'home');
   const project = join(root, 'project');
   await Promise.all([mkdir(home), mkdir(project)]);
-  const connection = await fakeProviderRoot(t);
+  const testModel = await fakeProviderRoot(t);
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
-    env: { ...process.env, OPENAGENT_HOME: home },
-  });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
 
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
   const { events, stop } = collectAgentEvents(worker, runId);
   await waitUntilDone(events);
   stop();
@@ -109,14 +106,12 @@ test('a Stop is never flagged longRunning, even past the threshold — the user 
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
 
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
-    env: { ...process.env, OPENAGENT_HOME: home, OPENAGENT_LONG_RUN_MS: '1' },
-  });
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home, { OPENAGENT_LONG_RUN_MS: '1' }));
   terminateAtEnd(t, worker);
 
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', connection });
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
   await providerCalled;
   await callWorker(worker, 'stop', { runId });
 

@@ -1,7 +1,8 @@
-import { parentPort } from 'node:worker_threads';
+import { parentPort, workerData } from 'node:worker_threads';
 import { join, resolve, isAbsolute, relative, sep } from 'node:path';
 import { writeFile, realpath, lstat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
 import { FoldersService } from './core/folders.mts';
@@ -49,6 +50,12 @@ const LONG_RUN_MS = Number(process.env.OPENAGENT_LONG_RUN_MS) || 10_000;
 // OPENAGENT_PROVIDER_IDLE_MS shortens the provider's silence timeout (120 s) so a test can prove the expiry
 // with a real silent server instead of waiting two minutes — never rely on it outside tests.
 const PROVIDER_IDLE_MS = Number(process.env.OPENAGENT_PROVIDER_IDLE_MS) || undefined;
+// TEST SEAM. Only a test passes workerData.testProviderModule (the absolute path of
+// tests/support/test-model-provider.mts); main.cjs never does (its workerOptions, proven by tests/test-seam.test.mts),
+// and tests/** is never packaged. Without it, payload.testModel of send/compact is never read.
+const testSeam = typeof workerData?.testProviderModule === 'string' && workerData.testProviderModule
+  ? await import(pathToFileURL(workerData.testProviderModule).href)
+  : null;
 const settings = new SettingsService(dataHome);
 const trust = new ProjectTrustService(dataHome, settings);
 const conversations = new Conversations();
@@ -426,7 +433,8 @@ function lastAssistantSummary(messages) {
 // and gets an object shaped like ChatProvider (`.complete()`, `.outputCap()`) — agent.mts/compactMessages
 // never know the difference; its `.contextWindow()` is the engine's real context size (H3). An id whose file
 // is gone (removed from the library, or moved) fails clearly, before anything starts.
-async function providerFor(connection, localModel) {
+async function providerFor(connection, localModel, testModel) {
+  if (testSeam && testModel && !localModel) return testSeam.createTestProvider(testModel);
   if (!localModel) return new ChatProvider(undefined, { idleTimeoutMs: PROVIDER_IDLE_MS });
   const modelPath = await ggufLibrary.resolve(localModel);
   if (!modelPath) throw new Error('Modèle local introuvable : il a peut-être été retiré de la bibliothèque. Choisis-en un autre.');
@@ -617,7 +625,7 @@ async function handle(message) {
       try {
         before = await conversations.messages(folder, branchId);
         planCompaction(before); // too short → refused right away, model never called
-        provider = await providerFor(payload.connection, payload.localModel);
+        provider = await providerFor(payload.connection, payload.localModel, testSeam ? payload.testModel : undefined);
       } catch (error) {
         active.delete(compactionId);
         throw error;
@@ -642,7 +650,7 @@ async function handle(message) {
       const attachments = validateAttachments(payload.attachments);
       // Same principle for a local model: an id whose file is gone must be reported synchronously, not as
       // a run that starts and immediately errors.
-      const provider = await providerFor(payload.connection, payload.localModel);
+      const provider = await providerFor(payload.connection, payload.localModel, testSeam ? payload.testModel : undefined);
       const runId = randomUUID();
       reply(id, true, { runId });
       // Fire-and-forget: the turn's real result streams back as 'event' messages, not

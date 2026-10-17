@@ -59,9 +59,9 @@ app.whenReady().then(async () => {
     });
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     const port = server.address().port;
-    const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+    const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', contextWindow: 16384 };
 
-    worker = new Worker(path.join(__dirname, '..', 'worker.mjs'), { env: { ...process.env, OPENAGENT_HOME: home } });
+    worker = new Worker(path.join(__dirname, '..', 'worker.mjs'), { env: { ...process.env, OPENAGENT_HOME: home }, workerData: { testProviderModule: path.join(__dirname, 'support', 'test-model-provider.mts') } });
     const pending = new Map();
     worker.on('message', message => {
       const done = pending.get(message.id);
@@ -83,10 +83,10 @@ app.whenReady().then(async () => {
         return { installing: true };
       }
       if (request.op === 'connection-snapshot') {
-        return { provider: 'test', model: 'test-model', base_url: connection.base_url, key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: true };
+        return { provider: 'test', model: 'test-model', base_url: testModel.base_url, key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: true };
       }
       let outgoing = request;
-      if (request.op === 'send') outgoing = { ...request, payload: { ...request.payload, connection } };
+      if (request.op === 'send') outgoing = { ...request, payload: { ...request.payload, testModel } };
       const id = `${Date.now()}-${Math.random()}`;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });

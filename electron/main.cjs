@@ -133,8 +133,18 @@ function notifyLongRun(message) {
   new Notification({ title: 'OpenAgentic Skyzer', body: notificationBodyFor(message) }).show();
 }
 
+/**
+ * The options main.cjs builds the worker with, packaged or not. The worker's test seam
+ * (workerData.testProviderModule, see worker.mjs) is never among them, whatever the environment:
+ * tests/test-seam.test.mts proves it, and that startBackend uses this function. The inputs are where the
+ * packaged app's resources live; nothing reads them yet.
+ */
+function workerOptions({ isPackaged, resourcesPath, appDir }) {
+  return { type: 'module', workerData: {} };
+}
+
 function startBackend() {
-  backend = new Worker(path.join(__dirname, 'worker.mjs'), { type: 'module' });
+  backend = new Worker(path.join(__dirname, 'worker.mjs'), workerOptions({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appDir: __dirname }));
   backend.on('message', message => {
     const done = pending.get(message.id);
     if (done) { pending.delete(message.id); message.ok ? done.resolve(message.result) : done.reject(new Error(message.error)); }
@@ -353,4 +363,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { restartApp, resolveSendPayload, createConnections, resolveMainDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection, isExportFilename, notificationBodyFor };
+module.exports = { restartApp, workerOptions, resolveSendPayload, createConnections, resolveMainDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, needsConnection, isExportFilename, notificationBodyFor };

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { testWorkerOptions } from './support/test-model-provider.mts';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
@@ -40,7 +41,7 @@ const call = (id: string, name: string, args: Record<string, unknown>) =>
   json({ choices: [{ message: { content: '', tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: 'tool_calls' }] });
 
 /** A real worker on an isolated data home, and a real model server that answers request N with replies[N]. */
-async function setup(t: any, replies: Reply[], env: Record<string, string> = {}) {
+async function setup(t: any, replies: Reply[], modelOptions: { idleTimeoutMs?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-request-'));
   removeAtEnd(t, root);
   const home = join(root, 'home');
@@ -58,11 +59,11 @@ async function setup(t: any, replies: Reply[], env: Record<string, string> = {})
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(() => resolve(undefined))); });
   const port = (server.address() as { port: number }).port;
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
-  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home, ...env } });
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', ...modelOptions };
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
   const send = async (text: string, extra: Record<string, unknown> = {}) => {
-    const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text, connection, ...extra });
+    const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text, testModel, ...extra });
     const events: any[] = [];
     const listener = (message: any) => { if (message?.type === 'event' && message.event === 'agent' && message.runId === runId) events.push(message); };
     worker.on('message', listener);
@@ -76,7 +77,7 @@ test('a provider gone silent ends the turn with a clear error, and the text alre
   const { send, saved } = await setup(t, [response => {
     response.writeHead(200, { 'content-type': 'text/event-stream' });
     response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Début de réponse' } }] })}\n\n`);
-  }], { OPENAGENT_PROVIDER_IDLE_MS: '400' });
+  }], { idleTimeoutMs: 400 });
   const run = await send('explique');
   await until(() => finished(run.events), 'the expiry');
   run.stop();

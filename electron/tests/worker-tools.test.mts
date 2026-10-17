@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { testWorkerOptions } from './support/test-model-provider.mts';
 
 const run = promisify(execFile);
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -65,18 +66,18 @@ async function setup(t: any, steps: Step[] = [{ text: 'ok' }], extraEnv: Record<
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(() => resolve(undefined))));
   const port = (server.address() as { port: number }).port;
-  const connection = { provider: 'test', base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', api_key: 'fake' };
+  const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
   const start = () => {
-    const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home, ...extraEnv } });
+    const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home, extraEnv));
     terminateAtEnd(t, worker);
     return worker;
   };
   const worker = start();
   const send = async (w: Worker, text = 'go') => {
-    const { runId } = await callWorker(w, 'send', { folder: project, branchId: 'main', text, connection });
+    const { runId } = await callWorker(w, 'send', { folder: project, branchId: 'main', text, testModel });
     return { runId, ...collect(w, runId) };
   };
-  return { root, home, project, bodies, worker, start, send, connection };
+  return { root, home, project, bodies, worker, start, send, testModel };
 }
 const sh = async (args: string[], cwd: string) => (await run('git', args, { cwd })).stdout.trim();
 

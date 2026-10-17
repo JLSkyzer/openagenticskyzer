@@ -92,3 +92,4 @@ import './main-data-home.test.mts';
 import './file-filter.test.mts';
 import './unified-diff.test.mts';
 import './tool-cards.test.mts';
+import './test-seam.test.mts';

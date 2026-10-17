@@ -100,3 +100,20 @@ test('semantic_search never renders a secret or ignored file, even from an index
   assert.equal(output.includes('SECRET-TOOL'), false, output);
   assert.equal(output.includes('secrets.json') || output.includes('private/'), false, output);
 });
+
+test('with the bundled model missing, both tools say so instead of asking to index the project', { timeout: 60000 }, async t => {
+  const { home, folder } = await fixture(t);
+  await writeFile(join(folder, 'sort.py'), 'def sort_list(items):\n    return sorted(items)\n');
+  const { indexFolder } = await import('../core/semantic-index.mts');
+  const { addToKnowledge } = await import('../core/knowledge-base.mts');
+  await indexFolder(folder, home);
+  await addToKnowledge('notes.md', 'trier une liste', home);
+  const { setModelsDir, DEFAULT_MODELS_DIR, EMBEDDINGS_MISSING } = await import('../core/embeddings.mts');
+  setModelsDir(home); // a folder without the model
+  t.after(() => setModelsDir(DEFAULT_MODELS_DIR));
+
+  const { searchTools } = await import('../core/search-tools.mts');
+  const tools = await searchTools(folder, home);
+  assert.equal(await tool(tools, 'semantic_search').execute({ query: 'trier' }, new AbortController().signal), EMBEDDINGS_MISSING);
+  assert.equal(await tool(tools, 'knowledge_search').execute({ query: 'trier' }, new AbortController().signal), `Erreur base de connaissances : ${EMBEDDINGS_MISSING}`);
+});

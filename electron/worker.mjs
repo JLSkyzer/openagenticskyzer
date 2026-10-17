@@ -34,6 +34,7 @@ import { McpConfigStore, readProjectMcpConfig, mergeServerConfigs, redactSecrets
 import { mcpTools, stopAllMcpServers } from './core/mcp-client.mts';
 import { searchTools } from './core/search-tools.mts';
 import { indexFolder } from './core/semantic-index.mts';
+import { setModelsDir, DEFAULT_MODELS_DIR } from './core/embeddings.mts';
 import { loadPlugins, projectPythonPluginFiles } from './core/plugin-loader.mts';
 import { ProjectTrustService } from './core/project-trust.mts';
 import { addFileToKnowledge, listSources as listKnowledgeSources, removeSource as removeKnowledgeSource } from './core/knowledge-base.mts';
@@ -42,6 +43,9 @@ import { addFileToKnowledge, listSources as listKnowledgeSources, removeSource a
 // through its redirect.json. OPENAGENT_HOME lets integration tests replace ~/.openagent with a temp directory — its
 // own redirect.json is followed, the real one is never read.
 const { defaultHome, dataHome } = await resolveHomes();
+// The bundled embedding model: main.cjs passes where it lives (packaged: <resources>/models); a worker started
+// without it (tests) uses the repository copy. Semantic search never downloads anything (core/embeddings.mts).
+setModelsDir(workerData?.modelsDir ?? DEFAULT_MODELS_DIR);
 // A send turn finishing at or beyond this duration is flagged 'longRunning' so main.cjs can
 // raise a native OS notification (mirrors the previous NiceGUI app's notifier.py threshold).
 // OPENAGENT_LONG_RUN_MS lets tests use a real (not mocked) but fast agent turn instead of

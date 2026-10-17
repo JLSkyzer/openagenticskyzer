@@ -4,7 +4,7 @@
 // real window with the real UI entirely outside the dev/test harness.
 const { spawn } = require('node:child_process');
 const path = require('node:path');
-const { mkdtemp, rm } = require('node:fs/promises');
+const { mkdtemp, rm, stat, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
@@ -52,6 +52,12 @@ function freeLoopbackPort() {
 
 async function main() {
   const exePath = path.join(__dirname, '..', 'release', 'win-unpacked', 'openagent.exe');
+  // The bundled embedding model (build.extraResources): real files beside app.asar, the onnx at its committed size.
+  const { EMBEDDING_FILES, EMBEDDING_MODEL } = await import('../core/embeddings.mts');
+  const packagedModel = path.join(__dirname, '..', 'release', 'win-unpacked', 'resources', 'models', ...EMBEDDING_MODEL.split('/'));
+  for (const file of EMBEDDING_FILES) assert.ok((await stat(path.join(packagedModel, file))).isFile(), `packaged ${file}`);
+  assert.equal((await stat(path.join(packagedModel, 'onnx', 'model_quantized.onnx'))).size, 22_972_370, 'the packaged onnx is the committed one');
+  process.stdout.write(`bundled embedding model packaged: ${EMBEDDING_FILES.join(', ')} under resources/models/${EMBEDDING_MODEL}\n`);
   const userData = await mkdtemp(join(tmpdir(), 'openagent-package-userdata-'));
   const openagentHome = await mkdtemp(join(tmpdir(), 'openagent-package-home-'));
   const port = 9334;
@@ -108,6 +114,16 @@ async function main() {
     const folders = await cdpEvaluate(pages[0].webSocketDebuggerUrl, "window.openagent.request({ op: 'list_folders' })");
     assert.ok(Array.isArray(folders), 'the worker still answers after the refused install');
     process.stdout.write(`install-now refused: ${JSON.stringify(refusal)}; worker answered list_folders (${folders.length} folder(s))\n`);
+
+    // A real offline embedding inside the packaged app: knowledge-add reads and embeds a temporary .md with the bundled
+    // model (workerData.modelsDir = <resources>/models), and nothing is downloaded or cached in the data home.
+    const note = join(openagentHome, 'smoke-note.md');
+    await writeFile(note, '# Note\n\nTrier une liste de nombres avec un tri rapide.\n');
+    const added = await cdpEvaluate(pages[0].webSocketDebuggerUrl, `window.openagent.request({ op: 'knowledge-add', payload: { filePath: ${JSON.stringify(note)} } }).then(r => ({ ok: true, r }), e => ({ ok: false, e: String(e.message || e) }))`);
+    assert.equal(added.ok, true, `knowledge-add: ${JSON.stringify(added)}`);
+    assert.ok(added.r.chunks >= 1, `knowledge-add embedded at least one chunk: ${JSON.stringify(added.r)}`);
+    await assert.rejects(stat(join(openagentHome, 'embeddings-cache')), { code: 'ENOENT' }, 'no embeddings cache is created in the data home');
+    process.stdout.write(`knowledge-add in the packaged app: ${JSON.stringify(added.r)}; no embeddings-cache in the data home\n`);
 
     process.stdout.write('PASS packaged executable launches outside npm start and loads the real UI\n');
   } finally {

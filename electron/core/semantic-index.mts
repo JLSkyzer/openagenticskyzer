@@ -18,8 +18,11 @@ export interface IndexEntry {
   text: string;
   vector: number[];
 }
+/** 2: vectors of the bundled quantized model (core/embeddings.mts). A version-1 index holds fp32 vectors: it is
+ * never compared with a quantized query vector, and the next activation or startup pre-warm rebuilds it. */
+export const INDEX_VERSION = 2;
 interface IndexFile {
-  version: 1;
+  version: number;
   entries: IndexEntry[];
 }
 export interface SearchResult {
@@ -93,14 +96,14 @@ export async function indexFolder(
     }
     const chunks = chunkText(content);
     if (!chunks.length) continue;
-    const vectors = await embed(chunks, home);
+    const vectors = await embed(chunks);
     chunks.forEach((text, chunkIndex) => {
       entries.push({ id: `${relFile}:${chunkIndex}`, file: relFile, chunk: chunkIndex, text, vector: vectors[chunkIndex] });
     });
   }
   const file = await storePath(folder);
   const store = new JsonStore();
-  await store.update<IndexFile>(file, { version: 1, entries: [] }, () => ({ version: 1, entries }));
+  await store.update<IndexFile>(file, { version: INDEX_VERSION, entries: [] }, () => ({ version: INDEX_VERSION, entries }));
   await rm(`${file}.pre-electron.bak`, { force: true });
   return { chunks: entries.length };
 }
@@ -108,7 +111,8 @@ export async function indexFolder(
 /** Top-`n` chunks by cosine similarity to `query` — score = cosine similarity itself (this
  * app's cosineSimilarity already returns the `1 - distance` value indexer.py's search scored with).
  * A chunk of a file `excluded` refuses is never returned: an index written before the filter, or before a pattern was
- * added, may still hold one. By default secrets and protected paths are hidden even when no patterns are passed. */
+ * added, may still hold one. By default secrets and protected paths are hidden even when no patterns are passed.
+ * An index of another format version returns nothing, without embedding the query, until it is rebuilt. */
 export async function searchCollection(
   collectionPath: string,
   query: string,
@@ -118,10 +122,11 @@ export async function searchCollection(
 ): Promise<SearchResult[]> {
   if (n <= 0) return [];
   const store = new JsonStore();
-  const data = await store.read<IndexFile>(collectionPath, { version: 1, entries: [] });
+  const data = await store.read<IndexFile>(collectionPath, { version: INDEX_VERSION, entries: [] });
+  if (data.version !== INDEX_VERSION) return []; // an older index: old and new vectors never mix
   const entries = data.entries.filter(entry => !excluded(entry.file));
   if (!entries.length) return [];
-  const [queryVector] = await embed([query], home);
+  const [queryVector] = await embed([query]);
   return entries
     .map(entry => ({ file: entry.file, content: entry.text, score: cosineSimilarity(queryVector, entry.vector) }))
     .sort((a, b) => b.score - a.score)

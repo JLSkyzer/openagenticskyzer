@@ -4,6 +4,7 @@ import { defineTool } from './tool-kit.mts';
 import { searchCollection, storePath } from './semantic-index.mts';
 import { searchKnowledge } from './knowledge-base.mts';
 import { searchExclusion } from './file-filter.mts';
+import { EMBEDDINGS_MISSING } from './embeddings.mts';
 
 const N_RULE = { type: 'integer' as const, minimum: 1, maximum: 20, description: 'Nombre de résultats (défaut 5)' };
 const QUERY_RULE = { type: 'string' as const, maxLength: 2000, description: 'Requête en langage naturel' };
@@ -34,6 +35,8 @@ export async function searchTools(folder: string, home: string, ignoredPatterns 
         try {
           results = await searchCollection(await storePath(folder), args.query as string, home, n, excluded);
         } catch (error) {
+          // The bundled model is missing from the installation: indexing would not help, say what is wrong.
+          if (error instanceof Error && error.message === EMBEDDINGS_MISSING) return EMBEDDINGS_MISSING;
           return `Index not ready: ${error instanceof Error ? error.message : 'Erreur interne'}. Index the project first.`;
         }
         if (!results.length) return 'No results found. The index may not be built yet.';

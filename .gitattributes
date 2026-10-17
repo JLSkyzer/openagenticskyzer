@@ -1,0 +1,2 @@
+# The bundled embedding model is committed byte for byte as downloaded (SHA-256 in the commit message): no EOL conversion.
+electron/resources/models/** -text

@@ -29,7 +29,7 @@ test('indexFolder scans, chunks, embeds real files and writes a real store on di
   assert.ok(progressCalls.every(([, total]) => total === 2));
 
   const raw = JSON.parse(await readFile(await storePath(project), 'utf8'));
-  assert.equal(raw.version, 1);
+  assert.equal(raw.version, 2);
   const files = new Set(raw.entries.map((e: any) => e.file));
   assert.deepEqual([...files].sort(), ['README.md', 'sort.py']);
   assert.ok(raw.entries.every((e: any) => Array.isArray(e.vector) && e.vector.length === 384));
@@ -103,11 +103,11 @@ test('searchCollection never returns a chunk of a secret or excluded file, even 
   const { searchCollection, storePath } = await import('../core/semantic-index.mts');
   const { embed } = await import('../core/embeddings.mts');
   const { searchExclusion } = await import('../core/file-filter.mts');
-  const [vector] = await embed(['trier une liste'], home);
+  const [vector] = await embed(['trier une liste']);
   const entry = (file: string, text: string) => ({ id: `${file}:0`, file, chunk: 0, text, vector });
   const store = await storePath(project);
   await mkdir(dirname(store), { recursive: true });
-  await writeFile(store, JSON.stringify({ version: 1, entries: [
+  await writeFile(store, JSON.stringify({ version: 2, entries: [
     entry('secrets.json', 'SECRET-READ-1'), entry('private/notes.md', 'SECRET-READ-2'), entry('.env.local', 'SECRET-READ-3'),
     entry('sort.py', 'def sort_list(items): return sorted(items)'),
   ] }));
@@ -133,4 +133,19 @@ test('re-indexing after a file is modified: the search finds the new content and
   const [best] = await searchCollection(await storePath(project), 'trier une liste', home, 5);
   assert.equal(best.file, 'topic.py');
   assert.match(best.content, /sort_list/);
+});
+
+test('a version-1 index is never searched (old and new vectors never mix); the next indexFolder writes version 2', { timeout: 60000 }, async t => {
+  const { home, project } = await fixture(t);
+  await writeFile(join(project, 'a.md'), 'tri');
+  const { indexFolder, searchCollection, storePath, INDEX_VERSION } = await import('../core/semantic-index.mts');
+  assert.equal(INDEX_VERSION, 2);
+  const path = await storePath(project);
+  await mkdir(dirname(path), { recursive: true });
+  const unit384 = [1, ...new Array(383).fill(0)];
+  await writeFile(path, JSON.stringify({ version: 1, entries: [{ id: 'a.md:0', file: 'a.md', chunk: 0, text: 'tri', vector: unit384 }] }));
+  assert.deepEqual(await searchCollection(path, 'tri', home), []);
+  await indexFolder(project, home);
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).version, 2);
+  assert.equal((await searchCollection(path, 'tri', home))[0]?.file, 'a.md', 'the rebuilt index is searched');
 });

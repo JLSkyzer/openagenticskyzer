@@ -1,50 +1,60 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { embed, setModelsDir, DEFAULT_MODELS_DIR, EMBEDDING_DIMENSIONS, EMBEDDING_FILES, EMBEDDING_MODEL, EMBEDDINGS_MISSING } from '../core/embeddings.mts';
+import { cosineSimilarity } from '../core/semantic-chunk.mts';
 
-// A real download of Xenova/all-MiniLM-L6-v2 happens on first use in this environment (cached
-// afterwards in the test's own data home) — this suite needs network access and can take a while
-// the first time it ever runs on a machine.
-test('embed() produces real 384-dim normalized vectors, cached under the given home (not node_modules)', { timeout: 120000 }, async t => {
-  const root = await mkdtemp(join(tmpdir(), 'openagent-embeddings-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const home = join(root, 'home');
+const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'));
 
-  const { embed, EMBEDDING_DIMENSIONS } = await import('../core/embeddings.mts');
-  const [vector] = await embed(['fonction qui trie une liste'], home);
+// The quantized Xenova/all-MiniLM-L6-v2 ships in electron/resources/models: nothing here ever downloads.
+test('embed() produces real 384-dim normalized vectors from the bundled model', { timeout: 120000 }, async () => {
+  const [vector] = await embed(['fonction qui trie une liste']);
   assert.equal(EMBEDDING_DIMENSIONS, 384);
   assert.equal(vector.length, 384);
   // normalize: true → unit vector.
   const norm = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0));
   assert.ok(Math.abs(norm - 1) < 1e-3, `expected a unit vector, got norm ${norm}`);
-
-  const { stat } = await import('node:fs/promises');
-  const cacheStat = await stat(join(home, 'embeddings-cache'));
-  assert.ok(cacheStat.isDirectory(), 'the model was cached under the app data home, not the library default');
 });
 
 test('embed() gives semantically closer texts a higher cosine similarity than unrelated ones', { timeout: 120000 }, async () => {
-  const root = await mkdtemp(join(tmpdir(), 'openagent-embeddings-sim-'));
-  const home = join(root, 'home');
-  try {
-    const { embed } = await import('../core/embeddings.mts');
-    const { cosineSimilarity } = await import('../core/semantic-chunk.mts');
-    const [fnSort, fnSortSimilar, unrelated] = await embed([
-      'function sortList(items) { return items.sort(); }',
-      'function orderArray(values) { return values.sort(); }',
-      'the weather in Paris is sunny today',
-    ], home);
-    const related = cosineSimilarity(fnSort, fnSortSimilar);
-    const notRelated = cosineSimilarity(fnSort, unrelated);
-    assert.ok(related > notRelated, `expected related (${related}) > unrelated (${notRelated})`);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  const [fnSort, fnSortSimilar, unrelated] = await embed([
+    'function sortList(items) { return items.sort(); }',
+    'function orderArray(values) { return values.sort(); }',
+    'the weather in Paris is sunny today',
+  ]);
+  const related = cosineSimilarity(fnSort, fnSortSimilar);
+  const notRelated = cosineSimilarity(fnSort, unrelated);
+  assert.ok(related > notRelated, `expected related (${related}) > unrelated (${notRelated})`);
 });
 
 test('embed([]) returns [] without loading the model at all', async () => {
-  const { embed } = await import('../core/embeddings.mts');
-  assert.deepEqual(await embed([], '/definitely/not/a/real/absolute/path/used'), []);
+  assert.deepEqual(await embed([]), []);
+});
+
+test('the bundled model is in the repository and packaged as extraResources', () => {
+  for (const f of EMBEDDING_FILES) assert.ok(statSync(join(DEFAULT_MODELS_DIR, EMBEDDING_MODEL, f)).isFile(), f);
+  assert.equal(statSync(join(DEFAULT_MODELS_DIR, EMBEDDING_MODEL, 'onnx/model_quantized.onnx')).size, 22_972_370);
+  assert.match(readFileSync(join(DEFAULT_MODELS_DIR, EMBEDDING_MODEL, 'LICENSE'), 'utf8'), /Apache License/);
+  assert.deepEqual(pkg.build.extraResources, [{ from: 'resources/models', to: 'models' }]);
+});
+
+test('embed never downloads: an empty models folder fails with EMBEDDINGS_MISSING and stays empty', async t => {
+  const empty = await mkdtemp(join(tmpdir(), 'openagent-no-models-'));
+  t.after(() => rm(empty, { recursive: true, force: true }));
+  setModelsDir(empty);
+  t.after(() => setModelsDir(DEFAULT_MODELS_DIR));
+  await assert.rejects(embed(['x']), { message: EMBEDDINGS_MISSING });
+  assert.deepEqual(await readdir(empty), []);
+  assert.throws(() => setModelsDir('resources/models'), { message: 'Répertoire de modèles absolu requis' });
+});
+
+test('once loaded, the library is locked to local files', { timeout: 120000 }, async () => {
+  await embed(['x']);
+  const { env } = await import('@huggingface/transformers');
+  assert.equal(env.allowRemoteModels, false);
+  assert.equal(env.useFSCache, false);
 });

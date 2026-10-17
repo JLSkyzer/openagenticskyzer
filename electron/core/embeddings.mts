@@ -1,43 +1,73 @@
-import { join } from 'node:path';
-import { isAbsolute } from 'node:path';
+import { stat } from 'node:fs/promises';
+import { isAbsolute, join, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-// Loaded lazily (not at module top-level) so that env.cacheDir below is set BEFORE
-// @huggingface/transformers ever touches its default cache path inside node_modules.
+export const EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
+/** The only files a BERT encoder loads with `dtype: 'q8'` (@huggingface/transformers 4.3.0: q8 → the `_quantized` suffix). */
+export const EMBEDDING_FILES = ['config.json', 'tokenizer.json', 'tokenizer_config.json', 'onnx/model_quantized.onnx'] as const;
+export const EMBEDDING_DIMENSIONS = 384;
+/** The repository's copy (electron/resources/models), used in development and by the tests. The packaged app passes
+ * `<resources>/models` (build.extraResources) through workerData.modelsDir instead — see main.cjs workerOptions. */
+export const DEFAULT_MODELS_DIR = fileURLToPath(new URL('../resources/models/', import.meta.url));
+export const EMBEDDINGS_MISSING = 'Modèle de recherche sémantique absent de l’installation : la recherche sémantique est indisponible.';
+
 type TransformersModule = typeof import('@huggingface/transformers');
 let transformers: TransformersModule | null = null;
 let extractorPromise: Promise<any> | null = null;
-let configuredHome: string | null = null;
+let modelsDir = DEFAULT_MODELS_DIR;
 
-const MODEL = 'Xenova/all-MiniLM-L6-v2';
-export const EMBEDDING_DIMENSIONS = 384;
+/** Points the loader at another models folder (absolute) and drops the pipeline loaded from the previous one. */
+export function setModelsDir(dir: string): void {
+  if (!isAbsolute(dir)) throw new Error('Répertoire de modèles absolu requis');
+  modelsDir = dir;
+  extractorPromise = null;
+}
+
+async function bundledFilesPresent(dir: string): Promise<boolean> {
+  for (const file of EMBEDDING_FILES) {
+    try {
+      if (!(await stat(join(dir, EMBEDDING_MODEL, file))).isFile()) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
 
 /**
- * Local embeddings — a Node/ONNX port of the same model family the previous NiceGUI app used
- * (sentence-transformers/all-MiniLM-L6-v2), run entirely offline after the model's one-time
- * download. `device: 'cpu'` here is @huggingface/transformers' NODE build routing through
- * onnxruntime-node (a native addon): the library's separate browser/WASM build (transformers.web.js)
- * does not actually work outside a real browser (verified empirically — its relative model-path
- * resolution assumes `document`/`location`), so the native backend is the only one that works
- * in this app's worker process. Same packaging class as node-llama-cpp: a real `dependency`,
- * never a devDependency.
+ * Local embeddings with the quantized all-MiniLM-L6-v2 that ships with the app (Apache-2.0, see the LICENSE and model
+ * card beside it). Nothing is ever downloaded: a missing file fails with EMBEDDINGS_MISSING before the library is even
+ * asked, and the library itself is locked to local files (allowRemoteModels = false, local_files_only) with every cache
+ * off, so it neither fetches nor writes anything. The old `<dataHome>/embeddings-cache/` is left in place, unused.
+ *
+ * `device: 'cpu'` is @huggingface/transformers' Node build routing through onnxruntime-node (a native addon): its
+ * browser/WASM build does not work outside a real browser, so the native backend is the only one that works in this
+ * app's worker. Same packaging class as node-llama-cpp: a real `dependency`, never a devDependency.
  */
-async function getExtractor(home: string) {
-  if (!isAbsolute(home)) throw new Error('Répertoire de données absolu requis');
-  if (extractorPromise && configuredHome === home) return extractorPromise;
-  if (!transformers) transformers = await import('@huggingface/transformers');
-  const { pipeline, env } = transformers;
-  // Never the library's own default (inside node_modules — read-only once packaged, and gone on
-  // every reinstall): the model is downloaded once into this app's own data directory.
-  env.cacheDir = join(home, 'embeddings-cache') + '/';
-  configuredHome = home;
-  extractorPromise = pipeline('feature-extraction', MODEL, { device: 'cpu' });
-  return extractorPromise;
+function getExtractor(): Promise<any> {
+  if (extractorPromise) return extractorPromise;
+  const dir = modelsDir;
+  const loading = (async () => {
+    if (!(await bundledFilesPresent(dir))) throw new Error(EMBEDDINGS_MISSING);
+    if (!transformers) transformers = await import('@huggingface/transformers');
+    const { pipeline, env } = transformers;
+    env.allowRemoteModels = false;
+    env.allowLocalModels = true;
+    env.localModelPath = dir.endsWith(sep) ? dir : dir + sep;
+    env.useFSCache = false;
+    env.useBrowserCache = false;
+    return pipeline('feature-extraction', EMBEDDING_MODEL, { device: 'cpu', dtype: 'q8', local_files_only: true });
+  })();
+  extractorPromise = loading;
+  // A failed load is not kept: the next call checks the folder again (e.g. after a repair of the installation).
+  loading.catch(() => { if (extractorPromise === loading) extractorPromise = null; });
+  return loading;
 }
 
 /** Embeds a batch of texts as normalized 384-dim vectors (mean-pooled), in the same order given. */
-export async function embed(texts: string[], home: string): Promise<number[][]> {
+export async function embed(texts: string[]): Promise<number[][]> {
   if (!texts.length) return [];
-  const extractor = await getExtractor(home);
+  const extractor = await getExtractor();
   const output = await extractor(texts, { pooling: 'mean', normalize: true });
   const [batch, dim] = output.dims;
   const vectors: number[][] = [];

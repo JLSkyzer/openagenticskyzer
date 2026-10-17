@@ -101,6 +101,11 @@ test('main never passes the test seam to the worker, packaged or not, whatever t
     const { workerOptions } = require('../main.cjs');
     for (const isPackaged of [true, false])
       assert.equal('testProviderModule' in workerOptions({ isPackaged, resourcesPath: 'C:\\r', appDir: 'C:\\a' }).workerData, false);
+    for (const isPackaged of [true, false])
+      assert.deepEqual(Object.keys(workerOptions({ isPackaged, resourcesPath: 'C:\\r', appDir: 'C:\\a' }).workerData), ['modelsDir']);
+    // The bundled embedding model: extraResources once packaged, the repository's resources/models otherwise.
+    assert.equal(workerOptions({ isPackaged: true, resourcesPath: 'C:\\r', appDir: 'C:\\a' }).workerData.modelsDir, 'C:\\r\\models');
+    assert.equal(workerOptions({ isPackaged: false, resourcesPath: 'C:\\r', appDir: 'C:\\a' }).workerData.modelsDir, 'C:\\a\\resources\\models');
   } finally {
     if (saved === undefined) delete process.env.OPENAGENT_TEST_PROVIDER; else process.env.OPENAGENT_TEST_PROVIDER = saved;
   }

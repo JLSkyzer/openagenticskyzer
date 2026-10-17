@@ -14,8 +14,11 @@ export interface KnowledgeEntry {
   text: string;
   vector: number[];
 }
+/** 2: vectors of the bundled quantized model (core/embeddings.mts). A version-1 base holds fp32 vectors; unlike a
+ * project index it cannot be rebuilt from a folder, so its stored texts are re-embedded once (upgradeKnowledge). */
+export const KNOWLEDGE_VERSION = 2;
 interface KnowledgeFile {
-  version: 1;
+  version: number;
   entries: KnowledgeEntry[];
 }
 export interface KnowledgeSearchResult {
@@ -41,7 +44,8 @@ export function knowledgeStorePath(home: string): string {
 export async function addToKnowledge(source: string, text: string, home: string): Promise<number> {
   const chunks = chunkText(text);
   if (!chunks.length) return 0;
-  const vectors = await embed(chunks, home);
+  await upgradeKnowledge(home);
+  const vectors = await embed(chunks);
   const newEntries: KnowledgeEntry[] = chunks.map((chunkedText, i) => ({
     id: `${source}:${i}`,
     source,
@@ -50,8 +54,8 @@ export async function addToKnowledge(source: string, text: string, home: string)
     vector: vectors[i],
   }));
   const store = new JsonStore();
-  await store.update<KnowledgeFile>(knowledgeStorePath(home), { version: 1, entries: [] }, current => ({
-    version: 1,
+  await store.update<KnowledgeFile>(knowledgeStorePath(home), { version: KNOWLEDGE_VERSION, entries: [] }, current => ({
+    version: KNOWLEDGE_VERSION,
     entries: [...current.entries.filter(e => e.source !== source), ...newEntries],
   }));
   return newEntries.length;
@@ -77,27 +81,50 @@ export async function addFileToKnowledge(filePath: string, home: string): Promis
 
 export async function listSources(home: string): Promise<string[]> {
   const store = new JsonStore();
-  const data = await store.read<KnowledgeFile>(knowledgeStorePath(home), { version: 1, entries: [] });
+  const data = await store.read<KnowledgeFile>(knowledgeStorePath(home), { version: KNOWLEDGE_VERSION, entries: [] });
   return [...new Set(data.entries.map(e => e.source))].sort();
 }
 
 export async function removeSource(source: string, home: string): Promise<number> {
   const store = new JsonStore();
   let removed = 0;
-  await store.update<KnowledgeFile>(knowledgeStorePath(home), { version: 1, entries: [] }, current => {
+  await store.update<KnowledgeFile>(knowledgeStorePath(home), { version: KNOWLEDGE_VERSION, entries: [] }, current => {
     const kept = current.entries.filter(e => e.source !== source);
     removed = current.entries.length - kept.length;
-    return { version: 1, entries: kept };
+    // The version found, never one this function did not compute: removing chunks does not re-embed the others.
+    return { version: current.version, entries: kept };
   });
   return removed;
 }
 
+/**
+ * Re-embeds every entry's stored text with the bundled model when the base is of another format version, and writes
+ * KNOWLEDGE_VERSION; returns true if it rewrote. The store is read first and only written when the version differs, so
+ * an up-to-date base is never touched; the version is checked again inside the write queue, where a concurrent call may
+ * already have upgraded it. A base that does not exist yet needs nothing.
+ */
+export async function upgradeKnowledge(home: string): Promise<boolean> {
+  const file = knowledgeStorePath(home);
+  const store = new JsonStore();
+  const found = await store.read<KnowledgeFile>(file, { version: KNOWLEDGE_VERSION, entries: [] });
+  if (found.version === KNOWLEDGE_VERSION) return false;
+  let rewrote = false;
+  await store.update<KnowledgeFile>(file, { version: KNOWLEDGE_VERSION, entries: [] }, async current => {
+    if (current.version === KNOWLEDGE_VERSION) return current;
+    const vectors = await embed(current.entries.map(e => e.text));
+    rewrote = true;
+    return { version: KNOWLEDGE_VERSION, entries: current.entries.map((e, i) => ({ ...e, vector: vectors[i] })) };
+  });
+  return rewrote;
+}
+
 export async function searchKnowledge(query: string, home: string, n = 5): Promise<KnowledgeSearchResult[]> {
   if (n <= 0) return [];
+  await upgradeKnowledge(home);
   const store = new JsonStore();
-  const data = await store.read<KnowledgeFile>(knowledgeStorePath(home), { version: 1, entries: [] });
+  const data = await store.read<KnowledgeFile>(knowledgeStorePath(home), { version: KNOWLEDGE_VERSION, entries: [] });
   if (!data.entries.length) return [];
-  const [queryVector] = await embed([query], home);
+  const [queryVector] = await embed([query]);
   return data.entries
     .map(entry => ({ source: entry.source, content: entry.text, score: cosineSimilarity(queryVector, entry.vector) }))
     .sort((a, b) => b.score - a.score)

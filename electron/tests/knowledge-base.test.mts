@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readFile, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 async function fixture(t: any) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-knowledge-'));
@@ -21,7 +21,7 @@ test('addToKnowledge chunks and embeds real text, listSources reflects the new s
   assert.deepEqual(await listSources(home), ['notes.txt']);
 
   const raw = JSON.parse(await readFile(knowledgeStorePath(home), 'utf8'));
-  assert.equal(raw.version, 1);
+  assert.equal(raw.version, 2);
   assert.equal(raw.entries.length, count);
   assert.ok(raw.entries.every((e: any) => e.source === 'notes.txt' && Array.isArray(e.vector) && e.vector.length === 384));
 });
@@ -106,4 +106,45 @@ test('addFileToKnowledge refuses a path that does not exist', { timeout: 20000 }
   const { addFileToKnowledge } = await import('../core/knowledge-base.mts');
 
   await assert.rejects(addFileToKnowledge(join(root, 'jamais-créé.txt'), home));
+});
+
+test('a version-1 knowledge base is re-embedded once with the bundled model before a search', { timeout: 60000 }, async t => {
+  const { home } = await fixture(t);
+  const { searchKnowledge, knowledgeStorePath, KNOWLEDGE_VERSION } = await import('../core/knowledge-base.mts');
+  assert.equal(KNOWLEDGE_VERSION, 2);
+  const path = knowledgeStorePath(home);
+  await mkdir(dirname(path), { recursive: true });
+  const seeded = [1, ...new Array(383).fill(0)];
+  await writeFile(path, JSON.stringify({ version: 1, entries: [{ id: 'n.md:0', source: 'n.md', chunk: 0, text: 'trier une liste', vector: seeded }] }));
+
+  const results = await searchKnowledge('liste', home);
+  assert.deepEqual(results.map(r => r.source), ['n.md']);
+  const raw = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(raw.version, 2);
+  const [entry] = raw.entries;
+  assert.equal(entry.text, 'trier une liste');
+  assert.equal(entry.vector.length, 384);
+  assert.notDeepEqual(entry.vector, seeded, 'the old vector was replaced');
+  const norm = Math.sqrt(entry.vector.reduce((sum: number, v: number) => sum + v * v, 0));
+  assert.ok(Math.abs(norm - 1) < 1e-3, `expected a unit vector, got norm ${norm}`);
+
+  const before = (await stat(path)).mtimeMs;
+  await searchKnowledge('liste', home);
+  assert.equal((await stat(path)).mtimeMs, before, 'an up-to-date knowledge base is not rewritten');
+});
+
+test('removeSource keeps the version it found', async t => {
+  const { home } = await fixture(t);
+  const { removeSource, knowledgeStorePath } = await import('../core/knowledge-base.mts');
+  const path = knowledgeStorePath(home);
+  await mkdir(dirname(path), { recursive: true });
+  const vector = new Array(384).fill(0);
+  await writeFile(path, JSON.stringify({ version: 1, entries: [
+    { id: 'a.md:0', source: 'a.md', chunk: 0, text: 'A', vector },
+    { id: 'b.md:0', source: 'b.md', chunk: 0, text: 'B', vector },
+  ] }));
+  assert.equal(await removeSource('a.md', home), 1);
+  const raw = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(raw.version, 1, 'old vectors are never stamped with the new version');
+  assert.deepEqual(raw.entries.map((e: any) => e.source), ['b.md']);
 });

@@ -133,11 +133,12 @@ function notifyLongRun(message) {
 /**
  * The options main.cjs builds the worker with, packaged or not. The worker's test seam
  * (workerData.testProviderModule, see worker.mjs) is never among them, whatever the environment:
- * tests/test-seam.test.mts proves it, and that startBackend uses this function. The inputs are where the
- * packaged app's resources live; nothing reads them yet.
+ * tests/test-seam.test.mts proves it, and that startBackend uses this function. Its only datum is where the bundled
+ * embedding model lives: build.extraResources copies resources/models to <resources>/models, real files outside
+ * app.asar that onnxruntime reads directly; unpackaged, the repository's own resources/models.
  */
 function workerOptions({ isPackaged, resourcesPath, appDir }) {
-  return { type: 'module', workerData: {} };
+  return { type: 'module', workerData: { modelsDir: isPackaged ? path.join(resourcesPath, 'models') : path.join(appDir, 'resources', 'models') } };
 }
 
 function startBackend() {

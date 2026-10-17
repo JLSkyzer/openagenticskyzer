@@ -54,6 +54,14 @@ test('no production module names an online model service', async () => {
   }
 });
 
+test('the embedding loader cannot download', async () => {
+  const source = await readFile(join(electron, 'core', 'embeddings.mts'), 'utf8');
+  assert.match(source, /allowRemoteModels = false/);
+  assert.match(source, /local_files_only: true/);
+  assert.equal(source.includes('cacheDir'), false, 'no download cache is configured');
+  assert.equal(source.includes('http'), false, 'no URL is named');
+});
+
 test('the data-folder migration no longer knows the vault', async () => {
   for (const file of [join('core', 'data-dir.mts'), join('core', 'data-home.cjs')]) {
     assert.equal((await readFile(join(electron, file), 'utf8')).toLowerCase().includes('connections'), false, `${file} names « connections »`);

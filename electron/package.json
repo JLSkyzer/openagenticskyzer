@@ -125,6 +125,12 @@
       "node_modules/lodash.isequal/**/*",
       "node_modules/tiny-typed-emitter/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "resources/models",
+        "to": "models"
+      }
+    ],
     "asarUnpack": [
       "node_modules/node-llama-cpp/**/*",
       "node_modules/@node-llama-cpp/**/*",

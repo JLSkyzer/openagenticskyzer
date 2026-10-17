@@ -3370,7 +3370,8 @@ Demande (validée par l'utilisateur) : `git_diff` et `git_diff_staged` ne montre
 
 ## À faire — lots suivants (demandes de l'utilisateur, 2026-10-17)
 
-1. **Modèles 100 % locaux** (conception `docs/superpowers/specs/2026-10-17-local-only-models-design.md`) : plus aucun fournisseur en ligne, plus d'outils web, plus de Hugging Face ; clés effacées ; modèle d'embeddings livré dans l'app.
+1. **Modèles 100 % locaux** (conception `docs/superpowers/specs/2026-10-17-local-only-models-design.md`) : la sélection du modèle ne propose plus que les fichiers `.gguf` locaux ; clés des fournisseurs en ligne effacées ; modèle d'embeddings livré dans l'app. **Aucun outil ni réglage retiré** (outils web, jeton Hugging Face, images… restent).
 2. **Vision + débordement VRAM → RAM/CPU** :
    - vision : les modèles `.gguf` de vision (modèle + projecteur `mmproj`) décrivent les captures envoyées, via `llama-mtmd-cli` de llama.cpp livré dans l'app (node-llama-cpp 3.x n'accepte pas d'image ; la v4, qui l'apportera, n'est pas publiée au 2026-10-17 — issue withcatai/node-llama-cpp#88) ; le modèle de discussion est déchargé pendant l'appel pour ne pas doubler la mémoire ;
    - débordement : demandé depuis longtemps par l'utilisateur et **jamais porté** depuis Python (`estimate_gpu_layers` dans `utils/utils.py`, étiquette `python-final`, servait à LM Studio / llama.cpp serveur) ; le moteur `.gguf` actuel s'en remet au réglage par défaut de node-llama-cpp, **non vérifié** : mesurer un modèle plus gros que la VRAM, reprendre une répartition explicite si nécessaire, afficher couches GPU / CPU.
+3. **Audit des outils** (demandé le 2026-10-17, après le lot 1) : « tout doit être conservé, voire ajouté s'il en manque » — comparer les outils de l'agent à ceux de l'ancienne app Python (`python-final`) et à ce qu'on attend d'un agent de code, proposer ceux qui manquent.

@@ -1,10 +1,11 @@
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import type { AgentTool } from './agent.mts';
 import { metadataDirectory } from './json-store.mts';
-import { isSensitiveFile, protectedPathMatcher } from './file-filter.mts';
+import { isSensitiveFile } from './file-filter.mts';
+import { projectPathGuard } from './path-guard.mts';
 import { boundedDiff, unifiedDiff } from './unified-diff.mts';
 import { defineTool, type ParamRule } from './tool-kit.mts';
 
@@ -13,45 +14,10 @@ export async function workspaceTools(folder: string, ignoredPatterns: string): P
   if (!isAbsolute(folder)) throw new Error('Dossier projet absolu requis');
   const root = await realpath(folder);
   if (!(await lstat(root)).isDirectory()) throw new Error('Dossier projet invalide');
-  // .env*, .git, .openagent and the project's ignored_patterns — core/file-filter.mts, shared with the semantic index.
-  const blocked = protectedPathMatcher(ignoredPatterns);
-  const typedPath = (value: string) => resolve(root, value.replace(/[\\/]/g, sep));
-  const outside = (rel: string, allowRoot: boolean) =>
-    rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel) || rel.includes(':') || (!rel && !allowRoot);
-  /** `file` under the names on disk: the realpath of its longest existing prefix, then the levels not created yet. */
-  const onDiskPath = async (file: string) => {
-    const missing: string[] = [];
-    for (let cursor = file; ; cursor = dirname(cursor)) {
-      try { return join(await realpath(cursor), ...missing); }
-      catch (e: any) { if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') throw e; }
-      if (dirname(cursor) === cursor) throw new Error('Chemin invalide');
-      missing.unshift(basename(cursor));
-    }
-  };
-  /** The one guard of every workspace tool. The typed name is checked first (inside the project, not protected nor
-   * ignored, no ambiguous level, no link or junction on the way), then the name on disk: a Windows 8.3 short name
-   * (GIT~1, OPENAG~1, SECRET~1.JSO) or another case (PRIVATE/ for an ignored private/) reaches the same place under a
-   * name the typed checks do not recognise, and realpath gives the real one. `root` is itself a realpath. Returns the
-   * path on disk, so a search walks — and shows — the real names. */
-  const safePath = async (value: string, allowRoot = false) => {
-    if (!value || value.includes('\0')) throw new Error('Chemin invalide');
-    const file = typedPath(value);
-    const rel = relative(root, file);
-    if (outside(rel, allowRoot)) throw new Error('Chemin hors projet ou racine protégée');
-    if (blocked(rel)) throw new Error('Fichier ignoré ou protégé');
-    let cursor = root;
-    for (const segment of rel.split(sep).filter(Boolean)) {
-      if (/[. ]$/.test(segment)) throw new Error('Chemin ambigu refusé');
-      cursor = join(cursor, segment);
-      try { if ((await lstat(cursor)).isSymbolicLink()) throw new Error('Lien ou jonction refusé'); }
-      catch (e: any) { if (e.code !== 'ENOENT') throw e; }
-    }
-    const onDisk = await onDiskPath(file);
-    const relOnDisk = relative(root, onDisk);
-    if (outside(relOnDisk, allowRoot)) throw new Error('Chemin hors projet ou racine protégée');
-    if (blocked(relOnDisk)) throw new Error('Fichier ignoré ou protégé');
-    return onDisk;
-  };
+  // The one guard of every workspace tool, shared with the git read tools (core/path-guard.mts): blocked is .env*, .git,
+  // .openagent and the project's ignored_patterns (core/file-filter.mts, shared with the semantic index); safePath checks
+  // the typed name and the name on disk and returns the path on disk, so a search walks — and shows — the real names.
+  const { blocked, typedPath, safePath } = projectPathGuard(root, ignoredPatterns);
   /** Opens a text file for read_file, view_file, grep_file and edit_file: key material by name (core/file-filter.mts)
    * is refused here, so none of them ever returns or rewrites its content. list_dir still names it. safePath() has
    * already checked the typed and the on-disk path against the protected and ignored ones; key material is checked on

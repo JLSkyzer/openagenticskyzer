@@ -72,6 +72,7 @@ import './semantic-index.test.mts';
 import './knowledge-base.test.mts';
 import './search-tools.test.mts';
 import './worker-search-tools.test.mts';
+import './worker-git-tools.test.mts';
 import './worker-index-status.test.mts';
 import './worker-knowledge.test.mts';
 import './plugin-loader.test.mts';

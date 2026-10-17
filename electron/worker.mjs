@@ -197,7 +197,7 @@ async function builtInTools(folder, effective) {
   return [
     ...await workspaceTools(folder, effective.ignored_patterns),
     ...await memoryTools(folder, dataHome),
-    ...await gitTools(folder),
+    ...await gitTools(folder, effective.ignored_patterns),
     ...projectTools(folder),
     ...await shellTools(folder),
     ...await webTools(),

@@ -1,7 +1,7 @@
 'use strict';
-// The data home, resolved in ONE place for both processes: main.cjs (the connections vault) requires it, worker.mjs
+// The data home, resolved in ONE place for both processes: main.cjs (the startup check) requires it, worker.mjs
 // (everything else) and core/data-dir.mts import it. CommonJS on purpose: main.cjs loads it with a plain require(), so
-// the packaged app needs no dynamic import of a TypeScript module at startup to find the vault. Packaged by the
+// the packaged app needs no dynamic import of a TypeScript module at startup to find the data home. Packaged by the
 // `core/**/*` entry of build.files.
 const { lstat, readFile } = require('node:fs/promises');
 const path = require('node:path');
@@ -21,7 +21,7 @@ function redirectError(file, error) {
  * (written by core/data-dir.mts::migrateDataDir, Réglages › Général › Répertoire de données), or `defaultHome`
  * itself when there is no redirect. Reads the pointer as core/json-store.mts reads any data file: a missing file is
  * "no redirect"; a non-regular file or unreadable JSON is an error naming the file (`error.redirectFile`), never
- * silently replaced by the default — a vault or a history written to the wrong folder would look like lost data.
+ * silently replaced by the default — settings or a history written to the wrong folder would look like lost data.
  */
 async function resolveDataHome(defaultHome) {
   const file = path.join(defaultHome, REDIRECT_FILE);

@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const { requestMessages, fitToBudget, closeDanglingCalls, estimateRequestTokens, CONTEXT_FULL } = await import('../core/request-context.mts');
-const { CONTEXT_WINDOWS, contextWindow, contextBudget, characters, tokensFor, effectiveWindow, MIN_LOCAL_CONTEXT } = await import('../core/context-budget.mts');
+const budget = await import('../core/context-budget.mts');
+const { contextBudget, characters, tokensFor, effectiveWindow, MIN_LOCAL_CONTEXT } = budget;
 
 const TEXT = { name: 'notes.txt', content_type: 'text', content: 'FICHIER-SECRET-42', size_kb: 1 };
 const callMessage = (id: string, name: string, args: string, content = '') => ({ role: 'assistant' as const, content, tool_calls: [{ id, type: 'function' as const, function: { name, arguments: args } }] });
@@ -97,13 +98,9 @@ test('a tool call left without its result gets one, in call order; a complete tr
   assert.equal(closeDanglingCalls([{ role: 'user', content: 'go' }, callMessage('c9', 'git_commit', '{}')] as any, 'Interrompu : boom').added[0].content, 'Interrompu : boom');
 });
 
-test('the shared window table and the 4-characters estimate', () => {
-  assert.deepEqual({ ...CONTEXT_WINDOWS }, { together: 128_000, groq: 128_000, mistral: 32_000, gemini: 1_000_000, openrouter: 128_000 });
-  assert.equal(contextWindow('groq', null), 128_000);
-  assert.equal(contextWindow('groq', 20_000), 20_000, 'max_tokens wins');
-  assert.equal(contextWindow(null, null), 128_000, "no provider: openrouter's window, the app's default provider");
-  assert.equal(contextWindow('ollama', null), 128_000, "an unknown (or removed) provider: the default provider's window");
-  assert.equal(contextWindow('constructor', null), 128_000, 'never an inherited property');
+test('the shared budget and the 4-characters estimate; no provider window table is left', () => {
+  assert.equal('CONTEXT_WINDOWS' in budget, false, 'the window is the engine one, never a provider table');
+  assert.equal('contextWindow' in budget, false);
   assert.equal(contextBudget(32_000, 2048), 29_952);
   assert.equal(contextBudget(100, 5000), 1);
   assert.equal(characters('😀😀'), 2);

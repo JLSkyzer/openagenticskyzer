@@ -3,11 +3,10 @@ import type {
   Attachment,
   BranchInfo,
   ChatMessage,
-  ConnectionPatch,
-  ConnectionSnapshot,
   FolderListItem,
   IndexEvent,
   IndexState,
+  ModelStatus,
   ProjectSettings,
   PromptEntry,
   UpdateStatus,
@@ -85,7 +84,7 @@ export function getGlobalSettings(): Promise<GlobalSettings> {
   return request('global-settings');
 }
 
-// Whatever reads settings or the active connection (the context gauge) must follow a change made
+// Whatever reads settings or the active model (the context gauge, the model button) must follow a change made
 // elsewhere, in the settings dialog or the model dialog. The bridge is the one place every save goes
 // through, so it announces them — after success only: a refused save changed nothing.
 const settingsListeners = new Set<() => void>();
@@ -252,17 +251,10 @@ export function forkBranch(folder: string, source: string, count: number, label:
   return request('fork', { folder, source, count, label });
 }
 
-// exporter.py, ported: writes a Markdown/HTML/JSON export of the branch to the project folder. Never
-// carries the connection's API key (export.mts doesn't call the model) — model/provider are the
-// already-redacted strings the model button shows, not a resolved connection.
-export function exportConversation(
-  folder: string,
-  branchId: string,
-  format: 'md' | 'html' | 'json',
-  provider: string,
-  model: string,
-): Promise<{ filename: string }> {
-  return request('export-conversation', { folder, branchId, format, provider, model });
+// exporter.py, ported: writes a Markdown/HTML/JSON export of the branch to the project folder. The worker names
+// the active .gguf in the header itself: the page sends no model.
+export function exportConversation(folder: string, branchId: string, format: 'md' | 'html' | 'json'): Promise<{ filename: string }> {
+  return request('export-conversation', { folder, branchId, format });
 }
 
 // Opens the just-exported file with the OS's associated application (os.startfile on Windows,
@@ -297,20 +289,14 @@ export function compactConversation(folder: string, branchId: string): Promise<{
   return request('compact', { folder, branchId });
 }
 
-// The connection vault lives in main.cjs (safeStorage) — these ops are answered there,
-// never by the worker. The snapshot carries no secret; api_key only ever flows inward.
-export function getConnection(folder: string | null): Promise<ConnectionSnapshot> {
-  return request('connection-snapshot', { folder });
+// The active .gguf and the window its engine runs with (core/active-model.mts::modelStatus): read when the page
+// needs it, then kept live by onModelEvent, which every turn posts once its engine has loaded.
+export function getModelStatus(): Promise<ModelStatus> {
+  return request('model-status');
 }
 
-// confirmEndpoint must only be true after the user explicitly agreed to re-bind an
-// existing key to a different URL (Connections.save refuses otherwise).
-export function saveConnection(
-  folder: string | null,
-  patch: ConnectionPatch,
-  confirmEndpoint = false,
-): Promise<ConnectionSnapshot> {
-  return announcing(request<ConnectionSnapshot>('save-connection', { folder, patch, authorization: { confirmEndpoint } }));
+export function onModelEvent(listener: (status: ModelStatus) => void): () => void {
+  return window.openagent.onModelEvent(({ type: _type, event: _event, ...status }) => listener(status));
 }
 
 // Zone Danger: none of these delete project files, only history / sidebar entries / settings.
@@ -339,13 +325,11 @@ export type {
   Attachment,
   BranchInfo,
   ChatMessage,
-  ConnectionPatch,
-  ConnectionSnapshot,
   FolderListItem,
   IndexEvent,
   IndexState,
+  ModelStatus,
   ProjectSettings,
   PromptEntry,
-  ProviderName,
   UpdateStatus,
 } from './types';

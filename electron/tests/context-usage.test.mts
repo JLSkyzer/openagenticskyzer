@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  CONTEXT_WINDOWS,
   computeContext,
   contextLevel,
   contextLimit,
@@ -12,13 +11,6 @@ import {
 } from '../renderer-src/src/state/context.ts';
 
 const msg = (role: string, content: string) => ({ role, content });
-
-test('windows table is the one of the NiceGUI app (utils.py::_DEFAULT_CTX_LIMITS), nothing invented', () => {
-  assert.deepEqual(CONTEXT_WINDOWS, {
-    together: 128_000, groq: 128_000, mistral: 32_000, gemini: 1_000_000,
-    openrouter: 128_000,
-  });
-});
 
 test('estimateTokens: 4 characters per token, user and assistant messages only', () => {
   // 8 + 12 characters → 20 // 4 = 5. The tool output (a big one) and the system message do not count.
@@ -40,26 +32,33 @@ test('an assistant turn that only calls a tool (empty content) counts for nothin
   assert.equal(estimateTokens([msg('assistant', '')]), 0);
 });
 
-test('contextLimit: the configured max_tokens wins over the provider window; reserved tokens are deducted', () => {
-  assert.equal(contextLimit('groq', null, 2048), 128_000 - 2048);
-  assert.equal(contextLimit('groq', 10_000, 2048), 10_000 - 2048);
-  assert.equal(contextLimit('gemini', null, 0), 1_000_000);
+test('contextLimit: the engine window, capped by max_tokens (never raised by it); reserved tokens are deducted', () => {
+  assert.equal(contextLimit(16_384, null, 2048), 16_384 - 2048);
+  assert.equal(contextLimit(16_384, 10_000, 2048), 10_000 - 2048, 'a smaller max_tokens caps the window');
+  assert.equal(contextLimit(16_384, 100_000, 2048), 16_384 - 2048, 'a larger max_tokens is only a ceiling: the engine window stays');
+  assert.equal(contextLimit(32_768, null, 0), 32_768);
 });
 
-test('contextLimit: no provider or an unknown one falls back on the default provider window (openrouter, 128 000), and never drops below 1', () => {
-  assert.equal(contextLimit(null, null, 2048), 128_000 - 2048);
-  assert.equal(contextLimit('inconnu', null, 2048), 128_000 - 2048);
-  assert.equal(contextLimit('groq', 100, 5000), 1, 'reserved tokens larger than the window cannot make a zero or negative limit');
+test('contextLimit never drops below 1', () => {
+  assert.equal(contextLimit(16_384, 100, 5000), 1, 'reserved tokens larger than the window cannot make a zero or negative limit');
+  assert.equal(contextLimit(1000, null, 5000), 1);
 });
 
 test('computeContext returns tokens and a percentage capped at 100', () => {
-  const half = computeContext([msg('user', 'x'.repeat(4 * 15_000))], { provider: 'mistral', max_tokens: null, reserved_tokens: 2000 });
-  assert.equal(half.tokens, 15_000);
-  assert.equal(half.pct, 50, '15 000 / (32 000 - 2 000)');
-  const over = computeContext([msg('user', 'x'.repeat(4 * 100_000))], { provider: 'mistral', max_tokens: null, reserved_tokens: 2000 });
+  const half = computeContext([msg('user', 'x'.repeat(4 * 7_000))], { contextWindow: 16_000, max_tokens: null, reserved_tokens: 2000 });
+  assert.equal(half.tokens, 7_000);
+  assert.equal(half.pct, 50, '7 000 / (16 000 - 2 000)');
+  const over = computeContext([msg('user', 'x'.repeat(4 * 100_000))], { contextWindow: 16_000, max_tokens: null, reserved_tokens: 2000 });
   assert.equal(over.pct, 100, 'never above 100');
   assert.equal(over.tokens, 100_000, 'the token count itself is not capped');
-  assert.deepEqual(computeContext([], { provider: 'groq', max_tokens: null, reserved_tokens: 2048 }), { tokens: 0, pct: 0 });
+  assert.deepEqual(computeContext([], { contextWindow: 16_384, max_tokens: null, reserved_tokens: 2048 }), { tokens: 0, pct: 0 });
+});
+
+test('the gauge reads the engine window, capped by max_tokens', () => {
+  const messages = [{ role: 'user', content: 'x'.repeat(4000) }]; // 1000 tokens
+  assert.equal(computeContext(messages, { contextWindow: 16384, max_tokens: null, reserved_tokens: 2048 }).pct.toFixed(3), '6.975');
+  assert.equal(computeContext(messages, { contextWindow: 16384, max_tokens: 8192, reserved_tokens: 2048 }).pct.toFixed(3), '16.276');
+  assert.equal(computeContext(messages, { contextWindow: 16384, max_tokens: 100000, reserved_tokens: 2048 }).pct.toFixed(3), '6.975');
 });
 
 test('contextLevel: purple under 70, yellow under 90, red from 90 (context_bar.py colours)', () => {
@@ -88,10 +87,13 @@ test('formatContextLabel: rounded percentage, comma as thousands separator (as t
   assert.equal(formatContextLabel({ tokens: 0, pct: 0 }), '0% · ~0 tokens');
 });
 
-test('the gauge uses the worker\'s own table and estimate (core/context-budget.mts), not a copy', async () => {
+test('the gauge applies the same rule as the worker (core/context-budget.mts), not a copy', async () => {
   const core = await import('../core/context-budget.mts');
-  assert.equal(CONTEXT_WINDOWS, core.CONTEXT_WINDOWS, 'the very same object');
-  for (const [provider, max, reserved] of [['mistral', null, 2048], ['gemini', 50_000, 1000], [null, null, 0]] as const) {
-    assert.equal(contextLimit(provider, max, reserved), core.contextBudget(core.contextWindow(provider, max), reserved));
+  for (const window of [16384, 32768]) {
+    for (const max of [null, 8192, 100000]) {
+      for (const reserved of [0, 2048]) {
+        assert.equal(contextLimit(window, max, reserved), core.contextBudget(core.effectiveWindow(window, max), reserved), `${window} / ${max} / ${reserved}`);
+      }
+    }
   }
 });

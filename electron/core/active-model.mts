@@ -35,3 +35,10 @@ export async function modelStatus(settings: SettingsService, library: GgufLibrar
   const size = entry ? loadedContextSize(entry.path) : null;
   return { id, name: entry?.name ?? null, missing: Boolean(id) && !entry, contextWindow: size ?? MIN_LOCAL_CONTEXT, loaded: size !== null };
 }
+
+/** What the 'model' event of a turn reports: the model that turn resolved before it started (null on the test seam),
+ * never a fresh read of the setting — the user may pick another one while the turn runs. Pure and synchronous. */
+export function turnModelStatus(model: ActiveModel | null): ModelStatus {
+  const size = model ? loadedContextSize(model.path) : null;
+  return { id: model?.id ?? '', name: model?.name ?? null, missing: false, contextWindow: size ?? MIN_LOCAL_CONTEXT, loaded: size !== null };
+}

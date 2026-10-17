@@ -1,18 +1,7 @@
 // Type declarations for the plain-JS main.cjs, consumed only by tests that need to
-// exercise its exported pure logic (resolveSendPayload, buildCsp, chooseLoadTarget)
-// without a real Electron window — see electron/tests/os-vault.cjs and
-// electron/tests/renderer-loading.test.mts.
-export function resolveSendPayload(
-  connectionsService: { resolve(folder: string | null): Promise<Record<string, unknown>> },
-  request: { op: string; payload?: Record<string, unknown> },
-): Promise<{ op: string; payload: Record<string, unknown> }>;
-
-export function createConnections(options?: {
-  env?: Record<string, string | undefined>;
-  userHome?: string;
-  cipher?: { isEncryptionAvailable(): boolean; encryptString(value: string): Buffer; decryptString(value: Buffer): string };
-}): Promise<unknown>;
-
+// exercise its exported pure logic (buildCsp, chooseLoadTarget, resolveMainDataHome, ...)
+// without a real Electron window — see electron/tests/renderer-loading.test.mts and
+// electron/tests/main-data-home.test.mts.
 export function resolveMainDataHome(env?: Record<string, string | undefined>, userHome?: string): Promise<string>;
 
 export function startupFailure(error: unknown): { title: string; message: string };

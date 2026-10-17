@@ -17,14 +17,12 @@ test('currentBranchLabel falls back to "🌿 Main" for an id it cannot find (def
 });
 
 function fakeDeps(overrides: Partial<{
-  getConnection: () => Promise<{ provider: string; model: string }>;
   exportConversation: () => Promise<{ filename: string }>;
   openExportedFile: () => Promise<{ opened: boolean }>;
 }> = {}) {
   const calls: string[] = [];
   return {
     calls,
-    getConnection: overrides.getConnection ?? (async () => { calls.push('getConnection'); return { provider: 'openrouter', model: 'gpt-4o' }; }),
     exportConversation: overrides.exportConversation ?? (async () => { calls.push('exportConversation'); return { filename: 'conversation_20260923_090503.md' }; }),
     openExportedFile: overrides.openExportedFile ?? (async () => { calls.push('openExportedFile'); return { opened: true }; }),
   };
@@ -34,19 +32,19 @@ test('performExport: writes, opens, and notifies success with the real filename 
   const deps = fakeDeps();
   const notices: Array<[string, string]> = [];
   await performExport(deps, 'D:\\proj', 'main', 'md', (text, kind) => notices.push([text, kind ?? 'positive']));
-  assert.deepEqual(deps.calls, ['getConnection', 'exportConversation', 'openExportedFile']);
+  assert.deepEqual(deps.calls, ['exportConversation', 'openExportedFile']);
   assert.deepEqual(notices, [['Exporté : conversation_20260923_090503.md', 'positive']]);
 });
 
-test('performExport passes the real connection (provider/model) it read, to the export call', async () => {
-  const deps = fakeDeps({ getConnection: async () => ({ provider: 'groq', model: 'llama-3.3' }) });
+test('performExport calls exportConversation with exactly (folder, branchId, format): the worker names the model itself', async () => {
+  const deps = fakeDeps();
   const captured: unknown[][] = [];
-  deps.exportConversation = (async (folder: string, branchId: string, format: string, provider: string, model: string) => {
-    captured.push([folder, branchId, format, provider, model]);
+  deps.exportConversation = (async (...args: unknown[]) => {
+    captured.push(args);
     return { filename: 'x.html' };
   }) as any;
   await performExport(deps, 'D:\\proj', 'abc', 'html', () => {});
-  assert.deepEqual(captured[0], ['D:\\proj', 'abc', 'html', 'groq', 'llama-3.3']);
+  assert.deepEqual(captured, [['D:\\proj', 'abc', 'html']]);
 });
 
 test('performExport: a write failure notifies "Échec de l\'export : <erreur>" and never tries to open anything', async () => {
@@ -64,13 +62,13 @@ test('performExport: the file was written, so a failure to OPEN it still counts 
   assert.deepEqual(notices, [['Exporté : conversation_20260923_090503.md', 'positive']], 'the export is still reported as a success');
 });
 
-test('performExport: a connection read failure is reported as an export failure too (the model/provider are required to build the header)', async () => {
-  const deps = fakeDeps({ getConnection: async () => { throw new Error('boom'); } });
+test('performExport needs no connection: its deps are the export and the opening only', async () => {
+  const deps = fakeDeps();
+  assert.deepEqual(Object.keys(deps).filter(key => key !== 'calls').sort(), ['exportConversation', 'openExportedFile']);
   const notices: Array<[string, string]> = [];
   await performExport(deps, 'D:\\proj', 'main', 'md', (text, kind) => notices.push([text, kind ?? 'positive']));
-  assert.deepEqual(notices, [["Échec de l'export : boom", 'negative']]);
-  assert.equal(deps.calls.includes('exportConversation'), false, 'the write is never attempted without a connection');
-  assert.equal(deps.calls.includes('openExportedFile'), false);
+  assert.deepEqual(notices, [['Exporté : conversation_20260923_090503.md', 'positive']], 'no connection is read, and the export succeeds');
+  assert.deepEqual(deps.calls, ['exportConversation', 'openExportedFile']);
 });
 
 test("performExport: a refusal relayed by Electron shows the worker's own message, without the IPC wrapper", async () => {

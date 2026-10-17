@@ -1,6 +1,6 @@
-// The table and the estimate are the worker's own (core/context-budget.mts): one source, imported as is —
+// The budget rule and the estimate are the worker's own (core/context-budget.mts): one source, imported as is —
 // Vite bundles the core file into the renderer (verified with a real build), so there is no copy to keep in step.
-import { CONTEXT_WINDOWS, characters, contextBudget, contextWindow, tokensFor } from '../../../core/context-budget.mts';
+import { characters, contextBudget, effectiveWindow, tokensFor } from '../../../core/context-budget.mts';
 
 interface RoleContent {
   role: string;
@@ -11,8 +11,6 @@ export interface ContextUsage {
   tokens: number;
   pct: number;
 }
-
-export { CONTEXT_WINDOWS };
 
 // storage.py::compute_context_pct: user + assistant text, 4 characters per token. Since 2026-10-03 this is also
 // exactly what the next request sends of the earlier turns (core/request-context.mts drops their tool calls and
@@ -27,16 +25,18 @@ export function estimateTokens(messages: readonly RoleContent[]): number {
   return tokensFor(total);
 }
 
-export function contextLimit(provider: string | null, maxTokens: number | null, reservedTokens: number): number {
-  return contextBudget(contextWindow(provider, maxTokens), reservedTokens);
+// The worker's rule (worker.mjs::windowFor): the engine window (the 'model' event / model-status), capped by max_tokens
+// when the user set one — never raised by it — minus reserved_tokens.
+export function contextLimit(contextWindow: number, maxTokens: number | null, reservedTokens: number): number {
+  return contextBudget(effectiveWindow(contextWindow, maxTokens), reservedTokens);
 }
 
 export function computeContext(
   messages: readonly RoleContent[],
-  settings: { provider: string | null; max_tokens: number | null; reserved_tokens: number },
+  settings: { contextWindow: number; max_tokens: number | null; reserved_tokens: number },
 ): ContextUsage {
   const tokens = estimateTokens(messages);
-  const limit = contextLimit(settings.provider, settings.max_tokens, settings.reserved_tokens);
+  const limit = contextLimit(settings.contextWindow, settings.max_tokens, settings.reserved_tokens);
   return { tokens, pct: Math.min(100, (tokens / limit) * 100) };
 }
 

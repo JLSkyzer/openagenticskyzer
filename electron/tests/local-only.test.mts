@@ -39,3 +39,17 @@ test('no production module imports the HTTP model client or the test seam', asyn
     assert.doesNotMatch(source, /\bclass ChatProvider\b|\bnew ChatProvider\(/, file); // the renderer's React ChatProvider component is a function
   }
 });
+
+// Online MODEL-PROVIDER hosts only. The spec names `api.openrouter`; the real hosts are listed too, since the app's URL
+// was `openrouter.ai/api`. Never tavily, duckduckgo or huggingface.co: the web tools (core/web-tools.mts) and the
+// Hugging Face token check (core/hf-token.mts) are kept.
+const ONLINE_MODEL_HOSTS = ['api.openrouter', 'openrouter.ai', 'api.together.xyz', 'api.groq.com', 'api.mistral.ai', 'generativelanguage.googleapis.com'];
+
+test('no production module names an online model service', async () => {
+  const production = await productionSources();
+  assert.ok(production.has(join('core', 'web-tools.mts')) && production.has(join('core', 'hf-token.mts')), 'the kept web tools and HF check are scanned too');
+  for (const [file, source] of production) {
+    const lower = source.toLowerCase();
+    for (const host of ONLINE_MODEL_HOSTS) assert.equal(lower.includes(host), false, `${file} names ${host}`);
+  }
+});

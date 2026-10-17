@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
-import { getConnection } from '../../ipc/bridge';
+import { getModelStatus, type ModelStatus } from '../../ipc/bridge';
 import type { SettingsDraft } from './useSettingsDraft';
 import { Group, Row, Section, Toggle } from './parts';
-// The maximum context of the active provider's models: the table the worker sizes every request with.
-import { contextWindow } from '../../../../core/context-budget.mts';
+import { MIN_LOCAL_CONTEXT } from '../../../../core/context-budget.mts';
 
 // Node's SettingsService rejects a context limit below 2048 (settings.py's slider started
 // at 2000), so the smallest value the slider can produce is clamped to it.
@@ -13,13 +12,14 @@ const fmt = (n: number) => n.toLocaleString('en-US');
 
 // Mirrors settings.py::_tab_context.
 export function ContextTab({ draft, activeFolder }: { draft: SettingsDraft; activeFolder: string | null }) {
-  // Until the active connection answers: openrouter, the app's default provider (core/connections.mts).
-  const [provider, setProvider] = useState('openrouter');
+  // The maximum context is the active .gguf's engine window (model-status): MIN_LOCAL_CONTEXT until it has loaded, or
+  // with no model at all. max_tokens can only cap it (core/context-budget.mts::effectiveWindow), so the slider stops there.
+  const [status, setStatus] = useState<ModelStatus>({ id: '', name: null, missing: false, contextWindow: MIN_LOCAL_CONTEXT, loaded: false });
   useEffect(() => {
     let cancelled = false;
-    getConnection(activeFolder)
-      .then(snapshot => {
-        if (!cancelled) setProvider(snapshot.provider);
+    getModelStatus()
+      .then(value => {
+        if (!cancelled) setStatus(value);
       })
       .catch(() => {});
     return () => {
@@ -27,7 +27,7 @@ export function ContextTab({ draft, activeFolder }: { draft: SettingsDraft; acti
     };
   }, [activeFolder]);
 
-  const ctxMax = contextWindow(provider, null);
+  const ctxMax = status.contextWindow;
   const maxTokens = draft.get<number>('max_tokens', Math.floor(ctxMax / 2));
   const threshold = draft.get<number>('compact_threshold', 70);
 
@@ -39,7 +39,7 @@ export function ContextTab({ draft, activeFolder }: { draft: SettingsDraft; acti
           <div className="flex flex-col gap-2 border-b border-gray-900 px-4 py-3">
             <span className="text-xs font-medium text-gray-300">Limite de contexte</span>
             <span data-testid="oa-ctx-caption" className="text-xs text-gray-500">
-              Max du modèle actif ({provider}) : {fmt(ctxMax)} tokens
+              {`Max du modèle actif (${status.name ?? 'aucun modèle'}) : ${fmt(ctxMax)} tokens`}
             </span>
             <input
               data-setting="max_tokens"

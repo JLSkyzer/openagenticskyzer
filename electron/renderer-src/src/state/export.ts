@@ -2,19 +2,16 @@ import { cleanIpcError } from '../ipc/errors.ts';
 export type ExportFormat = 'md' | 'html' | 'json';
 
 // The subset of the bridge this needs, expressed as an interface so tests can inject a fake — the
-// real `import * as bridge from '../ipc/bridge'` structurally satisfies it (ConnectionSnapshot has
-// more fields than provider/model, which is fine for a return type).
+// real `import * as bridge from '../ipc/bridge'` structurally satisfies it.
 export interface ExportDeps {
-  getConnection(folder: string | null): Promise<{ provider: string; model: string }>;
-  exportConversation(folder: string, branchId: string, format: ExportFormat, provider: string, model: string): Promise<{ filename: string }>;
+  exportConversation(folder: string, branchId: string, format: ExportFormat): Promise<{ filename: string }>;
   openExportedFile(folder: string, filename: string): Promise<{ opened: boolean }>;
 }
 
 export type Notify = (text: string, kind?: 'positive' | 'warning' | 'negative') => void;
 
 /**
- * main.py::_do_export, ported: reads the active connection (for the Markdown/HTML header), writes
- * the export, opens it, and reports the outcome as a toast. Deliberate improvement over the
+ * main.py::_do_export, ported: writes the export (the worker names the active model in its header), opens it, and reports the outcome as a toast. Deliberate improvement over the
  * original: there, `os.startfile()` was never wrapped, so a file the OS refused to open (no
  * associated application) silently ate the "Exporté :" notification even though the file existed —
  * here, a failure to OPEN the file does not undo the "success" reported for having WRITTEN it.
@@ -28,8 +25,7 @@ export async function performExport(
 ): Promise<void> {
   let filename: string;
   try {
-    const connection = await deps.getConnection(folder);
-    ({ filename } = await deps.exportConversation(folder, branchId, format, connection.provider, connection.model));
+    ({ filename } = await deps.exportConversation(folder, branchId, format));
   } catch (error) {
     // A refusal from the worker reaches the page wrapped by Electron (« Error invoking remote method … »): only the
     // worker's own reason is shown.

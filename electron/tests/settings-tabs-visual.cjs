@@ -3,8 +3,8 @@
 // config, real clicks/typing edit them, Enregistrer writes exactly the changed keys to
 // config.json, the HuggingFace token is persisted but never comes back to the page, a
 // re-opened dialog shows the saved values, and an invalid combination is rejected with
-// its message and stores nothing. Only connection-snapshot is faked (the vault lives in
-// main.cjs, which this harness does not run).
+// its message and stores nothing. The model window comes from the real worker's model-status
+// (no .gguf active: MIN_LOCAL_CONTEXT, 16 384).
 const { app, BrowserWindow, ipcMain } = require('electron');
 app.disableHardwareAcceleration();
 app.on('window-all-closed', () => {});
@@ -42,9 +42,6 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('backend-request', (_event, request) => {
       if (request.op === 'open-folder') return project;
-      if (request.op === 'connection-snapshot') {
-        return { provider: 'openrouter', model: 'm', base_url: 'https://openrouter.ai/api/v1', key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: false };
-      }
       const id = `${Date.now()}-${Math.random()}`;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
@@ -98,10 +95,11 @@ app.whenReady().then(async () => {
 
     // ── Contexte ──────────────────────────────────────────────────────────────────
     await openTab('context');
-    assert.match(await js(`document.querySelector('[data-testid="oa-ctx-caption"]').textContent`), /openrouter.*128,000 tokens/, 'the caption names the active provider and its max');
-    assert.match(await js(`document.querySelector('[data-testid="oa-max-tokens-label"]').textContent`), /64,000 tokens/, 'unset limit shows half of the model max, like settings.py');
-    await setValue(q('max_tokens'), 32000);
-    assert.match(await js(`document.querySelector('[data-testid="oa-max-tokens-label"]').textContent`), /32,000 tokens/, 'the label follows the slider');
+    assert.match(await js(`document.querySelector('[data-testid="oa-ctx-caption"]').textContent`), /^Max du modèle actif \(aucun modèle\) : 16,384 tokens$/, 'no .gguf active: the caption says so, with MIN_LOCAL_CONTEXT as the max');
+    assert.equal(await js(`document.querySelector('${q('max_tokens')}').max`), '16384', 'the slider stops at the engine window: max_tokens can only cap it');
+    assert.match(await js(`document.querySelector('[data-testid="oa-max-tokens-label"]').textContent`), /8,192 tokens/, 'unset limit shows half of the model max (16 384 / 2), like settings.py');
+    await setValue(q('max_tokens'), 12000);
+    assert.match(await js(`document.querySelector('[data-testid="oa-max-tokens-label"]').textContent`), /12,000 tokens/, 'the label follows the slider');
     await setValue(q('reserved_tokens'), 4096);
     await click(q('auto_compact'));
     await setValue(q('compact_threshold'), 80);
@@ -132,7 +130,7 @@ app.whenReady().then(async () => {
     const saved = await config();
     assert.deepEqual(
       { agent_mode: saved.agent_mode, animations: saved.animations, hf_token: saved.hf_token, max_tokens: saved.max_tokens, reserved_tokens: saved.reserved_tokens, auto_compact: saved.auto_compact, compact_threshold: saved.compact_threshold, show_context_bar: saved.show_context_bar, session_retention_days: saved.session_retention_days, permission_mode: saved.permission_mode, files_ask: saved.files_ask },
-      { agent_mode: 'plan', animations: false, hf_token: SECRET, max_tokens: 32000, reserved_tokens: 4096, auto_compact: false, compact_threshold: 80, show_context_bar: false, session_retention_days: 90, permission_mode: 'strict', files_ask: false },
+      { agent_mode: 'plan', animations: false, hf_token: SECRET, max_tokens: 12000, reserved_tokens: 4096, auto_compact: false, compact_threshold: 80, show_context_bar: false, session_retention_days: 90, permission_mode: 'strict', files_ask: false },
       'every edited value reached config.json',
     );
     assert.equal('restore_last_folder' in saved, false, 'a key the user did not touch is not written');
@@ -148,7 +146,7 @@ app.whenReady().then(async () => {
     assert.equal(await checked('animations'), false);
     assert.match(await js(`document.querySelector('${q('hf_token')}').placeholder`), /configuré/i, 'a stored token is shown as configured, never as its value');
     await openTab('context');
-    assert.equal(await value('max_tokens'), '32000');
+    assert.equal(await value('max_tokens'), '12000');
     assert.equal(await value('reserved_tokens'), '4096');
     assert.equal(await checked('auto_compact'), false);
     assert.equal(await value('session_retention_days'), '90');
@@ -163,7 +161,7 @@ app.whenReady().then(async () => {
     await click('#oa-settings-save-btn');
     await pause(400);
     assert.match(await js(`document.querySelector('[data-testid="oa-settings-error"]')?.textContent || ''`), /tokens réservés/, 'the backend message is shown to the user');
-    assert.equal((await config()).max_tokens, 32000, 'the rejected save changed nothing on disk');
+    assert.equal((await config()).max_tokens, 12000, 'the rejected save changed nothing on disk');
 
     // Real paint check, then keep the screenshot for a human look.
     await writeFile(join(screenshotDir, 'settings-context.png'), await capturePng(win));

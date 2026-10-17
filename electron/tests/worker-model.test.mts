@@ -127,3 +127,30 @@ test('g. model-status with none active, and with a missing file', { timeout: 300
   assert.equal(missing.id, entry.id);
   assert.equal(missing.loaded, false);
 });
+
+test('h. the model event names the model the turn actually used, even when the setting changes during the turn', { timeout: 180000 }, async t => {
+  const { worker, folder, model, agentEvents, modelEvents } = await setup(t);
+  const entry = await callWorker(worker, 'gguf-add', { path: model });
+  await callWorker(worker, 'save-global-settings', { patch: { active_local_model: entry.id } });
+  const ended = new Promise<void>(resolve => {
+    const listener = (message: any) => {
+      if (message?.type === 'event' && message.event === 'agent' && ['done', 'error', 'stopped'].includes(message.kind)) {
+        worker.off('message', listener); resolve();
+      }
+    };
+    worker.on('message', listener);
+  });
+  await callWorker(worker, 'send', { folder, branchId: 'main', text: 'Once upon a time' });
+  // The turn has its model; the user now deselects it. The event still describes the model this turn runs on,
+  // never a fresh read of the setting.
+  await callWorker(worker, 'save-global-settings', { patch: { active_local_model: '' } });
+  await ended;
+  assert.equal(agentEvents.at(-1).kind, 'done', JSON.stringify(agentEvents.find(e => e.kind === 'error')));
+  assert.equal(modelEvents.length, 1);
+  const { type, event, ...status } = modelEvents[0];
+  assert.equal(status.id, entry.id);
+  assert.equal(status.name, 'stories260K.gguf');
+  assert.equal(status.missing, false);
+  assert.equal(status.loaded, true);
+  assert.ok(status.contextWindow >= 16384);
+});

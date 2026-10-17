@@ -20,7 +20,7 @@ test('every test that launches the packaged exe switches updates off, except the
     launchers.push(name);
     if (!/OPENAGENT_DISABLE_UPDATES:\s*'1'/.test(source)) missing.push(name);
   }
-  assert.ok(launchers.includes('bridge-real.cjs') && launchers.includes('final-e2e.cjs'), `the scan found the launchers (${launchers.join(', ')})`);
+  assert.ok(launchers.includes('bridge-real.cjs') && launchers.includes('final-e2e-lot13.cjs'), `the scan found the launchers (${launchers.join(', ')})`);
   assert.deepEqual(missing, [], 'packaged-exe launchers that would query production GitHub');
 });
 

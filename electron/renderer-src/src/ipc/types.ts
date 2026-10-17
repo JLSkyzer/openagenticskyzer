@@ -34,28 +34,14 @@ export interface FolderListItem {
   last_used: string;
 }
 
-export type ProviderName =
-  | 'openrouter' | 'together' | 'groq' | 'mistral' | 'gemini';
-
-// Mirrors core/connections.mts::Connections.snapshot() — deliberately has no api_key and
-// no key_endpoint: the secret never reaches the renderer, only whether one is configured.
-export interface ConnectionSnapshot {
-  provider: ProviderName;
-  model: string;
-  base_url: string;
-  key_source: string;
-  legacy_plaintext: boolean;
-  model_source: string;
-  key_configured: boolean;
-}
-
-// Mirrors core/connections.mts::ConnectionPatch. api_key is write-only: a string sets it,
-// null clears it, undefined leaves it untouched.
-export interface ConnectionPatch {
-  provider: ProviderName;
-  model?: string;
-  base_url?: string;
-  api_key?: string | null;
+// Mirrors core/active-model.mts::ModelStatus: the active .gguf (name null when none, or when its file is gone —
+// missing then says so) and the window its engine runs with (MIN_LOCAL_CONTEXT until it has loaded).
+export interface ModelStatus {
+  id: string;
+  name: string | null;
+  missing: boolean;
+  contextWindow: number;
+  loaded: boolean;
 }
 
 // Mirrors core/settings.mts::projectDefaults plus the optional per-project permission
@@ -137,6 +123,7 @@ export interface OpenAgentBridge {
   request(request: { op: string; payload?: Record<string, unknown> }): Promise<unknown>;
   onAgentEvent(callback: (event: AgentEvent) => void): () => void;
   onIndexEvent(callback: (event: IndexEvent) => void): () => void;
+  onModelEvent(callback: (status: ModelStatus & { type: 'event'; event: 'model' }) => void): () => void;
   onUpdateStatus(callback: (status: UpdateStatus) => void): () => void;
 }
 

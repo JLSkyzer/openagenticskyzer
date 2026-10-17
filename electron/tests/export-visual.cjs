@@ -5,8 +5,7 @@
 // "Exporté : <filename>", the same flow works from the command palette (Ctrl+K → Exporter), a write
 // failure is refused by the real worker, and the backdrop closes the dropdown without exporting.
 // 'open-export' is stubbed here like every other native-OS operation in a per-component visual test
-// (open-folder, connection-snapshot): main.cjs's real shell.openPath is only reachable from the
-// packaged app, proven for real in final-e2e-lot8.cjs (Tâche 53).
+// (open-folder): main.cjs's real shell.openPath is only reachable from the packaged app (test:package).
 const { app, BrowserWindow, ipcMain } = require('electron');
 app.disableHardwareAcceleration();
 app.on('window-all-closed', () => {});
@@ -80,9 +79,6 @@ app.whenReady().then(async () => {
     });
     const opened = []; // records what the renderer asked to open, instead of really launching an app
     ipcMain.handle('backend-request', (_event, request) => {
-      if (request.op === 'connection-snapshot') {
-        return { provider: 'openrouter', model: 'gpt-4o-mini', base_url: 'https://openrouter.ai/api/v1', key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: false };
-      }
       if (request.op === 'open-export') { opened.push(request.payload); return { opened: true }; }
       return callWorker(request.op, request.payload);
     });
@@ -161,7 +157,8 @@ app.whenReady().then(async () => {
     const md = await readFile(join(alpha, mdName), 'utf8');
     assert.match(md, /^# Conversation — \d{4}-\d{2}-\d{2} \d{2}:\d{2}\n/);
     assert.match(md, new RegExp(`Dossier : \`${alpha.replace(/\\/g, '\\\\')}\``));
-    assert.match(md, /Modèle : `gpt-4o-mini` \(openrouter\)/);
+    // No .gguf is active in this harness: the worker writes the header itself (worker.mjs::exportConversation).
+    assert.match(md, /Modèle : `Aucun modèle` \(local\)/);
     assert.match(md, /\*\*\[READ\]\*\* `list_dir` —/);
     const block = md.split('---\n', 2)[1];
     assert.match(block, /> a\.py\n> b\.py\n> \n> subdir\/\n>   c\.py/, 'every line of the multiline tool content is quoted, blank line included');

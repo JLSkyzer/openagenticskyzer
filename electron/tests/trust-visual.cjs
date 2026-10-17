@@ -109,9 +109,6 @@ export function getTools() { return [{ name: 'trust_plugin', description: 'ok', 
       win?.webContents.send('backend-message', message);
     });
     ipcMain.handle('backend-request', (_event, request) => {
-      if (request.op === 'connection-snapshot') {
-        return { provider: 'openrouter', model: 'm', base_url: 'https://openrouter.ai/api/v1', key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: false };
-      }
       const id = `${Date.now()}-${Math.random()}`;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });

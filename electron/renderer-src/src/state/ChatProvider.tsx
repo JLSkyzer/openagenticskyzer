@@ -3,13 +3,14 @@ import {
   compactConversation,
   decidePermission,
   forkBranch,
-  getConnection,
   getGlobalSettings,
   getIndexStatus,
+  getModelStatus,
   getMessages,
   listBranches,
   onAgentEvent,
   onIndexEvent,
+  onModelEvent,
   onSettingsChanged,
   sendMessage,
   stop,
@@ -18,27 +19,29 @@ import {
   type ChatMessage,
   type IndexState,
 } from '../ipc/bridge';
+import { cleanIpcError } from '../ipc/errors';
 import { canForkAt, currentBranchLabel, nextBranchLabel } from './branches';
 import { computeContext, shouldAutoCompact, type ContextUsage } from './context';
+import { MIN_LOCAL_CONTEXT } from '../../../core/context-budget.mts';
 import { lastUserIndex } from './editing';
 import { chatReducer, initialChatState, type ChatState } from './reducer';
 
-// What the gauge needs from the settings (all global) and from the active connection (its provider
-// decides the default context window).
+// What the gauge needs from the settings (all global) and from the active model: the window its engine runs with
+// (the worker caps it by max_tokens itself — the gauge applies the same rule, state/context.ts).
 export interface ContextSettings {
   show_context_bar: boolean;
   auto_compact: boolean;
   compact_threshold: number;
   max_tokens: number | null;
   reserved_tokens: number;
-  provider: string | null;
+  contextWindow: number;
 }
 // Same defaults as the settings service, used until the first read answers.
 const DEFAULT_CONTEXT_SETTINGS: ContextSettings = {
-  show_context_bar: true, auto_compact: true, compact_threshold: 70, max_tokens: null, reserved_tokens: 2048, provider: null,
+  show_context_bar: true, auto_compact: true, compact_threshold: 70, max_tokens: null, reserved_tokens: 2048, contextWindow: MIN_LOCAL_CONTEXT,
 };
 
-function readContextSettings(global: Record<string, unknown>, provider: string | null): ContextSettings {
+function readContextSettings(global: Record<string, unknown>, contextWindow: number): ContextSettings {
   const number = (value: unknown, fallback: number) => (typeof value === 'number' && Number.isFinite(value) ? value : fallback);
   return {
     show_context_bar: typeof global.show_context_bar === 'boolean' ? global.show_context_bar : DEFAULT_CONTEXT_SETTINGS.show_context_bar,
@@ -46,7 +49,7 @@ function readContextSettings(global: Record<string, unknown>, provider: string |
     compact_threshold: number(global.compact_threshold, DEFAULT_CONTEXT_SETTINGS.compact_threshold),
     max_tokens: typeof global.max_tokens === 'number' && Number.isFinite(global.max_tokens) ? global.max_tokens : null,
     reserved_tokens: number(global.reserved_tokens, DEFAULT_CONTEXT_SETTINGS.reserved_tokens),
-    provider,
+    contextWindow: number(contextWindow, DEFAULT_CONTEXT_SETTINGS.contextWindow),
   };
 }
 
@@ -143,21 +146,31 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
     [],
   );
 
-  // Settings and provider of the gauge: read again for each folder and after any save made elsewhere
-  // (settings dialog, model dialog) — the bridge announces those.
+  // Settings and model window of the gauge: read again for each folder and after any save made elsewhere
+  // (settings dialog, model dialog) — the bridge announces those — and kept live by the 'model' event each turn
+  // posts once its engine has loaded (the real window may differ from MIN_LOCAL_CONTEXT).
   const [contextSettings, setContextSettings] = useState<ContextSettings>(DEFAULT_CONTEXT_SETTINGS);
   const [settingsVersion, setSettingsVersion] = useState(0);
   useEffect(() => onSettingsChanged(() => setSettingsVersion(version => version + 1)), []);
   useEffect(() => {
     let cancelled = false;
-    Promise.all([getGlobalSettings(), getConnection(activeFolder)])
-      .then(([global, connection]) => {
+    Promise.all([getGlobalSettings(), getModelStatus()])
+      .then(([global, status]) => {
         if (cancelled) return;
-        setContextSettings(readContextSettings(global, connection.provider));
+        setContextSettings(readContextSettings(global, status.contextWindow));
       })
       .catch(() => { /* keep what is shown: a gauge that cannot read its settings must not break the chat */ });
     return () => { cancelled = true; };
   }, [activeFolder, settingsVersion]);
+  useEffect(
+    () =>
+      onModelEvent(status => {
+        if (typeof status.contextWindow === 'number' && Number.isFinite(status.contextWindow)) {
+          setContextSettings(previous => (previous.contextWindow === status.contextWindow ? previous : { ...previous, contextWindow: status.contextWindow }));
+        }
+      }),
+    [],
+  );
 
   // index_status: read the current state once per folder switch (in case indexing already
   // finished or is mid-flight before this mount), then keep it live from the worker's own events —
@@ -188,7 +201,7 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
   }, [state.currentBranchId, state.branches, onBranchChange]);
 
   const usage = useMemo(
-    () => computeContext(state.messages, { provider: contextSettings.provider, max_tokens: contextSettings.max_tokens, reserved_tokens: contextSettings.reserved_tokens }),
+    () => computeContext(state.messages, { contextWindow: contextSettings.contextWindow, max_tokens: contextSettings.max_tokens, reserved_tokens: contextSettings.reserved_tokens }),
     [state.messages, contextSettings],
   );
 
@@ -204,7 +217,8 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
       if (early) dispatch({ type: 'agent-event', event: early });
       endedCompactions.current.delete(compactionId);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Compression impossible';
+      // The worker's own reason (e.g. no .gguf active), without Electron's IPC wrapper.
+      const message = error instanceof Error ? cleanIpcError(error) : 'Compression impossible';
       // Automatic attempts run after every turn: "nothing to summarise yet" is not worth an error each time.
       if (options?.auto && /Pas assez de messages/.test(message)) return;
       dispatch({ type: 'show-error', error: message });
@@ -328,10 +342,10 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
         const { runId } = await sendMessage(activeFolder, state.currentBranchId, text, keep, attachments);
         dispatch({ type: 'send-started', runId, text, keep, attachments });
       } catch (error) {
-        // Without this, a rejected IPC call (e.g. connections.resolve() refusing an
-        // unconfirmed key/endpoint pairing) left the send silently doing nothing — no
-        // message, no error, no way out of the input box short of restarting the app.
-        dispatch({ type: 'send-failed', error: error instanceof Error ? error.message : 'Échec de l’envoi du message' });
+        // Without this, a rejected IPC call (e.g. no .gguf active, or its file gone) left the
+        // send silently doing nothing — no message, no error, no way out of the input box
+        // short of restarting the app.
+        dispatch({ type: 'send-failed', error: error instanceof Error ? cleanIpcError(error) : 'Échec de l’envoi du message' });
       }
     },
     [activeFolder, state.currentBranchId, state.truncatedTo],

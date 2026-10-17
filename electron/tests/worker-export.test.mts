@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
@@ -113,4 +113,26 @@ test('worker::export-conversation refuses an invalid format and a missing folder
   await assert.rejects(callWorker(worker, 'export-conversation', { folder: join(folder, 'inexistant'), format: 'md', provider: 'p', model: 'm' }), /^Error: Dossier introuvable$/);
   const listing = await readdir(folder);
   assert.equal(listing.some(name => name.startsWith('conversation_')), false, 'nothing was written on a refused request');
+});
+
+test('the Markdown header names the active .gguf', async t => {
+  const { worker, folder } = await project(t);
+  const model = join(folder, '..', 'stories260K.gguf');
+  await copyFile(fileURLToPath(new URL('./fixtures/stories260K.gguf', import.meta.url)), model);
+  const entry = await callWorker(worker, 'gguf-add', { path: model });
+  await callWorker(worker, 'save-global-settings', { patch: { active_local_model: entry.id } });
+  await callWorker(worker, 'save-messages', { folder, branchId: 'main', messages: [{ role: 'user', content: 'Bonjour' }] });
+  // A provider and a model sent by the page are ignored: the worker reads the active model itself.
+  const { filename } = await callWorker(worker, 'export-conversation', { folder, format: 'md', provider: 'groq', model: 'llama' });
+  const content = await readFile(join(folder, filename), 'utf8');
+  assert.match(content, /Modèle : `stories260K\.gguf` \(local\)/);
+  assert.equal(content.includes('groq') || content.includes('llama'), false, 'nothing the page sent reaches the header');
+});
+
+test('with no active model the header says so', async t => {
+  const { worker, folder } = await project(t);
+  await callWorker(worker, 'save-messages', { folder, branchId: 'main', messages: [{ role: 'user', content: 'Bonjour' }] });
+  const { filename } = await callWorker(worker, 'export-conversation', { folder, format: 'md', provider: 'test', model: 'm' });
+  const content = await readFile(join(folder, filename), 'utf8');
+  assert.match(content, /Modèle : `Aucun modèle` \(local\)/);
 });

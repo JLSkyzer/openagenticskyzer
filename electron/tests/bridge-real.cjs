@@ -1,17 +1,15 @@
-// Plain Node script. Launches the REAL, unmocked app (`electron .` -> main.cjs, its real
-// safeStorage vault and real worker) and exercises the connection / project-settings IPC
-// ops through window.openagent.request over CDP — the same path the bridge functions in
-// renderer-src/src/ipc/bridge.ts take. Proves the secret API key never comes back to the
-// renderer and never reaches disk in clear text.
+// Plain Node script. Launches the REAL, unmocked app (the packaged exe -> main.cjs and its real
+// worker) and exercises IPC ops through window.openagent.request over CDP — the same path the
+// bridge functions in renderer-src/src/ipc/bridge.ts take: the connection ops are gone (local
+// models only), model-status answers from the worker, and project settings round-trip to disk.
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const { mkdtemp, rm, readFile } = require('node:fs/promises');
+const { existsSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
 const { httpGetJson, waitFor, Cdp } = require('./cdp-helper.cjs');
-
-const SECRET = 'sk-SECRET-XYZ';
 
 async function main() {
   const electronDir = path.join(__dirname, '..');
@@ -39,47 +37,17 @@ async function main() {
       `window.openagent.request(${JSON.stringify({ op, payload })}).then(value => ({ ok: true, value }), error => ({ ok: false, message: String(error && error.message || error) }))`,
       true,
     );
-    const assertNoSecret = (label, value) => {
-      const text = JSON.stringify(value);
-      assert.ok(!text.includes(SECRET), `${label}: the API key must never come back to the renderer`);
-      assert.ok(!/api_key"\s*:/.test(text) && !text.includes('key_endpoint'), `${label}: no api_key / key_endpoint field in the renderer-facing reply`);
-    };
-
-    const saved = await ipc('save-connection', {
-      folder: null,
-      patch: { provider: 'openrouter', model: 'm1', base_url: 'http://127.0.0.1:9/v1', api_key: SECRET },
-      authorization: { confirmEndpoint: false },
-    });
-    assert.ok(saved.ok, `save-connection failed: ${saved.message}`);
-    assertNoSecret('save-connection reply', saved.value);
-    assert.equal(saved.value.key_configured, true);
-    assert.equal(saved.value.model, 'm1');
-
-    const snapshot = await ipc('connection-snapshot', { folder: null });
-    assert.ok(snapshot.ok);
-    assertNoSecret('connection-snapshot reply', snapshot.value);
-    assert.equal(snapshot.value.key_configured, true);
-
-    const vaultRaw = await readFile(join(home, 'connections.v1.json'), 'utf8');
-    assert.ok(!vaultRaw.includes(SECRET), 'the vault file on disk must not contain the key in clear text');
-    assert.equal(JSON.parse(vaultRaw).version, 1, 'the vault is the encrypted envelope');
-
-    // Re-binding a keyed profile to another URL must be refused until explicitly confirmed.
-    const refused = await ipc('save-connection', {
-      folder: null,
-      patch: { provider: 'openrouter', base_url: 'http://127.0.0.1:10/v1' },
-      authorization: { confirmEndpoint: false },
-    });
-    assert.equal(refused.ok, false);
-    assert.match(refused.message, /Confirmation requise/);
-    const confirmed = await ipc('save-connection', {
-      folder: null,
-      patch: { provider: 'openrouter', base_url: 'http://127.0.0.1:10/v1' },
-      authorization: { confirmEndpoint: true },
-    });
-    assert.ok(confirmed.ok, `confirmed save failed: ${confirmed.message}`);
-    assert.equal(confirmed.value.base_url, 'http://127.0.0.1:10/v1');
-    assertNoSecret('confirmed save reply', confirmed.value);
+    // Local models only: the real main.cjs answers no connection op any more, and opens no vault at startup.
+    for (const op of ['connection-snapshot', 'save-connection']) {
+      const answer = await ipc(op, { folder: null });
+      assert.equal(answer.ok, false, `${op} is no longer answered`);
+      assert.match(answer.message, /Opération IPC inconnue/, `${op}: refused by the allow-list`);
+    }
+    // The model status comes from the real worker: no .gguf active on a fresh data home.
+    const status = await ipc('model-status');
+    assert.ok(status.ok, `model-status failed: ${status.message}`);
+    assert.deepEqual(status.value, { id: '', name: null, missing: false, contextWindow: 16384, loaded: false });
+    assert.equal(existsSync(join(home, 'connections.v1.json')), false, 'no vault file is ever written');
 
     // Project settings round trip, persisted where the legacy layout keeps them.
     const before = await ipc('project-settings', { folder: project });
@@ -94,7 +62,7 @@ async function main() {
     const rejected = await ipc('save-project-settings', { folder: project, patch: { agent_mode: 'nimporte-quoi' } });
     assert.equal(rejected.ok, false, 'an invalid value is rejected, not silently stored');
 
-    process.stdout.write('PASS connection + project-settings IPC through the real app: secret never returned nor stored in clear\n');
+    process.stdout.write('PASS IPC through the real app: no connection op, model-status from the worker, project settings round trip\n');
   } finally {
     cdp?.close();
     child.kill();

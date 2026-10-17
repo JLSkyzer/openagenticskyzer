@@ -5,7 +5,7 @@ import { SHORTCUTS, shouldShowOnboarding, stepAfter, type OnboardingStep } from 
 import { Modal } from './settings/Modal';
 
 // onboarding.py::onboarding_wizard: a persistent window (no Escape, no click on the backdrop) walking through
-// four steps on the first launch. "Open the model settings" and "Open a folder" trigger the real windows through
+// four steps on the first launch. "Add a .gguf model" and "Open a folder" trigger the real windows through
 // the same registry the command palette uses; the wizard is mounted BEFORE the rest of the app (see App.tsx) so
 // the selector it opens is stacked above it. The end writes `onboarding_done`.
 const persistent = () => { /* the wizard cannot be dismissed: only "Commencer à coder" ends it */ };
@@ -62,9 +62,9 @@ export function Onboarding({ activeFolder }: { activeFolder: string | null }) {
         {step === 'model' && (
           <>
             <div className="text-lg font-bold">🤖 Choisissez votre modèle</div>
-            <div className="text-sm text-gray-400">Configurez le fournisseur et le modèle à utiliser.</div>
+            <div className="text-sm text-gray-400">Ajoutez un fichier .gguf présent sur votre disque : le modèle tourne dans l’application, sans connexion.</div>
             <button id="oa-onboarding-model-open" type="button" onClick={() => registry.run('switch-model')} className={`${secondary} mt-2 w-full`}>
-              ⚙️ Ouvrir les paramètres du modèle
+              📁 Ajouter un modèle .gguf
             </button>
             <div className="mt-4 flex justify-between">
               <button id="oa-onboarding-back" type="button" onClick={() => go('back')} className={ghost}>← Retour</button>

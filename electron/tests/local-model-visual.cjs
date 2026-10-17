@@ -2,8 +2,8 @@
 // worker.mjs and the REAL node-llama-cpp engine on a real tiny GGUF (llama.cpp's own CI asset). 'pick-gguf' is
 // stubbed to return a real path directly (it is a native file dialog nothing can drive, same as 'open-folder' in
 // every other component test) — everything AFTER that point is real: gguf-add, the library list, activation,
-// a real agent turn with NO connection configured at all, and switching back to a remote connection deactivating
-// the local model. Nothing here opens an external application.
+// a real agent turn with NO connection configured at all, and the removal that leaves no model active. Nothing here
+// opens an external application.
 const { app, BrowserWindow, ipcMain } = require('electron');
 app.disableHardwareAcceleration();
 app.on('window-all-closed', () => {});
@@ -56,9 +56,6 @@ app.whenReady().then(async () => {
     ipcMain.handle('backend-request', (_event, request) => {
       if (request.op === 'open-folder') return alpha;
       if (request.op === 'pick-gguf') return ggufDialogPath;
-      if (request.op === 'connection-snapshot') {
-        return { provider: 'openrouter', model: '', base_url: 'https://openrouter.ai/api/v1', key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: false };
-      }
       const id = `${Date.now()}-${Math.random()}`;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
@@ -107,6 +104,7 @@ app.whenReady().then(async () => {
     // ── 2. Importing activates it immediately: the banner and the button both say so ────────────────
     await waitFor(async () => /Modèle actif/.test(await text('[data-testid="oa-model-active"]')) && /stories260K\.gguf/.test(await text('[data-testid="oa-model-active"]')), { what: 'active banner shows the local model' });
     assert.match(await text('[data-testid="oa-model-active"]'), /local/);
+    assert.equal(await js(`document.querySelector('[data-testid="oa-model-active"]').dataset.state`), 'active');
     await click('#oa-model-close-btn');
     await waitFor(async () => /stories260K/.test(await text('#oa-model-btn')), { what: 'the button label follows' });
     await writeFile(join(screenshotDir, 'localmodel-1-active.png'), await capturePng(win));
@@ -123,6 +121,8 @@ app.whenReady().then(async () => {
     await click('[data-testid="oa-local-model-remove"]');
     await waitFor(async () => (await countOf('[data-testid="oa-local-model-entry"]')) === 0, { what: 'removed from the library' });
     assert.doesNotMatch(await text('[data-testid="oa-model-active"]'), /stories260K/, 'no longer shown as active once removed');
+    await waitFor(async () => (await js(`document.querySelector('[data-testid="oa-model-active"]').dataset.state`)) === 'none', { what: 'the banner says no model is selected' });
+    assert.equal(await text('[data-testid="oa-model-active"]'), '⚠ Aucun modèle sélectionné — importe un fichier .gguf.');
 
     process.stdout.write(`PASS local .gguf model: real import (stubbed native picker), immediate activation, a real turn on the real engine with no connection configured, real removal (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshots: ${screenshotDir}\n`);

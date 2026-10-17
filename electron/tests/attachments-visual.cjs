@@ -102,9 +102,6 @@ app.whenReady().then(async () => {
     let nextFolder = alpha;
     ipcMain.handle('backend-request', (_event, request) => {
       if (request.op === 'open-folder') return nextFolder;
-      if (request.op === 'connection-snapshot') {
-        return { provider: 'openrouter', model: 'm', base_url: 'https://openrouter.ai/api/v1', key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: false };
-      }
       const outgoing = request.op === 'send' ? { ...request, payload: { ...request.payload, testModel } } : request;
       const id = `${Date.now()}-${Math.random()}`;
       return new Promise((resolve, reject) => {

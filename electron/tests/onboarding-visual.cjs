@@ -55,9 +55,6 @@ app.whenReady().then(async () => {
     let failSave = false;
     ipcMain.handle('backend-request', (_event, request) => {
       if (request.op === 'open-folder') return alpha;
-      if (request.op === 'connection-snapshot') {
-        return { provider: 'openrouter', model: 'm', base_url: 'https://openrouter.ai/api/v1', key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: false };
-      }
       if (request.op === 'save-global-settings' && failSave) return Promise.reject(new Error('Disque plein (simulé)'));
       const id = `${Date.now()}-${Math.random()}`;
       return new Promise((resolve, reject) => {
@@ -132,8 +129,13 @@ app.whenReady().then(async () => {
     await realClick('#oa-onboarding-start');
     await waitFor(async () => (await step()) === 'model', { what: 'step 2' });
     assert.match(await text('[data-testid="oa-onboarding"]'), /Choisissez votre modèle/);
+    // Local models only: no provider to configure, a .gguf file from the disk.
+    assert.match(await text('[data-testid="oa-onboarding"]'), /Ajoutez un fichier \.gguf présent sur votre disque : le modèle tourne dans l’application, sans connexion\./);
+    assert.equal(await text('#oa-onboarding-model-open'), '📁 Ajouter un modèle .gguf');
+    assert.equal(/fournisseur/i.test(await text('[data-testid="oa-onboarding"]')), false, 'no provider is mentioned');
     await realClick('#oa-onboarding-model-open');
     await waitFor(() => exists('[data-testid="oa-model-active"]'), { what: 'the model selector opens' });
+    assert.equal(await js(`document.querySelector('[data-testid="oa-model-active"]').dataset.state`), 'none', 'a first launch has no model yet');
     const modelDialog = await rectCenter('[data-testid="oa-model-active"]');
     assert.equal(
       await js(`(() => { const el = document.elementFromPoint(${modelDialog.x}, ${modelDialog.y}); return !!el && !el.closest('[data-testid="oa-onboarding"]'); })()`),

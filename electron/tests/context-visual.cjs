@@ -33,13 +33,16 @@ function flush() {
 }
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// max_tokens 18432 minus the default 2048 reserved tokens: a limit of exactly 16384 tokens. Every turn this test
-// sends must fit that budget WITH the system prompt and the 33 tool schemas (about 3 100 tokens, measured
-// 2026-10-03), or the worker refuses it with "Contexte plein" (H3). The gauge counts only the conversation, so
-// the histories below are 8 times what they were under the former 2048-token limit: same percentages, same
-// levels, token counts 8 times larger.
+// No .gguf is active here: the gauge's window is the worker's model-status, MIN_LOCAL_CONTEXT = 16 384 (the seam's
+// test model runs with the same 16 384, so the worker and the gauge size alike). max_tokens 18 432 is ABOVE that
+// window: it is only a ceiling, it never raises it. The limit is therefore
+//   min(16 384, 18 432) − 2 048 reserved = 14 336 tokens,
+// the same formula as core/context-budget.mts (effectiveWindow, then contextBudget). Every turn this test sends
+// must fit that budget WITH the system prompt and the tool schemas (about 3 100 tokens, measured 2026-10-03), or
+// the worker refuses it with "Contexte plein" (H3): 9 600 + 3 100 < 14 336.
 const MAX_TOKENS = 18432;
-const LIMIT = MAX_TOKENS - 2048;
+const ENGINE_WINDOW = 16384;
+const LIMIT = Math.min(ENGINE_WINDOW, MAX_TOKENS) - 2048; // 14 336
 
 app.whenReady().then(async () => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-context-'));
@@ -97,9 +100,6 @@ app.whenReady().then(async () => {
       worker.postMessage({ op, payload, id });
     });
     ipcMain.handle('backend-request', (_event, request) => {
-      if (request.op === 'connection-snapshot') {
-        return { provider: 'openrouter', model: 'm', base_url: 'https://openrouter.ai/api/v1', key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: false };
-      }
       // Same routing as main.cjs: the operations that call the model receive the test model (the seam main.cjs never enables).
       const needsConnection = request.op === 'send' || request.op === 'compact';
       return callWorker(request.op, needsConnection ? { ...request.payload, testModel } : request.payload);
@@ -193,17 +193,20 @@ app.whenReady().then(async () => {
     // ── 1. The numbers on screen are the ones of the file on disk ────────────────
     await reloadWith(history(6, 6400));
     let want = expected(await mainOnDisk());
-    assert.equal(want.label, '59% · ~9,600 tokens', 'sanity check of the fixture itself');
+    // 6 × 6 400 characters = 38 400 → 9 600 tokens; 9 600 / 14 336 = 66.96 % → « 67% », under 70: normal.
+    assert.equal(want.label, '67% · ~9,600 tokens', 'sanity check of the fixture itself');
     assert.equal(await exists('[data-testid="oa-context-bar"]'), true, 'the gauge is shown');
     assert.match(await text('[data-testid="oa-context-bar"]'), /🧠 Contexte/);
     let shown = await gauge();
     assert.equal(shown.label, want.label, 'label recomputed from conversations.json');
     assert.equal(shown.level, 'normal');
-    assert.match(shown.width, /width:\s*59%/);
+    assert.match(shown.width, /width:\s*67%/);
     assert.equal(await exists('#oa-compact-btn'), false, 'under the threshold there is no compaction button');
     await writeFile(join(screenshotDir, 'context-1-normal.png'), await capturePng(win));
 
     // ── 2. Colours and the cap, still checked against the disk ───────────────────
+    // 8 × 6 400 = 51 200 characters → 12 800 tokens → 12 800 / 14 336 = 89.29 % (warning, under 90);
+    // 8 × 7 600 = 60 800 → 15 200 tokens → 106 % capped at 100 (critical); 8 × 16 000 → 32 000 tokens → 100 % (critical).
     for (const [count, length, level, screenshot] of [[8, 6400, 'warning', null], [8, 7600, 'critical', 'context-2-critical.png'], [8, 16000, 'critical', null]]) {
       await reloadWith(history(count, length));
       want = expected(await mainOnDisk());
@@ -219,7 +222,7 @@ app.whenReady().then(async () => {
 
     // ── 3. The settings dialog changes the gauge live ────────────────────────────
     await reloadWith(history(6, 6400));
-    assert.equal(await exists('#oa-compact-btn'), false, '59% is under the threshold of 70');
+    assert.equal(await exists('#oa-compact-btn'), false, '67% is under the threshold of 70');
     await setContextSettings({ threshold: 50 });
     assert.equal(await exists('#oa-compact-btn'), true, 'lowering the threshold to 50 shows the button at once, no restart');
     await writeFile(join(screenshotDir, 'context-3-button.png'), await capturePng(win));
@@ -315,12 +318,13 @@ app.whenReady().then(async () => {
     const fork = await callWorker('fork', { folder: alpha, source: 'main', count: 2, label: 'Branche 1' });
     await reloadWith(history(6, 6400));
     await waitFor(() => exists('[data-testid="oa-branch-select"]'), { what: 'branch selector' });
-    assert.equal((await gauge()).label, '59% · ~9,600 tokens');
+    assert.equal((await gauge()).label, '67% · ~9,600 tokens'); // 9 600 / 14 336 = 66.96 %
     await setSelect('[data-testid="oa-branch-select"]', fork.id);
-    await waitFor(async () => (await gauge()).label === '20% · ~3,200 tokens', { what: 'gauge follows the branch' });
+    // The fork keeps 2 × 6 400 = 12 800 characters → 3 200 tokens; 3 200 / 14 336 = 22.32 % → « 22% ».
+    await waitFor(async () => (await gauge()).label === '22% · ~3,200 tokens', { what: 'gauge follows the branch' });
     assert.equal((await gauge()).label, expected((await disk()).branches.find(b => b.id === fork.id).messages).label);
     await setSelect('[data-testid="oa-branch-select"]', 'main');
-    await waitFor(async () => (await gauge()).label === '59% · ~9,600 tokens', { what: 'gauge back on main' });
+    await waitFor(async () => (await gauge()).label === '67% · ~9,600 tokens', { what: 'gauge back on main' });
 
     process.stdout.write(`PASS context gauge: numbers match the disk, live settings, real-click compaction, failure-safe, auto-compact, per-branch (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshots: ${screenshotDir}\n`);

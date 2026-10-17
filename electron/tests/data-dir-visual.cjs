@@ -63,9 +63,6 @@ app.whenReady().then(async () => {
       if (request.op === 'open-folder') return project;
       if (request.op === 'pick-data-dir') return pickedDataDir;
       if (request.op === 'restart-app') { restartRequests++; return { restarting: true }; }
-      if (request.op === 'connection-snapshot') {
-        return { provider: 'openrouter', model: '', base_url: 'https://openrouter.ai/api/v1', key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: false };
-      }
       const id = `${Date.now()}-${Math.random()}`;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });

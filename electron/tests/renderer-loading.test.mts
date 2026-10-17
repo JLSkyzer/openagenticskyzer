@@ -29,6 +29,15 @@ test('the unpackaged dev CSP allows the Vite dev server, still scoped otherwise'
   assert.match(dev, /default-src 'self'/);
 });
 
+test('the page reaches no network origin: connect-src is the app itself when packaged, plus only the Vite dev server in dev', () => {
+  // The renderer makes no request of its own (no fetch, WebSocket or EventSource in renderer-src/src): the model runs
+  // in the worker, the web tools too. Nothing remote is ever allowed to the page.
+  assert.match(buildCsp(true), /connect-src 'self';/);
+  assert.doesNotMatch(buildCsp(true), /https?:/);
+  assert.doesNotMatch(buildCsp(false), /https:/);
+  assert.match(buildCsp(false), /connect-src 'self' ws:\/\/localhost:5173 http:\/\/localhost:5173;/);
+});
+
 test('the load target is the packaged build unless explicitly unpackaged with the dev flag set', () => {
   assert.equal(chooseLoadTarget({ isPackaged: true, devFlag: '1' }).mode, 'file');
   assert.equal(chooseLoadTarget({ isPackaged: false, devFlag: undefined }).mode, 'file');

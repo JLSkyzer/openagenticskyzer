@@ -82,9 +82,6 @@ app.whenReady().then(async () => {
         installs++;
         return { installing: true };
       }
-      if (request.op === 'connection-snapshot') {
-        return { provider: 'test', model: 'test-model', base_url: testModel.base_url, key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: true };
-      }
       let outgoing = request;
       if (request.op === 'send') outgoing = { ...request, payload: { ...request.payload, testModel } };
       const id = `${Date.now()}-${Math.random()}`;

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, session, protocol, Notification, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, session, protocol, Notification, Tray, Menu, nativeImage } = require('electron');
 const path = require('node:path');
 const { homedir } = require('node:os');
 const { writeFileSync } = require('node:fs');
@@ -14,7 +14,6 @@ const artifacts = artifactProtocol.createArtifactStore();
 let mainWindow;
 let tray;
 let backend;
-let connections;
 let updater;
 let installUpdateNow;
 // Set by 'before-quit' (see the app lifecycle below) and by a Windows session end: from then on, closing the window
@@ -33,14 +32,14 @@ const isExportFilename = name => typeof name === 'string' && EXPORT_FILENAME.tes
 const isBackendOp = op => allowed.has(op);
 
 /**
- * Content-Security-Policy for the renderer. Strict in a packaged build (no eval, no
- * remote origins beyond https:). Relaxed ONLY for the Vite dev server (HMR needs
+ * Content-Security-Policy for the renderer. Strict in a packaged build (no eval, and no remote origin at all: the page
+ * makes no request of its own — the model and the web tools run in the worker). Relaxed ONLY for the Vite dev server (HMR needs
  * 'unsafe-eval' and a ws:// connection) — and only when the app is NOT packaged, so a
  * packaged build can never end up with the relaxed policy regardless of stray env vars.
  */
 function buildCsp(isPackaged) {
   const scriptSrc = isPackaged ? "'self'" : "'self' 'unsafe-eval'";
-  const connectSrc = isPackaged ? "'self' https:" : "'self' https: ws://localhost:5173 http://localhost:5173";
+  const connectSrc = isPackaged ? "'self'" : "'self' ws://localhost:5173 http://localhost:5173";
   // frame-src: only the artifact preview may be framed (its own document carries its own, stricter policy).
   return `default-src 'self'; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ${connectSrc}; frame-src ${artifactProtocol.SCHEME}:; object-src 'none'`;
 }
@@ -187,8 +186,8 @@ async function stopBackend() {
 
 /**
  * The data home, resolved by core/data-home.cjs exactly as worker.mjs resolves it: ~/.openagent followed through its
- * redirect.json (Réglages › Général › Répertoire de données) — the connections vault must live where the rest of the
- * data went (R4). OPENAGENT_HOME (tests only) replaces ~/.openagent. `env` and `userHome` are parameters for tests only.
+ * redirect.json (Réglages › Général › Répertoire de données) — resolved at startup so a broken redirect is reported
+ * before anything opens (R4). OPENAGENT_HOME (tests only) replaces ~/.openagent. `env` and `userHome` are parameters for tests only.
  */
 async function resolveMainDataHome(env = process.env, userHome = homedir()) {
   return (await resolveHomes(env, userHome)).dataHome;
@@ -202,13 +201,6 @@ function startupFailure(error) {
     return { title: 'openagent — dossier de données illisible', message: `${reason}\n\nCorrige ou supprime ${error.redirectFile}, puis relance openagent.` };
   }
   return { title: 'openagent — démarrage impossible', message: reason };
-}
-
-/** The connections vault of the data home. main.cjs calls it with no argument; a test passes a temporary user home,
- * its own environment and a real cipher in place of the OS safeStorage, and goes through this very path. */
-async function createConnections({ env = process.env, userHome = homedir(), cipher = safeStorage } = {}) {
-  const { Connections } = await import('./core/connections.mts');
-  return new Connections({ home: await resolveMainDataHome(env, userHome), cipher, environment: env });
 }
 
 /**
@@ -240,8 +232,6 @@ async function handleBackendRequest(event, request) {
     const picked = await dialog.showOpenDialog(mainWindow, { properties: ['openFile'], filters: [{ name: 'Documents', extensions: ['txt', 'md'] }] });
     return picked.canceled ? null : picked.filePaths[0];
   }
-  if (request.op === 'connection-snapshot') return connections.snapshot(request.payload?.folder ?? null);
-  if (request.op === 'save-connection') return connections.save(request.payload?.folder ?? null, request.payload?.patch, request.payload?.authorization);
   if (request.op === 'open-export') {
     const { folder, filename } = request.payload || {};
     if (!isExportFilename(filename)) throw new Error('Nom de fichier d’export invalide');
@@ -298,11 +288,12 @@ if (require.main === module) {
       artifactProtocol.installHandler(protocol, artifacts);
       installCsp();
       try {
-        connections = await createConnections();
+        // The data home is resolved before anything opens: a broken redirect.json stops the start here, with the file to fix.
+        await resolveMainDataHome();
       } catch (error) {
         // Nothing has started yet (no window, no worker, no tray): say why, then exit at once with a non-zero code,
         // which also releases the single-instance lock — otherwise every relaunch would hand off to an invisible
-        // process. Never fall back to the default home: the vault would be written in the wrong folder.
+        // process. Never fall back to the default home: the data would be written in the wrong folder.
         const { title, message } = startupFailure(error);
         // Test-only: the native box blocks until dismissed, so a packaged test reads the text from this file instead.
         // Never set outside tests.
@@ -344,4 +335,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { restartApp, workerOptions, createConnections, resolveMainDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, isExportFilename, notificationBodyFor };
+module.exports = { restartApp, workerOptions, resolveMainDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, isExportFilename, notificationBodyFor };

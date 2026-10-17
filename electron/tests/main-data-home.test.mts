@@ -6,32 +6,13 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
-import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 // main.cjs only registers IPC and the app lifecycle when it is the Electron entry point: as a library, its helpers run.
 // Every call below passes an explicit temporary user home: the real ~/.openagent is never read.
-const { resolveMainDataHome, createConnections, startupFailure } = createRequire(import.meta.url)('../main.cjs');
+const { resolveMainDataHome, startupFailure } = createRequire(import.meta.url)('../main.cjs');
 const { resolveHomes } = createRequire(import.meta.url)('../core/data-home.cjs');
 
-// Real authenticated encryption in place of the OS safeStorage, as in connections.test.mts.
-function encryption() {
-  const key = randomBytes(32);
-  return {
-    isEncryptionAvailable: () => true,
-    encryptString(text: string) {
-      const iv = randomBytes(12);
-      const cipher = createCipheriv('aes-256-gcm', key, iv);
-      const data = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
-      return Buffer.concat([iv, cipher.getAuthTag(), data]);
-    },
-    decryptString(data: Buffer) {
-      const decipher = createDecipheriv('aes-256-gcm', key, data.subarray(0, 12));
-      decipher.setAuthTag(data.subarray(12, 28));
-      return Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]).toString('utf8');
-    },
-  };
-}
 function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
     const id = `main-home-${Math.random()}`;
@@ -82,32 +63,6 @@ test('the worker resolves its data home through the same module: under OPENAGENT
   assert.equal(JSON.parse(await readFile(join(redirected, 'config.json'), 'utf8')).theme, 'light', 'the worker wrote in the redirected folder');
   await assert.rejects(readFile(join(home, 'config.json')), /ENOENT/, 'and nothing in the home that only holds the pointer');
   assert.equal(await resolveMainDataHome({ OPENAGENT_HOME: home }, root), redirected, 'main resolves the very same folder');
-});
-
-test('R4: after a real migrate-data-dir, the vault main.cjs::createConnections opens is in the new folder, with its key', { timeout: 30000 }, async t => {
-  const userHome = await mkdtemp(join(tmpdir(), 'openagent-main-home-vault-'));
-  removeAtEnd(t, userHome);
-  const defaultHome = join(userHome, '.openagent');
-  const newDir = join(userHome, 'donnees-deplacees');
-  await mkdir(join(defaultHome, 'knowledge'), { recursive: true });
-  await writeFile(join(defaultHome, 'knowledge', 'store.json'), '{"chunks":[]}');
-  const cipher = encryption();
-  // The exact function main.cjs calls at startup — only the user home, the environment and the cipher are the test's.
-  const before = await createConnections({ env: {}, userHome, cipher });
-  await before.save(null, { provider: 'openrouter', model: 'm', api_key: 'sk-VAULT-FOLLOWS' });
-  assert.ok((await readFile(join(defaultHome, 'connections.v1.json'))).length > 0, 'the vault starts in ~/.openagent');
-
-  // The worker's data home IS the temporary default home: OPENAGENT_HOME keeps it off the real ~/.openagent.
-  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: defaultHome } }));
-  const result = await callWorker(worker, 'migrate-data-dir', { newDir });
-  assert.deepEqual(result.errors, []);
-
-  // The next start of the main process.
-  const after = await createConnections({ env: {}, userHome, cipher });
-  assert.equal((await after.resolve(null)).api_key, 'sk-VAULT-FOLLOWS', 'the vault followed the data');
-  assert.ok((await readFile(join(newDir, 'connections.v1.json'))).length > 0, 'it is read from the new folder');
-  await assert.rejects(readFile(join(defaultHome, 'connections.v1.json')), /ENOENT/, 'nothing left in the old folder');
-  assert.equal(await readFile(join(newDir, 'knowledge', 'store.json'), 'utf8'), '{"chunks":[]}', 'sub-folders followed too');
 });
 
 test('a corrupt redirect.json, or a directory in its place, is an error that names the file — never a silent fallback to the default home', async t => {

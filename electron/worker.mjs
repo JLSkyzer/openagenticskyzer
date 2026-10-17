@@ -21,7 +21,7 @@ import { PromptLibrary } from './core/prompts.mts';
 import { readProjectMemory } from './core/project-memory.mts';
 import { validateAttachments } from './core/attachments.mts';
 import { effectiveWindow } from './core/context-budget.mts';
-import { activeModel, modelStatus, NO_LOCAL_MODEL } from './core/active-model.mts';
+import { activeModel, modelStatus, turnModelStatus, NO_LOCAL_MODEL } from './core/active-model.mts';
 import { closeDanglingCalls } from './core/request-context.mts';
 import { buildHtml, buildJson, buildMarkdown, exportFilename, renderEntries } from './core/export.mts';
 import { cleanupOldFolders } from './core/cleanup.mts';
@@ -38,9 +38,9 @@ import { loadPlugins, projectPythonPluginFiles } from './core/plugin-loader.mts'
 import { ProjectTrustService } from './core/project-trust.mts';
 import { addFileToKnowledge, listSources as listKnowledgeSources, removeSource as removeKnowledgeSource } from './core/knowledge-base.mts';
 
-// The data home, resolved by core/data-home.cjs exactly as main.cjs resolves it (the connections vault must live
-// where the rest of the data is): ~/.openagent followed through its redirect.json. OPENAGENT_HOME lets integration
-// tests replace ~/.openagent with a temp directory — its own redirect.json is followed, the real one is never read.
+// The data home, resolved by core/data-home.cjs exactly as main.cjs resolves it at startup: ~/.openagent followed
+// through its redirect.json. OPENAGENT_HOME lets integration tests replace ~/.openagent with a temp directory — its
+// own redirect.json is followed, the real one is never read.
 const { defaultHome, dataHome } = await resolveHomes();
 // A send turn finishing at or beyond this duration is flagged 'longRunning' so main.cjs can
 // raise a native OS notification (mirrors the previous NiceGUI app's notifier.py threshold).
@@ -144,9 +144,13 @@ async function windowFor(provider, maxTokens) {
   return effectiveWindow(await provider.contextWindow(), maxTokens);
 }
 
-/** Tells the page the active model and the window its engine really runs with — known once windowFor has loaded it. */
-async function postModelStatus() {
-  parentPort.postMessage({ type: 'event', event: 'model', ...(await modelStatus(settings, ggufLibrary)) });
+/** Tells the page the model this turn runs on and the window its engine really runs with — known once windowFor has
+ * loaded it. Built from the turn's own resolved model (never a fresh read of the setting), and best-effort: a status
+ * that cannot be posted never fails the turn. */
+function postModelStatus(model) {
+  try {
+    parentPort.postMessage({ type: 'event', event: 'model', ...turnModelStatus(model) });
+  } catch { /* the page keeps its last status; the turn goes on */ }
 }
 
 /**
@@ -154,13 +158,13 @@ async function postModelStatus() {
  * is capped at 30 s, a summary is not). Nothing is written unless the model answered AND the branch
  * is still exactly what it was when the summary was requested.
  */
-async function runCompaction(compactionId, folder, branchId, before, provider) {
+async function runCompaction(compactionId, folder, branchId, before, { provider, model }) {
   const post = message => parentPort.postMessage({ type: 'event', event: 'agent', runId: compactionId, ...message });
   let outcome;
   try {
     // max_tokens is a global setting only (core/settings.mts), so the global config is the whole answer here.
     const window = await windowFor(provider, (await settings.global()).max_tokens);
-    await postModelStatus();
+    postModelStatus(model);
     const after = await compactMessages({ provider, messages: before, contextWindow: window, signal: active.get(compactionId).controller.signal });
     await conversations.replaceIfUnchanged(folder, branchId, before, after);
     // context_bar.py::trigger_compact parity: persist the summary itself into the project's
@@ -380,7 +384,7 @@ const EXPORT_FORMATS = new Set(['md', 'html', 'json']);
 /** Writes the conversation to `<folder>/conversation_<timestamp>.<ext>` and returns its filename —
  * never a full path: main.cjs is the only one allowed to open a file, and only by folder + a
  * filename matching exactly what this function itself generates. */
-async function exportConversation(folder, branchId, format, provider, model) {
+async function exportConversation(folder, branchId, format) {
   if (!EXPORT_FORMATS.has(format)) throw new Error('Format d’export invalide');
   if (!isAbsolute(folder)) throw new Error('Dossier absolu requis');
   // As FoldersService.open (core/folders.mts): a folder realpath cannot resolve is refused with the worker's own reason,
@@ -396,6 +400,10 @@ async function exportConversation(folder, branchId, format, provider, model) {
   const { tools } = await registerTools(folder);
   const toolCategory = new Map(tools.map(tool => [tool.name, tool.category]));
   const entries = renderEntries(messages, name => toolCategory.get(name));
+  // The header names the active .gguf, read here like a turn reads it: never a provider or a model sent by the page.
+  // None active, or one whose file is gone: « Aucun modèle ».
+  const model = (await activeModel(settings, ggufLibrary).catch(() => null))?.name ?? 'Aucun modèle';
+  const provider = 'local';
   const date = new Date();
   const filename = exportFilename(format, date);
   const content =
@@ -435,13 +443,13 @@ function lastAssistantSummary(messages) {
  */
 async function turnProvider(payload) {
   const model = await activeModel(settings, ggufLibrary);
-  if (model) return localProvider(model.path);
-  if (testSeam && payload.testModel) return testSeam.createTestProvider(payload.testModel);
+  if (model) return { provider: localProvider(model.path), model };
+  if (testSeam && payload.testModel) return { provider: testSeam.createTestProvider(payload.testModel), model: null };
   throw new Error(NO_LOCAL_MODEL);
 }
 
 /** Runs one agent turn to completion, streaming events to the renderer via parentPort. */
-async function runSend(runId, folder, branchId, text, keep, attachments = [], provider) {
+async function runSend(runId, folder, branchId, text, keep, attachments, { provider, model }) {
   const controller = new AbortController();
   const accumulated = [];
   active.set(runId, { controller, folder });
@@ -494,7 +502,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments = [], pr
       post({ kind: 'permission-request', requestId, tool: request.tool, category: toolCategory.get(request.tool), arguments: request.arguments });
     });
     const contextTokens = await windowFor(provider, effective.max_tokens);
-    await postModelStatus();
+    postModelStatus(model);
     const result = await runAgent({
       provider, messages: collected, instructions, tools, contextWindow: contextTokens,
       settings: agentSettings,
@@ -623,17 +631,17 @@ async function handle(message) {
       const compactionId = randomUUID();
       active.set(compactionId, { controller: new AbortController(), folder, kind: 'compact' });
       let before;
-      let provider;
+      let turn;
       try {
         before = await conversations.messages(folder, branchId);
         planCompaction(before); // too short → refused right away, model never called
-        provider = await turnProvider(payload);
+        turn = await turnProvider(payload);
       } catch (error) {
         active.delete(compactionId);
         throw error;
       }
       reply(id, true, { compactionId });
-      void runCompaction(compactionId, folder, branchId, before, provider);
+      void runCompaction(compactionId, folder, branchId, before, turn);
       return;
     }
     if (op === 'send') {
@@ -652,13 +660,13 @@ async function handle(message) {
       const attachments = validateAttachments(payload.attachments);
       // Same principle for the model: none active, or one whose file is gone, is reported synchronously, not as
       // a run that starts and immediately errors.
-      const provider = await turnProvider(payload);
+      const turn = await turnProvider(payload);
       const runId = randomUUID();
       reply(id, true, { runId });
       // Fire-and-forget: the turn's real result streams back as 'event' messages, not
       // as this request's response (main.cjs's 30s IPC timeout could never cover a full
       // multi-step agent run).
-      void runSend(runId, payload.folder, payload.branchId || 'main', payload.text, keep, attachments, provider);
+      void runSend(runId, payload.folder, payload.branchId || 'main', payload.text, keep, attachments, turn);
       return;
     }
     if (op === 'stop') { active.get(payload.runId)?.controller.abort(); result = { stopped: true }; }
@@ -699,7 +707,7 @@ async function handle(message) {
     if (op === 'reset-global-settings') result = await settings.resetGlobal();
     if (op === 'list-prompts') result = await promptLibrary.list();
     if (op === 'read-project-memory') result = await readProjectMemory(payload.folder);
-    if (op === 'export-conversation') result = await exportConversation(payload.folder, payload.branchId || 'main', payload.format, payload.provider || '', payload.model || '');
+    if (op === 'export-conversation') result = await exportConversation(payload.folder, payload.branchId || 'main', payload.format);
     if (op === 'list-branches') result = await conversations.list(payload.folder);
     if (op === 'messages') result = servedMessages(await conversations.messages(payload.folder, payload.branchId || 'main'));
     if (op === 'save-messages') result = await conversations.save(payload.folder, payload.branchId || 'main', payload.messages);

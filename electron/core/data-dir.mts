@@ -14,7 +14,7 @@ export interface MigrationResult {
  * itself relocated) always holds a tiny redirect.json once the user has moved their data
  * elsewhere — everything else (settings, connections, folder history…) lives at whatever it
  * points to. No redirect on disk means the default location IS the real home, as always.
- * Defined once in core/data-home.cjs, which main.cjs (the connections vault) and worker.mjs both use.
+ * Defined once in core/data-home.cjs, which main.cjs (at startup) and worker.mjs both use.
  */
 export { resolveDataHome };
 

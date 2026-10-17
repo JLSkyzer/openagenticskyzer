@@ -3,7 +3,7 @@
 // own config.json, the custom prompt editor works (Escape closes only the modal), clearing
 // the history empties the disk AND the visible chat, removing the folder drops it from the
 // sidebar without touching its files, and resetting the global settings restores the
-// defaults on disk and in the live theme. Only connection-snapshot is faked.
+// defaults on disk and in the live theme. Only the native folder picker is faked.
 const { app, BrowserWindow, ipcMain } = require('electron');
 app.disableHardwareAcceleration();
 app.on('window-all-closed', () => {});
@@ -45,9 +45,6 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('backend-request', (_event, request) => {
       if (request.op === 'open-folder') return project;
-      if (request.op === 'connection-snapshot') {
-        return { provider: 'openrouter', model: 'm', base_url: 'https://openrouter.ai/api/v1', key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: false };
-      }
       return callWorker(request.op, request.payload);
     });
 

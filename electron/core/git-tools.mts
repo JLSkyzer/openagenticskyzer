@@ -79,7 +79,10 @@ function batches(groups: string[][], budget: number): string[][] {
 // diff.mnemonicPrefix give none or c/ i/ w/), no colour codes (color.ui=always), paths from the top (diff.relative).
 // core.quotepath=false is in every call's base arguments.
 const DIFF_FORMAT = ['--no-relative', '--no-color', '--src-prefix=a/', '--dst-prefix=b/'];
-const SECTION_START = /^(?=diff --git |diff --cc |\* Unmerged path )/m;
+// A section starts at the start of the output or right after a '\n', the only line end git writes. Never the `m` flag:
+// its ^ also matches after '\r', U+2028 and U+2029, which a file's content can hold inside one diff line — a hidden
+// body could then open a fake section under a visible header.
+const SECTION_START = /(?<=^|\n)(?=diff --git |diff --cc |\* Unmerged path )/;
 const SECTION_HEADER = /^(diff --git |diff --cc |\* Unmerged path )/;
 const UNREADABLE_SECTION = '(fichier apparu pendant la lecture)';
 const C_ESCAPES: Record<string, string> = { '\x07': 'a', '\b': 'b', '\t': 't', '\n': 'n', '\v': 'v', '\f': 'f', '\r': 'r', '"': '"', '\\': '\\' };
@@ -271,7 +274,7 @@ export async function gitTools(folder: string, ignoredPatterns: string, testOpti
     const parts: string[] = [];
     let size = 0;
     for (const batch of batches(visibleEntries.map(paths => paths.map(path => literal(path, ''))), PATHSPEC_BUDGET - (fits ? excludeSize : 0))) {
-      const { kept, dropped } = keepListedSections(await git([...guard, 'diff', ...DIFF_FORMAT, ...flags, '--', ...batch, ...excludes], signal), expected);
+      const { kept, dropped } = keepListedSections((await gitRaw([...guard, 'diff', ...DIFF_FORMAT, ...flags, '--', ...batch, ...excludes], signal)).stdout, expected);
       for (const path of dropped) if (!masked.includes(path)) masked.push(path);
       if (kept) { parts.push(kept); size += kept.length + 1; }
       if (size > DIFF_OUTPUT_MAX) break;
@@ -279,8 +282,11 @@ export async function gitTools(folder: string, ignoredPatterns: string, testOpti
     let body = parts.join('\n');
     if (body.length > DIFF_OUTPUT_MAX) body = body.slice(0, DIFF_OUTPUT_MAX) + '\n[Diff tronqué]';
     if (!masked.length) return body || empty;
-    // One line whatever the names: a name with a control character (a newline is legal outside Windows) is quoted.
-    const named = masked.map(path => (/[\u0000-\u001f\u007f]/.test(path) ? JSON.stringify(path) : path));
+    // One line whatever the names: a name with a control character or a Unicode line separator (a newline is legal
+    // outside Windows) is JSON-quoted, U+0080-U+009F, U+2028 and U+2029 escaped too (JSON.stringify leaves them raw).
+    const named = masked.map(path => (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(path)
+      ? JSON.stringify(path).replace(/[\u007f-\u009f\u2028\u2029]/g, ch => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'))
+      : path));
     const shown = named.slice(0, MASKED_NAMES).join(', ') + (named.length > MASKED_NAMES ? `, … (+${named.length - MASKED_NAMES})` : '');
     return `${body || empty}\n${MASKED_LINE}${shown}`;
   };

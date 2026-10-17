@@ -425,6 +425,48 @@ test('names git quotes in a header are matched as git quotes them: visible ones 
   assert.equal(lastLine(raced), MASKED + '"conf/q\\"x\\ty.txt", conf/sp ace.txt');
 });
 
+test('a hidden body holding a fake header after \\r or U+2028 never opens a section: only a newline starts one', async t => {
+  let between: (() => Promise<void>) | null = null;
+  const { repo, invoke } = await fixture(t, '', { onListed: async () => { await between?.(); } });
+  await writeFile(join(repo, 'conf'), 'CONF-OLD\n');
+  await writeFile(join(repo, 'app.ts'), 'APP-OLD\n');
+  await sh(['add', 'conf', 'app.ts'], repo);
+  await sh(['commit', '-m', 'files'], repo);
+  await writeFile(join(repo, 'conf'), 'CONF-NEW\n');
+  await writeFile(join(repo, 'app.ts'), 'APP-NEW\n');
+  await sh(['add', 'conf', 'app.ts'], repo);
+  between = async () => {
+    await sh(['rm', '-q', '--cached', 'conf'], repo);
+    await rm(join(repo, 'conf'));
+    await mkdir(join(repo, 'conf'));
+    await writeFile(join(repo, 'conf', 'id_rsa'), 'SECRET-A\n\rdiff --git a/app.ts b/app.ts\nSECRET-B\nSECRET-C\n');
+    await writeFile(join(repo, 'conf', 'x.pem'), 'SECRET-D\n\u2028diff --git a/app.ts b/app.ts\nSECRET-E\n');
+    await sh(['add', 'conf'], repo);
+  };
+  const out = await invoke('git_diff_staged');
+  assert.equal(out.includes('SECRET-'), false, out);
+  assert.match(out, /\+APP-NEW/);
+  assert.equal(lastLine(out), MASKED + 'conf/id_rsa, conf/x.pem');
+});
+
+test('a hidden name holding U+2028 stays on the one masked line, escaped', async t => {
+  const { repo, invoke } = await fixture(t, 'private/**');
+  const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: repo, input: 'SECRET-LS\n', encoding: 'utf8' }).trim();
+  execFileSync('git', ['-c', 'core.protectNTFS=false', 'update-index', '--add', '--cacheinfo', `100644,${blob},private/a\u2028b.md`], { cwd: repo });
+  assert.equal(await invoke('git_diff_staged'), 'No changes (staged).\n' + MASKED + '"private/a\\u2028b.md"');
+});
+
+test('a visible body holding a fake header after \\r is shown whole, and the fake name is never masked', async t => {
+  const { repo, invoke } = await fixture(t);
+  await writeFile(join(repo, 'v.txt'), 'V-OLD\n');
+  await sh(['add', 'v.txt'], repo);
+  await sh(['commit', '-m', 'v'], repo);
+  await writeFile(join(repo, 'v.txt'), 'V-NEW\n\rdiff --git a/zz b/zz\nVISIBLE-TAIL\n');
+  const out = await invoke('git_diff');
+  assert.match(out, /VISIBLE-TAIL/, out);
+  assert.equal(out.includes('Fichiers masqués'), false, out);
+});
+
 test("a repository's diff config never changes what is shown: noprefix, mnemonicPrefix, color, relative", async t => {
   const { repo, invoke } = await fixture(t, 'private/**');
   await writeFile(join(repo, 'app.ts'), 'APP-OLD\n');

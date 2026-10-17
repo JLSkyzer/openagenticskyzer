@@ -456,6 +456,34 @@ test('a hidden name holding U+2028 stays on the one masked line, escaped', async
   assert.equal(await invoke('git_diff_staged'), 'No changes (staged).\n' + MASKED + '"private/a\\u2028b.md"');
 });
 
+test('a rename header made ambiguous by names holding " b/" is kept only with its rename lines: an unlisted file reusing it is masked', async t => {
+  let between: (() => Promise<void>) | null = null;
+  const { repo, invoke } = await fixture(t, '/t/z b/t', { onListed: async () => { await between?.(); } });
+  // Index-only, so the working tree never has to hold a file t and a folder t/ at once.
+  const blob = (content: string) => execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: repo, input: content, encoding: 'utf8' }).trim();
+  const index = (...args: string[]) => execFileSync('git', ['update-index', ...args], { cwd: repo });
+  const from = 't/z b/t b/t/z';
+  const body = blob(Array.from({ length: 20 }, (_, i) => `visible line ${i}`).join('\n') + '\n');
+  index('--add', '--cacheinfo', `100644,${body},${from}`);
+  await sh(['commit', '-q', '-m', 'from'], repo);
+  index('--force-remove', from);
+  index('--add', '--cacheinfo', `100644,${body},t`);
+  assert.match(await sh(['diff', '--staged', '--name-status'], repo), /^R100\tt\/z b\/t b\/t\/z\tt$/m, 'sanity: git lists the rename');
+  // Without the race, the genuine rename keeps its ambiguous header and is shown, as a rename.
+  const genuine = await invoke('git_diff_staged');
+  assert.match(genuine, /^rename from t\/z b\/t b\/t\/z\nrename to t$/m, genuine);
+  assert.equal(genuine.includes('Fichiers masqués'), false, genuine);
+  between = async () => {
+    index('--force-remove', 't');
+    index('--add', '--cacheinfo', `100644,${blob('SECRET-AMBIG-1\nSECRET-AMBIG-2\n')},t/z b/t`);
+  };
+  const out = await invoke('git_diff_staged');
+  assert.equal(out.includes('SECRET-'), false, out);
+  const masked = lastLine(out)!;
+  assert.ok(masked.startsWith(MASKED), out);
+  assert.ok(masked.slice(MASKED.length).split(', ').includes('t/z b/t'), masked);
+});
+
 test('a visible body holding a fake header after \\r is shown whole, and the fake name is never masked', async t => {
   const { repo, invoke } = await fixture(t);
   await writeFile(join(repo, 'v.txt'), 'V-OLD\n');

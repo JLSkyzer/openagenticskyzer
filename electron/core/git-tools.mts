@@ -118,16 +118,32 @@ function cUnquote(text: string, start: number): { name: string; end: number } | 
   return null;
 }
 
-/** The section headers git writes for these listed entries (a rename or copy: old, new) with DIFF_FORMAT. */
-function expectedHeaders(entries: string[][]): Set<string> {
-  const expected = new Set<string>();
+/** The section headers git writes for these listed entries (a rename or copy: old, new) with DIFF_FORMAT. A rename or
+ * copy maps to its two names as its extended lines write them (C-quoted, no a/ b/ prefix — verified with git 2.56):
+ * names holding " b/" make a header ambiguous (a/F b/T for F = "T/z b/T b/T/z" is also the header of an added
+ * "T/z b/T"), so such a section is kept only when its own rename or copy lines name the listed pair. */
+function expectedHeaders(entries: string[][]): Map<string, [string, string] | null> {
+  const expected = new Map<string, [string, string] | null>();
   for (const [from, to = from] of entries) {
-    expected.add(`diff --git ${cQuote('a/' + from)} ${cQuote('b/' + to)}`);
-    expected.add(`diff --cc ${cQuote(from)}`);
-    expected.add(`* Unmerged path ${from}`);
-    expected.add(`* Unmerged path ${cQuote(from)}`);
+    expected.set(`diff --git ${cQuote('a/' + from)} ${cQuote('b/' + to)}`, from === to ? null : [cQuote(from), cQuote(to)]);
+    expected.set(`diff --cc ${cQuote(from)}`, null);
+    expected.set(`* Unmerged path ${from}`, null);
+    expected.set(`* Unmerged path ${cQuote(from)}`, null);
   }
   return expected;
+}
+
+/** True when the extended header lines of `section` (after its first line, up to the first "--- ", "@@" or
+ * "Binary files " line) name `pair` as a rename or as a copy. The lines are scanned, never counted: old mode and new
+ * mode come before similarity index. */
+function namesPair(section: string, [from, to]: [string, string]): boolean {
+  const block: string[] = [];
+  for (const line of section.split('\n').slice(1)) {
+    if (line.startsWith('--- ') || line.startsWith('@@') || line.startsWith('Binary files ')) break;
+    block.push(line);
+  }
+  return (block.includes(`rename from ${from}`) && block.includes(`rename to ${to}`)) ||
+    (block.includes(`copy from ${from}`) && block.includes(`copy to ${to}`));
 }
 
 /** The path a section header names (the new side of a diff --git), or null when it cannot be read with certainty. */
@@ -152,13 +168,14 @@ function headerPath(header: string): string | null {
 }
 
 /** Keeps the sections of a diff output whose header is expected; the others are dropped and named (fails closed). */
-function keepListedSections(output: string, expected: Set<string>): { kept: string; dropped: string[] } {
+function keepListedSections(output: string, expected: Map<string, [string, string] | null>): { kept: string; dropped: string[] } {
   const kept: string[] = [];
   const dropped: string[] = [];
   for (const section of output.split(SECTION_START)) {
     if (!SECTION_HEADER.test(section)) { if (section.trim()) dropped.push(UNREADABLE_SECTION); continue; }
     const header = section.split('\n', 1)[0];
-    if (expected.has(header)) kept.push(section);
+    const pair = expected.get(header);
+    if (expected.has(header) && (!pair || namesPair(section, pair))) kept.push(section);
     else dropped.push(headerPath(header) ?? UNREADABLE_SECTION);
   }
   return { kept: kept.join('').trimEnd(), dropped };

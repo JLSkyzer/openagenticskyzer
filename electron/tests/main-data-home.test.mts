@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -82,6 +82,39 @@ test('R4: the startup erasure runs in the redirected data home', { timeout: 3000
   assert.equal(dataHome, newDir);
   assert.deepEqual(erasure.removed, ['connections.v1.json']);
   await assert.rejects(stat(join(newDir, 'connections.v1.json')), /ENOENT/);
+});
+
+test('with a redirect, the startup erases the vault family in BOTH homes, and nothing else in the default home', async t => {
+  const userHome = await mkdtemp(join(tmpdir(), 'openagent-main-home-both-vaults-'));
+  removeAtEnd(t, userHome);
+  const defaultHome = join(userHome, '.openagent');
+  const moved = join(userHome, 'ailleurs');
+  await Promise.all([mkdir(defaultHome), mkdir(moved)]);
+  const vaultFamily = ['connections.v1.json', 'connections.v1.json.pre-electron.bak', 'connections.v1.json.0f8fad5b-d9cb-469f-a165-70867728950e.tmp'];
+  // A vault left in ~/.openagent (written there before the main process followed the redirect, or by a partly failed
+  // migration), and one in the redirected folder.
+  for (const home of [defaultHome, moved]) for (const name of vaultFamily) await writeFile(join(home, name), 'vault-bytes');
+  const kept: Record<string, Record<string, string>> = {
+    [defaultHome]: {
+      'redirect.json': JSON.stringify({ data_dir: moved }),
+      'config.json': JSON.stringify({ current_provider: 'groq', current_model: 'llama', hf_token: 'hf_DEFAULT' }),
+      'config.json.pre-electron.bak': JSON.stringify({ current_provider: 'groq' }),
+      'notes.txt': 'keep',
+    },
+    [moved]: { 'folders.json': '[]', 'notes.txt': 'keep too' },
+  };
+  for (const [home, files] of Object.entries(kept)) for (const [name, content] of Object.entries(files)) await writeFile(join(home, name), content);
+
+  const { dataHome, erasure, defaultHomeErasure } = await prepareDataHome({ env: {}, userHome });
+  assert.equal(dataHome, moved);
+  assert.deepEqual(erasure.errors, []);
+  assert.deepEqual(defaultHomeErasure?.errors, []);
+  assert.deepEqual([...defaultHomeErasure!.removed].sort(), [...vaultFamily].sort());
+  assert.deepEqual(defaultHomeErasure!.cleaned, [], 'the default home config.json is not cleaned');
+  for (const [home, files] of Object.entries(kept)) {
+    assert.deepEqual((await readdir(home)).sort(), Object.keys(files).sort(), `${home}: the vault family is gone, nothing else`);
+    for (const [name, content] of Object.entries(files)) assert.equal(await readFile(join(home, name), 'utf8'), content, `${home}/${name} is byte-identical`);
+  }
 });
 
 test('a corrupt redirect.json, or a directory in its place, is an error that names the file — never a silent fallback to the default home', async t => {

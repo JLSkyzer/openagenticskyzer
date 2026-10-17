@@ -196,19 +196,31 @@ async function resolveMainDataHome(env = process.env, userHome = homedir()) {
 /**
  * The startup's data-home step: resolves the home (an unresolvable home throws, into the startup-failure path), then
  * erases the online-provider secrets earlier versions left there (core/online-secrets.mts: the connections vault and
- * its copies, current_provider/current_model in config.json and its pre-Electron backup; hf_token is kept). Runs
+ * its copies, current_provider/current_model in config.json and its pre-Electron backup; hf_token is kept), and the
+ * vault family alone in the default home when a redirect points elsewhere (defaultHomeErasure, null otherwise). Runs
  * before the worker starts, so no write is in flight. An erasure error is only logged, never a startup failure: the
  * files are still there, so the next launch retries. `env` and `userHome` are parameters for tests only.
  */
 async function prepareDataHome({ env = process.env, userHome = homedir() } = {}) {
-  const dataHome = await resolveMainDataHome(env, userHome);
-  // An ES module (like everything under core/ but data-home.cjs): imported, as worker.mjs imports core/.
-  // eraseOnlineSecrets never throws; the catch only covers the module failing to load, which must not stop the start.
+  const { defaultHome, dataHome } = await resolveHomes(env, userHome);
+  const failed = error => ({ removed: [], cleaned: [], errors: [`core/online-secrets.mts : ${error instanceof Error ? error.message : String(error)}`] });
+  // An ES module (like everything under core/ but data-home.cjs): imported, as worker.mjs imports core/. Its functions
+  // never throw; the catches only cover the module failing to load, which must not stop the start either.
   let erasure;
   try { erasure = await (await import('./core/online-secrets.mts')).eraseOnlineSecrets(dataHome); }
-  catch (error) { erasure = { removed: [], cleaned: [], errors: [`core/online-secrets.mts : ${error instanceof Error ? error.message : String(error)}`] }; }
+  catch (error) { erasure = failed(error); }
   for (const line of erasure.errors) console.error('[effacement] ' + line);
-  return { dataHome, erasure };
+  // With a redirect, a vault can also be left in the default home (~/.openagent): written there before the main
+  // process followed the redirect, or by a partly failed migration. Only the vault family goes; that folder's
+  // config.json and redirect.json are not touched.
+  const same = (a, b) => process.platform === 'win32' ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase() : path.resolve(a) === path.resolve(b);
+  let defaultHomeErasure = null;
+  if (!same(defaultHome, dataHome)) {
+    try { defaultHomeErasure = await (await import('./core/online-secrets.mts')).eraseVaultFiles(defaultHome); }
+    catch (error) { defaultHomeErasure = failed(error); }
+    for (const line of defaultHomeErasure.errors) console.error(`[effacement] ${defaultHome} › ${line}`);
+  }
+  return { dataHome, erasure, defaultHomeErasure };
 }
 
 /** What the user is told when the startup fails before anything opened: the redirect file to fix when the data home

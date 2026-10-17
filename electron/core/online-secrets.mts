@@ -31,27 +31,44 @@ function without(value: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(value).filter(([key]) => !(ERASED_CONFIG_KEYS as readonly string[]).includes(key)));
 }
 
+/** The folder's entries, or null when it does not exist (any other failure is reported). */
+async function entries(home: string, report: ErasureReport): Promise<string[] | null> {
+  try { return await readdir(home); }
+  catch (error: any) {
+    if (error?.code !== 'ENOENT') report.errors.push(`${home} : ${reason(error)}`);
+    return null;
+  }
+}
+
+/** Not recursive: a directory in a file's place is reported, never emptied. */
+async function removeMatching(home: string, names: string[], pattern: RegExp, report: ErasureReport) {
+  for (const name of names.filter(name => pattern.test(name))) {
+    try { await rm(join(home, name)); report.removed.push(name); }
+    catch (error) { report.errors.push(`${name} : ${reason(error)}`); }
+  }
+}
+
+/**
+ * Only the vault family (connections.v1.json, its pre-Electron backup and its temp files), whatever their content.
+ * main.cjs::prepareDataHome runs it on ~/.openagent when a redirect points the data home elsewhere: a vault can be
+ * left there (written before the main process followed the redirect, or by a partly failed migration). Nothing else
+ * in that folder is touched — its config.json and redirect.json stay as they are. Never throws.
+ */
+export async function eraseVaultFiles(home: string): Promise<ErasureReport> {
+  const report: ErasureReport = { removed: [], cleaned: [], errors: [] };
+  const names = await entries(home, report);
+  if (names) await removeMatching(home, names, VAULT_FILE, report);
+  return report;
+}
+
 /** Never throws: every failure is reported in `errors` as "<name> : <reason>", and retried at the next start. */
 export async function eraseOnlineSecrets(dataHome: string): Promise<ErasureReport> {
   const report: ErasureReport = { removed: [], cleaned: [], errors: [] };
-  let names: string[];
-  try { names = await readdir(dataHome); }
-  catch (error: any) {
-    if (error?.code !== 'ENOENT') report.errors.push(`${dataHome} : ${reason(error)}`);
-    return report;
-  }
-
-  // Whatever their content (encrypted, corrupt or empty). Not recursive: a directory in their place is reported.
-  for (const name of names.filter(name => VAULT_FILE.test(name))) {
-    try { await rm(join(dataHome, name)); report.removed.push(name); }
-    catch (error) { report.errors.push(`${name} : ${reason(error)}`); }
-  }
-
+  const names = await entries(dataHome, report);
+  if (!names) return report;
+  await removeMatching(dataHome, names, VAULT_FILE, report);
   // Orphans of an interrupted config.json write: one may still hold the erased keys.
-  for (const name of names.filter(name => CONFIG_TEMP.test(name))) {
-    try { await rm(join(dataHome, name)); report.removed.push(name); }
-    catch (error) { report.errors.push(`${name} : ${reason(error)}`); }
-  }
+  await removeMatching(dataHome, names, CONFIG_TEMP, report);
 
   const store = new JsonStore();
   for (const name of CONFIG_FILES) {

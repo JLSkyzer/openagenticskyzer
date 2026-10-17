@@ -2,7 +2,8 @@
 // (release/win-unpacked/openagent.exe) and proves, in the real packaged main process, that the startup erasure of the
 // online-provider secrets (core/online-secrets.mts, through main.cjs::prepareDataHome) runs in the folder the data-home
 // redirect points to (R4) — resolved by core/data-home.cjs, the CommonJS module main.cjs requires at startup — exactly
-// where the packaged worker keeps the rest of the data, and never in the folder that only holds the pointer.
+// where the packaged worker keeps the rest of the data. In the folder that only holds the pointer, only a leftover
+// vault family is removed; its config.json is never cleaned.
 //
 // Isolation: OPENAGENT_HOME is a temp folder that takes the place of ~/.openagent; its redirect.json points to a
 // second temp folder. userData is a third temp folder (--user-data-dir and OPENAGENT_USERDATA_DIR). The real data
@@ -44,14 +45,15 @@ async function main() {
   const redirected = await mkdtemp(join(tmpdir(), 'openagent-package-datahome-redirected-'));
   // The pointer, as Réglages › Général › Répertoire de données writes it. The REDIRECTED folder holds what an earlier
   // version left: the connections vault and a config.json with both provider keys and the kept Hugging Face token.
-  // Decoys in the pointer's own folder: a main process that erased in the wrong folder would remove or change them.
+  // The pointer's own folder holds a config.json that must stay byte-identical (only the data home's config.json is
+  // cleaned), and a leftover vault family that must go too (a vault left there before the redirect was followed).
   await writeFile(join(home, 'redirect.json'), JSON.stringify({ data_dir: redirected }));
   await writeFile(join(home, 'config.json'), JSON.stringify({ current_provider: 'groq', current_model: 'llama-leurre', hf_token: 'hf_LEURRE' }));
-  await writeFile(join(home, 'connections.v1.json'), 'leurre-coffre');
+  const homeVaultFamily = ['connections.v1.json', 'connections.v1.json.pre-electron.bak', 'connections.v1.json.0f8fad5b-d9cb-469f-a165-70867728950e.tmp'];
+  for (const name of homeVaultFamily) await writeFile(join(home, name), 'coffre-reste-dans-le-dossier-par-defaut');
   await writeFile(join(redirected, 'connections.v1.json'), JSON.stringify({ version: 1, payload: 'eA==' }));
   await writeFile(join(redirected, 'config.json'), JSON.stringify({ current_provider: 'mistral', current_model: 'modele-en-ligne', hf_token: 'hf_GARDE', theme: 'dark' }));
   const homeConfigBefore = await readFile(join(home, 'config.json'), 'utf8');
-  const homeVaultBefore = await readFile(join(home, 'connections.v1.json'), 'utf8');
 
   // 0. A corrupt redirect.json: a clear message and an immediate exit with code 1 — never a process left running
   //    with no window, holding the single-instance lock.
@@ -104,9 +106,10 @@ async function main() {
       assert.equal(/current_provider|current_model|mistral|modele-en-ligne/.test(backup), false, 'no backup holds the erased keys');
     }
 
-    // 2. The decoys in the folder that only holds the pointer are untouched.
-    assert.equal(await readFile(join(home, 'connections.v1.json'), 'utf8'), homeVaultBefore, 'the decoy vault is untouched');
-    assert.equal(await readFile(join(home, 'config.json'), 'utf8'), homeConfigBefore, 'the decoy config.json is untouched');
+    // 2. In the folder that only holds the pointer, the leftover vault family is erased too; its config.json is untouched.
+    for (const name of homeVaultFamily) assert.equal(await present(join(home, name)), false, `${name} is erased from the default home`);
+    assert.equal(await readFile(join(home, 'config.json'), 'utf8'), homeConfigBefore, 'the default home config.json is untouched');
+    assert.equal(await present(join(home, 'redirect.json')), true, 'the pointer stays');
 
     // 3. The packaged worker resolved the very same folder (one module for both processes).
     const globalSettings = await ask({ op: 'global-settings' });
@@ -116,7 +119,7 @@ async function main() {
     assert.equal(JSON.parse(await readFile(join(redirected, 'config.json'), 'utf8')).theme, 'light', 'the worker writes in the redirected folder');
     assert.equal(await readFile(join(home, 'config.json'), 'utf8'), homeConfigBefore, 'the pointer folder is untouched');
 
-    process.stdout.write('PASS packaged data home: main.cjs and the worker follow redirect.json; the startup erasure ran in the redirected folder only, hf_token kept\n');
+    process.stdout.write('PASS packaged data home: main.cjs and the worker follow redirect.json; the startup erasure cleaned the redirected folder (hf_token kept) and removed the vault left in the default home\n');
   } finally {
     child.kill();
     await new Promise(resolve => setTimeout(resolve, 1500)); // let the killed process release its files

@@ -7,6 +7,7 @@ export function resolveMainDataHome(env?: Record<string, string | undefined>, us
 export function prepareDataHome(options?: { env?: Record<string, string | undefined>; userHome?: string }): Promise<{
   dataHome: string;
   erasure: { removed: string[]; cleaned: string[]; errors: string[] };
+  defaultHomeErasure: { removed: string[]; cleaned: string[]; errors: string[] } | null;
 }>;
 
 export function startupFailure(error: unknown): { title: string; message: string };

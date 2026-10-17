@@ -17,7 +17,7 @@ export interface KnowledgeEntry {
 /** 2: vectors of the bundled quantized model (core/embeddings.mts). A version-1 base holds fp32 vectors; unlike a
  * project index it cannot be rebuilt from a folder, so its stored texts are re-embedded once (upgradeKnowledge). */
 export const KNOWLEDGE_VERSION = 2;
-interface KnowledgeFile {
+export interface KnowledgeFile {
   version: number;
   entries: KnowledgeEntry[];
 }
@@ -54,11 +54,15 @@ export async function addToKnowledge(source: string, text: string, home: string)
     vector: vectors[i],
   }));
   const store = new JsonStore();
-  await store.update<KnowledgeFile>(knowledgeStorePath(home), { version: KNOWLEDGE_VERSION, entries: [] }, current => ({
-    version: KNOWLEDGE_VERSION,
-    entries: [...current.entries.filter(e => e.source !== source), ...newEntries],
-  }));
+  await store.update<KnowledgeFile>(knowledgeStorePath(home), { version: KNOWLEDGE_VERSION, entries: [] }, current => withSource(current, source, newEntries));
   return newEntries.length;
+}
+
+/** addToKnowledge's write: `source`'s chunks replaced by `newEntries`. Refuses a base of another version (written
+ * between upgradeKnowledge and this write): stamping it KNOWLEDGE_VERSION would relabel its old vectors. */
+export function withSource(current: KnowledgeFile, source: string, newEntries: KnowledgeEntry[]): KnowledgeFile {
+  if (current.version !== KNOWLEDGE_VERSION) throw new Error(`Base de connaissances en version ${current.version}, ${KNOWLEDGE_VERSION} attendue : réessaie l’ajout.`);
+  return { version: KNOWLEDGE_VERSION, entries: [...current.entries.filter(e => e.source !== source), ...newEntries] };
 }
 
 /**

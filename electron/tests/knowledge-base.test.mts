@@ -148,3 +148,13 @@ test('removeSource keeps the version it found', async t => {
   assert.equal(raw.version, 1, 'old vectors are never stamped with the new version');
   assert.deepEqual(raw.entries.map((e: any) => e.source), ['b.md']);
 });
+
+test('the final write of addToKnowledge refuses a base of another version: old vectors are never relabelled', async () => {
+  const { withSource, KNOWLEDGE_VERSION } = await import('../core/knowledge-base.mts');
+  const vector = new Array(384).fill(0);
+  const old = { id: 'a.md:0', source: 'a.md', chunk: 0, text: 'A', vector };
+  const fresh = { id: 'b.md:0', source: 'b.md', chunk: 0, text: 'B', vector };
+  assert.throws(() => withSource({ version: 1, entries: [old] }, 'b.md', [fresh]), /version/);
+  assert.deepEqual(withSource({ version: KNOWLEDGE_VERSION, entries: [old, { ...fresh, text: 'B ancien' }] }, 'b.md', [fresh]),
+    { version: KNOWLEDGE_VERSION, entries: [old, fresh] });
+});

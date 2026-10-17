@@ -58,3 +58,27 @@ test('once loaded, the library is locked to local files', { timeout: 120000 }, a
   assert.equal(env.allowRemoteModels, false);
   assert.equal(env.useFSCache, false);
 });
+
+test('embed() runs fixed slices of EMBED_BATCH texts and returns every vector in input order', { timeout: 120000 }, async () => {
+  const { EMBED_BATCH, embeddingBatches } = await import('../core/embeddings.mts');
+  assert.equal(EMBED_BATCH, 32);
+  const marked = new Map([[0, 'trier une liste de nombres'], [33, 'la météo de demain à Paris'], [69, 'ouvrir une connexion à la base de données']]);
+  const texts = Array.from({ length: 70 }, (_, i) => marked.get(i) ?? `ligne de remplissage numéro ${i}`);
+  // The slicing embed() runs: 3 runs of 32, 32 and 6 texts, in order.
+  const batches = embeddingBatches(texts);
+  assert.deepEqual(batches.map(b => b.length), [32, 32, 6]);
+  assert.deepEqual(batches.flat(), texts);
+  const vectors = await embed(texts);
+  assert.equal(vectors.length, 70);
+  // Not an exact equality: the quantized model's vector of a text shifts slightly with the padding of the batch it is in
+  // (measured 2026-10-17: up to 0.026 per component, cosine ≥ 0.987 to the single-call vector, ≤ 0.49 across these texts).
+  const alone = new Map<number, number[]>();
+  for (const [position, text] of marked) alone.set(position, (await embed([text]))[0]);
+  for (const position of marked.keys()) {
+    const own = cosineSimilarity(alone.get(position)!, vectors[position]);
+    assert.ok(own >= 0.98, `position ${position} holds the vector of « ${marked.get(position)} » (cosine ${own})`);
+    for (const other of marked.keys()) {
+      if (other !== position) assert.ok(own > cosineSimilarity(alone.get(other)!, vectors[position]) + 0.3, `position ${position} is not « ${marked.get(other)} »`);
+    }
+  }
+});

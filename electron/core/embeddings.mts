@@ -9,6 +9,9 @@ export const EMBEDDING_DIMENSIONS = 384;
 /** The repository's copy (electron/resources/models), used in development and by the tests. The packaged app passes
  * `<resources>/models` (build.extraResources) through workerData.modelsDir instead — see main.cjs workerOptions. */
 export const DEFAULT_MODELS_DIR = fileURLToPath(new URL('../resources/models/', import.meta.url));
+/** Texts per ONNX run: one run's memory grows with batch × sequence², so a large input (a whole knowledge base being
+ * re-embedded, a big file) is never sent as one batch. */
+export const EMBED_BATCH = 32;
 export const EMBEDDINGS_MISSING = 'Modèle de recherche sémantique absent de l’installation : la recherche sémantique est indisponible.';
 
 type TransformersModule = typeof import('@huggingface/transformers');
@@ -64,15 +67,22 @@ function getExtractor(): Promise<any> {
   return loading;
 }
 
-/** Embeds a batch of texts as normalized 384-dim vectors (mean-pooled), in the same order given. */
+/** The consecutive slices of at most `size` items embed() runs, one ONNX run each, in input order. */
+export function embeddingBatches<T>(items: readonly T[], size = EMBED_BATCH): T[][] {
+  const batches: T[][] = [];
+  for (let start = 0; start < items.length; start += size) batches.push(items.slice(start, start + size));
+  return batches;
+}
+
+/** Embeds texts as normalized 384-dim vectors (mean-pooled), in the same order given, EMBED_BATCH texts per run. */
 export async function embed(texts: string[]): Promise<number[][]> {
   if (!texts.length) return [];
   const extractor = await getExtractor();
-  const output = await extractor(texts, { pooling: 'mean', normalize: true });
-  const [batch, dim] = output.dims;
   const vectors: number[][] = [];
-  for (let i = 0; i < batch; i++) {
-    vectors.push(Array.from(output.data.slice(i * dim, (i + 1) * dim)) as number[]);
+  for (const batch of embeddingBatches(texts)) {
+    const output = await extractor(batch, { pooling: 'mean', normalize: true });
+    const [count, dim] = output.dims;
+    for (let i = 0; i < count; i++) vectors.push(Array.from(output.data.slice(i * dim, (i + 1) * dim)) as number[]);
   }
   return vectors;
 }

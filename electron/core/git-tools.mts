@@ -31,13 +31,13 @@ function refName(value: string, what: string) {
 // Files whose content never reaches the model through a diff or blame, whatever their tracking state (2026-10-17): key
 // material by name (isSensitiveFile), .env*, .git, .openagent and the project's ignored_patterns (protectedPathMatcher)
 // — the same rule as the file tools. git_blame and git_diff's `file` go through the file tools' own path check
-// (core/path-guard.mts), on the typed name and on the name on disk. The diffs list the changed paths first and exclude
-// the hidden ones, then NAME them on one final line: the model knows a secret file changed, never what it holds.
-// EXCLUDE_ENV stays on every real diff as defence in depth.
+// (core/path-guard.mts), on the typed name and on the name on disk. The diffs list the changed paths first, diff only
+// the visible ones, then NAME the hidden ones on one final line: the model knows a secret file changed, never what it
+// holds. EXCLUDE_ENV stays on every real diff as defence in depth.
 const EXCLUDE_ENV = [':(exclude,glob)**/.env', ':(exclude,glob)**/.env.*'];
 const MASKED_LINE = 'Fichiers masqués (secrets ou exclus), contenu non affiché : ';
-// Windows caps a whole command line at 32 767 characters: the pathspecs a diff adds stay well under it, leaving room for
-// git's own arguments and the read guard's (git-safety.mts). Beyond it, the visible paths are diffed in batches instead.
+// Windows caps a whole command line at 32 767 characters: the pathspecs one diff call carries stay well under it,
+// leaving room for git's own arguments and the read guard's (git-safety.mts). More paths mean more calls (batches).
 const PATHSPEC_BUDGET = 16000;
 // agent.mts cuts a tool result at 50 000 characters: the masked line must survive that cut, so the diff before it is cut
 // here first. The line itself names at most MASKED_NAMES paths.
@@ -60,14 +60,14 @@ function parseNameStatus(out: string): string[][] {
   return entries;
 }
 
-/** Splits arguments into batches whose total length (plus quoting room) stays under PATHSPEC_BUDGET. */
-function batches(groups: string[][]): string[][] {
+/** Splits groups of arguments into batches whose total length (plus quoting room) stays under `budget`; a group is never split. */
+function batches(groups: string[][], budget: number): string[][] {
   const out: string[][] = [];
   let current: string[] = [];
   let size = 0;
   for (const group of groups) {
     const length = group.reduce((sum, arg) => sum + arg.length + 3, 0);
-    if (current.length && size + length > PATHSPEC_BUDGET) { out.push(current); current = []; size = 0; }
+    if (current.length && size + length > budget) { out.push(current); current = []; size = 0; }
     current.push(...group);
     size += length;
   }
@@ -97,8 +97,12 @@ function splitFiles(input: string): string[] {
   return kept;
 }
 
+/** Test seam only (tests/git-tools.test.mts): `onListed` runs between a diff's listing and the diff itself, so a test can
+ * change a file exactly there. Not exported: production callers never pass it. */
+interface GitToolsTestOptions { onListed?: () => Promise<void> }
+
 /** Git tools for the active project. No shell is ever involved: every value is one argv entry. */
-export async function gitTools(folder: string, ignoredPatterns: string): Promise<AgentTool[]> {
+export async function gitTools(folder: string, ignoredPatterns: string, testOptions: GitToolsTestOptions = {}): Promise<AgentTool[]> {
   if (!isAbsolute(folder)) throw new Error('Dossier projet absolu requis');
   const root = await realpath(folder);
   if (!(await lstat(root)).isDirectory()) throw new Error('Dossier projet invalide');
@@ -146,41 +150,45 @@ export async function gitTools(folder: string, ignoredPatterns: string): Promise
 
   /**
    * A diff with the hidden files left out and named. `flags` are the diff's own (--staged, --no-ext-diff…), `scope` its
-   * pathspec. The changed paths are listed first with the same flags and scope, then the real diff excludes each hidden
-   * one by a literal pathspec. A rename or copy is hidden, both names, when either name is: its other side holds the
-   * hidden content. git gives paths from the top of the repository, the project may be a folder inside it: a path is
-   * matched both as git gives it and relative to the project.
+   * pathspec. The changed paths are listed first with the same flags and scope; the real diff then runs on the VISIBLE
+   * listed paths only, each named by a literal pathspec: a file that changes between the two git calls (an editor's
+   * auto-save, a watcher) was not listed, so it is not diffed. A rename or copy is hidden, both names, when either name
+   * is: its other side holds the hidden content; a visible one keeps both names in one call, so git still pairs them.
+   * git gives paths from the top of the repository, the project may be a folder inside it: a path under the project is
+   * matched relative to the project, any other path as git gives it.
    */
   const filteredDiff = async (flags: string[], scope: string[], empty: string, signal: AbortSignal): Promise<string> => {
     const guard = await readGuard(signal);
     const prefix = (await git([...guard, 'rev-parse', '--show-prefix'], signal));
-    const hidden = (path: string) => isSensitiveFile(path) || blocked(path) ||
-      (!!prefix && path.startsWith(prefix) && blocked(path.slice(prefix.length)));
+    const hidden = (path: string) => isSensitiveFile(path) ||
+      blocked(prefix && path.startsWith(prefix) ? path.slice(prefix.length) : path);
     const listing = await gitRaw([...guard, 'diff', '--name-status', '-z', ...flags, '--', ...scope], signal);
     if (listing.truncated) throw new Error('Trop de fichiers modifiés pour un diff sûr : indiquez un fichier ou un dossier');
     const entries = parseNameStatus(listing.stdout);
-    const masked = entries.filter(paths => paths.some(hidden));
-    if (!masked.length) return (await git([...guard, 'diff', ...flags, '--', ...scope, ...EXCLUDE_ENV], signal)) || empty;
-
-    const names = [...new Set(masked.flat())];
+    await testOptions.onListed?.();
     const literal = (path: string, magic: string) => `:(top,literal${magic})${path}`;
-    const excludes = names.map(path => literal(path, ',exclude'));
-    let body: string;
-    if (excludes.reduce((sum, arg) => sum + arg.length + 3, 0) <= PATHSPEC_BUDGET) {
-      body = await git([...guard, 'diff', ...flags, '--', ...scope, ...excludes, ...EXCLUDE_ENV], signal);
-    } else {
-      // Too many hidden paths for one command line: the visible entries are diffed instead, in batches, each rename or
-      // copy kept whole in one batch. Nothing hidden is ever named to git as something to show.
-      const visible = entries.filter(paths => !paths.some(hidden)).map(paths => paths.map(path => literal(path, '')));
-      const parts: string[] = [];
-      for (const batch of batches(visible)) {
-        parts.push(await git([...guard, 'diff', ...flags, '--', ...batch, ...EXCLUDE_ENV], signal));
-        if (parts.join('\n').length > DIFF_OUTPUT_MAX) break;
-      }
-      body = parts.filter(Boolean).join('\n');
+    const masked = [...new Set(entries.filter(paths => paths.some(hidden)).flat())];
+    const visible = entries.filter(paths => !paths.some(hidden)).map(paths => paths.map(path => literal(path, '')));
+    // Defence in depth on every call: .env* by glob, and the listed hidden paths when they fit in half the budget. A
+    // literal include also covers what lies under it (a path that became a folder): these excludes keep the hidden
+    // paths out of that too.
+    const hiddenExcludes = masked.map(path => literal(path, ',exclude'));
+    const excludeSize = hiddenExcludes.reduce((sum, arg) => sum + arg.length + 3, 0);
+    const fits = excludeSize <= PATHSPEC_BUDGET / 2;
+    const excludes = [...(fits ? hiddenExcludes : []), ...EXCLUDE_ENV];
+    const parts: string[] = [];
+    let size = 0;
+    for (const batch of batches(visible, PATHSPEC_BUDGET - (fits ? excludeSize : 0))) {
+      const part = await git([...guard, 'diff', ...flags, '--', ...batch, ...excludes], signal);
+      if (part) { parts.push(part); size += part.length + 1; }
+      if (size > DIFF_OUTPUT_MAX) break;
     }
-    const shown = names.slice(0, MASKED_NAMES).join(', ') + (names.length > MASKED_NAMES ? `, … (+${names.length - MASKED_NAMES})` : '');
+    let body = parts.join('\n');
     if (body.length > DIFF_OUTPUT_MAX) body = body.slice(0, DIFF_OUTPUT_MAX) + '\n[Diff tronqué]';
+    if (!masked.length) return body || empty;
+    // One line whatever the names: a name with a control character (a newline is legal outside Windows) is quoted.
+    const named = masked.map(path => (/[\u0000-\u001f\u007f]/.test(path) ? JSON.stringify(path) : path));
+    const shown = named.slice(0, MASKED_NAMES).join(', ') + (named.length > MASKED_NAMES ? `, … (+${named.length - MASKED_NAMES})` : '');
     return `${body || empty}\n${MASKED_LINE}${shown}`;
   };
   const okIfEmpty = (out: string) => out || 'OK (pas de sortie)';

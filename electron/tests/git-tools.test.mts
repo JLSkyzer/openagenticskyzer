@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, mkdir, writeFile, readFile, rm, stat, utimes } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -19,7 +20,7 @@ async function refuses(promise: Promise<unknown>, expected?: RegExp) {
   });
 }
 
-async function fixture(t: any, ignoredPatterns = '') {
+async function fixture(t: any, ignoredPatterns = '', options?: { onListed?: () => Promise<void> }) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-git-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const repo = join(root, 'repo');
@@ -32,7 +33,7 @@ async function fixture(t: any, ignoredPatterns = '') {
   await sh(['add', 'README.md'], repo);
   await sh(['commit', '-m', 'initial'], repo);
   const { gitTools } = await import('../core/git-tools.mts');
-  const tools = await gitTools(repo, ignoredPatterns);
+  const tools = await gitTools(repo, ignoredPatterns, options);
   async function invoke(name: string, args: Record<string, unknown> = {}) {
     const tool = tools.find(entry => entry.name === name);
     if (!tool) throw new MissingTool(`Missing ${name}`);
@@ -237,20 +238,26 @@ test('a rename to or from a secret file is hidden, both names given, no content'
 });
 
 test('git_blame and git_diff refuse a secret, ignored or protected file by name, with no content', async t => {
-  const { invoke, modify } = await secretsFixture(t);
+  const { repo, invoke, modify } = await secretsFixture(t);
   await modify();
   await assert.rejects(invoke('git_blame', { file: 'secrets.json' }), refusedWithoutContent(/^Fichier secret : blame refusé/));
   await assert.rejects(invoke('git_blame', { file: 'key.pem' }), refusedWithoutContent(/^Fichier secret : blame refusé/));
   await assert.rejects(invoke('git_blame', { file: 'private/notes.md' }), refusedWithoutContent(/^Fichier ignoré ou protégé : blame refusé/));
-  await assert.rejects(invoke('git_blame', { file: 'PRIVATE/notes.md' }), refusedWithoutContent(/^Fichier ignoré ou protégé : blame refusé/));
   await assert.rejects(invoke('git_diff', { file: 'secrets.json' }), refusedWithoutContent(/^Fichier secret : diff refusé/));
-  await assert.rejects(invoke('git_diff', { file: 'PRIVATE/notes.md' }), refusedWithoutContent(/^Fichier ignoré ou protégé : diff refusé/));
-  // private/** matches what is under private/, not the folder itself (the file tools' rule): the folder is diffed, and
-  // every file in it is masked by name, under its name on disk.
-  assert.equal(await invoke('git_diff', { file: 'PRIVATE' }), 'No changes.\n' + MASKED + 'private/notes.md');
-  await assert.rejects(invoke('git_diff', { file: '.GIT' }), refusedWithoutContent(/^Fichier ignoré ou protégé : diff refusé/));
+  await assert.rejects(invoke('git_diff', { file: 'private/notes.md' }), refusedWithoutContent(/^Fichier ignoré ou protégé : diff refusé/));
   await assert.rejects(invoke('git_diff', { file: '.git/config' }), refusedWithoutContent(/^Fichier ignoré ou protégé : diff refusé/));
   await assert.rejects(invoke('git_diff', { file: '../outside' }), refusedWithoutContent(/^Chemin hors projet ou racine protégée : diff refusé/));
+  // .git is matched whatever its case, by name.
+  await assert.rejects(invoke('git_diff', { file: '.GIT' }), refusedWithoutContent(/^Fichier ignoré ou protégé : diff refusé/));
+  // PRIVATE/ is another spelling of private/ only where names ignore case (Windows, macOS by default).
+  await t.test('through another case of the ignored folder', async st => {
+    if (!existsSync(join(repo, 'PRIVATE'))) { st.skip('case-sensitive file system: PRIVATE/ is another folder'); return; }
+    await assert.rejects(invoke('git_blame', { file: 'PRIVATE/notes.md' }), refusedWithoutContent(/^Fichier ignoré ou protégé : blame refusé/));
+    await assert.rejects(invoke('git_diff', { file: 'PRIVATE/notes.md' }), refusedWithoutContent(/^Fichier ignoré ou protégé : diff refusé/));
+    // private/** matches what is under private/, not the folder itself (the file tools' rule): the folder is diffed, and
+    // every file in it is masked by name, under its name on disk.
+    assert.equal(await invoke('git_diff', { file: 'PRIVATE' }), 'No changes.\n' + MASKED + 'private/notes.md');
+  });
 });
 
 test('git_blame and git_diff check the name on disk: an 8.3 short name never reaches a secret file or .git', async t => {
@@ -273,20 +280,27 @@ test('git_blame and git_diff still work on a normal file, also through another c
   await sh(['commit', '-m', 'src'], repo);
   await writeFile(join(repo, 'src', 'app.ts'), 'NORMAL-NEW\n');
   await writeFile(join(repo, 'src', 'key.pem'), 'SECRET-IN-SRC-NEW\n');
-  for (const file of ['src/app.ts', 'SRC/app.ts', 'src\\app.ts']) {
+  const checkFile = async (file: string) => {
     assert.match(await invoke('git_blame', { file }), /Not Committed Yet.*NORMAL-NEW/, file);
     const diff = await invoke('git_diff', { file });
     assert.match(diff, /^diff --git a\/src\/app\.ts b\/src\/app\.ts$/m, file);
     assert.match(diff, /\+NORMAL-NEW/, file);
     assert.equal(diff.includes('Fichiers masqués'), false, file);
-  }
+  };
   // A folder is allowed when the folder itself is: the files inside are filtered one by one.
-  for (const file of ['src', 'SRC']) {
+  const checkFolder = async (file: string) => {
     const folder = await invoke('git_diff', { file });
     assert.match(folder, /\+NORMAL-NEW/, file);
     assert.equal(folder.includes('SECRET-'), false, folder);
     assert.equal(lastLine(folder), MASKED + 'src/key.pem', file);
-  }
+  };
+  for (const file of ['src/app.ts', 'src\\app.ts']) await checkFile(file);
+  await checkFolder('src');
+  await t.test('through another case of the folder', async st => {
+    if (!existsSync(join(repo, 'SRC'))) { st.skip('case-sensitive file system: SRC/ is another folder'); return; }
+    await checkFile('SRC/app.ts');
+    await checkFolder('SRC');
+  });
 });
 
 test('too many hidden files for one command line: the visible ones are still diffed, nothing hidden is shown', async t => {
@@ -322,6 +336,83 @@ test('a project inside a larger repository: its ignored patterns apply under its
   assert.match(diff, /\+APP-NEW/);
   assert.equal(diff.includes('SECRET-'), false, diff);
   assert.equal(lastLine(diff), MASKED + 'sub/private/notes.md');
+});
+
+test('a file that changes between the listing and the diff is never shown: only the listed visible paths are diffed', async t => {
+  let between: (() => Promise<void>) | null = null;
+  let ran = 0;
+  const { repo, invoke } = await fixture(t, '', { onListed: async () => { ran++; await between?.(); } });
+  await writeFile(join(repo, 'app.ts'), 'APP-OLD\n');
+  await writeFile(join(repo, 'secrets.json'), 'SECRET-RACE-OLD\n');
+  await sh(['add', 'app.ts', 'secrets.json'], repo);
+  await sh(['commit', '-m', 'files'], repo);
+
+  // Nothing changed at listing time, a secret changes right after it.
+  between = () => writeFile(join(repo, 'secrets.json'), 'SECRET-RACE-ONLY\n');
+  assert.equal(await invoke('git_diff'), 'No changes.');
+  assert.match(await sh(['diff'], repo), /SECRET-RACE-ONLY/, 'sanity: the secret did change before the diff could run');
+
+  // A visible change is listed, the secret changes right after: only the visible one is diffed.
+  await sh(['checkout', '--', 'secrets.json'], repo);
+  await writeFile(join(repo, 'app.ts'), 'APP-NEW\n');
+  between = () => writeFile(join(repo, 'secrets.json'), 'SECRET-RACE-NEW\n');
+  const unstaged = await invoke('git_diff');
+  assert.match(unstaged, /\+APP-NEW/);
+  assert.equal(/SECRET-RACE|secrets\.json/.test(unstaged), false, unstaged);
+
+  // Same for the index: the secret is staged right after the listing.
+  await sh(['checkout', '--', 'secrets.json'], repo);
+  await sh(['add', 'app.ts'], repo);
+  between = async () => { await writeFile(join(repo, 'secrets.json'), 'SECRET-RACE-STAGED\n'); await sh(['add', 'secrets.json'], repo); };
+  const staged = await invoke('git_diff_staged');
+  assert.match(staged, /\+APP-NEW/);
+  assert.equal(/SECRET-RACE|secrets\.json/.test(staged), false, staged);
+  assert.equal(ran, 3, 'the hook ran between the listing and the diff of each call');
+});
+
+test('a rename between two visible names is still shown as a rename', async t => {
+  const { repo, invoke } = await fixture(t);
+  const body = Array.from({ length: 20 }, (_, i) => `old line ${i}`).join('\n');
+  await writeFile(join(repo, 'old.ts'), body + '\n');
+  await sh(['add', 'old.ts'], repo);
+  await sh(['commit', '-m', 'old'], repo);
+  await sh(['mv', 'old.ts', 'new.ts'], repo);
+  await writeFile(join(repo, 'new.ts'), body + '\nRENAMED-LINE\n');
+  await sh(['add', 'new.ts'], repo);
+  const out = await invoke('git_diff_staged');
+  assert.match(out, /^rename from old\.ts$/m);
+  assert.match(out, /^rename to new\.ts$/m);
+  assert.match(out, /\+RENAMED-LINE/);
+});
+
+test('a project inside a folder its own ignored patterns name (repo/dist/site with dist ignored) still shows its files', async t => {
+  const { repo } = await fixture(t);
+  const project = join(repo, 'dist', 'site');
+  await mkdir(join(project, 'private'), { recursive: true });
+  await writeFile(join(project, 'app.ts'), 'APP-OLD\n');
+  await writeFile(join(project, 'private', 'notes.md'), 'SECRET-DIST-OLD\n');
+  await sh(['add', 'dist'], repo);
+  await sh(['commit', '-m', 'dist'], repo);
+  await writeFile(join(project, 'app.ts'), 'APP-NEW\n');
+  await writeFile(join(project, 'private', 'notes.md'), 'SECRET-DIST-NEW\n');
+  const { gitTools } = await import('../core/git-tools.mts');
+  const tools = await gitTools(project, 'dist,private/**');
+  const diff = await tools.find(tool => tool.name === 'git_diff')!.execute({}, new AbortController().signal);
+  assert.match(diff, /\+APP-NEW/);
+  assert.equal(diff.includes('SECRET-'), false, diff);
+  assert.equal(lastLine(diff), MASKED + 'dist/site/private/notes.md');
+});
+
+test('a hidden name with a control character stays on the one masked line, quoted', async t => {
+  const { repo, invoke } = await fixture(t, 'private/**');
+  // Staged straight into the index (no file on disk), so the name exists on every platform, Windows included, where a
+  // file name cannot hold a newline. A repository cloned from elsewhere can carry such a name.
+  const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: repo, input: 'SECRET-NL\n', encoding: 'utf8' }).trim();
+  // core.protectNTFS (on by default in Git for Windows) refuses the name; a clone made elsewhere has it anyway.
+  execFileSync('git', ['-c', 'core.protectNTFS=false', 'update-index', '--add', '--cacheinfo', `100644,${blob},private/a\nb.md`], { cwd: repo });
+  execFileSync('git', ['update-index', '--add', '--cacheinfo', `100644,${blob},private/plain.md`], { cwd: repo });
+  const out = await invoke('git_diff_staged');
+  assert.equal(out, 'No changes (staged).\n' + MASKED + '"private/a\\nb.md", private/plain.md');
 });
 
 test('git_branch_list shows the branches', async t => {

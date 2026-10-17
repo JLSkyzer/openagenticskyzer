@@ -5,7 +5,9 @@
 // "Exporté : <filename>", the same flow works from the command palette (Ctrl+K → Exporter), a write
 // failure is refused by the real worker, and the backdrop closes the dropdown without exporting.
 // 'open-export' is stubbed here like every other native-OS operation in a per-component visual test
-// (open-folder): main.cjs's real shell.openPath is only reachable from the packaged app (test:package).
+// (open-folder). Its filename check is proven by isExportFilename in main-routing.test.mts; the real
+// main.cjs handler (its refusals and shell.openPath) is not proven by any test since the retired lot8
+// PROOF 6 — to be re-proven in final-e2e-lot13.cjs (Task 5 of the local-only lot).
 const { app, BrowserWindow, ipcMain } = require('electron');
 app.disableHardwareAcceleration();
 app.on('window-all-closed', () => {});

@@ -370,6 +370,94 @@ test('a file that changes between the listing and the diff is never shown: only 
   assert.equal(ran, 3, 'the hook ran between the listing and the diff of each call');
 });
 
+test('a visible path replaced, between the listing and the diff, by a folder of secrets: nothing of them shown, their names masked', async t => {
+  let between: (() => Promise<void>) | null = null;
+  const { repo, invoke } = await fixture(t, '', { onListed: async () => { await between?.(); } });
+  await writeFile(join(repo, 'conf'), 'CONF-OLD\n');
+  await writeFile(join(repo, 'app.ts'), 'APP-OLD\n');
+  await sh(['add', 'conf', 'app.ts'], repo);
+  await sh(['commit', '-m', 'files'], repo);
+  await writeFile(join(repo, 'conf'), 'CONF-NEW\n');
+  await writeFile(join(repo, 'app.ts'), 'APP-NEW\n');
+  await sh(['add', 'conf', 'app.ts'], repo);
+  between = async () => {
+    await sh(['rm', '-q', '--cached', 'conf'], repo);
+    await rm(join(repo, 'conf'));
+    await mkdir(join(repo, 'conf'));
+    await writeFile(join(repo, 'conf', 'id_rsa'), 'SECRET-WINDOW\n');
+    await writeFile(join(repo, 'conf', 'x.pem'), 'SECRET-PEM\n');
+    await sh(['add', 'conf'], repo);
+  };
+  const out = await invoke('git_diff_staged');
+  assert.equal(out.includes('SECRET-'), false, out);
+  assert.match(out, /\+APP-NEW/);
+  assert.equal(lastLine(out), MASKED + 'conf/id_rsa, conf/x.pem');
+});
+
+test('names git quotes in a header are matched as git quotes them: visible ones shown, unlisted ones masked by name', async t => {
+  let between: (() => Promise<void>) | null = null;
+  const { repo, invoke } = await fixture(t, '', { onListed: async () => { await between?.(); } });
+  // Staged straight into the index: '"', '\' and a tab cannot be in a Windows file name, a clone made elsewhere has them.
+  const stage = (content: string, name: string) => {
+    const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: repo, input: content, encoding: 'utf8' }).trim();
+    execFileSync('git', ['-c', 'core.protectNTFS=false', 'update-index', '--add', '--cacheinfo', `100644,${blob},${name}`], { cwd: repo });
+  };
+  const visible = ['q"uote.txt', 'back\\slash.txt', 'tab\there.txt', 'sp ace.txt', 'é.txt', 'dir/sp ace "q".txt'];
+  for (const name of visible) stage('VISIBLE-Q\n', name);
+  const out = await invoke('git_diff_staged');
+  assert.equal(out.split('\n').filter(line => line === '+VISIBLE-Q').length, visible.length, out);
+  assert.equal(out.includes('Fichiers masqués'), false, out);
+
+  // A visible path becomes a folder of unlisted files with such names: dropped, and named.
+  await sh(['commit', '-q', '-m', 'quoted'], repo);
+  await writeFile(join(repo, 'conf'), 'CONF-OLD\n');
+  await sh(['add', 'conf'], repo);
+  await sh(['commit', '-q', '-m', 'conf'], repo);
+  await writeFile(join(repo, 'conf'), 'CONF-NEW\n');
+  await sh(['add', 'conf'], repo);
+  between = async () => {
+    await sh(['rm', '-q', '--cached', 'conf'], repo);
+    stage('SECRET-Q1\n', 'conf/sp ace.txt');
+    stage('SECRET-Q2\n', 'conf/q"x\ty.txt');
+  };
+  const raced = await invoke('git_diff_staged');
+  assert.equal(raced.includes('SECRET-'), false, raced);
+  assert.equal(lastLine(raced), MASKED + '"conf/q\\"x\\ty.txt", conf/sp ace.txt');
+});
+
+test("a repository's diff config never changes what is shown: noprefix, mnemonicPrefix, color, relative", async t => {
+  const { repo, invoke } = await fixture(t, 'private/**');
+  await writeFile(join(repo, 'app.ts'), 'APP-OLD\n');
+  await sh(['add', 'app.ts'], repo);
+  await sh(['commit', '-m', 'app'], repo);
+  await writeFile(join(repo, 'app.ts'), 'APP-NEW\n');
+  for (const [key, value] of [['diff.noprefix', 'true'], ['diff.mnemonicPrefix', 'true'], ['color.ui', 'always'], ['color.diff', 'always'], ['diff.relative', 'true']]) {
+    await sh(['config', key, value], repo);
+    const out = await invoke('git_diff');
+    assert.match(out, /^diff --git a\/app\.ts b\/app\.ts$/m, `${key}=${value}: ${out}`);
+    assert.match(out, /^\+APP-NEW$/m, `${key}=${value}`);
+  }
+});
+
+test('a project inside a larger repository with diff.relative set still shows its changes and masks its ignored files', async t => {
+  const { repo } = await fixture(t);
+  const project = join(repo, 'sub');
+  await mkdir(join(project, 'private'), { recursive: true });
+  await writeFile(join(project, 'app.ts'), 'APP-OLD\n');
+  await writeFile(join(project, 'private', 'notes.md'), 'SECRET-REL-OLD\n');
+  await sh(['add', 'sub'], repo);
+  await sh(['commit', '-m', 'sub'], repo);
+  await sh(['config', 'diff.relative', 'true'], repo);
+  await writeFile(join(project, 'app.ts'), 'APP-NEW\n');
+  await writeFile(join(project, 'private', 'notes.md'), 'SECRET-REL-NEW\n');
+  const { gitTools } = await import('../core/git-tools.mts');
+  const tools = await gitTools(project, 'private/**');
+  const diff = await tools.find(tool => tool.name === 'git_diff')!.execute({}, new AbortController().signal);
+  assert.match(diff, /\+APP-NEW/);
+  assert.equal(diff.includes('SECRET-'), false, diff);
+  assert.equal(lastLine(diff), MASKED + 'sub/private/notes.md');
+});
+
 test('a rename between two visible names is still shown as a rename', async t => {
   const { repo, invoke } = await fixture(t);
   const body = Array.from({ length: 20 }, (_, i) => `old line ${i}`).join('\n');

@@ -75,6 +75,92 @@ function batches(groups: string[][], budget: number): string[][] {
   return out;
 }
 
+// The real diff's header format, pinned whatever the repository's config: a/ b/ prefixes (diff.noprefix and
+// diff.mnemonicPrefix give none or c/ i/ w/), no colour codes (color.ui=always), paths from the top (diff.relative).
+// core.quotepath=false is in every call's base arguments.
+const DIFF_FORMAT = ['--no-relative', '--no-color', '--src-prefix=a/', '--dst-prefix=b/'];
+const SECTION_START = /^(?=diff --git |diff --cc |\* Unmerged path )/m;
+const SECTION_HEADER = /^(diff --git |diff --cc |\* Unmerged path )/;
+const UNREADABLE_SECTION = '(fichier apparu pendant la lecture)';
+const C_ESCAPES: Record<string, string> = { '\x07': 'a', '\b': 'b', '\t': 't', '\n': 'n', '\v': 'v', '\f': 'f', '\r': 'r', '"': '"', '\\': '\\' };
+
+/** A name as git writes it in a diff header with core.quotepath=false (verified with git 2.56): left alone unless it holds
+ * '"', '\' or a control character; then C-quoted whole, \a \b \t \n \v \f \r \" \\ by letter, other controls in octal. */
+function cQuote(name: string): string {
+  if (!/["\\\u0000-\u001f\u007f]/.test(name)) return name;
+  let out = '"';
+  for (const ch of name) {
+    const code = ch.charCodeAt(0);
+    if (C_ESCAPES[ch]) out += '\\' + C_ESCAPES[ch];
+    else if (code < 0x20 || code === 0x7f) out += '\\' + code.toString(8).padStart(3, '0');
+    else out += ch;
+  }
+  return out + '"';
+}
+
+/** The inverse of cQuote for one quoted token starting at `start`: the name and the index after the closing quote. */
+function cUnquote(text: string, start: number): { name: string; end: number } | null {
+  if (text[start] !== '"') return null;
+  const bytes: number[] = [];
+  const letters = Object.fromEntries(Object.entries(C_ESCAPES).map(([ch, letter]) => [letter, ch.charCodeAt(0)]));
+  for (let i = start + 1; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"') return { name: Buffer.from(bytes).toString('utf8'), end: i + 1 };
+    if (ch !== '\\') { bytes.push(...Buffer.from(ch, 'utf8')); continue; }
+    const next = text[++i];
+    if (next !== undefined && next in letters) bytes.push(letters[next]);
+    else if (/^[0-7]{3}$/.test(text.slice(i, i + 3))) { bytes.push(parseInt(text.slice(i, i + 3), 8)); i += 2; }
+    else return null;
+  }
+  return null;
+}
+
+/** The section headers git writes for these listed entries (a rename or copy: old, new) with DIFF_FORMAT. */
+function expectedHeaders(entries: string[][]): Set<string> {
+  const expected = new Set<string>();
+  for (const [from, to = from] of entries) {
+    expected.add(`diff --git ${cQuote('a/' + from)} ${cQuote('b/' + to)}`);
+    expected.add(`diff --cc ${cQuote(from)}`);
+    expected.add(`* Unmerged path ${from}`);
+    expected.add(`* Unmerged path ${cQuote(from)}`);
+  }
+  return expected;
+}
+
+/** The path a section header names (the new side of a diff --git), or null when it cannot be read with certainty. */
+function headerPath(header: string): string | null {
+  const plainOrQuoted = (text: string) => (text.startsWith('"') ? (cUnquote(text, 0)?.end === text.length ? cUnquote(text, 0)!.name : null) : text);
+  if (header.startsWith('* Unmerged path ')) return plainOrQuoted(header.slice('* Unmerged path '.length));
+  if (header.startsWith('diff --cc ')) return plainOrQuoted(header.slice('diff --cc '.length));
+  const rest = header.slice('diff --git '.length);
+  let newSide: string | null = null;
+  if (rest.startsWith('"')) {
+    const first = cUnquote(rest, 0);
+    if (first && rest[first.end] === ' ') newSide = plainOrQuoted(rest.slice(first.end + 1));
+  } else if (rest.endsWith('"') && rest.includes(' "')) {
+    newSide = plainOrQuoted(rest.slice(rest.indexOf(' "') + 1));
+  } else {
+    // Both names plain: "a/P b/P" for one path, or the only " b/" for a rename.
+    const n = (rest.length - 5) / 2;
+    if (Number.isInteger(n) && n > 0 && rest.slice(2, 2 + n) === rest.slice(5 + n) && rest.slice(2 + n, 5 + n) === ' b/') newSide = 'b/' + rest.slice(5 + n);
+    else if (rest.split(' b/').length === 2) newSide = 'b/' + rest.split(' b/')[1];
+  }
+  return newSide?.startsWith('b/') && newSide.length > 2 ? newSide.slice(2) : null;
+}
+
+/** Keeps the sections of a diff output whose header is expected; the others are dropped and named (fails closed). */
+function keepListedSections(output: string, expected: Set<string>): { kept: string; dropped: string[] } {
+  const kept: string[] = [];
+  const dropped: string[] = [];
+  for (const section of output.split(SECTION_START)) {
+    if (!SECTION_HEADER.test(section)) { if (section.trim()) dropped.push(UNREADABLE_SECTION); continue; }
+    const header = section.split('\n', 1)[0];
+    if (expected.has(header)) kept.push(section);
+    else dropped.push(headerPath(header) ?? UNREADABLE_SECTION);
+  }
+  return { kept: kept.join('').trimEnd(), dropped };
+}
+
 /** shlex-like split (quotes group words); backslashes become '/' first so Windows paths survive. */
 function splitFiles(input: string): string[] {
   const text = input.replace(/\\/g, '/');
@@ -156,31 +242,38 @@ export async function gitTools(folder: string, ignoredPatterns: string, testOpti
    * is: its other side holds the hidden content; a visible one keeps both names in one call, so git still pairs them.
    * git gives paths from the top of the repository, the project may be a folder inside it: a path under the project is
    * matched relative to the project, any other path as git gives it.
+   *
+   * A literal include also covers what lies under it: a visible path replaced by a folder between the two calls would
+   * bring that folder's new files, which no listing ever saw. So the output is checked too, and fails closed: only the
+   * sections whose header is a listed visible entry's are kept; any other section is dropped, and its path (or a generic
+   * entry when the header cannot be read) is added to the masked names. The header format is pinned for that
+   * (DIFF_FORMAT): a repository's diff.noprefix, diff.mnemonicPrefix, color or diff.relative would otherwise change it.
    */
   const filteredDiff = async (flags: string[], scope: string[], empty: string, signal: AbortSignal): Promise<string> => {
     const guard = await readGuard(signal);
     const prefix = (await git([...guard, 'rev-parse', '--show-prefix'], signal));
     const hidden = (path: string) => isSensitiveFile(path) ||
       blocked(prefix && path.startsWith(prefix) ? path.slice(prefix.length) : path);
-    const listing = await gitRaw([...guard, 'diff', '--name-status', '-z', ...flags, '--', ...scope], signal);
+    const listing = await gitRaw([...guard, 'diff', '--name-status', '-z', '--no-relative', ...flags, '--', ...scope], signal);
     if (listing.truncated) throw new Error('Trop de fichiers modifiés pour un diff sûr : indiquez un fichier ou un dossier');
     const entries = parseNameStatus(listing.stdout);
     await testOptions.onListed?.();
     const literal = (path: string, magic: string) => `:(top,literal${magic})${path}`;
     const masked = [...new Set(entries.filter(paths => paths.some(hidden)).flat())];
-    const visible = entries.filter(paths => !paths.some(hidden)).map(paths => paths.map(path => literal(path, '')));
-    // Defence in depth on every call: .env* by glob, and the listed hidden paths when they fit in half the budget. A
-    // literal include also covers what lies under it (a path that became a folder): these excludes keep the hidden
-    // paths out of that too.
+    const visibleEntries = entries.filter(paths => !paths.some(hidden));
+    const expected = expectedHeaders(visibleEntries);
+    // .env* by glob and the listed hidden paths (when they fit in half the budget) stay excluded as defence in depth;
+    // what no listing named is caught by the output check above.
     const hiddenExcludes = masked.map(path => literal(path, ',exclude'));
     const excludeSize = hiddenExcludes.reduce((sum, arg) => sum + arg.length + 3, 0);
     const fits = excludeSize <= PATHSPEC_BUDGET / 2;
     const excludes = [...(fits ? hiddenExcludes : []), ...EXCLUDE_ENV];
     const parts: string[] = [];
     let size = 0;
-    for (const batch of batches(visible, PATHSPEC_BUDGET - (fits ? excludeSize : 0))) {
-      const part = await git([...guard, 'diff', ...flags, '--', ...batch, ...excludes], signal);
-      if (part) { parts.push(part); size += part.length + 1; }
+    for (const batch of batches(visibleEntries.map(paths => paths.map(path => literal(path, ''))), PATHSPEC_BUDGET - (fits ? excludeSize : 0))) {
+      const { kept, dropped } = keepListedSections(await git([...guard, 'diff', ...DIFF_FORMAT, ...flags, '--', ...batch, ...excludes], signal), expected);
+      for (const path of dropped) if (!masked.includes(path)) masked.push(path);
+      if (kept) { parts.push(kept); size += kept.length + 1; }
       if (size > DIFF_OUTPUT_MAX) break;
     }
     let body = parts.join('\n');

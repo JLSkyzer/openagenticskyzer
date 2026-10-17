@@ -152,8 +152,8 @@ test('the max_tokens sent is the output cap, reduced to what the window leaves a
   assert.equal(bodies[2].max_tokens, 16_384);
   await run(big, estimateRequestTokens(big, [], user));
   assert.equal(bodies[3].max_tokens, 1, 'never below 1, even when the request fills the window');
-  await run(big, 20_000, 'ollama');
-  assert.equal('max_tokens' in bodies[4], false, 'no cap for ollama: still nothing sent');
+  await run(big, 20_000, 'inconnu');
+  assert.equal('max_tokens' in bodies[4], false, 'a provider id with no cap: still nothing sent');
   await run(big);
   assert.equal(bodies[5].max_tokens, 16_384, 'no window known: the cap of the provider, as before');
 });

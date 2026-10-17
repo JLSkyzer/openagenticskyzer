@@ -98,11 +98,12 @@ test('a tool call left without its result gets one, in call order; a complete tr
 });
 
 test('the shared window table and the 4-characters estimate', () => {
-  assert.deepEqual({ ...CONTEXT_WINDOWS }, { together: 128_000, groq: 128_000, mistral: 32_000, gemini: 1_000_000, openrouter: 128_000, ollama: 32_000, lmstudio: 32_000, llamacpp: 32_000 });
+  assert.deepEqual({ ...CONTEXT_WINDOWS }, { together: 128_000, groq: 128_000, mistral: 32_000, gemini: 1_000_000, openrouter: 128_000 });
   assert.equal(contextWindow('groq', null), 128_000);
   assert.equal(contextWindow('groq', 20_000), 20_000, 'max_tokens wins');
-  assert.equal(contextWindow(null, null), 32_000);
-  assert.equal(contextWindow('constructor', null), 32_000, 'never an inherited property');
+  assert.equal(contextWindow(null, null), 128_000, "no provider: openrouter's window, the app's default provider");
+  assert.equal(contextWindow('ollama', null), 128_000, "an unknown (or removed) provider: the default provider's window");
+  assert.equal(contextWindow('constructor', null), 128_000, 'never an inherited property');
   assert.equal(contextBudget(32_000, 2048), 29_952);
   assert.equal(contextBudget(100, 5000), 1);
   assert.equal(characters('😀😀'), 2);

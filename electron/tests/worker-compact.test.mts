@@ -255,7 +255,7 @@ test('worker::compact sends no max_tokens to a provider with no output cap, what
   const { worker, model, seed, compact } = await setup(t);
   await callWorker(worker, 'save-global-settings', { patch: { max_tokens: 8000 } });
   await seed(longExchanges(8));
-  const done = await (await compact('main', { ...model.connection, provider: 'ollama' })).outcome;
+  const done = await (await compact('main', { ...model.connection, provider: 'inconnu' })).outcome;
   assert.equal(done.kind, 'compacted', JSON.stringify(done));
   assert.equal(Object.hasOwn(model.requests[0], 'max_tokens'), false);
 });

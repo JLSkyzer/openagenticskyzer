@@ -84,8 +84,8 @@ export function mintCallId(): string {
 // A real HTTP provider's own server enforces some sane generation limit even when we don't ask for one
 // — here WE are the server, and node-llama-cpp will happily generate until end-of-sequence or the context
 // is full if left unbounded, which on a model that rarely emits a natural stop token means an effectively
-// hung turn. The cap is the one Python gave the local HTTP servers (lmstudio, llamacpp:
-// provider.mts::OUTPUT_CAPS); a reply that reaches it is flagged truncated, like finish_reason "length".
+// hung turn. The cap is the one the Python app gave the local HTTP servers it supported (LM Studio, a
+// llama.cpp server); a reply that reaches it is flagged truncated, like finish_reason "length".
 export const LOCAL_OUTPUT_CAP = 8192;
 
 /** Same contract as `ChatProvider.complete()` (provider.mts): agent.mts calls this without knowing the

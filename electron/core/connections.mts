@@ -7,8 +7,6 @@ export const providers = {
   openrouter: 'https://openrouter.ai/api/v1', together: 'https://api.together.xyz/v1',
   groq: 'https://api.groq.com/openai/v1', mistral: 'https://api.mistral.ai/v1',
   gemini: 'https://generativelanguage.googleapis.com/v1beta/openai',
-  ollama: 'http://localhost:11434/v1', lmstudio: 'http://localhost:1234/v1',
-  llamacpp: 'http://localhost:8080/v1',
 };
 export type Provider = keyof typeof providers;
 interface Cipher {
@@ -20,13 +18,16 @@ interface Profile {
   model?: string; base_url?: string; api_key?: string | null; key_endpoint?: string;
   authorized_from?: string; authorized_to?: string;
 }
-interface Scope { provider?: Provider; profiles: Partial<Record<Provider, Profile>> }
+// A scope saved before a provider was removed (ollama, lmstudio, llamacpp) still names it: such entries
+// are kept as they are, and ignored when the connection is resolved.
+interface Scope { provider?: string; profiles: Partial<Record<string, Profile>> }
 interface Vault { scopes: Record<string, Scope> }
 interface Envelope { version: 1; payload: string }
 export interface ConnectionPatch { provider: Provider; model?: string; base_url?: string; api_key?: string | null }
 
+const knownProvider = (v: unknown): v is Provider => typeof v === 'string' && Object.hasOwn(providers, v);
 function providerValue(v: unknown): asserts v is Provider {
-  if (typeof v !== 'string' || !Object.hasOwn(providers, v)) throw new Error('Provider invalide');
+  if (!knownProvider(v)) throw new Error('Provider invalide');
 }
 export function endpoint(value: string) {
   let url: URL;
@@ -84,9 +85,9 @@ export class Connections {
       for (const [key, scope] of Object.entries(vault.scopes) as [string, Scope][]) {
         if (key !== 'global' && !/^[a-f0-9]{64}$/.test(key)) throw new Error();
         object(scope); object(scope.profiles);
-        if (scope.provider !== undefined) providerValue(scope.provider);
-        for (const [name, profile] of Object.entries(scope.profiles)) {
-          providerValue(name); object(profile);
+        if (scope.provider !== undefined && typeof scope.provider !== 'string') throw new Error();
+        for (const profile of Object.values(scope.profiles)) {
+          object(profile);
           for (const [field, value] of Object.entries(profile)) {
             if (!['model', 'base_url', 'api_key', 'key_endpoint', 'authorized_from', 'authorized_to'].includes(field)) throw new Error();
             if (typeof value !== 'string' && !(field === 'api_key' && value === null)) throw new Error();
@@ -114,16 +115,20 @@ export class Connections {
     const legacy = await this.legacy(folder);
     const detected = Object.keys(providers).find(p => legacy.localEnv[p.toUpperCase() + '_API_KEY'] || legacy.localEnv[p.toUpperCase() + '_MODEL'])
       ?? Object.keys(providers).find(p => legacy.globalEnv[p.toUpperCase() + '_API_KEY'] || legacy.globalEnv[p.toUpperCase() + '_MODEL']);
-    const selected = local?.provider ?? global?.provider ?? legacy.localConfig.current_provider ?? legacy.globalConfig.current_provider ?? detected ?? 'openrouter';
-    providerValue(selected);
+    const chosen = local?.provider ?? global?.provider ?? legacy.localConfig.current_provider ?? legacy.globalConfig.current_provider ?? detected ?? 'openrouter';
+    // Local models are only the .gguf files of the app's own library: a provider the app no longer offers
+    // (ollama, lmstudio, llamacpp), or any other unknown id, opens on openrouter with no model, so the user
+    // picks one. The old entry is ignored, not deleted.
+    const removed = !knownProvider(chosen);
+    const selected: Provider = removed ? 'openrouter' : chosen;
     const p = local?.profiles[selected] ?? {}; const g = global?.profiles[selected] ?? {};
     const prefix = selected.toUpperCase();
     const legacyEndpoint = (env: Record<string, string | undefined>) => {
       const base = env[prefix + '_BASE_URL'] || env.OPENAI_BASE_URL || providers[selected];
-      return endpoint(selected === 'ollama' && !base.replace(/\/+$/, '').endsWith('/v1') ? base.replace(/\/+$/, '') + '/v1' : base);
+      return endpoint(base);
     };
     const base_url = endpoint(p.base_url ?? g.base_url ?? (legacy.localEnv[prefix + '_BASE_URL'] || legacy.localEnv.OPENAI_BASE_URL ? legacyEndpoint(legacy.localEnv) : legacyEndpoint(legacy.globalEnv)));
-    const model = p.model ?? g.model ?? (legacy.localConfig.current_provider === selected ? legacy.localConfig.current_model as string : undefined)
+    const model = removed ? '' : p.model ?? g.model ?? (legacy.localConfig.current_provider === selected ? legacy.localConfig.current_model as string : undefined)
       ?? legacy.localEnv[prefix + '_MODEL']?.split(',')[0].trim() ?? legacy.globalEnv[prefix + '_MODEL']?.split(',')[0].trim() ?? '';
     let api_key = ''; let key_endpoint = base_url; let key_source = 'none';
     if (Object.hasOwn(p, 'api_key')) { api_key = p.api_key ?? ''; key_endpoint = p.key_endpoint ?? providers[selected]; key_source = 'project'; }
@@ -139,7 +144,7 @@ export class Connections {
     }
     return { provider: selected, model, base_url, api_key, key_endpoint, key_source,
       legacy_plaintext: Boolean(legacy.localEnv[prefix + '_API_KEY'] || legacy.globalEnv[prefix + '_API_KEY']),
-      model_source: p.model !== undefined ? 'project' : g.model !== undefined ? 'global' : 'legacy',
+      model_source: removed ? 'legacy' : p.model !== undefined ? 'project' : g.model !== undefined ? 'global' : 'legacy',
     };
   }
   /** Main/agent boundary only. Never forward this result to the renderer. */

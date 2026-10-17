@@ -88,10 +88,10 @@ test('exportFilename: conversation_YYYYMMDD_HHMMSS.ext, from the given date', ()
 
 test('buildMarkdown: header, then a section per message', () => {
   const entries = renderEntries([{ role: 'user', content: 'Bonjour' }, { role: 'assistant', content: 'Salut !' }], categoryOf);
-  const markdown = buildMarkdown(entries, { folder: 'D:\\proj', model: 'llama3', provider: 'ollama', date: new Date(2026, 8, 23, 9, 5) });
+  const markdown = buildMarkdown(entries, { folder: 'D:\\proj', model: 'llama3', provider: 'groq', date: new Date(2026, 8, 23, 9, 5) });
   assert.match(markdown, /^# Conversation — 2026-09-23 09:05\n/);
   assert.match(markdown, /Dossier : `D:\\proj`\n/);
-  assert.match(markdown, /Modèle : `llama3` \(ollama\)\n\n---\n/);
+  assert.match(markdown, /Modèle : `llama3` \(groq\)\n\n---\n/);
   assert.match(markdown, /\n## 👤 Utilisateur\n\nBonjour\n/);
   assert.match(markdown, /\n## 🤖 Assistant\n\nSalut !\n/);
 });

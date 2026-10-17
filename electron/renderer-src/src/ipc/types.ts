@@ -35,7 +35,7 @@ export interface FolderListItem {
 }
 
 export type ProviderName =
-  | 'openrouter' | 'together' | 'groq' | 'mistral' | 'gemini' | 'ollama' | 'lmstudio' | 'llamacpp';
+  | 'openrouter' | 'together' | 'groq' | 'mistral' | 'gemini';
 
 // Mirrors core/connections.mts::Connections.snapshot() — deliberately has no api_key and
 // no key_endpoint: the secret never reaches the renderer, only whether one is configured.

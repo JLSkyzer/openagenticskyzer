@@ -31,7 +31,7 @@ test('saveConnection forwards the patch and only sets confirmEndpoint when asked
     op: 'save-connection',
     payload: { folder: 'D:\\proj', patch, authorization: { confirmEndpoint: false } },
   });
-  await bridge.saveConnection(null, { provider: 'ollama', base_url: 'http://localhost:11434/v1' }, true);
+  await bridge.saveConnection(null, { provider: 'openrouter', base_url: 'https://approved.example/v1' }, true);
   assert.deepEqual(calls[1].payload?.authorization, { confirmEndpoint: true });
 });
 

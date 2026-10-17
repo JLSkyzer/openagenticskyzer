@@ -16,7 +16,7 @@ const msg = (role: string, content: string) => ({ role, content });
 test('windows table is the one of the NiceGUI app (utils.py::_DEFAULT_CTX_LIMITS), nothing invented', () => {
   assert.deepEqual(CONTEXT_WINDOWS, {
     together: 128_000, groq: 128_000, mistral: 32_000, gemini: 1_000_000,
-    openrouter: 128_000, ollama: 32_000, lmstudio: 32_000, llamacpp: 32_000,
+    openrouter: 128_000,
   });
 });
 
@@ -46,17 +46,17 @@ test('contextLimit: the configured max_tokens wins over the provider window; res
   assert.equal(contextLimit('gemini', null, 0), 1_000_000);
 });
 
-test('contextLimit: no provider or an unknown one falls back on the local default window, and never drops below 1', () => {
-  assert.equal(contextLimit(null, null, 2048), 32_000 - 2048);
-  assert.equal(contextLimit('inconnu', null, 2048), 32_000 - 2048);
+test('contextLimit: no provider or an unknown one falls back on the default provider window (openrouter, 128 000), and never drops below 1', () => {
+  assert.equal(contextLimit(null, null, 2048), 128_000 - 2048);
+  assert.equal(contextLimit('inconnu', null, 2048), 128_000 - 2048);
   assert.equal(contextLimit('groq', 100, 5000), 1, 'reserved tokens larger than the window cannot make a zero or negative limit');
 });
 
 test('computeContext returns tokens and a percentage capped at 100', () => {
-  const half = computeContext([msg('user', 'x'.repeat(4 * 15_000))], { provider: 'ollama', max_tokens: null, reserved_tokens: 2000 });
+  const half = computeContext([msg('user', 'x'.repeat(4 * 15_000))], { provider: 'mistral', max_tokens: null, reserved_tokens: 2000 });
   assert.equal(half.tokens, 15_000);
   assert.equal(half.pct, 50, '15 000 / (32 000 - 2 000)');
-  const over = computeContext([msg('user', 'x'.repeat(4 * 100_000))], { provider: 'ollama', max_tokens: null, reserved_tokens: 2000 });
+  const over = computeContext([msg('user', 'x'.repeat(4 * 100_000))], { provider: 'mistral', max_tokens: null, reserved_tokens: 2000 });
   assert.equal(over.pct, 100, 'never above 100');
   assert.equal(over.tokens, 100_000, 'the token count itself is not capped');
   assert.deepEqual(computeContext([], { provider: 'groq', max_tokens: null, reserved_tokens: 2048 }), { tokens: 0, pct: 0 });

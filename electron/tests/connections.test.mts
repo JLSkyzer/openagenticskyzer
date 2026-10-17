@@ -140,3 +140,48 @@ test('a JSON null vault is corrupt, not an invitation to reset credentials', asy
   await assert.rejects(service.save(null, { provider: 'groq', api_key: 'fake' }), /coffre/i);
   assert.equal(await readFile(file, 'utf8'), 'null');
 });
+
+// Local models are only the .gguf files of the app's own library: ollama, lmstudio and llamacpp are no longer
+// providers. A selection saved before that must open on openrouter with no model (the user then picks one),
+// never throw — and the old entry is ignored, not deleted.
+test('a vault scope that selects a removed provider resolves to openrouter with no model, and keeps the old entry', async t => {
+  const { home, cipher, service } = await fixture(t);
+  const vault = { scopes: { global: { provider: 'ollama', profiles: { ollama: { model: 'llama3', base_url: 'http://localhost:11434/v1' } } } } };
+  const file = join(home, 'connections.v1.json');
+  await writeFile(file, JSON.stringify({ version: 1, payload: cipher.encryptString(JSON.stringify(vault)).toString('base64') }));
+  const resolved = await service.resolve(null);
+  assert.equal(resolved.provider, 'openrouter');
+  assert.equal(resolved.model, '');
+  assert.equal(resolved.base_url, 'https://openrouter.ai/api/v1');
+  assert.equal((await service.snapshot(null)).provider, 'openrouter');
+  await service.save(null, { provider: 'groq', model: 'chosen' });
+  assert.deepEqual([(await service.resolve(null)).provider, (await service.resolve(null)).model], ['groq', 'chosen']);
+  const saved = JSON.parse(cipher.decryptString(Buffer.from(JSON.parse(await readFile(file, 'utf8')).payload, 'base64')));
+  assert.deepEqual(saved.scopes.global.profiles.ollama, vault.scopes.global.profiles.ollama, 'the old entry is left as it was');
+});
+
+test('a legacy config.json that names a removed provider resolves to openrouter with no model', async t => {
+  const { service, home, a } = await fixture(t);
+  await writeFile(join(home, 'config.json'), JSON.stringify({ current_provider: 'lmstudio' }));
+  await mkdir(join(a, '.openagent'));
+  await writeFile(join(a, '.openagent', 'config.json'), JSON.stringify({ current_provider: 'lmstudio', current_model: 'qwen' }));
+  for (const folder of [null, a]) {
+    const resolved = await service.resolve(folder);
+    assert.deepEqual([resolved.provider, resolved.model, resolved.base_url], ['openrouter', '', 'https://openrouter.ai/api/v1']);
+  }
+});
+
+test('a legacy global .env holding only OLLAMA_MODEL no longer selects ollama', async t => {
+  const { home, cipher, Connections } = await fixture(t);
+  const legacyGlobalEnv = join(home, 'legacy.env');
+  await writeFile(legacyGlobalEnv, 'OLLAMA_MODEL=llama3\n');
+  const service = new Connections({ home, cipher, environment: { OLLAMA_API_KEY: 'fake-ollama' }, legacyGlobalEnv });
+  const resolved = await service.resolve(null);
+  assert.deepEqual([resolved.provider, resolved.model, resolved.base_url, resolved.api_key], ['openrouter', '', 'https://openrouter.ai/api/v1', '']);
+});
+
+test('saving a removed provider is refused, like any unknown provider', async t => {
+  const { home, service } = await fixture(t);
+  await assert.rejects(service.save(null, { provider: 'llamacpp' as any, model: 'x' }), /Provider invalide/);
+  await assert.rejects(readFile(join(home, 'connections.v1.json')), /ENOENT/, 'nothing written');
+});

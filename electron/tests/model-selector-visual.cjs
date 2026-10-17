@@ -186,17 +186,22 @@ app.whenReady().then(async () => {
     assert.deepEqual(providerB.requests, [{ authorization: `Bearer ${SECRET}`, model: LONG_MODEL }], 'server B now receives the request, with the same stored key');
     assert.equal(providerA.requests.length, 1, 'server A got nothing more');
 
-    // ── Switch provider (no key needed locally), then come back and drop the key ──
+    // ── Switch provider (another online one: local models are only the .gguf library), then come back and drop the key ──
     await openDialog();
-    await setValue(field('provider'), 'ollama');
+    assert.deepEqual(
+      await js(`Array.from(document.querySelector(${JSON.stringify(field('provider'))}).options).map(option => option.value)`),
+      ['openrouter', 'together', 'groq', 'mistral', 'gemini'],
+      'only the online providers are offered: no ollama, lmstudio or llamacpp',
+    );
+    await setValue(field('provider'), 'groq');
     await setValue(field('model'), 'qwen2.5-coder');
     await click('#oa-model-save-btn');
     await pause(500);
-    const local = await snapshot();
-    assert.equal(local.provider, 'ollama');
-    assert.equal(local.model, 'qwen2.5-coder');
-    assert.equal(local.base_url, 'http://localhost:11434/v1', 'ollama defaults to its own local endpoint');
-    assert.equal(local.key_configured, false, 'the openrouter key is not shared with ollama');
+    const other = await snapshot();
+    assert.equal(other.provider, 'groq');
+    assert.equal(other.model, 'qwen2.5-coder');
+    assert.equal(other.base_url, 'https://api.groq.com/openai/v1', 'groq defaults to its own endpoint');
+    assert.equal(other.key_configured, false, 'the openrouter key is not shared with groq');
     assert.match(await text('#oa-model-btn'), /qwen2\.5-coder/);
 
     await setValue(field('provider'), 'openrouter');

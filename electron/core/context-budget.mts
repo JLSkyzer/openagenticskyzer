@@ -3,20 +3,19 @@
 // (renderer-src/src/state/context.ts — Vite bundles it). It must stay pure: no import at all.
 
 // utils.py::_DEFAULT_CTX_LIMITS (the NiceGUI app): the window assumed when the user has not set max_tokens.
-// Local providers default to a small window on purpose.
+// Only the online providers: a local .gguf model is sized by its own engine (worker.mjs), not by this table.
 export const CONTEXT_WINDOWS: Readonly<Record<string, number>> = Object.freeze({
   together: 128_000, groq: 128_000, mistral: 32_000, gemini: 1_000_000,
-  openrouter: 128_000, ollama: 32_000, lmstudio: 32_000, llamacpp: 32_000,
+  openrouter: 128_000,
 });
-export const DEFAULT_WINDOW = 32_000;
-// storage.py::compute_context_pct falls back on ollama's window when no provider is known.
-const DEFAULT_PROVIDER = 'ollama';
+// No provider known, or one the app no longer offers: the window of the app's default provider.
+const DEFAULT_PROVIDER = 'openrouter';
 
-/** The window in tokens: the user's max_tokens when set, else the provider's entry, else 32 000. */
+/** The window in tokens: the user's max_tokens when set, else the provider's entry, else openrouter's (128 000). */
 export function contextWindow(provider: string | null, maxTokens: number | null): number {
   if (maxTokens) return maxTokens;
-  const id = provider ?? DEFAULT_PROVIDER;
-  return Object.hasOwn(CONTEXT_WINDOWS, id) ? CONTEXT_WINDOWS[id] : DEFAULT_WINDOW;
+  const id = provider !== null && Object.hasOwn(CONTEXT_WINDOWS, provider) ? provider : DEFAULT_PROVIDER;
+  return CONTEXT_WINDOWS[id];
 }
 
 /** What a request may use: the window minus reserved_tokens (kept free for the answer), never below 1. */

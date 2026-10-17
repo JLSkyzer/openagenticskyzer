@@ -56,7 +56,7 @@ export function buildSummaryPrompt(historyText: string): string {
  *
  * `contextWindow` (tokens) sizes the request like the agent does (M3): the output asked for is the provider's
  * cap lowered to what the window leaves after the summary prompt, never below 1; a prompt that alone fills the
- * window is refused without calling the provider. No cap (ollama): no maxTokens, as before. Without a window,
+ * window is refused without calling the provider. No cap (a provider id with no entry): no maxTokens, as before. Without a window,
  * nothing is sized.
  */
 export async function compactMessages<T extends Stored>(options: {

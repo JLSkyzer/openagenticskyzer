@@ -36,16 +36,16 @@ const failure = (status: number, body: string, headers: Record<string, string> =
   response.end(body);
 };
 
-test('max_tokens follows Python\'s per-provider cap, and is not sent at all for ollama', async t => {
+test('max_tokens follows Python\'s per-provider cap, and is not sent at all for a provider id with no cap', async t => {
   const { bodies, connection } = await serve(t, [reply('ok')]);
   const provider = new ChatProvider();
   const expected: Record<string, number | undefined> = {
-    together: 16384, mistral: 16384, gemini: 16384, openrouter: 16384, groq: 8192, lmstudio: 8192, llamacpp: 8192, ollama: undefined,
+    together: 16384, mistral: 16384, gemini: 16384, openrouter: 16384, groq: 8192, inconnu: undefined,
   };
   for (const id of Object.keys(expected)) await provider.complete({ connection: connection(id), messages: [{ role: 'user', content: 'x' }] });
   assert.deepEqual(bodies.map(body => body.max_tokens), Object.values(expected));
-  assert.equal('max_tokens' in bodies.at(-1), false, 'ollama: the key itself is absent');
-  assert.deepEqual({ ...OUTPUT_CAPS }, { together: 16384, mistral: 16384, gemini: 16384, openrouter: 16384, groq: 8192, lmstudio: 8192, llamacpp: 8192 });
+  assert.equal('max_tokens' in bodies.at(-1), false, 'no cap: the key itself is absent');
+  assert.deepEqual({ ...OUTPUT_CAPS }, { together: 16384, mistral: 16384, gemini: 16384, openrouter: 16384, groq: 8192 });
   assert.equal(outputCap('inconnu'), undefined);
   assert.equal(outputCap('constructor'), undefined, 'never an inherited property');
 });

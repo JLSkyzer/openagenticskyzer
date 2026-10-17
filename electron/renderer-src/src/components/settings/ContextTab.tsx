@@ -13,7 +13,8 @@ const fmt = (n: number) => n.toLocaleString('en-US');
 
 // Mirrors settings.py::_tab_context.
 export function ContextTab({ draft, activeFolder }: { draft: SettingsDraft; activeFolder: string | null }) {
-  const [provider, setProvider] = useState('ollama');
+  // Until the active connection answers: openrouter, the app's default provider (core/connections.mts).
+  const [provider, setProvider] = useState('openrouter');
   useEffect(() => {
     let cancelled = false;
     getConnection(activeFolder)
@@ -53,12 +54,6 @@ export function ContextTab({ draft, activeFolder }: { draft: SettingsDraft; acti
             <span data-testid="oa-max-tokens-label" className="text-xs text-purple-400">
               {fmt(maxTokens)} tokens
             </span>
-            {provider === 'ollama' && (
-              <div className="flex items-start gap-2 rounded border border-yellow-900 p-2" style={{ background: '#1a1200' }}>
-                <span className="text-sm">⚠️</span>
-                <span className="text-xs text-yellow-600">Ollama : le contexte réel dépend de votre VRAM/RAM.</span>
-              </div>
-            )}
           </div>
           <Row label="Tokens réservés pour la réponse" hint="Espace toujours gardé libre pour la génération">
             <input

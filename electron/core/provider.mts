@@ -32,10 +32,10 @@ export interface ProviderOptions {
   retryDelaysMs?: readonly number[];
 }
 
-/** Python's output cap per provider (utils/utils.py:663-791). ollama, and any id not listed, gets none. */
+/** Python's output cap per provider (utils/utils.py:663-791). Any id not listed gets none. */
 export const OUTPUT_CAPS: Readonly<Record<string, number>> = Object.freeze({
   together: 16384, mistral: 16384, gemini: 16384, openrouter: 16384,
-  groq: 8192, lmstudio: 8192, llamacpp: 8192,
+  groq: 8192,
 });
 export function outputCap(provider: string): number | undefined {
   return Object.hasOwn(OUTPUT_CAPS, provider) ? OUTPUT_CAPS[provider] : undefined;
@@ -75,8 +75,8 @@ export function retryAfterMs(header: string | null, now = Date.now()): number | 
 const mask = (text: string, apiKey: string) => (apiKey ? text.split(apiKey).join('***') : text);
 
 /**
- * The provider's own explanation, safe to show: `error.message` of a JSON body (an `error` string too, as
- * Ollama sends), else the raw text; the connection's API key masked BEFORE the cut, so not even a fragment
+ * The provider's own explanation, safe to show: `error.message` of a JSON body (or an `error` that is itself
+ * a string, as some OpenAI-compatible servers send), else the raw text; the connection's API key masked BEFORE the cut, so not even a fragment
  * of it survives; whitespace collapsed; 500 characters at most.
  */
 export function errorDetail(raw: string, apiKey: string): string {

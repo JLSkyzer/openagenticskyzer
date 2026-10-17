@@ -13,8 +13,8 @@ function formatSize(bytes: number): string {
 }
 
 // "j'importe mes fichiers .gguf dans ma librairie et c'est nous qui alimentons ce fichier pour le
-// réveiller si le modèle est sélectionné" — no URL, no API key, no external tool (Ollama/LM Studio/
-// llama.cpp below are a DIFFERENT, pre-existing thing: a remote HTTP server the user runs themselves).
+// réveiller si le modèle est sélectionné" — no URL, no API key, no external tool: the app's own engine loads
+// the file. These .gguf files are the ONLY local models; every provider below is an online service.
 function LocalModelsSection({ activeId, onActivate }: { activeId: string; onActivate(id: string): void }) {
   const [entries, setEntries] = useState<GgufEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -143,8 +143,8 @@ const fromSnapshot = (snapshot: ConnectionSnapshot): FormState => ({
   urlTouched: false,
 });
 
-// Mirrors model_modal.py's "Sélectionner un modèle" for the providers the Node engine
-// knows. Model discovery/download for local runtimes is a separate, later piece of work.
+// Mirrors model_modal.py's "Sélectionner un modèle" for the online providers the Node engine
+// knows, beside the app's own .gguf library (LocalModelsSection).
 export function ModelDialog({
   snapshot,
   activeFolder,
@@ -306,7 +306,7 @@ export function ModelDialog({
           />
         </label>
         <label className="flex flex-col gap-1 text-xs text-gray-400">
-          Clé API {providerEntry?.local && <span className="text-gray-600">(facultative en local)</span>}
+          Clé API
           <input
             data-model-field="api_key"
             type="password"

@@ -59,7 +59,7 @@ app.whenReady().then(async () => {
     });
     ipcMain.handle('backend-request', (_event, request) => {
       if (request.op === 'connection-snapshot') {
-        return { provider: 'ollama', model: 'm', base_url: 'http://127.0.0.1:11434/v1', key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: false };
+        return { provider: 'openrouter', model: 'm', base_url: 'https://openrouter.ai/api/v1', key_source: 'none', legacy_plaintext: false, model_source: 'legacy', key_configured: false };
       }
       // A real native dialog cannot be driven from a test: stubbed to a real file path, same
       // convention as 'pick-gguf'/'open-folder' in every other visual test in this project.

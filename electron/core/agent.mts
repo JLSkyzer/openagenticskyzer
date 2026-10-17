@@ -16,7 +16,7 @@ export interface AgentSettings {
 /** What the agent needs from a provider: ChatProvider (HTTP) or the built-in engine (local-engine.mts::localProvider). */
 export interface AgentProvider {
   complete(options: CompletionOptions): Promise<ChatMessage & { content: string }>;
-  // The output cap applied to `connection` when no maxTokens is passed; undefined = none (ollama).
+  // The output cap applied to `connection` when no maxTokens is passed; undefined = none (a provider id with no cap).
   outputCap?(connection: ModelConnection): number | undefined;
 }
 export interface AgentOptions {
@@ -98,8 +98,8 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
     const outgoing = requestMessages(messages.slice(1));
     const fitted = budgetTokens === undefined ? outgoing : fitToBudget(outgoing, { system: instructions, tools: schemas, budgetTokens });
     // M3: the output asked for must fit in the window beside the request — the provider's cap (H1), lowered to
-    // what the window leaves after the estimated request, never below 1. No window known, or no cap (ollama):
-    // nothing is passed and the provider does as before.
+    // what the window leaves after the estimated request, never below 1. No window known, or no cap (a provider
+    // id with no entry): nothing is passed and the provider does as before.
     const cap = options.contextWindow === undefined ? undefined : provider.outputCap?.(connection);
     const maxTokens = cap === undefined ? undefined
       : Math.max(1, Math.min(cap, options.contextWindow! - estimateRequestTokens(instructions, schemas, fitted)));

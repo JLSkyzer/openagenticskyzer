@@ -197,7 +197,9 @@ test('EstimateJobs: one key one job; another key cancels the running one; cancel
 });
 
 // The Task 4 pre-check also guards the estimate: a hopeless size never reaches the native resolver (which can abort
-// the whole process on a Vulkan card). In a process of its own in case it ever did.
+// the whole process on a Vulkan card). In a process of its own in case it ever did, on the processor: a
+// `node --input-type=module -e` child cannot resolve a card (node-llama-cpp's binary test fork() inherits execArgv and
+// dies), so asking it for one would only test that failed fallback. The pre-check is pure JS and backend-independent.
 test('a context the machine cannot hold is estimated « ne tient pas » before any native estimation', { timeout: 120000 }, async t => {
   const home = await tempHome(t);
   const patched = join(home, 'stories-huge.gguf');
@@ -205,10 +207,11 @@ test('a context the machine cannot hold is estimated « ne tient pas » before a
   const out = await inChild(`
     const phases = [];
     out.estimate = await e.estimatePlacement({ kind: 'file', path: ${JSON.stringify(patched)} }, { contextSize: 2 ** 30, onPhase: p => phases.push(p) });
-    out.phases = phases;`);
+    out.phases = phases;`, { NODE_LLAMA_CPP_GPU: 'false' });
   assert.equal(out.estimate.fit, 'none');
   assert.equal(out.estimate.gpuLayers, 0);
   assert.equal(out.estimate.contextSize, 2 ** 30);
   assert.equal(out.estimate.source, 'estimate');
   assert.deepEqual(out.phases, ['stat', 'read', 'insights'], 'stopped before the layer resolution');
+  assert.equal(out.estimate.backend, 'cpu');
 });

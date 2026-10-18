@@ -33,6 +33,7 @@ test('restart-app (« Redémarrer maintenant » after a data-folder migration) i
 test('main folds nothing into a payload: no connection resolution is left', () => {
   assert.equal(main.resolveSendPayload, undefined); assert.equal(main.needsConnection, undefined);
   assert.equal(main.isBackendOp('model-status'), true);
+  assert.equal(main.isBackendOp('hardware-info'), true);
 });
 
 test('main no longer answers any connection op', async () => {

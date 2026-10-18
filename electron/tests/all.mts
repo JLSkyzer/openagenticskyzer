@@ -95,3 +95,4 @@ import './tool-cards.test.mts';
 import './test-seam.test.mts';
 import './worker-model.test.mts';
 import './local-only.test.mts';
+import './hardware.test.mts';

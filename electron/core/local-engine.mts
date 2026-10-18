@@ -1,4 +1,4 @@
-// The ONLY module that imports node-llama-cpp: a native binding, loaded only on first actual use
+// The model engine: with core/llama-runtime.mts, one of the two modules that import node-llama-cpp, a native binding loaded only
 // ("réveiller le modèle sélectionné"), never at module load time. Bridges to `local-provider.mts`'s pure
 // mappers, so the agent loop (agent.mts) keeps its OpenAI-shaped messages (model-types.mts).
 import { randomUUID } from 'node:crypto';

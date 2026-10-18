@@ -1,4 +1,4 @@
-// The model engine: with core/llama-runtime.mts, one of the two modules that import node-llama-cpp, a native binding loaded only
+// The model engine: with core/llama-runtime.mts and core/offload-estimate.mts, one of the modules that import node-llama-cpp, a native binding loaded only
 // ("réveiller le modèle sélectionné"), never at module load time. Bridges to `local-provider.mts`'s pure
 // mappers, so the agent loop (agent.mts) keeps its OpenAI-shaped messages (model-types.mts).
 // The Llama belongs to llama-runtime.mts (one per worker). That module and this one import each other, so neither
@@ -126,9 +126,17 @@ export function warmContext(): LlamaContext | null {
  */
 async function assertContextCanFit(llama: Llama, modelPath: string, contextSize: number): Promise<void> {
   const insights = await GgufInsights.from(await readGgufFileInfo(modelPath), llama);
+  if ((await contextOverflow(llama, insights, contextSize)) !== null) throw new Error(localModelTooBig(contextSize));
+}
+
+/** The pre-check itself, shared with the offload estimate (core/offload-estimate.mts), which must not run native
+ * code for a hopeless size either: the KV cache bytes `contextSize` needs when they exceed all the RAM plus all the
+ * VRAM, else null. */
+export async function contextOverflow(llama: Llama, insights: GgufInsights, contextSize: number): Promise<number | null> {
   const { cpuRam, gpuVram } = insights.estimateContextResourceRequirements({ contextSize, modelGpuLayers: 0, includeGraphOverhead: false });
   const vramTotal = llama.gpu === false ? 0 : (await llama.getVramState().catch(() => null))?.total ?? Number.POSITIVE_INFINITY;
-  if (cpuRam + gpuVram > os.totalmem() + vramTotal) throw new Error(localModelTooBig(contextSize));
+  const required = cpuRam + gpuVram;
+  return required > os.totalmem() + vramTotal ? required : null;
 }
 
 /**

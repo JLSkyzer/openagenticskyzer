@@ -7,7 +7,9 @@ import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
 import { FoldersService } from './core/folders.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
-import { localProvider } from './core/local-engine.mts';
+import { localProvider, plannedContextSize } from './core/local-engine.mts';
+import { EstimateCache, estimateAndRemember, estimateKey, hardwareKey, ESTIMATE_BUSY } from './core/offload-estimate.mts';
+import { EstimateJobs } from './core/estimate-jobs.mts';
 import { readHardware } from './core/hardware.mts';
 import { disposeLlama } from './core/llama-runtime.mts';
 import { offeredTools, runAgent, TOOL_NAME_PATTERN } from './core/agent.mts';
@@ -23,7 +25,7 @@ import { PromptLibrary } from './core/prompts.mts';
 import { readProjectMemory } from './core/project-memory.mts';
 import { validateAttachments } from './core/attachments.mts';
 import { effectiveWindow } from './core/context-budget.mts';
-import { activeModel, modelStatus, turnModelStatus, contextRequestOf, NO_LOCAL_MODEL } from './core/active-model.mts';
+import { activeModel, modelStatus, turnModelStatus, contextRequestOf, NO_LOCAL_MODEL, LOCAL_MODEL_MISSING } from './core/active-model.mts';
 import { closeDanglingCalls } from './core/request-context.mts';
 import { buildHtml, buildJson, buildMarkdown, exportFilename, renderEntries } from './core/export.mts';
 import { cleanupOldFolders } from './core/cleanup.mts';
@@ -66,6 +68,9 @@ const folders = new FoldersService(dataHome);
 const ggufLibrary = new GgufLibrary(dataHome);
 const promptLibrary = new PromptLibrary(dataHome);
 const mcpConfig = new McpConfigStore(dataHome);
+// The worker's one estimate cache and job queue (hardware and offload): handed explicitly to whatever reads them.
+const estimateCache = new EstimateCache(dataHome);
+const estimateJobs = new EstimateJobs();
 // index_status (semantic search): folder (resolved absolute path) -> {state, current?, total?, message?}.
 // state.index_status in the previous NiceGUI app was a single free-form string a background thread
 // updated in place; here it is a real small state machine ('idle'|'indexing'|'ready'|'error') per
@@ -132,7 +137,7 @@ const mcpDiscoveries = new Map();
 const mcpDiscoveryKey = (folder, server) => JSON.stringify([server.scope === 'project' ? resolve(String(folder)) : null, serverIdentity(server)]);
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'model-status', 'hardware-info', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-add-remote', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'project-trust', 'trust-project', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'model-status', 'hardware-info', 'estimate-model', 'estimate-cancel', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-add-remote', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'project-trust', 'trust-project', 'shutdown']);
 
 // Anything in `active` on this folder — an agent run or a compaction — is writing its transcript.
 function runningIn(folder) {
@@ -451,9 +456,43 @@ async function turnProvider(payload) {
   const model = await activeModel(settings, ggufLibrary);
   // The engine context comes from « Contexte des modèles locaux », read on every send: a changed setting reloads the
   // model at the next message. max_tokens is not part of it (it caps the request window only, windowFor).
-  if (model) return { provider: localProvider(model.path, await contextRequestOf(settings)), model };
+  if (model) {
+    // A turn has the machine to itself: a background estimate would compete with its load for the same memory.
+    estimateJobs.cancelAll();
+    return { provider: localProvider(model.path, await contextRequestOf(settings)), model };
+  }
   if (testSeam && payload.testModel) return { provider: testSeam.createTestProvider(payload.testModel), model: null };
   throw new Error(NO_LOCAL_MODEL);
+}
+
+/**
+ * Op estimate-model: where `modelId`'s layers (else the active model's) would go with the context it would be
+ * loaded with. A cached estimate answers at once; otherwise a background job starts, the op answers its id, and the
+ * job posts one 'estimate' event (done, cancelled or error). Refused during a turn or a compaction (ESTIMATE_BUSY).
+ */
+async function estimateModel(payload) {
+  let model;
+  if (payload.modelId) {
+    model = (await ggufLibrary.list()).find(entry => entry.id === payload.modelId);
+    if (!model) throw new Error(LOCAL_MODEL_MISSING);
+  } else {
+    model = await activeModel(settings, ggufLibrary);
+    if (!model) throw new Error(NO_LOCAL_MODEL);
+  }
+  if (active.size > 0) throw new Error(ESTIMATE_BUSY);
+  const contextSize = await plannedContextSize(model.path, await contextRequestOf(settings));
+  const source = { kind: 'file', path: model.path };
+  const key = await estimateKey(source, contextSize, await hardwareKey());
+  const cached = await estimateCache.get(key);
+  if (cached) return { estimateId: null, estimate: cached };
+  // Checked again after the awaits above: a turn that started meanwhile has already cancelled every job.
+  if (active.size > 0) throw new Error(ESTIMATE_BUSY);
+  const modelId = model.id;
+  const { id } = estimateJobs.start(key, signal => estimateAndRemember(estimateCache, key, source, { contextSize, signal }), outcome => {
+    const { id: estimateId, ...rest } = outcome;
+    parentPort.postMessage({ type: 'event', event: 'estimate', estimateId, modelId, ...rest });
+  });
+  return { estimateId: id, estimate: null };
 }
 
 /** Runs one agent turn to completion, streaming events to the renderer via parentPort. */
@@ -563,6 +602,8 @@ async function handle(message) {
     if (op === 'model-status') result = await modelStatus(settings, ggufLibrary);
     // payload.refresh is accepted and ignored for now: every call re-reads free memory.
     if (op === 'hardware-info') result = await readHardware();
+    if (op === 'estimate-model') result = await estimateModel(payload);
+    if (op === 'estimate-cancel') result = { cancelled: estimateJobs.cancel(String(payload.estimateId ?? '')) };
     if (op === 'git-status') result = await gitStatus(payload.folder);
     // OPENAGENT_HF_ENDPOINT lets tests point this at a local fake server instead of the real
     // HuggingFace API — never set outside tests.
@@ -684,6 +725,7 @@ async function handle(message) {
       // The app is closing: abort what is running and stop every dev server run_command started,
       // whole process trees included — terminating this thread would leave them running.
       for (const run of active.values()) run.controller.abort();
+      estimateJobs.cancelAll();
       // MCP processes too: a discovery has no abort signal, and a call's session only closes once it unwinds.
       await Promise.all([stopAllServers(), stopAllMcpServers()]);
       // Then the local model and the Llama: several gigabytes of RAM/VRAM, freed rather than left to the exit.

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, copyFile, stat, utimes, readFile, access } from 'node:fs/promises';
+import { mkdtemp, copyFile, stat, utimes, readFile, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -150,6 +150,40 @@ test('EstimateCache persists in estimates.v1.json and keeps the last 64', async 
   const saved = JSON.parse(await readFile(join(home, 'estimates.v1.json'), 'utf8'));
   assert.equal(saved.entries.length, ESTIMATE_CACHE_LIMIT);
   await assert.rejects(access(join(home, 'estimates.v1.json.pre-electron.bak')), { code: 'ENOENT' }, 'a cache keeps no backup copy');
+});
+
+// The file is a disposable cache: a corrupt one costs the estimates it held, never a refused write.
+test('a corrupt estimates.v1.json reads as empty and is replaced by a fresh file on the next set', async t => {
+  const home = await tempHome(t);
+  const file = join(home, 'estimates.v1.json');
+  await writeFile(file, '{ "entries": [ broken');
+  const cache = new EstimateCache(home);
+  assert.equal(await cache.get('key 1'), null);
+  await cache.set('key 1', sample(1));
+  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { entries: [{ key: 'key 1', placement: sample(1) }] });
+  assert.deepEqual(await new EstimateCache(home).get('key 1'), sample(1));
+});
+
+// A turn cancels the running estimate, then waits for idle() before its load: the native resolver only notices the
+// abort between its own steps, so the cancelled run may still be inside one. idle() settles only once it has ended.
+test('EstimateJobs.idle resolves only once a cancelled run has really ended', async () => {
+  const jobs = new EstimateJobs();
+  await jobs.idle(); // nothing queued: resolves at once
+  let release!: () => void;
+  const stuck = new Promise<void>(resolve => { release = resolve; });
+  let ended = false;
+  // A run that ignores the abort until `release`, like a native step that cannot be interrupted.
+  jobs.start('k1', async () => { await stuck; return sample(1); }, () => { ended = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  jobs.cancelAll();
+  let idle = false;
+  const waiting = jobs.idle().then(() => { idle = true; });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(idle, false, 'still inside the cancelled run');
+  assert.equal(ended, false);
+  release();
+  await waiting;
+  assert.equal(ended, true, 'idle came after the run ended');
 });
 
 test('a remote source is accepted by the type and refused with REMOTE_ESTIMATE_LATER', async () => {

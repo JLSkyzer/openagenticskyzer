@@ -28,6 +28,14 @@ contextBridge.exposeInMainWorld('openagent', {
     ipcRenderer.on('backend-message', listener);
     return () => ipcRenderer.removeListener('backend-message', listener);
   },
+  // The end of a background offload estimate (worker.mjs, op estimate-model).
+  onEstimateEvent: (callback) => {
+    const listener = (_event, message) => {
+      if (message?.type === 'event' && message.event === 'estimate') callback(message);
+    };
+    ipcRenderer.on('backend-message', listener);
+    return () => ipcRenderer.removeListener('backend-message', listener);
+  },
   // Update statuses come from the main process on their own channel (never the worker's).
   onUpdateStatus: (callback) => {
     const listener = (_event, status) => callback(status);

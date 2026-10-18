@@ -1,5 +1,5 @@
 // Run with Electron, not node. Verifies preload.cjs exposes a filtered, unsubscribable
-// onAgentEvent — not a generic relay of every backend-message payload (which also
+// onAgentEvent (and onEstimateEvent) — not a generic relay of every backend-message payload (which also
 // carries request/response bookkeeping the renderer has no business seeing).
 const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
@@ -51,7 +51,29 @@ app.whenReady().then(async () => {
     received = await win.webContents.executeJavaScript('window.__received');
     assert.equal(received.length, 1, 'unsubscribe stops further delivery');
 
-    process.stdout.write(`PASS preload onAgentEvent filters and unsubscribes (Electron ${process.versions.electron})\n`);
+    // The same proof for onEstimateEvent (hardware and offload): only the 'estimate' event reaches it, and
+    // unsubscribing stops delivery.
+    await win.webContents.executeJavaScript(`
+      window.__estimates = [];
+      window.__unsubscribeEstimate = window.openagent.onEstimateEvent(event => window.__estimates.push(event));
+      true;
+    `);
+    send({ type: 'event', event: 'estimate', estimateId: 'e1', modelId: 'm1', state: 'cancelled' });
+    send({ type: 'event', event: 'model', id: 'm1', name: 'x.gguf', missing: false, contextWindow: 16384, loaded: false }); // filtered out
+    send({ type: 'event', event: 'agent', runId: 'r1', kind: 'done' }); // filtered out
+    send({ type: 'response', id: 'y', ok: true, result: {} }); // filtered out
+    await new Promise(resolve => setTimeout(resolve, 100));
+    let estimates = await win.webContents.executeJavaScript('window.__estimates');
+    assert.equal(estimates.length, 1, 'only the estimate event reaches onEstimateEvent');
+    assert.equal(estimates[0].estimateId, 'e1');
+    assert.equal(estimates[0].state, 'cancelled');
+    await win.webContents.executeJavaScript('window.__unsubscribeEstimate()');
+    send({ type: 'event', event: 'estimate', estimateId: 'e2', modelId: 'm1', state: 'cancelled' });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    estimates = await win.webContents.executeJavaScript('window.__estimates');
+    assert.equal(estimates.length, 1, 'unsubscribe stops further estimate delivery');
+
+    process.stdout.write(`PASS preload onAgentEvent and onEstimateEvent filter and unsubscribe (Electron ${process.versions.electron})\n`);
   } finally {
     win.destroy();
   }

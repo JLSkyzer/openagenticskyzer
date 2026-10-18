@@ -1,5 +1,7 @@
 // The background estimates of a worker: one at a time, cancellable. A new key cancels the running job, and its run
-// starts only once the cancelled run has settled, so two native resolutions never overlap.
+// starts only once the cancelled run has settled, so two estimates never overlap. A cancelled run still finishes the
+// native step it is in (the resolver only checks its signal between steps), so its overlap with whatever runs next
+// is bounded by one step, not zero, unless that caller waits for idle() first (a turn's load does).
 import { randomUUID } from 'node:crypto';
 import type { Placement } from './placement.mts';
 
@@ -51,6 +53,11 @@ export class EstimateJobs {
     const job = this.current;
     this.current = null;
     job?.controller.abort();
+  }
+
+  /** Resolves once every run started so far has ended, cancelled ones included. Never rejects. */
+  idle(): Promise<void> {
+    return this.tail;
   }
 
   /** 0 or 1: the job not yet ended nor cancelled. */

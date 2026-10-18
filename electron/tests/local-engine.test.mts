@@ -187,8 +187,10 @@ test('a context the machine cannot hold fails with localModelTooBig and leaves n
   assert.equal(out.backend, 'cpu');
 });
 
-// On whatever backend a fresh process resolves to (the card when there is one), in a process of its own in case the
-// pre-check ever let it through. 2^30 tokens is about 1.4 TB of f16 KV cache for stories260K.
+// On the processor (NODE_LLAMA_CPP_GPU=false), in a process of its own in case the pre-check ever let it through: a
+// `node --input-type=module -e` child cannot resolve a card (node-llama-cpp's binary test fork() inherits execArgv and
+// dies), so asking it for one would only test that failed fallback. The pre-check is pure JS and backend-independent.
+// 2^30 tokens is about 1.4 TB of f16 KV cache for stories260K.
 test('the pre-check refuses « max » on a huge train context before node-llama-cpp loads anything', { timeout: 120000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-local-engine-'));
   removeAtEnd(t, root);
@@ -203,8 +205,9 @@ test('the pre-check refuses « max » on a huge train context before node-llama-
     out.warm = m.warmModelPath();
     out.small = (await m.loadLocalModel(path, 16384)).contextSize;
     out.nativeAfter = m.nativeLoadCount();
+    out.backend = m.loadedPlacement(path).backend;
     await m.disposeEngine();
-    out.liveAfter = m.liveModelCount();`);
+    out.liveAfter = m.liveModelCount();`, { NODE_LLAMA_CPP_GPU: 'false' });
   assert.equal(out.size, 2 ** 30, '« max » is the train size');
   assert.equal(out.loaded, undefined);
   assert.equal(out.message, localModelTooBig(2 ** 30));
@@ -214,6 +217,7 @@ test('the pre-check refuses « max » on a huge train context before node-llama-
   assert.equal(out.small, 16384, 'a size that fits is not refused');
   assert.equal(out.nativeAfter, 1);
   assert.equal(out.liveAfter, 0);
+  assert.equal(out.backend, 'cpu');
 });
 
 test('the engine reloads when the context size changes, and only then', { timeout: 60000 }, async t => {

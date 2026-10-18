@@ -152,6 +152,12 @@ function compactingIn(folder) {
 /** The window a request must fit in (H3): the engine's real context size, capped by max_tokens when the user set
  * one (core/context-budget.mts). Shared by agent turns and compaction, so the two can never size a request differently. */
 async function windowFor(provider, maxTokens) {
+  // provider.contextWindow() loads the engine. Its run is registered in `active` by now, so estimate-model refuses
+  // any new estimate (ESTIMATE_BUSY): cancelling again here catches one that started before that registration, and
+  // idle() waits until a cancelled run has really ended — the native resolver only notices the abort between its own
+  // steps — so the load never overlaps an estimate.
+  estimateJobs.cancelAll();
+  await estimateJobs.idle();
   return effectiveWindow(await provider.contextWindow(), maxTokens);
 }
 
@@ -457,9 +463,12 @@ async function turnProvider(payload) {
   // The engine context comes from « Contexte des modèles locaux », read on every send: a changed setting reloads the
   // model at the next message. max_tokens is not part of it (it caps the request window only, windowFor).
   if (model) {
+    const request = await contextRequestOf(settings);
     // A turn has the machine to itself: a background estimate would compete with its load for the same memory.
+    // Cancelled with no await left before the caller registers the run in `active` (after which estimate-model is
+    // refused); windowFor cancels again and waits for the cancelled run to end before the load.
     estimateJobs.cancelAll();
-    return { provider: localProvider(model.path, await contextRequestOf(settings)), model };
+    return { provider: localProvider(model.path, request), model };
   }
   if (testSeam && payload.testModel) return { provider: testSeam.createTestProvider(payload.testModel), model: null };
   throw new Error(NO_LOCAL_MODEL);
@@ -599,7 +608,7 @@ async function handle(message) {
     if (op === 'gguf-list') result = await ggufLibrary.list();
     if (op === 'gguf-add') result = await ggufLibrary.add(payload.path);
     if (op === 'gguf-remove') result = await ggufLibrary.remove(payload.id);
-    if (op === 'model-status') result = await modelStatus(settings, ggufLibrary);
+    if (op === 'model-status') result = await modelStatus(settings, ggufLibrary, estimateCache);
     // payload.refresh is accepted and ignored for now: every call re-reads free memory.
     if (op === 'hardware-info') result = await readHardware();
     if (op === 'estimate-model') result = await estimateModel(payload);

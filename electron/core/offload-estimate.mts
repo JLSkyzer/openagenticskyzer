@@ -2,7 +2,7 @@
 // very resolver loadModel uses (`gpuLayers: { fitContext }`), so the figure shown before a load is the one the load
 // gives while free VRAM stays the same. Slow on a big model (60–110 s on the user's 27B, measured by the recon):
 // it runs in the background (core/estimate-jobs.mts), can be aborted, and its result is cached on disk.
-import { stat } from 'node:fs/promises';
+import { lstat, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import os from 'node:os';
 import { readGgufFileInfo, GgufInsights, InsufficientMemoryError, GgmlType } from 'node-llama-cpp';
@@ -46,15 +46,30 @@ export async function estimateKey(source: ModelSource, contextSize: number, hard
 interface CacheFile { entries: { key: string; placement: Placement }[] }
 const EMPTY: CacheFile = { entries: [] };
 
+/** A disposable cache's store: a regular file that cannot be read or parsed reads as the fallback, so the next write
+ * replaces it with a fresh file instead of failing on it forever. Anything else (a link, a folder) still throws. */
+class DisposableStore extends JsonStore {
+  override async read<T>(file: string, fallback: T): Promise<T> {
+    try {
+      return await super.read(file, fallback);
+    } catch (error) {
+      const info = await lstat(file).catch(() => null);
+      if (info?.isFile() && !info.isSymbolicLink()) return structuredClone(fallback);
+      throw error;
+    }
+  }
+}
+
 /** The estimates already computed, in <dataHome>/estimates.v1.json: the last ESTIMATE_CACHE_LIMIT set, oldest first. */
 export class EstimateCache {
   private readonly file: string;
-  private readonly store = new JsonStore();
+  private readonly store = new DisposableStore();
   constructor(dataHome: string) {
     this.file = join(dataHome, 'estimates.v1.json');
   }
 
-  /** The cached estimate, or null. An unreadable cache file reads as empty: it only costs a new estimate. */
+  /** The cached estimate, or null. An unreadable cache file reads as empty: it only costs a new estimate, and the
+   * next set replaces it. */
   async get(key: string): Promise<Placement | null> {
     const saved = await this.store.read<CacheFile>(this.file, EMPTY).catch(() => EMPTY);
     const entries = Array.isArray(saved?.entries) ? saved.entries : [];
@@ -90,7 +105,7 @@ export async function estimatePlacement(source: ModelSource, options: { contextS
   signal?.throwIfAborted();
   if (source.kind === 'remote') throw new Error(REMOTE_ESTIMATE_LATER);
   step('stat');
-  const info = await readGgufFileInfo(source.path, { signal });
+  const info = await readGgufFileInfo(source.path, { sourceType: 'filesystem', signal });
   step('read');
   const llama = await runtimeLlama();
   const insights = await GgufInsights.from(info, llama);

@@ -21,6 +21,20 @@ test('getModelStatus asks model-status with no payload', async () => {
   assert.deepEqual(calls[0], { op: 'model-status', payload: undefined });
 });
 
+test('hardware and estimate bridges send their exact ops', async () => {
+  calls.length = 0;
+  await bridge.getHardwareInfo();
+  await bridge.getHardwareInfo(true);
+  await bridge.estimateModel('id1');
+  await bridge.cancelEstimate('e1');
+  assert.deepEqual(calls, [
+    { op: 'hardware-info', payload: { refresh: false } },
+    { op: 'hardware-info', payload: { refresh: true } },
+    { op: 'estimate-model', payload: { modelId: 'id1' } },
+    { op: 'estimate-cancel', payload: { estimateId: 'e1' } },
+  ]);
+});
+
 test('danger zone bridges call their dedicated ops with the folder', async () => {
   calls.length = 0;
   await bridge.clearHistory('D:\\proj');

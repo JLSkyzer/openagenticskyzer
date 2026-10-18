@@ -42,6 +42,46 @@ export interface ModelStatus {
   missing: boolean;
   contextWindow: number;
   loaded: boolean;
+  /** Omitted when unknown: the loaded truth once the model is loaded, else the cached estimate, if any. */
+  placement?: Placement;
+}
+
+// Mirrors core/placement.mts.
+export type Backend = 'cuda' | 'vulkan' | 'metal' | 'cpu';
+export type Fit = 'gpu' | 'split' | 'cpu' | 'none';
+export interface Placement {
+  source: 'estimate' | 'loaded';
+  backend: Backend;
+  gpuLayers: number;
+  totalLayers: number;
+  contextSize: number;
+  vramBytes: number;
+  ramBytes: number;
+  /** The byte figures are node-llama-cpp's own estimates, never a measurement. */
+  memoryMeasured: false;
+  fit: Fit;
+}
+
+// Mirrors core/hardware.mts::HardwareInfo.
+export interface HardwareInfo {
+  backend: Backend;
+  gpuNames: string[];
+  vram: { total: number; free: number } | null;
+  ram: { total: number; free: number };
+  cpu: { model: string; mathCores: number; logicalCores: number };
+  nvidia: boolean;
+  notice: string | null;
+}
+
+// The end of a background offload estimate (worker.mjs, op estimate-model).
+export interface EstimateEvent {
+  type: 'event';
+  event: 'estimate';
+  estimateId: string;
+  modelId: string;
+  state: 'done' | 'cancelled' | 'error';
+  estimate?: Placement;
+  message?: string;
 }
 
 // Mirrors core/settings.mts::projectDefaults plus the optional per-project permission
@@ -124,6 +164,7 @@ export interface OpenAgentBridge {
   onAgentEvent(callback: (event: AgentEvent) => void): () => void;
   onIndexEvent(callback: (event: IndexEvent) => void): () => void;
   onModelEvent(callback: (status: ModelStatus & { type: 'event'; event: 'model' }) => void): () => void;
+  onEstimateEvent(callback: (event: EstimateEvent) => void): () => void;
   onUpdateStatus(callback: (status: UpdateStatus) => void): () => void;
 }
 

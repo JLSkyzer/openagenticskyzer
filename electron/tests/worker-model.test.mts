@@ -313,3 +313,45 @@ test('l. model-status before any load reports the planned window, not MIN_LOCAL_
   await callWorker(worker, 'save-global-settings', { patch: { active_local_model: small.id } });
   assert.deepEqual(await callWorker(worker, 'model-status', {}), { id: small.id, name: 'stories260K.gguf', missing: false, contextWindow: 16384, loaded: false });
 });
+
+// Hardware and offload, Task 6. In a processor-only worker of its own process (as k): no card is needed, and the
+// layers are known — 0 on the card. After a load, the placement is the loaded truth (model.gpuLayers), never an
+// estimate, and model-status and the turn's model event carry the same one.
+test('m. after a turn, model-status and the model event carry the loaded placement', { timeout: 180000 }, async t => {
+  const { worker, folder, model, agentEvents } = await setup(t, undefined, { NODE_LLAMA_CPP_GPU: 'false' });
+  const entry = await callWorker(worker, 'gguf-add', { path: model });
+  await callWorker(worker, 'save-global-settings', { patch: { active_local_model: entry.id } });
+  const turn = await turnToModel(worker, folder);
+  assert.equal(turn.end.kind, 'stopped', JSON.stringify(agentEvents.find(e => e.kind === 'error')));
+  const status = await callWorker(worker, 'model-status', {});
+  assert.equal(status.loaded, true);
+  assert.equal(status.placement.source, 'loaded');
+  assert.deepEqual(status.placement, turn.model.placement, 'the model event carries the same placement');
+  assert.equal(status.placement.contextSize, status.contextWindow);
+  assert.equal(status.placement.gpuLayers, 0);
+  assert.equal(status.placement.backend, 'cpu');
+  assert.equal(status.placement.fit, 'cpu');
+  assert.equal(status.placement.memoryMeasured, false);
+});
+
+test('n. before a load, model-status carries the cached estimate, marked estimate', { timeout: 180000 }, async t => {
+  const { worker, model } = await setup(t);
+  const entry = await callWorker(worker, 'gguf-add', { path: model });
+  await callWorker(worker, 'save-global-settings', { patch: { active_local_model: entry.id } });
+  assert.equal((await callWorker(worker, 'model-status', {})).placement, undefined, 'no estimate yet: omitted');
+  await callWorker(worker, 'hardware-info', { refresh: false }); // creates the Llama
+  const done = new Promise<any>(resolve => {
+    const listener = (message: any) => {
+      if (message?.type === 'event' && message.event === 'estimate') { worker.off('message', listener); resolve(message); }
+    };
+    worker.on('message', listener);
+  });
+  const started = await callWorker(worker, 'estimate-model', {});
+  assert.ok(started.estimateId, 'no cached estimate: a job started');
+  const event = await done;
+  assert.equal(event.state, 'done', JSON.stringify(event));
+  const status = await callWorker(worker, 'model-status', {});
+  assert.equal(status.loaded, false);
+  assert.deepEqual(status.placement, event.estimate);
+  assert.equal(status.placement.source, 'estimate');
+});

@@ -3,10 +3,13 @@ import type {
   Attachment,
   BranchInfo,
   ChatMessage,
+  EstimateEvent,
   FolderListItem,
+  HardwareInfo,
   IndexEvent,
   IndexState,
   ModelStatus,
+  Placement,
   ProjectSettings,
   PromptEntry,
   UpdateStatus,
@@ -299,6 +302,25 @@ export function onModelEvent(listener: (status: ModelStatus) => void): () => voi
   return window.openagent.onModelEvent(({ type: _type, event: _event, ...status }) => listener(status));
 }
 
+// What this machine offers a local model (core/hardware.mts); `refresh` re-reads it.
+export function getHardwareInfo(refresh = false): Promise<HardwareInfo> {
+  return request('hardware-info', { refresh });
+}
+
+// Where a model's layers would go (the active one when no id): a cached estimate answers at once (estimateId null);
+// otherwise a background job starts and its end arrives through onEstimateEvent.
+export function estimateModel(modelId?: string): Promise<{ estimateId: string | null; estimate: Placement | null }> {
+  return request('estimate-model', { modelId });
+}
+
+export function cancelEstimate(estimateId: string): Promise<{ cancelled: boolean }> {
+  return request('estimate-cancel', { estimateId });
+}
+
+export function onEstimateEvent(listener: (event: Omit<EstimateEvent, 'type' | 'event'>) => void): () => void {
+  return window.openagent.onEstimateEvent(({ type: _type, event: _event, ...rest }) => listener(rest));
+}
+
 // Zone Danger: none of these delete project files, only history / sidebar entries / settings.
 export function clearHistory(folder: string): Promise<{ removed_messages: number }> {
   return request('clear-history', { folder });
@@ -325,10 +347,13 @@ export type {
   Attachment,
   BranchInfo,
   ChatMessage,
+  EstimateEvent,
   FolderListItem,
+  HardwareInfo,
   IndexEvent,
   IndexState,
   ModelStatus,
+  Placement,
   ProjectSettings,
   PromptEntry,
   UpdateStatus,

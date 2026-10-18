@@ -3368,9 +3368,88 @@ Demande (validée par l'utilisateur) : `git_diff` et `git_diff_staged` ne montre
 
 **Commits** : 4ea0c2d, 7d58d59, 9e319dc, 5e14a6d, ecbd561, puis ce bilan.
 
+## Bilan du lot — modèles 100 % locaux (2026-10-17)
+
+Spec `docs/superpowers/specs/2026-10-17-local-only-models-design.md` (validée, réduite : seule la sélection du modèle passe en local, AUCUN outil ni réglage retiré). Plan `docs/superpowers/plans/2026-10-17-local-only-models.md`, 6 tâches en sous-agents, base 4bf7c0a. Commits : c8b4dac (T1 couture de test), fcc9981 (T2 un seul moteur), a2d0c5a + 5f861e7 (T3 interface, coffre retiré, CSP), 8dfb765 + 6f8669c (T4 effacement des clés), 712b33d + ac38bbc (T5 embeddings livrés), puis la clôture (T6, ce bilan).
+
+**État : PAS LIVRÉ en entier** — 2 des 27 tests à fenêtre de développement ont échoué à leur lancement unique (détail plus bas) ; les 3 preuves empaquetées sont passées.
+
+**Vérifications de clôture (2026-10-18)** :
+- suite complète `node --experimental-strip-types --test tests/all.mts` : 845/845, exit 0 (845 et non 837 : tests gardés ou ajoutés par les revues — F11 redirection, F5 request-context, test h du worker, EMBEDDINGS_MISSING, coffre du dossier par défaut, découpage d'`embed()` en lots, `withSource`). Un premier lancement a donné 844/845 : « a dev server is started in the background… » (`shell-tool.test.mts`, hors lot, dépendant du temps) a échoué pendant que `tsc` tournait en parallèle ; relancé seul sans charge : 845/845 ;
+- `tsc` cœur : les 5 erreurs préexistantes ; `tsc` renderer : 0 ; `npm run renderer:build` : exit 0 ;
+- `package:win` : exit 0 ; `resources/models/Xenova/all-MiniLM-L6-v2/onnx/model_quantized.onnx` présent (22 972 370 octets) ; `app.asar` contient `core/online-secrets.mts` et `core/active-model.mts`, aucun `tests/`, aucun `test-model-provider`, aucun `transformers/.cache` (exclu par `build.files` dans la clôture : `app.asar` passe de 109 728 337 à 18 624 762 octets) ;
+- statiques : `git grep -i -E "openrouter|together\.xyz|groq\.com|mistral\.ai|googleapis"` sur `electron/core`, `worker.mjs`, `main.cjs`, `renderer-src/src` : rien ; `connection-snapshot|save-connection` hors `electron/tests` : rien ; `git diff --stat 4bf7c0a..HEAD` sur `web-tools.mts`, `hf-token.mts`, `web-tools.test.mts`, `hf-token.test.mts` : rien (de même pour `attachments.mts`, `git-*.mts`, `mcp-*.mts`, `updater.cjs`).
+
+**Tests à fenêtre, chacun lancé UNE fois (journaux `.superpowers/runs/`)** — 25/27 en développement, 3/3 empaquetés :
+- PASS : test:artifact, test:attach, test:branches, test:chat, test:context (jauge 67 % · ~9,600 sur la fenêtre 16 384, budget du worker 14 336 tenu), test:datadir, test:edit, test:export, test:indexstatus, test:knowledge, test:localmodel (vrai tour sur le moteur), test:mcp, test:onboarding, test:palette, test:permission, test:plugins, test:projectinit, test:prompts, test:restorefolder, test:settings-folder, test:settings-tabs (légende « Max du modèle actif (aucun modèle) : 16,384 tokens »), test:stop, test:trust, test:update-ui, test:bridge-real (sur l'exe empaqueté : ops de connexion refusées, `model-status` du worker) ;
+- **FAIL test:model** (`model-selector-visual.cjs`, réécrit en T3) : « waitFor timed out: the send is refused ». Cause, lue dans le code : la barre de saisie est toujours dans la page, avec ou sans dossier ; le test attendait `#oa-input-ta` après « Ouvrir un dossier », condition vraie dès l'état initial, puis envoyait avant la réponse d'`activate_folder` — la page abandonne un envoi sans dossier actif (pas d'erreur). Le worker, lui, refuse bien : sonde sans fenêtre (vrai `worker.mjs`, modèle actif supprimé) → `send` rejeté avec le texte exact de `LOCAL_MODEL_MISSING`, `model-status` `missing: true`. **Échec au lancement unique, script corrigé, non relancé** : l'attente porte maintenant sur l'entrée active de la barre latérale (`[data-testid="oa-folder-entry"][data-active="true"]`). L'étape « introuvable » de l'interface (bannière `missing`, message sans enveloppe IPC) reste donc NON prouvée en fenêtre ;
+- **FAIL test:gitstatus** (`git-status-visual.cjs`, inchangé par le lot hormis le bouchon retiré) : un dépôt propre fraîchement ouvert affiche « ⎇ main ● » (sale). Cause, prouvée par une sonde sans fenêtre : l'ouverture du dossier lance l'indexation, qui écrit `<projet>/.openagent/index/codebase.json` ; `git status --porcelain` montre alors `?? .openagent/` et l'op `git-status` répond `dirty: true` (avant la fin de l'index : `false`). Défaut **du produit**, antérieur au lot (écriture de l'index dans le projet depuis 83f9fca), révélé parce que le modèle quantifié livré indexe en ~0,3 s. Non corrigé ici (pas trivial : décider si `.openagent/` doit être exclu du témoin, ou ajouté à `.git/info/exclude`) ;
+- empaquetés : test:package PASS (modèle présent, `knowledge-add` réel → 1 passage, aucun `embeddings-cache`), test:package-datahome PASS (effacement dans le dossier redirigé, `hf_token` gardé, coffre du dossier par défaut effacé — prouve l'import dynamique de `core/online-secrets.mts` depuis `main.cjs` dans l'asar), test:final-e2e-lot13 PASS (PROOF 1–7 ; la PROOF 6 a ouvert le `.json` exporté dans l'application par défaut — Sublime Text ici — deux fois : l'export par le menu l'ouvre déjà, puis l'appel explicite ; le dossier temporaire n'a pas pu être supprimé par le test, fichier tenu ouvert) ;
+- `tasklist` après les runs : aucun processus openagent/electron restant.
+
+**Objectifs de la spec → preuves** :
+1. Un seul moteur, refus sans `.gguf` : `worker-model.test.mts` a, b (`NO_LOCAL_MODEL`, rien de sauvé, aucun événement), `test-seam.test.mts` 3 ; fcc9981.
+2. Fournisseurs en ligne supprimés (cœur, main, interface) : `local-only.test.mts`, `main-routing.test.mts` (« main no longer answers any connection op »), `bridge-connection.test.mts`, test:bridge-real, test:model (étape 1 passée avant l'échec) ; fcc9981, a2d0c5a.
+3. Effacement des clés : `online-secrets.test.mts` 1–6, `storage.test.mts` (`backup:false`), `main-data-home.test.mts` (deux dossiers), test:package-datahome, test:final-e2e-lot13 PROOF 3 ; 8dfb765, 6f8669c.
+4. Outils web gardés : aucun fichier touché (`git diff --stat` vide), `web-tools.test.mts` dans chaque suite.
+5. Jeton Hugging Face gardé : aucun fichier touché, `online-secrets` test 1 (`hf_token` survit), test:package-datahome, lot13 PROOF 3.
+6. Modèle d'embeddings livré : `embeddings.test.mts`, `semantic-index.test.mts`, `knowledge-base.test.mts` (versions 2), garde réseau 43/43 (rapport T5), test:package ; 712b33d, ac38bbc, `build.files` de la clôture.
+7. Fenêtre réelle : `context-usage.test.mts` (jauge), `worker-model` (événement `model`), test:context, test:settings-tabs, lot13 PROOF 5 (`contextWindow` 16384, `loaded: true`) ; fcc9981, a2d0c5a.
+8. Textes de l'interface : test:onboarding, test:localmodel, `worker-export.test.mts` (en-tête « Aucun modèle (local) »), test:export ; a2d0c5a.
+9. `active_local_model` seule source : `worker-model` c, d, g, h ; l'étape « introuvable » en fenêtre n'est PAS prouvée (test:model) ; fcc9981, a2d0c5a.
+
+**Décisions** :
+- couture de test : le client HTTP de test vit dans `tests/support/test-model-provider.mts`, chargé par le worker seulement si `workerData.testProviderModule` est donné ; `main.cjs::workerOptions` ne le donne jamais (plus strict que la spec, qui permettait à main de l'activer hors paquet) ; `tests/**` hors `build.files`, vérifié dans l'asar ;
+- fenêtre avant chargement : `MIN_LOCAL_CONTEXT` = 16 384, puis le `contextSize` réel du moteur ; `max_tokens` n'est qu'un plafond (`effectiveWindow`, règle partagée worker/renderer) ;
+- embeddings : `electron/resources/models/…` → `extraResources` → `<install>/resources/models`, `allowRemoteModels = false`, `local_files_only` ; index et base de connaissances en version 2 ;
+- effacement sans nouvelle sauvegarde : `JsonStore.update(…, { backup: false })` ;
+- ordre changé : interface et code du coffre (T3) avant l'effacement (T4), pour qu'aucun commit intermédiaire n'ait une jauge cassée et que plus rien ne puisse recréer le coffre une fois effacé ;
+- CSP : `connect-src 'self'` empaqueté (le serveur Vite seulement en dev) ;
+- e2e retirés → où vivent leurs preuves : final-e2e (flux, outil, Stop) → chat-visual, stop-visual, `worker-send.test` ; lot2 → settings-visual, settings-tabs-visual, model-selector-visual, `hf-token.test`, `worker-hf-token.test`, hf-token-visual ; lot3 → `worker-tools.test` (Stop du shell, serveurs), permission-visual, **`git-tools.test.mts`** (~L919 refus de dépôt distant option/transport, L943, L872 — et non `worker-git-tools`), `web-tools.test.mts` ; lot4 → branches-visual ; lot5 → context-visual, `worker-compact` ; lot6 → prompts-visual ; lot7 → palette-visual ; lot8 → export-visual, et sa PROOF 6 (vrai `open-export`) → lot13 PROOF 6 ; lot9 → edit-regenerate-visual ; lot10 → artifact-visual ; lot12 → attachments-visual.
+
+**Fonctions gardées, intactes** : outils web (`web-tools.mts`, catégorie `network`, `search_ask`), jeton Hugging Face (`hf-token.mts`, op, réglage), pièces jointes (images reçues comme note « image ignorée »), mise à jour (`updater.cjs`), git, MCP (stdio et distants) — `git diff --stat 4bf7c0a..HEAD` vide sur leurs modules.
+
+**Limites connues** :
+- le lien cdnjs de highlight.js reste dans l'export HTML ;
+- un `config.json.pre-electron.bak` illisible garde ses clés (signalé à chaque démarrage) ;
+- `current_provider`/`current_model` d'un `.openagent/config.json` de projet restent : pas des secrets, jamais lus ;
+- l'ancien `<dataHome>/embeddings-cache/` reste sur disque, inutilisé ;
+- un `config.json` nettoyé est réécrit au format JsonStore (échappements, `1.0` → `1`, très grands entiers arrondis) ;
+- dérive du modèle quantifié selon le lot : cosinus ≈ 0,987 en lot contre seul, peut inverser des quasi-égalités à ≈ 0,02 près ; existait avant le découpage ;
+- le curseur de l'onglet Contexte s'arrête à la fenêtre du moteur (16 384 avant chargement) même si un `max_tokens` enregistré est plus haut ;
+- le budget 14 336 du worker dans `context-visual` n'est mesuré que par son unique lancement (passé) ;
+- la couture est plus stricte que la spec : main ne l'active jamais ;
+- ouvrir un dépôt propre l'affiche « sale » dès que l'index est écrit dans `.openagent/` (test:gitstatus).
+
+**Mineurs différés (registre)** :
+- T1 test 1 ne fige que 3 URL refusées — ouvert ;
+- T1 le client de test acceptait des identifiants dans une URL loopback — corrigé en T2 (`loopbackEndpoint`) ;
+- T1 budget 14 336 de context-visual vs jauge — test:context PASS ;
+- T1 le test idle de worker-request prouve la logique du client, plus l'env du worker — accepté (chemin retiré en T2) ;
+- T2 `main.d.cts` déclarait encore `resolveSendPayload` — corrigé en T3 ;
+- T2 `postModelStatus` pouvait faire échouer un tour — corrigé en T3 (best-effort, `turnModelStatus`) ;
+- T2 sur la couture, l'événement `model` dit 16384/`loaded:false` — accepté, aucun test n'asserte jauge == événement sur la couture ;
+- T2 l'événement porte la fenêtre du moteur, la jauge applique `max_tokens` — fait en T3 (`effectiveWindow`) ;
+- T2 tests a–d pourraient aussi asserter `modelEvents.length === 0` — ouvert ;
+- T3 curseur Contexte vs `max_tokens` enregistré plus haut — limite notée ci-dessus ;
+- T3 l'effet de `ModelButton` dépend d'`activeFolder` (relecture inutile, sans effet) — ouvert ;
+- T3 `bridge-connection` asserte `payload: undefined` (convention) — accepté ;
+- T4 `config.json` nettoyé réécrit au format JsonStore — limite notée ci-dessus ;
+- T4 les lignes d'erreur d'effacement contiennent des chemins absolus (console locale) — ouvert ;
+- T4 la garde `local-only` n'a jamais été rouge (déjà propre) — accepté ;
+- T4 le commentaire d'en-tête d'`online-secrets.mts` dit encore que rien hors du dossier de données n'est touché — ouvert (faux depuis 6f8669c) ;
+- T5 « never downloads » passe par la vérification de fichiers de l'app ; le verrou de la bibliothèque est prouvé par drapeaux + lecture du source — accepté ;
+- T5 lot13 laisse une application ouverte sur un `.json` temporaire — constaté (Sublime Text, dossier temporaire non supprimé par le test) ;
+- T5 le test à 70 textes passerait sans découpage dans `embed()` — ouvert ;
+- T5 dérive de quantification selon le lot — limite notée ci-dessus.
+
+**Non prouvé** : aucun lancement sur une machine propre ; qualité de la recherche quantifiée vs fp32 non mesurée ; étape « introuvable » de model-selector-visual en fenêtre (script corrigé, non relancé).
+
+**Reste à faire pour livrer** : (1) relancer une fois `test:model` corrigé ; (2) décider et corriger le témoin git sali par `.openagent/` (produit), puis lancer une fois `test:gitstatus`.
+
 ## À faire — lots suivants (demandes de l'utilisateur, 2026-10-17)
 
-1. **Modèles 100 % locaux** (conception `docs/superpowers/specs/2026-10-17-local-only-models-design.md`) : la sélection du modèle ne propose plus que les fichiers `.gguf` locaux ; clés des fournisseurs en ligne effacées ; modèle d'embeddings livré dans l'app. **Aucun outil ni réglage retiré** (outils web, jeton Hugging Face, images… restent).
+1. **Modèles 100 % locaux** — LIVRÉ SAUF 2 PREUVES EN FENÊTRE (2026-10-18, voir « Bilan du lot — modèles 100 % locaux ») : `test:model` à relancer une fois (script corrigé), `test:gitstatus` en échec réel (dépôt propre affiché sale par l'index écrit dans `.openagent/`, défaut produit à corriger). (conception `docs/superpowers/specs/2026-10-17-local-only-models-design.md`) : la sélection du modèle ne propose plus que les fichiers `.gguf` locaux ; clés des fournisseurs en ligne effacées ; modèle d'embeddings livré dans l'app. **Aucun outil ni réglage retiré** (outils web, jeton Hugging Face, images… restent).
 2. **Vision + débordement VRAM → RAM/CPU** :
    - vision : les modèles `.gguf` de vision (modèle + projecteur `mmproj`) décrivent les captures envoyées, via `llama-mtmd-cli` de llama.cpp livré dans l'app (node-llama-cpp 3.x n'accepte pas d'image ; la v4, qui l'apportera, n'est pas publiée au 2026-10-17 — issue withcatai/node-llama-cpp#88) ; le modèle de discussion est déchargé pendant l'appel pour ne pas doubler la mémoire ;
    - débordement : demandé depuis longtemps par l'utilisateur et **jamais porté** depuis Python (`estimate_gpu_layers` dans `utils/utils.py`, étiquette `python-final`, servait à LM Studio / llama.cpp serveur) ; le moteur `.gguf` actuel s'en remet au réglage par défaut de node-llama-cpp, **non vérifié** : mesurer un modèle plus gros que la VRAM, reprendre une répartition explicite si nécessaire, afficher couches GPU / CPU.

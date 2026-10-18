@@ -1,6 +1,6 @@
 # openagent
 
-Agent de code pour Windows : une application de bureau qui travaille dans le dossier que tu ouvres — lire, écrire et modifier des fichiers, lancer des commandes, utiliser git, chercher dans le code et sur le web — avec tes propres clés de fournisseur ou un modèle local `.gguf`.
+Agent de code pour Windows : une application de bureau qui travaille dans le dossier que tu ouvres — lire, écrire et modifier des fichiers, lancer des commandes, utiliser git, chercher dans le code et sur le web — avec un modèle local `.gguf` exécuté dans l'application.
 
 ## Installer
 
@@ -12,7 +12,7 @@ Les mises à jour se téléchargent en arrière-plan ; un bandeau « Version X p
 
 ## Fonctions
 
-- **Fournisseurs** : OpenRouter, Together, Groq, Mistral, Gemini, Ollama, LM Studio, llama.cpp (serveur), ou un modèle `.gguf` exécuté dans l'application, sans serveur.
+- **Modèles** : uniquement des fichiers `.gguf` de votre disque, exécutés dans l'application, sans serveur ni connexion.
 - **Modes** : `ask` (questions, lecture seule), `plan` (plan détaillé, lecture seule), `auto` (agent).
 - **Permissions** : `demander` (les écritures, les commandes shell et les outils d'extension — MCP, plugins — sont confirmés ; la confirmation de chaque catégorie se règle dans les paramètres), `auto`, `strict` ; « Toujours » vaut pour la session.
 - **Outils** : fichiers, recherche dans le code, git, commandes shell, web, mémoire de projet, initialisation de projet (`OPENAGENT.md`), serveurs MCP (stdio et distants), plugins Node.

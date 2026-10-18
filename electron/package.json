@@ -97,6 +97,7 @@
       "node_modules/@node-llama-cpp/win-x64-vulkan/**/*",
       "node_modules/@node-llama-cpp/win-arm64/**/*",
       "node_modules/@huggingface/transformers/**/*",
+      "!node_modules/@huggingface/transformers/.cache/**/*",
       "node_modules/@huggingface/jinja/**/*",
       "node_modules/@huggingface/tokenizers/**/*",
       "node_modules/onnxruntime-common/**/*",

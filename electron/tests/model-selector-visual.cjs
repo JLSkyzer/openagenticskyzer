@@ -96,7 +96,9 @@ app.whenReady().then(async () => {
     })()`);
 
     await click('#oa-open-folder-btn');
-    await waitFor(() => exists('#oa-input-ta'), { what: 'folder opened' });
+    // The input bar is always on the page, folder or not: wait for the sidebar's active entry, which is set only once
+    // activate_folder has answered — a send before that is dropped by the page (no active folder).
+    await waitFor(() => exists('[data-testid="oa-folder-entry"][data-active="true"]'), { what: 'folder opened' });
 
     // ── 1. Nothing selected: the button and the banner say so, and there is no provider form at all ───────────────
     await waitFor(async () => (await text('#oa-model-btn')) === '● Aucun modèle ▾', { what: 'the button says no model is set' });
@@ -126,7 +128,7 @@ app.whenReady().then(async () => {
     await win.loadFile(path.join(__dirname, '..', 'renderer-dist', 'index.html'));
     await waitFor(() => exists('#oa-open-folder-btn'), { what: 'page reloaded' });
     await click('#oa-open-folder-btn');
-    await waitFor(() => exists('#oa-input-ta'), { what: 'folder reopened' });
+    await waitFor(() => exists('[data-testid="oa-folder-entry"][data-active="true"]'), { what: 'folder reopened' });
     await waitFor(async () => (await text('#oa-model-btn')) === '● Aucun modèle ▾', { what: 'a missing model is shown as no model' });
     await sendMessage('Bonjour');
     await waitFor(() => exists('[data-testid="oa-chat-error"]'), { what: 'the send is refused' });

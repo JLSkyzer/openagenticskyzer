@@ -120,8 +120,10 @@ app.whenReady().then(async () => {
     await waitFor(() => exists('[data-testid="oa-local-model-entry"]'), { timeout: 10000 });
     await click('[data-testid="oa-local-model-remove"]');
     await waitFor(async () => (await countOf('[data-testid="oa-local-model-entry"]')) === 0, { what: 'removed from the library' });
-    assert.doesNotMatch(await text('[data-testid="oa-model-active"]'), /stories260K/, 'no longer shown as active once removed');
+    // The banner follows model-status, a separate request answered after (or before) the list: wait for its state
+    // first, never read it the instant the list empties.
     await waitFor(async () => (await js(`document.querySelector('[data-testid="oa-model-active"]').dataset.state`)) === 'none', { what: 'the banner says no model is selected' });
+    assert.doesNotMatch(await text('[data-testid="oa-model-active"]'), /stories260K/, 'no longer shown as active once removed');
     assert.equal(await text('[data-testid="oa-model-active"]'), '⚠ Aucun modèle sélectionné — importe un fichier .gguf.');
 
     process.stdout.write(`PASS local .gguf model: real import (stubbed native picker), immediate activation, a real turn on the real engine with no connection configured, real removal (Electron ${process.versions.electron})\n`);

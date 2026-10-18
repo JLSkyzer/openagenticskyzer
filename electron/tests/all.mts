@@ -96,3 +96,4 @@ import './test-seam.test.mts';
 import './worker-model.test.mts';
 import './local-only.test.mts';
 import './hardware.test.mts';
+import './local-context.test.mts';

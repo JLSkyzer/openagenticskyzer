@@ -11,6 +11,8 @@ export const globalDefaults = {
   // Which entry of the .gguf library (gguf-library.mts) is the active model, if any — empty means none is
   // selected yet, and a turn is refused (core/active-model.mts). Not a secret: just an id.
   active_local_model: '',
+  // « Contexte des modèles locaux »: the engine context asked for, capped by the model (context-budget.mts::localContextSize).
+  local_context: 32768 as number | 'max',
 };
 export const projectDefaults = {
   agent_mode: 'inherit', ignored_patterns: 'node_modules/, .env, dist/',
@@ -28,6 +30,7 @@ const permissionRules = {
 const globalRules: Record<string, Rule> = {
   agent_mode: choice('ask', 'auto', 'plan'), auto_compact: bool, compact_threshold: integer(40, 95),
   max_tokens: v => v === null || integer(2048, 2097152)(v), reserved_tokens: integer(1, 65536),
+  local_context: choice(16384, 32768, 65536, 131072, 'max'),
   show_context_bar: bool, session_retention_days: choice(0, 7, 30, 90), animations: bool,
   restore_last_folder: bool, ...permissionRules,
   data_dir: text(1000), hf_token: text(1000),

@@ -20,9 +20,10 @@ export async function readHardware(): Promise<HardwareInfo> {
   let gpuNames: string[] = [];
   let vram: HardwareInfo['vram'] = null;
   if (backend !== 'cpu') {
-    const [names, state] = await Promise.all([llama.getGpuDeviceNames(), llama.getVramState()]);
+    // A card the driver cannot describe right now still leaves a usable reading: no names, no VRAM figure.
+    const [names, state] = await Promise.all([llama.getGpuDeviceNames().catch(() => []), llama.getVramState().catch(() => null)]);
     gpuNames = names;
-    vram = { total: state.total, free: state.free };
+    vram = state ? { total: state.total, free: state.free } : null;
   }
   return {
     backend,

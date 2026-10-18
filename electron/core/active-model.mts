@@ -2,7 +2,7 @@
 // .gguf library. The worker reads it itself on every send and compaction; an id sent by the page is never used.
 import type { SettingsService } from './settings.mts';
 import type { GgufEntry, GgufLibrary } from './gguf-library.mts';
-import { loadedContextSize } from './local-engine.mts';
+import { loadedContextSize, plannedContextSize, type ContextRequest } from './local-engine.mts';
 import { MIN_LOCAL_CONTEXT } from './context-budget.mts';
 
 export const NO_LOCAL_MODEL = 'Aucun modèle local actif : ajoute ou choisis un fichier .gguf (bouton du modèle).';
@@ -28,12 +28,27 @@ export async function activeModel(settings: SettingsService, library: GgufLibrar
   return { id, name: entry.name, path: entry.path };
 }
 
+/** The engine context request the global settings ask for (« Contexte des modèles locaux »). */
+export async function contextRequestOf(settings: SettingsService): Promise<ContextRequest> {
+  return { setting: (await settings.global()).local_context as ContextRequest['setting'] };
+}
+
+/** The window planned for `path` before it loads; MIN_LOCAL_CONTEXT when the file cannot be read. */
+async function plannedWindow(path: string, request: ContextRequest): Promise<number> {
+  try {
+    return await plannedContextSize(path, request);
+  } catch {
+    return MIN_LOCAL_CONTEXT;
+  }
+}
+
 /** What the page shows of the model. The window is the engine's real context size once that model is loaded, else
- * MIN_LOCAL_CONTEXT; reading it never loads anything. */
+ * the size it will be loaded with (the setting capped by the file's train size); reading it never loads anything. */
 export async function modelStatus(settings: SettingsService, library: GgufLibrary): Promise<ModelStatus> {
   const { id, entry } = await lookup(settings, library);
   const size = entry ? loadedContextSize(entry.path) : null;
-  return { id, name: entry?.name ?? null, missing: Boolean(id) && !entry, contextWindow: size ?? MIN_LOCAL_CONTEXT, loaded: size !== null };
+  const contextWindow = size ?? (entry ? await plannedWindow(entry.path, await contextRequestOf(settings)) : MIN_LOCAL_CONTEXT);
+  return { id, name: entry?.name ?? null, missing: Boolean(id) && !entry, contextWindow, loaded: size !== null };
 }
 
 /** What the 'model' event of a turn reports: the model that turn resolved before it started (null on the test seam),

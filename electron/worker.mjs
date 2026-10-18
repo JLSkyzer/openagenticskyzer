@@ -9,6 +9,7 @@ import { FoldersService } from './core/folders.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
 import { localProvider } from './core/local-engine.mts';
 import { readHardware } from './core/hardware.mts';
+import { disposeLlama } from './core/llama-runtime.mts';
 import { offeredTools, runAgent, TOOL_NAME_PATTERN } from './core/agent.mts';
 import { basePrompt } from './core/system-prompt.mts';
 import { workspaceTools } from './core/workspace.mts';
@@ -22,7 +23,7 @@ import { PromptLibrary } from './core/prompts.mts';
 import { readProjectMemory } from './core/project-memory.mts';
 import { validateAttachments } from './core/attachments.mts';
 import { effectiveWindow } from './core/context-budget.mts';
-import { activeModel, modelStatus, turnModelStatus, NO_LOCAL_MODEL } from './core/active-model.mts';
+import { activeModel, modelStatus, turnModelStatus, contextRequestOf, NO_LOCAL_MODEL } from './core/active-model.mts';
 import { closeDanglingCalls } from './core/request-context.mts';
 import { buildHtml, buildJson, buildMarkdown, exportFilename, renderEntries } from './core/export.mts';
 import { cleanupOldFolders } from './core/cleanup.mts';
@@ -448,7 +449,9 @@ function lastAssistantSummary(messages) {
  */
 async function turnProvider(payload) {
   const model = await activeModel(settings, ggufLibrary);
-  if (model) return { provider: localProvider(model.path), model };
+  // The engine context comes from « Contexte des modèles locaux », read on every send: a changed setting reloads the
+  // model at the next message. max_tokens is not part of it (it caps the request window only, windowFor).
+  if (model) return { provider: localProvider(model.path, await contextRequestOf(settings)), model };
   if (testSeam && payload.testModel) return { provider: testSeam.createTestProvider(payload.testModel), model: null };
   throw new Error(NO_LOCAL_MODEL);
 }
@@ -683,6 +686,8 @@ async function handle(message) {
       for (const run of active.values()) run.controller.abort();
       // MCP processes too: a discovery has no abort signal, and a call's session only closes once it unwinds.
       await Promise.all([stopAllServers(), stopAllMcpServers()]);
+      // Then the local model and the Llama: several gigabytes of RAM/VRAM, freed rather than left to the exit.
+      await disposeLlama();
       result = { stopped: true };
     }
     if (op === 'permission-decision') {

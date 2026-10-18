@@ -1067,7 +1067,108 @@ None of them belongs in Général (identity, theme-independent preferences, the 
 
 ## Bilan — Task 1 (spike CUDA)
 
-Empty until Task 1 runs. It receives S1–S6 findings and the decisions D-CUDA-1…4, with sources (file paths, official URLs and dates, commands run).
+Run on 2026-10-18 on the user's machine. Everything was written to a `mkdtemp` scratch folder outside the repository, which was deleted afterwards. No repository file changed except this section.
+
+**S1 — Inventory.**
+- `electron/node_modules/@node-llama-cpp/win-x64-cuda` (3.21.1) has 22 files:
+  - `LICENSE` (MIT, « Copyright (c) 2024 Gilad S. »), `README.md`, `package.json`, `dist/index.js`;
+  - in `bins/win-x64-cuda/`:
+    - `ggml-cuda.dll`: 144 822 784 bytes;
+    - `llama-common.dll`: 8 203 264 bytes;
+    - `llama.cuda.v0.4.0.dll`: 7 103 488 bytes;
+    - 9 `ggml-cpu-*.dll`: 0.8–1.1 MB each;
+    - `ggml-base.dll`: 1 290 752 bytes;
+    - `llama-addon.node`, `.lib` and `.exp`: 0.95 MB, 2.7 MB and 1.6 MB;
+    - `ggml.cuda.v0.4.0.dll` and `_nlcBuildMetadata.json` (llama.cpp release `v0.4.0`).
+- `win-x64-cuda-ext` holds `bins/win-x64-cuda/fallback/ggml-cuda.dll` (367 827 968 bytes), plus `LICENSE` (MIT), README, `package.json` and `dist/index.js`. Neither package ships an NVIDIA DLL or an NVIDIA licence.
+- PE import tables, read with a Node PE reader. It parsed the import directory and the delay-import directory.
+  - **Main `ggml-cuda.dll` (CUDA 13):**
+    - Imports `cublas64_13.dll`, `ggml-base.dll`, the MSVC runtime and `api-ms-win-crt-*`.
+    - No `cudart64_*` is imported, yet the CUDA runtime API symbols are present, so **cudart is linked statically**.
+    - `nvcuda.dll` is not imported. It appears only as a string and is loaded at runtime from the driver, as the S4 module list confirms.
+  - **`fallback/ggml-cuda.dll` (CUDA 12):** imports `cudart64_12.dll`, `cublas64_12.dll`, `nvcuda.dll`, `ggml-base.dll` and the MSVC runtime.
+  - **From the archive (S3):** `cublas64_13.dll` imports `cublasLt64_13.dll` and `KERNEL32.dll`. `cublasLt64_13.dll` imports only `KERNEL32.dll`.
+- `nvidia-smi`: NVIDIA GeForce RTX 4060, 8188 MiB, driver **616.92**. This nvidia-smi version prints « CUDA UMD Version: 13.4 » instead of « CUDA Version ».
+- No CUDA Toolkit is installed: `CUDA_PATH` is empty and no `cublas*` or `cudart*` is on `PATH` or in System32. The tests below therefore depend only on the pack.
+- DLLs the pack carries, from NVIDIA `libcublas` 13.8.0.4:
+  - `cublas64_13.dll`: 54 873 200 bytes;
+  - `cublasLt64_13.dll`: 493 474 416 bytes.
+- Not carried:
+  - `nvcuda.dll` belongs to the display driver.
+  - The CUDA 12 fallback would also need `cudart64_12.dll` (`cuda_cudart` 12.x) and `cublas64_12.dll` + `cublasLt64_12.dll` (`libcublas` 12.x). The user did not approve those archives, and S4 shows they are not needed.
+
+**S2 — Licence.**
+- Sources:
+  - The NVIDIA CUDA Toolkit EULA at https://docs.nvidia.com/cuda/eula/index.html, for CUDA Toolkit v13.4. Its header says « Last updated: January 26, 2026 », and its page footer says Oct 12, 2026. It has no separate version number.
+  - The `LICENSE` inside the `libcublas` 13.8.0.4 archive (68 070 bytes), which carries the same January 26, 2026 date.
+  - The `cuda_cudart/LICENSE.txt` and `libcublas/LICENSE.txt` pages under `developer.download.nvidia.com/compute/cuda/redist/`. These are identical and older (January 12, 2024), with the same Attachment A entries and the same §1.1.2 requirements.
+- Attachment A (§2.6) lists, for Windows:
+  - « CUDA Runtime »: `cudart.dll`;
+  - « CUDA BLAS Library »: `cublas.dll` and `cublasLt.dll`.
+- Its introduction covers file names carrying a version number, with `cudart64_90.dll` as the example. So `cublas64_13.dll`, `cublasLt64_13.dll`, `cublas64_12.dll`, `cublasLt64_12.dll` and `cudart64_12.dll` are all redistributable.
+- Conditions (§1.1.1–1.1.2, §2.1, Attachment B), paraphrased:
+  - the DLLs ship in object form inside an application with material additional functionality;
+  - only that application may use them;
+  - our distribution terms must stay consistent with the EULA and protect NVIDIA's IP, so the DLLs must not be relabelled MIT;
+  - we report known non-compliant use to NVIDIA;
+  - the application targets systems with NVIDIA GPUs;
+  - part of cuBLAS comes from Vasily Volkov / UC Berkeley under a BSD licence, so a binary redistribution must reproduce its copyright notice. NVIDIA's `LICENSE` therefore ships inside the pack.
+- The node-llama-cpp packages are MIT: `electron/node_modules/@node-llama-cpp/win-x64-cuda/LICENSE` and `.../win-x64-cuda-ext/LICENSE`.
+
+**S3 — Runtime fetched.** The user approved one archive only: `libcublas-windows-x86_64-13.8.0.4-archive.zip`, from `https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/`. It is listed in `redistrib_13.4.3.json` (release 2026-10-13).
+- Size: 422 415 931 bytes, matching the manifest.
+- sha256: `0974318e9861a61cb9091cf7de8d4c2880e9787fe311cb4bcbd08865663c5f43`, matching the manifest.
+- Unpacked: only the two DLLs and `LICENSE`. `nvblas64_13.dll` is in the archive but is not needed.
+
+**S4 — Loading outside `node_modules`.**
+- Setup:
+  - Electron 44.4.2 (Node 24.21.0), headless, with no window.
+  - The main process starts a `worker_threads` Worker of type module, as `main.cjs` does.
+  - `OPENAGENT_HOME` and `userData` point to temp folders.
+  - In the worker, `module.registerHooks({ resolve })` maps both bare specifiers to `<scratch>/pack*/node_modules/@node-llama-cpp/<name>/dist/index.js`. `getBinsDir()` then reported the scratch path, with version 3.21.1.
+- Control, without the hook (repository packages, no NVIDIA DLL): node-llama-cpp printed « The prebuilt binary … with CUDA support is not compatible with the current system », followed by `NoBinaryFoundError`.
+- **A, DLLs beside `ggml-cuda.dll`: failed.**
+  - The child-process binary test's stderr: « Binary GPU type mismatch. Expected: cuda, got: false … »
+  - Cause: the Windows loader does not search the folder of the DLL that `ggml` loads for its dependencies.
+- **B, DLLs in `<pack>/cuda-runtime/`, prepended to `process.env.PATH` by the main process before creating the Worker: succeeded.**
+  - The binary test passed, and `llama.gpu === 'cuda'` on the RTX 4060.
+  - `loadModel(stories260K, gpuLayers: { fitContext: { contextSize: 16384 } })` gave `model.gpuLayers` = 6 of 6, and the 4-token generation returned text.
+  - Loaded build: the **main CUDA 13 build**, not `fallback/`. The log said « loaded CUDA backend from …\win-x64-cuda\bins\win-x64-cuda\ggml-cuda.dll ».
+  - The process module list showed `cublas64_13.dll` and `cublasLt64_13.dll` loaded from `cuda-runtime/`, and `nvcuda.dll` from System32.
+- **C, `CUDA_PATH` instead of `PATH`: failed**, with the same « got: false » as A. `CUDA_PATH` feeds node-llama-cpp's detection, not the OS loader.
+
+**S5 — Backend switch in one process**, mechanism B, in one worker, with every object disposed between steps:
+- Vulkan, then CUDA: both loaded, offloaded 6 of 6 layers and generated text. Likewise in the reverse order. Neither crashed.
+- The module list explains why this is not a clean switch.
+  - After disposal, the first backend's DLLs stay loaded.
+  - The second backend's `llama-addon.node`, `ggml-cuda.dll` (or `ggml-vulkan.dll`) and `llama.*.dll` load from its own folder. Its `ggml-base.dll`, `llama-common.dll` and `ggml-cpu-haswell.dll` do not: Windows reuses the modules already loaded under those names.
+  - Those files differ between the Vulkan and CUDA folders (different sha256; `ggml-base.dll` is 1 281 536 bytes for Vulkan and 1 290 752 for CUDA).
+  - So the second backend ran on the first backend's base libraries. It worked here, on a 260K model and a 4-token generation, but nothing guarantees it.
+
+**S6 — Sizes.**
+- Raw bytes are measured (file sizes). The gzip figures are **estimates**: each file was gzipped once with `zlib.gzipSync` at level 9.
+- Proposed pack: the `win-x64-cuda` package plus `cublas64_13.dll`, `cublasLt64_13.dll` and NVIDIA's `LICENSE`.
+  - Package: **175 510 346** bytes raw, ≈ 138 539 707 gzip.
+  - NVIDIA runtime: **548 415 686** bytes raw, ≈ 423 076 369 gzip.
+  - Total: **723 926 032 bytes raw (≈ 690 MiB)**, estimated **≈ 561 616 076 bytes gzip (≈ 536 MiB)**.
+- `win-x64-cuda-ext` would add 367 830 717 bytes raw (≈ 175 416 838 gzip, estimated). It is useless without the CUDA 12 runtime, which this pack does not carry. The `.lib` and `.exp` files (≈ 4.3 MB) are not needed at runtime.
+
+**Decisions.**
+- **D-CUDA-1, licence: GO.**
+  - `cublas64_13.dll` and `cublasLt64_13.dll` are on Attachment A.
+  - The project meets the conditions: the app adds material functionality, the pack is offered only for NVIDIA GPUs, and NVIDIA's `LICENSE` is shipped inside the pack with the DLLs labelled NVIDIA-licensed, not MIT.
+- **D-CUDA-2, mechanism: B.** The worker uses a resolve hook for `@node-llama-cpp/win-x64-cuda`. The main process prepends the runtime folder to `PATH` before creating the Worker.
+- **D-CUDA-3, runtime placement: `cuda-runtime/`.** The pack does not ship `win-x64-cuda-ext`. Only the main CUDA 13 build is used.
+- **D-CUDA-4, switch: next app start.**
+  - The loader reuses `ggml-base.dll` and `llama-common.dll` across backends, and DLLs are not unloaded on dispose. The in-process switch therefore mixes binaries from two builds, even though S5 did not crash.
+  - A pack install or removal sets `restartRequired`, and « Redémarrer maintenant » reuses `restart-app`.
+  - The spec's « utilisation au prochain chargement » becomes « au prochain démarrage de l'app ».
+  - The `PATH` change must also happen in the main process before the Worker starts, which is only possible at start-up.
+
+**Concerns.**
+- The download is about 536 MB (estimate).
+- cuBLAS 13.8 comes from toolkit 13.4.3. The minimum driver this imposes on other machines has not been measured; this machine's driver 616.92 supports 13.4.
+- Other machines without a CUDA 13 driver will fail the binary test. The app must then fall back cleanly to Vulkan (Task 10).
 
 ## Bilan — Task 13
 

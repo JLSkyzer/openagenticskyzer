@@ -35,6 +35,8 @@ export function ModelButton({ activeFolder }: { activeFolder: string | null }) {
     <>
       <button
         id="oa-model-btn"
+        // Set once model-status has answered: before that the label already reads « Aucun modèle » (status null).
+        data-loaded={status ? 'true' : undefined}
         onClick={() => setOpen(true)}
         title={name ?? undefined}
         className="flex h-10 shrink-0 items-center rounded-lg border border-gray-700 bg-gray-900 px-2 text-xs text-gray-400 hover:border-purple-500"

@@ -101,7 +101,8 @@ app.whenReady().then(async () => {
     await waitFor(() => exists('[data-testid="oa-folder-entry"][data-active="true"]'), { what: 'folder opened' });
 
     // ── 1. Nothing selected: the button and the banner say so, and there is no provider form at all ───────────────
-    await waitFor(async () => (await text('#oa-model-btn')) === '● Aucun modèle ▾', { what: 'the button says no model is set' });
+    // « Aucun modèle » is also the label before model-status answers: data-loaded says the answer is in.
+    await waitFor(async () => (await exists('#oa-model-btn[data-loaded="true"]')) && (await text('#oa-model-btn')) === '● Aucun modèle ▾', { what: 'the button says no model is set' });
     await openDialog();
     assert.equal(await bannerState(), 'none');
     assert.equal(await text('[data-testid="oa-model-active"]'), '⚠ Aucun modèle sélectionné — importe un fichier .gguf.');
@@ -129,7 +130,7 @@ app.whenReady().then(async () => {
     await waitFor(() => exists('#oa-open-folder-btn'), { what: 'page reloaded' });
     await click('#oa-open-folder-btn');
     await waitFor(() => exists('[data-testid="oa-folder-entry"][data-active="true"]'), { what: 'folder reopened' });
-    await waitFor(async () => (await text('#oa-model-btn')) === '● Aucun modèle ▾', { what: 'a missing model is shown as no model' });
+    await waitFor(async () => (await exists('#oa-model-btn[data-loaded="true"]')) && (await text('#oa-model-btn')) === '● Aucun modèle ▾', { what: 'a missing model is shown as no model' });
     await sendMessage('Bonjour');
     await waitFor(() => exists('[data-testid="oa-chat-error"]'), { what: 'the send is refused' });
     assert.equal(await text('[data-testid="oa-chat-error"]'), LOCAL_MODEL_MISSING, "the worker's own reason, without the IPC wrapper");

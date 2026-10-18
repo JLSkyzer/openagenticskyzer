@@ -94,7 +94,7 @@ test('indexFolder never indexes a secret file nor one the project ignores, and a
   const raw = JSON.parse(await readFile(store, 'utf8'));
   assert.deepEqual([...new Set(raw.entries.map((e: any) => e.file))], ['sort.py']);
   assert.deepEqual(seen, ['sort.py'], 'an excluded file is not even read');
-  assert.deepEqual(await readdir(dirname(store)), ['codebase.json'], 'no backup copy keeps the old index');
+  assert.deepEqual((await readdir(dirname(store))).sort(), ['.gitignore', 'codebase.json'], 'no backup copy keeps the old index');
   assert.equal(JSON.stringify(raw).includes('SECRET-INDEX'), false);
 });
 
@@ -148,4 +148,47 @@ test('a version-1 index is never searched (old and new vectors never mix); the n
   await indexFolder(project, home);
   assert.equal(JSON.parse(await readFile(path, 'utf8')).version, 2);
   assert.equal((await searchCollection(path, 'tri', home))[0]?.file, 'a.md', 'the rebuilt index is searched');
+});
+
+test('indexing a committed git project leaves `git status` clean: the index directory ignores itself with a `*` .gitignore', { timeout: 60000 }, async t => {
+  const { home, project } = await fixture(t);
+  const { execFileSync } = await import('node:child_process');
+  const git = (...args: string[]) => execFileSync('git', ['-c', 'core.autocrlf=false', ...args], { cwd: project, encoding: 'utf8' });
+  git('init', '-q');
+  await writeFile(join(project, 'sort.py'), 'def sort_list(items):\n    return sorted(items)\n');
+  git('add', 'sort.py');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'init');
+  const { indexFolder, storePath } = await import('../core/semantic-index.mts');
+  await indexFolder(project, home);
+  assert.equal(git('status', '--porcelain'), '', 'no ?? .openagent/ after indexing');
+  assert.equal(git('status', '--porcelain', '-uall'), '', 'not even one file under .openagent/index/');
+  const ignore = join(dirname(await storePath(project)), '.gitignore');
+  assert.equal(await readFile(ignore, 'utf8'), '*\n');
+  assert.deepEqual((await readdir(join(project, '.openagent'))).sort(), ['index'], 'nothing else is written under .openagent/');
+});
+
+test('a second index run leaves an existing .gitignore of the index directory untouched', { timeout: 60000 }, async t => {
+  const { home, project } = await fixture(t);
+  await writeFile(join(project, 'a.md'), 'tri');
+  const { indexFolder, storePath } = await import('../core/semantic-index.mts');
+  const ignore = join(dirname(await storePath(project)), '.gitignore');
+  await mkdir(dirname(ignore), { recursive: true });
+  await writeFile(ignore, '# the user\'s own\ncodebase.json\n');
+  await indexFolder(project, home);
+  assert.equal(await readFile(ignore, 'utf8'), '# the user\'s own\ncodebase.json\n');
+  await rm(ignore);
+  await indexFolder(project, home);
+  await indexFolder(project, home);
+  assert.equal(await readFile(ignore, 'utf8'), '*\n', 'written once, then kept as is');
+});
+
+test('the .gitignore is in place BEFORE the index is written: git never sees the index directory, even mid-write', { timeout: 60000 }, async t => {
+  const { home, project } = await fixture(t);
+  await writeFile(join(project, 'a.md'), 'tri');
+  const { indexFolder, storePath } = await import('../core/semantic-index.mts');
+  const store = await storePath(project);
+  // A directory in the store's place makes the store write fail: whatever exists at that point was written before it.
+  await mkdir(store, { recursive: true });
+  await assert.rejects(indexFolder(project, home));
+  assert.equal(await readFile(join(dirname(store), '.gitignore'), 'utf8'), '*\n', 'written before the store, not after');
 });

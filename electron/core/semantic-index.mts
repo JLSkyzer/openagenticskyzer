@@ -1,5 +1,5 @@
-import { readdir, readFile as readFileFs, rm, stat as statFs } from 'node:fs/promises';
-import { join, relative, sep, extname, isAbsolute } from 'node:path';
+import { mkdir, readdir, readFile as readFileFs, rm, stat as statFs, writeFile as writeFileFs } from 'node:fs/promises';
+import { join, relative, sep, extname, isAbsolute, dirname } from 'node:path';
 import { metadataDirectory, JsonStore } from './json-store.mts';
 import { chunkText, cosineSimilarity } from './semantic-chunk.mts';
 import { embed } from './embeddings.mts';
@@ -102,6 +102,18 @@ export async function indexFolder(
     });
   }
   const file = await storePath(folder);
+  // The index is a cache: in a git project it must never show as `?? .openagent/`. A `*` .gitignore in the index
+  // directory (the one storePath validated) hides it, and touches nothing else — not .git/, not the git config, no
+  // other file of .openagent/. It is written BEFORE the store: written after, a `git status` run during the store
+  // write (the git widget's, at folder activation) saw the temp file or codebase.json and showed the repo dirty.
+  // Written once ('wx'): an existing .gitignore, the user's or ours, is left as it is. Like an unreadable file above,
+  // a failure is skipped: it never fails the indexing — the index is still written, git just sees it.
+  try {
+    await mkdir(dirname(file), { recursive: true });
+    await writeFileFs(join(dirname(file), '.gitignore'), '*\n', { flag: 'wx' });
+  } catch {
+    // EEXIST (already there) or any write error.
+  }
   const store = new JsonStore();
   await store.update<IndexFile>(file, { version: INDEX_VERSION, entries: [] }, () => ({ version: INDEX_VERSION, entries }));
   await rm(`${file}.pre-electron.bak`, { force: true });

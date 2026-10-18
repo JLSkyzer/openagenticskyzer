@@ -129,5 +129,5 @@ test("the automatic indexing applies the project's ignored patterns and the secr
   const index = join(project, '.openagent', 'index');
   const raw = JSON.parse(await readFile(join(index, 'codebase.json'), 'utf8'));
   assert.deepEqual([...new Set(raw.entries.map((e: any) => e.file))], ['a.py']);
-  assert.deepEqual(await readdir(index), ['codebase.json'], 'no backup copy of the old index is kept');
+  assert.deepEqual((await readdir(index)).sort(), ['.gitignore', 'codebase.json'], 'no backup copy of the old index is kept');
 });

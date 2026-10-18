@@ -5,7 +5,9 @@
 // Erased: the connections vault (connections.v1.json) with its JsonStore copies (pre-Electron backup and temp files),
 // and the keys current_provider / current_model of the global config.json AND of its pre-Electron backup — that
 // backup is cleaned, never deleted. hf_token is a kept setting (the Hugging Face token): it is never erased.
-// The user's projects' .env files are never opened, and nothing outside the data home is read.
+// The user's projects' .env files are never opened. Outside the data home, only the default home (~/.openagent) is
+// read, and only when a redirect points the data home elsewhere: eraseVaultFiles lists it and removes its vault
+// family (connections.v1.json, its backup and temp files) — nothing else there is touched.
 import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { JsonStore } from './json-store.mts';

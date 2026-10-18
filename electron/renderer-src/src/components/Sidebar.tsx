@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { activateFolder, getGlobalSettings, gitStatus, initProject, listFolders, openFolderDialog, type ChatMessage, type FolderListItem, type GitStatus } from '../ipc/bridge';
+import { activateFolder, getGlobalSettings, gitStatus, initProject, listFolders, onIndexEvent, openFolderDialog, type ChatMessage, type FolderListItem, type GitStatus } from '../ipc/bridge';
 import { useRegisterAction } from '../state/ActionRegistry';
 import { KnowledgeSection } from './KnowledgeSection';
 import { Modal } from './settings/Modal';
 import { useToast } from '../state/ToastProvider';
 import { cleanIpcError } from '../ipc/errors';
+import { createLatestWins, shouldRefreshGitOn } from '../state/git-refresh';
 
 interface SidebarProps {
   activeFolder: string | null;
@@ -30,7 +31,9 @@ function formatDate(iso: string): string {
 export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: SidebarProps) {
   const [folders, setFolders] = useState<FolderListItem[]>([]);
   const [opening, setOpening] = useState(false);
-  const [gitInfo, setGitInfo] = useState<GitStatus | null>(null);
+  // The folder each git status was read for travels with it (shown as data-folder on the widget).
+  const [git, setGit] = useState<{ folder: string; status: GitStatus | null } | null>(null);
+  const gitInfo = git?.status ?? null;
   const [initConfirm, setInitConfirm] = useState(false);
   const [initializing, setInitializing] = useState(false);
   const { notify } = useToast();
@@ -41,15 +44,30 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
       .catch(() => {});
   }, [refreshToken]);
 
+  // activate_folder also starts indexing, which writes <project>/.openagent/index/ — a read landing
+  // mid-write can see the folder dirty (state/git-refresh.ts). So the status is read on activation AND
+  // again once that folder's indexing settles, and only the latest read is shown.
+  const activeFolderRef = useRef(activeFolder);
+  activeFolderRef.current = activeFolder;
+  const gitReads = useRef<ReturnType<typeof createLatestWins<{ folder: string; status: GitStatus | null }>> | null>(null);
+  gitReads.current ??= createLatestWins(setGit);
+  const refreshGit = useCallback((folder: string) => {
+    gitReads.current?.run(() => gitStatus(folder).then(status => ({ folder, status })));
+  }, []);
   useEffect(() => {
-    setGitInfo(null);
+    gitReads.current?.cancel();
+    setGit(null);
     if (!activeFolder) return;
-    let stale = false;
-    gitStatus(activeFolder)
-      .then(status => { if (!stale) setGitInfo(status); })
-      .catch(() => {});
-    return () => { stale = true; };
-  }, [activeFolder]);
+    refreshGit(activeFolder);
+    return () => gitReads.current?.cancel();
+  }, [activeFolder, refreshGit]);
+  useEffect(
+    () =>
+      onIndexEvent(event => {
+        if (shouldRefreshGitOn(event, activeFolderRef.current)) refreshGit(event.folder);
+      }),
+    [refreshGit],
+  );
 
   const activate = useCallback(
     async (folder: string) => {
@@ -72,8 +90,6 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
   // Python évite en testant `not state.active_folder` juste avant d'écrire. Une seule tentative
   // par montage (`attempted`) ; toute erreur (dossier supprimé depuis, fichier illisible) est
   // avalée silencieusement, même comportement qu'avant l'existence de cette fonctionnalité.
-  const activeFolderRef = useRef(activeFolder);
-  activeFolderRef.current = activeFolder;
   const attempted = useRef(false);
   useEffect(() => {
     if (attempted.current) return;
@@ -221,6 +237,7 @@ export function Sidebar({ activeFolder, onActivated, refreshToken = 0 }: Sidebar
         <div
           data-testid="oa-git-status"
           data-dirty={gitInfo.dirty}
+          data-folder={git?.folder}
           className={'px-3 py-1 font-mono text-xs ' + (gitInfo.dirty ? 'text-yellow-400' : 'text-green-400')}
         >
           ⎇ {gitInfo.branch}

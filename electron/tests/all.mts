@@ -53,6 +53,7 @@ import './cleanup.test.mts';
 import './worker-cleanup.test.mts';
 import './worker-longrun.test.mts';
 import './git-status.test.mts';
+import './git-refresh.test.mts';
 import './worker-git-status.test.mts';
 import './tray-icon.test.mts';
 import './hf-token.test.mts';

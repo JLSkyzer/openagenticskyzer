@@ -102,22 +102,43 @@ app.whenReady().then(async () => {
       await waitFor(() => exists(activeEntrySelector(folderPath)), { timeout: 15000, what: `${folderPath} becomes active` });
     }
 
+    // Activating a folder also indexes it, which writes <folder>/.openagent/index/ — a git read landing
+    // mid-write may see the repo dirty; the widget reads again once that indexing settles (state/git-refresh.ts).
+    // So a check of « clean » waits for the folder's index to be ready (the worker's own state, then the
+    // indicator) and then for the widget of THAT folder (data-folder) to say clean.
+    const widgetOf = folderPath => `[data-testid="oa-git-status"][data-folder="${folderPath.replace(/\\/g, '\\\\')}"]`;
+    const indexReady = async folderPath => {
+      await waitFor(async () => {
+        const id = `idx-${Date.now()}-${Math.random()}`;
+        const status = await new Promise((resolve, reject) => { pending.set(id, { resolve, reject }); worker.postMessage({ id, op: 'index-status', payload: { folder: folderPath } }); });
+        return status.state === 'ready';
+      }, { what: `${folderPath} index ready (worker)` });
+      await waitFor(() => exists('[data-testid="oa-index-status"][data-state="ready"]'), { what: `${folderPath} index ready (indicator)` });
+    };
+    const waitClean = async folderPath => {
+      await indexReady(folderPath);
+      await waitFor(async () => (await attr(widgetOf(folderPath), 'data-dirty')) === 'false', { what: `${folderPath} widget shows clean` });
+    };
+
     // ── 1. Opening alpha (clean git repo) shows the widget with its branch, no dirty dot ─────────────
     await openAndWaitActive(alpha);
-    await waitFor(() => exists('[data-testid="oa-git-status"]'), { timeout: 15000, what: 'git widget appears for alpha' });
+    await waitClean(alpha);
     assert.match(await text('[data-testid="oa-git-status"]'), /⎇ main/);
     assert.equal(await attr('[data-testid="oa-git-status"]', 'data-dirty'), 'false');
     await writeFile(join(screenshotDir, 'gitstatus-1-clean.png'), await capturePng(win));
 
     // ── 2. Switching to beta (a different clean repo) re-fetches — same branch name, still clean ────
     await openAndWaitActive(beta);
-    await waitFor(() => exists('[data-testid="oa-git-status"]'), { what: 'widget still present for beta' });
+    await waitClean(beta);
     assert.equal(await attr('[data-testid="oa-git-status"]', 'data-dirty'), 'false');
 
     // ── 3. Dirtying alpha on disk, then switching back to it, shows the dirty indicator ──────────────
     await writeFile(join(alpha, 'README.md'), '# Test\n\nchangé\n');
     await openAndWaitActive(alpha);
-    await waitFor(async () => (await attr('[data-testid="oa-git-status"]', 'data-dirty')) === 'true', { what: 'alpha now shows dirty' });
+    await waitFor(async () => (await attr(widgetOf(alpha), 'data-dirty')) === 'true', { what: 'alpha now shows dirty' });
+    await indexReady(alpha);
+    await pause(300); // the refresh after indexing must keep it dirty (a real modification, not the index)
+    assert.equal(await attr(widgetOf(alpha), 'data-dirty'), 'true');
     assert.match(await text('[data-testid="oa-git-status"]'), /●/);
     await writeFile(join(screenshotDir, 'gitstatus-2-dirty.png'), await capturePng(win));
 
@@ -125,6 +146,7 @@ app.whenReady().then(async () => {
     const gamma = join(root, 'gamma');
     await mkdir(gamma);
     await openAndWaitActive(gamma);
+    await indexReady(gamma); // its indexing writes gamma/.openagent/ too; the refresh after it must still show nothing
     await pause(300);
     assert.equal(await exists('[data-testid="oa-git-status"]'), false, 'no widget for a non-git folder');
 

@@ -131,3 +131,29 @@ test("the automatic indexing applies the project's ignored patterns and the secr
   assert.deepEqual([...new Set(raw.entries.map((e: any) => e.file))], ['a.py']);
   assert.deepEqual((await readdir(index)).sort(), ['.gitignore', 'codebase.json'], 'no backup copy of the old index is kept');
 });
+
+test('a committed clean git repo stays clean once its activation indexing is ready: git-status answers dirty: false', { timeout: 60000 }, async t => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-index-git-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  const git = (...args: string[]) => run('git', args, { cwd: project, env: { ...process.env, LC_ALL: 'C' } });
+  await git('init', '-b', 'main');
+  await git('config', 'user.name', 'Test');
+  await git('config', 'user.email', 'test@example.com');
+  await git('config', 'commit.gpgsign', 'false');
+  await writeFile(join(project, 'a.py'), 'def a():\n    return 1\n');
+  await git('add', 'a.py');
+  await git('commit', '-m', 'initial');
+
+  const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home } });
+  terminateAtEnd(t, worker);
+  const { folder } = await callWorker(worker, 'activate_folder', { folder: project });
+  const status = await untilReady(worker, folder);
+  assert.equal(status.state, 'ready', JSON.stringify(status));
+  assert.deepEqual(await callWorker(worker, 'git-status', { folder }), { branch: 'main', dirty: false });
+});

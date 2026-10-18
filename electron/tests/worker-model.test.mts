@@ -97,21 +97,36 @@ async function patchedModel(root: string): Promise<string> {
   return patched;
 }
 
-/** Sends one message and resolves with the run's last agent event once it has ended. */
-async function turn(worker: WorkerPort, folder: string, text = 'Once upon a time'): Promise<any> {
-  let runId: string | undefined;
-  const early: any[] = [];
-  const ended = new Promise<any>(resolve => {
+/**
+ * Sends one message, waits for its 'model' event (posted once windowFor has loaded the engine, before any token is
+ * generated), then stops the run and resolves with that event and the run's end. stories260K never stops by itself:
+ * a full turn runs to the 8 192-token output cap (481 s measured on the processor), and the window is all these
+ * tests need.
+ */
+async function turnToModel(worker: WorkerPort, folder: string): Promise<{ model: any; end: any }> {
+  const model = new Promise<any>(resolve => {
     const listener = (message: any) => {
-      if (message?.type !== 'event' || message.event !== 'agent' || !['done', 'error', 'stopped'].includes(message.kind)) return;
-      if (runId === undefined) { early.push(message); return; }
-      if (message.runId === runId) { worker.off('message', listener); resolve(message); }
+      if (message?.type === 'event' && message.event === 'model') { worker.off('message', listener); resolve(message); }
     };
     worker.on('message', listener);
   });
-  runId = (await callWorker(worker, 'send', { folder, branchId: 'main', text })).runId;
-  const already = early.find(message => message.runId === runId);
-  return already ?? ended;
+  let runId: string | undefined;
+  const ended: any[] = [];
+  const endListener = (message: any) => {
+    if (message?.type === 'event' && message.event === 'agent' && ['done', 'error', 'stopped'].includes(message.kind)) ended.push(message);
+  };
+  worker.on('message', endListener);
+  try {
+    runId = (await callWorker(worker, 'send', { folder, branchId: 'main', text: 'Once upon a time' })).runId;
+    const end = turnEnd(worker, runId!);
+    const first = await Promise.race([model, end.then(() => null)]);
+    const already = ended.find(message => message.runId === runId);
+    if (!first || already) return { model: first, end: already ?? await end };
+    await callWorker(worker, 'stop', { runId });
+    return { model: first, end: await end };
+  } finally {
+    worker.off('message', endListener);
+  }
 }
 
 /** Resolves with the last agent event of `runId` once that run has ended. */
@@ -236,24 +251,29 @@ test('h. the model event names the model the turn actually used, even when the s
   assert.ok(status.contextWindow >= 16384);
 });
 
-test('i. local_context 65536 on a model trained for 131072: the turn runs with 65536; set to max, the next turn reloads at 131072', { timeout: 300000 }, async t => {
+test('i. local_context 65536 on a model trained for 131072: the turn runs with 65536; set to max, the next turn reloads at 131072', { timeout: 120000 }, async t => {
   const { worker, folder, root, agentEvents, modelEvents } = await setup(t);
   const entry = await callWorker(worker, 'gguf-add', { path: await patchedModel(root) });
   await callWorker(worker, 'save-global-settings', { patch: { active_local_model: entry.id, local_context: 65536 } });
-  assert.equal((await turn(worker, folder)).kind, 'done', JSON.stringify(agentEvents.find(e => e.kind === 'error')));
-  assert.equal(modelEvents.at(-1).contextWindow, 65536);
+  const first = await turnToModel(worker, folder);
+  assert.equal(first.end.kind, 'stopped', JSON.stringify(agentEvents.find(e => e.kind === 'error')));
+  assert.equal(first.model.contextWindow, 65536);
   await callWorker(worker, 'save-global-settings', { patch: { local_context: 'max' } });
-  assert.equal((await turn(worker, folder)).kind, 'done', JSON.stringify(agentEvents.find(e => e.kind === 'error')));
+  const second = await turnToModel(worker, folder);
+  assert.equal(second.end.kind, 'stopped', JSON.stringify(agentEvents.find(e => e.kind === 'error')));
   assert.equal(modelEvents.length, 2);
+  assert.equal(second.model.contextWindow, 131072);
   assert.equal(modelEvents.at(-1).contextWindow, 131072, 'the changed setting reloaded the engine at the next message');
 });
 
 // Ruling F6: max_tokens caps the request window (effectiveWindow), never the engine context.
-test('j. max_tokens leaves the engine context alone: local_context 65536 with max_tokens 24576 still loads 65536', { timeout: 180000 }, async t => {
+test('j. max_tokens leaves the engine context alone: local_context 65536 with max_tokens 24576 still loads 65536', { timeout: 120000 }, async t => {
   const { worker, folder, root, agentEvents, modelEvents } = await setup(t);
   const entry = await callWorker(worker, 'gguf-add', { path: await patchedModel(root) });
   await callWorker(worker, 'save-global-settings', { patch: { active_local_model: entry.id, local_context: 65536, max_tokens: 24576 } });
-  assert.equal((await turn(worker, folder)).kind, 'done', JSON.stringify(agentEvents.find(e => e.kind === 'error')));
+  const { model, end } = await turnToModel(worker, folder);
+  assert.equal(end.kind, 'stopped', JSON.stringify(agentEvents.find(e => e.kind === 'error')));
+  assert.equal(model.contextWindow, 65536);
   assert.equal(modelEvents.at(-1).contextWindow, 65536);
 });
 

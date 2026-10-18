@@ -54,8 +54,9 @@ async function trainContextOf(modelPath: string): Promise<number | undefined> {
   const { size, mtimeMs } = await stat(modelPath);
   const cached = trainCache.get(modelPath);
   if (cached && cached.size === size && cached.mtimeMs === mtimeMs) return cached.train;
-  // No Llama passed: node-llama-cpp reads the header without a backend, so this never creates the runtime.
-  const train = (await GgufInsights.from(await readGgufFileInfo(modelPath))).trainContextSize;
+  // Straight from the header (what GgufInsights.trainContextSize returns): GgufInsights.from() without a Llama would
+  // load node-llama-cpp's cpu binding just for this.
+  const train = (await readGgufFileInfo(modelPath)).architectureMetadata.context_length;
   trainCache.set(modelPath, { size, mtimeMs, train });
   return train;
 }
@@ -83,6 +84,53 @@ function placementOf({ llama, model, context }: Loaded): Placement {
   };
 }
 
+// One load or dispose at a time: two folders sending at once must not interleave a dispose with the other's load,
+// which would leak a model or free a context the other just created.
+let lock: Promise<unknown> = Promise.resolve();
+function serial<T>(run: () => Promise<T>): Promise<T> {
+  const result = lock.then(run);
+  lock = result.catch(() => undefined);
+  return result;
+}
+
+// For tests: how many times node-llama-cpp's loadModel was called in this process, and how many of the models it
+// returned are not disposed yet.
+let nativeLoads = 0;
+let liveModels = 0;
+export function nativeLoadCount(): number {
+  return nativeLoads;
+}
+export function liveModelCount(): number {
+  return liveModels;
+}
+
+async function disposeModel(model: LlamaModel): Promise<void> {
+  if (model.disposed) return;
+  await model.dispose();
+  liveModels -= 1;
+}
+
+/** For tests: the warm LlamaContext itself, to tell a reused engine from a reloaded one by identity. */
+export function warmContext(): LlamaContext | null {
+  return loaded?.context ?? null;
+}
+
+/**
+ * Refuses, before any native code runs, a context that cannot fit even with every layer on the processor: on a
+ * Vulkan card, node-llama-cpp's own fitContext resolution of such a size can abort the whole process natively
+ * instead of throwing. Conservative on purpose — it must never refuse a load that would fit:
+ * - the requirement is the KV cache alone (no weights, no graph overhead), at f16, which is what loadModel uses here;
+ * - the room is ALL the RAM plus ALL the VRAM, free or not; a card whose VRAM cannot be read counts as unlimited.
+ * The V1 estimate is arithmetic on the header (plus constant lookups in the already loaded binding): no tensor is
+ * allocated, unlike the V2 simulation.
+ */
+async function assertContextCanFit(llama: Llama, modelPath: string, contextSize: number): Promise<void> {
+  const insights = await GgufInsights.from(await readGgufFileInfo(modelPath), llama);
+  const { cpuRam, gpuVram } = insights.estimateContextResourceRequirements({ contextSize, modelGpuLayers: 0, includeGraphOverhead: false });
+  const vramTotal = llama.gpu === false ? 0 : (await llama.getVramState().catch(() => null))?.total ?? Number.POSITIVE_INFINITY;
+  if (cpuRam + gpuVram > os.totalmem() + vramTotal) throw new Error(localModelTooBig(contextSize));
+}
+
 /**
  * Loads `modelPath` with exactly `contextSize` tokens of context, its layers placed by node-llama-cpp for THAT
  * context (`gpuLayers: { fitContext }`), and keeps it warm. The warm engine is reused only for the same path, the
@@ -90,19 +138,27 @@ function placementOf({ llama, model, context }: Loaded): Placement {
  * no layer on the card, nothing stays loaded and the error is localModelTooBig(contextSize).
  */
 export async function loadLocalModel(modelPath: string, contextSize: number): Promise<Placement> {
-  if (loaded && loaded.path === modelPath && loaded.requested === contextSize && loaded.generation === runtimeGeneration()) return placementOf(loaded);
-  await disposeEngine();
+  // The placement is read inside the lock: a load queued behind this one may dispose this context.
+  return serial(async () => placementOf(await loadLocked(modelPath, contextSize)));
+}
+
+async function loadLocked(modelPath: string, contextSize: number): Promise<Loaded> {
+  if (loaded && loaded.path === modelPath && loaded.requested === contextSize && loaded.generation === runtimeGeneration()) return loaded;
+  await disposeLocked();
   const llama = await runtimeLlama();
   const generation = runtimeGeneration();
+  await assertContextCanFit(llama, modelPath, contextSize);
   let model: LlamaModel | null = null;
   try {
+    nativeLoads += 1;
     model = await llama.loadModel({ modelPath, gpuLayers: { fitContext: { contextSize } } });
+    liveModels += 1;
     // A fixed size: no silent shrink on failure (node-llama-cpp only retries an 'auto' size, said here anyway).
     const context = await model.createContext({ contextSize, failedCreationRemedy: false });
     loaded = { path: modelPath, requested: contextSize, generation, llama, model, context, chat: new LlamaChat({ contextSequence: context.getSequence() }) };
-    return placementOf(loaded);
+    return loaded;
   } catch (error) {
-    if (model && !model.disposed) await model.dispose();
+    if (model) await disposeModel(model);
     if (error instanceof InsufficientMemoryError) throw new Error(localModelTooBig(contextSize));
     throw error;
   }
@@ -119,20 +175,23 @@ export function loadedPlacement(modelPath: string): Placement | null {
 // of its own between generateResponse() calls), so re-using the same instance is purely a cost optimisation, not
 // a correctness requirement. A changed « Contexte des modèles locaux » reloads at the next message.
 async function engineFor(modelPath: string, request: ContextRequest): Promise<Loaded> {
-  await loadLocalModel(modelPath, await plannedContextSize(modelPath, request));
-  if (!loaded) throw new Error('Modèle local non chargé');
-  return loaded;
+  const contextSize = await plannedContextSize(modelPath, request);
+  return serial(() => loadLocked(modelPath, contextSize));
 }
 
 /** Frees whatever local model is currently loaded (switching to another model or context size, or the app shutting
  * down) — a GGUF model can hold several gigabytes of RAM/VRAM, so this is never left to the GC. The Llama itself is
  * not disposed here: llama-runtime.mts owns it. */
-export async function disposeEngine(): Promise<void> {
+export function disposeEngine(): Promise<void> {
+  return serial(disposeLocked);
+}
+
+async function disposeLocked(): Promise<void> {
   if (!loaded) return;
   const { context, model } = loaded;
   loaded = null;
   await context.dispose();
-  await model.dispose();
+  await disposeModel(model);
 }
 
 /** For tests: which path (if any) is currently kept warm, without touching it. */

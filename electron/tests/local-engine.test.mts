@@ -8,7 +8,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readGgufFileInfo, GgufInsights } from 'node-llama-cpp';
-import { completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig } from '../core/local-engine.mts';
+import { completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount } from '../core/local-engine.mts';
 import { runtimeLlama, backendOf } from '../core/llama-runtime.mts';
 import { removeAtEnd } from './teardown.mts';
 import { withTrainContext } from './support/gguf-fixture.mts';
@@ -147,39 +147,73 @@ test('loadLocalModel loads with fitContext: the placement is model.gpuLayers, th
   assert.equal(loadedPlacement(`${modelPath}.other`), null);
 });
 
-// On the processor (NODE_LLAMA_CPP_GPU=false): 2^28 tokens of KV cache is hundreds of GB, and node-llama-cpp rejects
-// the context with InsufficientMemoryError. It runs in its OWN PROCESS:
-// - on a Vulkan card the same size aborts the whole process natively inside loadModel's fitContext resolution
-//   (ggml-backend.cpp:941, « pre-allocated tensor (cache_k_l0) in a buffer (Vulkan0) that cannot run the
-//   operation », observed 2026-10-18 with node-llama-cpp 3.21.1);
-// - a worker thread is not enough: the CPU binary loaded beside this process's Vulkan one killed the whole
-//   tests/all.mts process once, silently (2026-10-18). The app never mixes two backends in one process.
-test('a context the machine cannot hold fails with localModelTooBig and leaves nothing loaded', { timeout: 120000 }, async () => {
-  const url = new URL('../core/local-engine.mts', import.meta.url).href;
+/** Runs `body` in a Node process of its own, `m` being core/local-engine.mts and `r` core/llama-runtime.mts, and
+ * returns what it assigned to `out`. A child that never ends is killed rather than left holding this run open. */
+async function inChild(body: string, env: NodeJS.ProcessEnv = {}): Promise<any> {
   const source = `
-    const m = await import(${JSON.stringify(url)});
-    const path = ${JSON.stringify(modelPath)};
+    const m = await import(${JSON.stringify(new URL('../core/local-engine.mts', import.meta.url).href)});
+    const r = await import(${JSON.stringify(new URL('../core/llama-runtime.mts', import.meta.url).href)});
     const out = {};
+    ${body}
+    await r.disposeLlama();
+    process.stdout.write('RESULT ' + JSON.stringify(out) + '\\n');`;
+  const { stdout } = await execFileAsync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', source], {
+    env: { ...process.env, ...env }, maxBuffer: 16 * 1024 * 1024, timeout: 100000,
+  });
+  const line = stdout.split('\n').find(text => text.startsWith('RESULT '));
+  assert.ok(line, `the child printed its result: ${stdout.slice(-500)}`);
+  return JSON.parse(line.slice('RESULT '.length));
+}
+
+// On the processor (NODE_LLAMA_CPP_GPU=false), in a process of its own: 2^28 tokens of KV cache is hundreds of GB.
+// - on a Vulkan card, node-llama-cpp's fitContext resolution of such a size was seen aborting the whole process
+//   natively (ggml-backend.cpp:941, « pre-allocated tensor (cache_k_l0) in a buffer (Vulkan0) that cannot run the
+//   operation », 2026-10-18, node-llama-cpp 3.21.1): the pre-check in loadLocalModel now refuses it before any native code;
+// - a cpu binary loaded beside this process's Vulkan one killed the whole tests/all.mts process once, silently
+//   (2026-10-18). The app never mixes two backends in one process.
+test('a context the machine cannot hold fails with localModelTooBig and leaves nothing loaded', { timeout: 120000 }, async () => {
+  const out = await inChild(`
+    const path = ${JSON.stringify(modelPath)};
     try { await m.loadLocalModel(path, 2 ** 28); out.loaded = true; } catch (error) { out.message = error.message; }
     out.warm = m.warmModelPath();
     out.placement = m.loadedPlacement(path);
     out.next = (await m.loadLocalModel(path, 16384)).contextSize;
-    out.backend = m.loadedPlacement(path).backend;
-    await m.disposeEngine();
-    process.stdout.write('RESULT ' + JSON.stringify(out) + '\\n');`;
-  const { stdout } = await execFileAsync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', source], {
-    // A child that never ends is killed rather than left holding this run open.
-    env: { ...process.env, NODE_LLAMA_CPP_GPU: 'false' }, maxBuffer: 16 * 1024 * 1024, timeout: 100000,
-  });
-  const line = stdout.split('\n').find(text => text.startsWith('RESULT '));
-  assert.ok(line, `the child printed its result: ${stdout.slice(-500)}`);
-  const out = JSON.parse(line.slice('RESULT '.length));
+    out.backend = m.loadedPlacement(path).backend;`, { NODE_LLAMA_CPP_GPU: 'false' });
   assert.equal(out.loaded, undefined, 'the load was refused');
   assert.equal(out.message, localModelTooBig(2 ** 28));
   assert.equal(out.warm, null, 'nothing kept warm');
   assert.equal(out.placement, null);
   assert.equal(out.next, 16384, 'the next normal load works');
   assert.equal(out.backend, 'cpu');
+});
+
+// On whatever backend a fresh process resolves to (the card when there is one), in a process of its own in case the
+// pre-check ever let it through. 2^30 tokens is about 1.4 TB of f16 KV cache for stories260K.
+test('the pre-check refuses « max » on a huge train context before node-llama-cpp loads anything', { timeout: 120000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-local-engine-'));
+  removeAtEnd(t, root);
+  const patched = join(root, 'stories-huge.gguf');
+  await withTrainContext(modelPath, patched, 2 ** 30);
+  const out = await inChild(`
+    const path = ${JSON.stringify(patched)};
+    out.size = await m.plannedContextSize(path, { setting: 'max' });
+    try { await m.loadLocalModel(path, out.size); out.loaded = true; } catch (error) { out.message = error.message; }
+    out.nativeLoads = m.nativeLoadCount();
+    out.live = m.liveModelCount();
+    out.warm = m.warmModelPath();
+    out.small = (await m.loadLocalModel(path, 16384)).contextSize;
+    out.nativeAfter = m.nativeLoadCount();
+    await m.disposeEngine();
+    out.liveAfter = m.liveModelCount();`);
+  assert.equal(out.size, 2 ** 30, '« max » is the train size');
+  assert.equal(out.loaded, undefined);
+  assert.equal(out.message, localModelTooBig(2 ** 30));
+  assert.equal(out.nativeLoads, 0, 'loadModel was never reached');
+  assert.equal(out.live, 0);
+  assert.equal(out.warm, null);
+  assert.equal(out.small, 16384, 'a size that fits is not refused');
+  assert.equal(out.nativeAfter, 1);
+  assert.equal(out.liveAfter, 0);
 });
 
 test('the engine reloads when the context size changes, and only then', { timeout: 60000 }, async t => {
@@ -190,12 +224,54 @@ test('the engine reloads when the context size changes, and only then', { timeou
   await withTrainContext(modelPath, patched, 131072);
   const a = await loadLocalModel(patched, 32768);
   assert.equal(a.contextSize, 32768);
-  const start = Date.now();
+  const first = warmContext();
+  assert.ok(first);
+  const loads = nativeLoadCount();
   const b = await loadLocalModel(patched, 32768);
-  const warmMs = Date.now() - start;
   assert.deepEqual(b, a);
-  assert.ok(warmMs < 3000, `kept warm, not reloaded (${warmMs} ms)`);
+  assert.equal(warmContext(), first, 'the same request reuses the very same context object');
+  assert.equal(nativeLoadCount(), loads, 'and calls loadModel no more');
   const c = await loadLocalModel(patched, 65536);
   assert.equal(c.contextSize, 65536, 'a new size reloads the engine');
+  assert.notEqual(warmContext(), first, 'a new context object');
+  assert.equal(first.disposed, true, 'the old one freed');
+  assert.equal(nativeLoadCount(), loads + 1);
   assert.equal(loadedContextSize(patched), 65536);
+});
+
+// A new runtime generation (the Llama disposed and created again) is checked in a process of its own: recreating the
+// Llama here could resolve another backend beside the one already loaded in this process.
+test('the engine reloads when the runtime generation changes, even for the same request', { timeout: 120000 }, async () => {
+  const out = await inChild(`
+    const path = ${JSON.stringify(modelPath)};
+    await m.loadLocalModel(path, 16384);
+    const first = m.warmContext();
+    await m.loadLocalModel(path, 16384);
+    out.reused = m.warmContext() === first;
+    const generation = r.runtimeGeneration();
+    await r.disposeLlama();
+    out.bumped = r.runtimeGeneration() === generation + 1;
+    out.firstDisposed = first.disposed;
+    await m.loadLocalModel(path, 16384);
+    out.fresh = m.warmContext() !== null && m.warmContext() !== first;
+    out.nativeLoads = m.nativeLoadCount();`);
+  assert.deepEqual(out, { reused: true, bumped: true, firstDisposed: true, fresh: true, nativeLoads: 2 });
+});
+
+test('two concurrent loads with different requests end with exactly one warm model and nothing leaked', { timeout: 60000 }, async t => {
+  t.after(() => disposeEngine());
+  await disposeEngine();
+  const root = await mkdtemp(join(tmpdir(), 'openagent-local-engine-'));
+  removeAtEnd(t, root);
+  const patched = join(root, 'stories-131072.gguf');
+  await withTrainContext(modelPath, patched, 131072);
+  assert.equal(liveModelCount(), 0, 'nothing loaded before');
+  const loads = nativeLoadCount();
+  const [a, b] = await Promise.all([loadLocalModel(patched, 32768), loadLocalModel(patched, 65536)]);
+  assert.equal(a.contextSize, 32768, 'each call got the placement of its own load');
+  assert.equal(b.contextSize, 65536);
+  assert.equal(nativeLoadCount(), loads + 2);
+  assert.equal(liveModelCount(), 1, 'the first model was disposed, not overwritten');
+  assert.equal(loadedContextSize(patched), 65536, 'the last request wins');
+  assert.equal(warmContext()?.disposed, false);
 });

@@ -11,6 +11,7 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { lstat, mkdir, open, readdir, realpath, rm, unlink, writeFile, type FileHandle } from 'node:fs/promises';
+import type { BigIntStats } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pipeline, Readable } from 'node:stream';
 import { pipeline as pipelineAsync } from 'node:stream/promises';
@@ -42,6 +43,18 @@ export function partName(nodeLlamaCppVersion: string, index: number): string {
 
 export function cudaPackUnsafePath(path: string): string {
   return `Pack CUDA refusé : il contient un chemin non autorisé (${path}).`;
+}
+
+export function cudaPackLimitInvalid(name: string, value: unknown): string {
+  return `Limite d'extraction du pack CUDA invalide : ${name} = ${String(value)}.`;
+}
+
+/** A limit is a non-negative safe integer; anything else (NaN, a string, Infinity, a fraction) is refused. */
+function limitOf(limits: Record<string, unknown> | undefined, name: 'maxBytes' | 'maxFiles'): number {
+  const value = limits?.[name];
+  if (value === undefined) return CUDA_PACK_DEFAULT_LIMITS[name];
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new Error(cudaPackLimitInvalid(name, value));
+  return value;
 }
 
 export function cudaPackUnsafeTarget(destDir: string): string {
@@ -279,12 +292,13 @@ async function prepareTarget(destDir: string): Promise<void> {
  * Links: the target must be an empty real directory, every parent of a file is lstat-checked from `destDir` down
  * just before the file is opened, and the opened file's real folder is compared with where it should be. A process
  * of the same user that swaps a folder for a junction at the right instant is outside the threat model (it already
- * holds every right this extraction has: no privilege is gained); these checks only narrow that window, and a
- * mismatch found after the open removes the file and rolls everything back.
+ * holds every right this extraction has: no privilege is gained); these checks only narrow that window. A mismatch
+ * found after the open removes the stray file only if it is still the very file opened (same dev and ino), then
+ * rolls everything back; nothing else outside the target is ever deleted.
  */
 export async function extractPack(stream: AsyncIterable<Uint8Array>, destDir: string, limits?: { maxBytes?: number; maxFiles?: number }): Promise<{ files: number; bytes: number }> {
-  const maxBytes = limits?.maxBytes ?? CUDA_PACK_DEFAULT_LIMITS.maxBytes;
-  const maxFiles = limits?.maxFiles ?? CUDA_PACK_DEFAULT_LIMITS.maxFiles;
+  const maxBytes = limitOf(limits, 'maxBytes');
+  const maxFiles = limitOf(limits, 'maxFiles');
   await prepareTarget(destDir);
   const realDest = await realpath(destDir);
   const created = new Set<string>();           // top-level entries made here, removed on failure
@@ -347,9 +361,11 @@ export async function extractPack(stream: AsyncIterable<Uint8Array>, destDir: st
         const expected = join(realDest, ...segments.slice(0, -1));
         const actual = await realpath(dirname(file));
         if (!samePath(actual, expected)) {
-          // The file was created where it should not be: it is ours ('wx'), so it goes, then everything rolls back.
+          // The file was created where it should not be. It goes only if the entry there is still the file opened
+          // ('wx': ours); a file swapped in meanwhile is not ours and stays. Then everything rolls back.
+          const identity = await handle.stat({ bigint: true });
           await handle.close().catch(() => {});
-          await rm(join(actual, segments[segments.length - 1]), { force: true });
+          await removeIfSameFile(join(actual, segments[segments.length - 1]), identity);
           throw unsafeTarget();
         }
         for await (const chunk of reader.stream(header.size)) {
@@ -375,6 +391,19 @@ export async function extractPack(stream: AsyncIterable<Uint8Array>, destDir: st
     if (typeof code === 'string' && code.startsWith('Z_')) throw new Corrupt();
     throw error;
   }
+}
+
+/**
+ * Removes `path` only if it is a regular file with the given identity (dev and ino, as bigint so no precision is
+ * lost on Windows file indexes). A link, another file, or nothing at that path: nothing is removed. Returns whether
+ * it removed the file.
+ */
+export async function removeIfSameFile(path: string, identity: Pick<BigIntStats, 'dev' | 'ino'>): Promise<boolean> {
+  let info: BigIntStats;
+  try { info = await lstat(path, { bigint: true }); } catch { return false; }
+  if (!info.isFile() || info.dev !== identity.dev || info.ino !== identity.ino) return false;
+  await unlink(path);
+  return true;
 }
 
 /** Removes what an extraction made. A top-level entry that is now a link is unlinked itself, never followed. */

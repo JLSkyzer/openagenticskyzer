@@ -12,8 +12,8 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import {
-  CUDA_PACK_CHUNK_BYTES, CUDA_PACK_CORRUPT, CUDA_PACK_FORMAT, cudaPackUnsafePath, cudaPackUnsafeTarget, extractPack,
-  partName, safePackPath, writePack, type PackFile,
+  CUDA_PACK_CHUNK_BYTES, CUDA_PACK_CORRUPT, CUDA_PACK_FORMAT, cudaPackLimitInvalid, cudaPackUnsafePath, cudaPackUnsafeTarget,
+  extractPack, partName, removeIfSameFile, safePackPath, writePack, type PackFile,
 } from '../core/cuda-pack-format.mts';
 import { collectPackFiles, DEFAULT_RUNTIME_PLACEMENT } from '../scripts/cuda-pack.mts';
 import { removeAtEnd } from './teardown.mts';
@@ -353,4 +353,50 @@ test('a folder swapped for a junction between two records is refused, nothing la
   assert.equal(await readFile(join(outside, 'sentinel.txt'), 'utf8'), 'keep me');
   // The rollback removed the junction it found under its own name, not what it points to.
   assert.deepEqual(await readdir(dest), ['moved']);
+});
+
+test('extraction limits must be non-negative safe integers: NaN, negatives, fractions, strings and Infinity are refused before anything is made', async t => {
+  const root = await tempRoot(t);
+  const bad: Array<[string, unknown]> = [['maxBytes', NaN], ['maxBytes', -1], ['maxBytes', 1.5], ['maxBytes', '10'], ['maxBytes', Infinity],
+    ['maxFiles', NaN], ['maxFiles', -1], ['maxFiles', 2 ** 53], ['maxFiles', null]];
+  for (const [name, value] of bad) {
+    const dest = join(root, `d-${name}-${String(value)}`);
+    const pack = rawPack([{ path: 'cuda-runtime/a.dll', bytes: Buffer.from('a') }]);
+    await assert.rejects(extractPack(pack, dest, { [name]: value } as never), { message: cudaPackLimitInvalid(name, value) });
+    await assert.rejects(readdir(dest), { code: 'ENOENT' });
+  }
+  // 0 is a valid limit: nothing may be extracted.
+  const zero = join(root, 'zero');
+  await assert.rejects(extractPack(rawPack([{ path: 'cuda-runtime/a.dll', bytes: Buffer.from('a') }]), zero, { maxFiles: 0 }), { message: CUDA_PACK_CORRUPT });
+  assert.deepEqual(await readdir(zero), []);
+});
+
+test('the after-open cleanup removes only the very file this extraction created, never another file or a link at that path', async t => {
+  const root = await tempRoot(t);
+  const { open: openFile, stat: statFile, rm: rmPath } = await import('node:fs/promises');
+  const ours = join(root, 'ours.dll');
+  const handle = await openFile(ours, 'wx');
+  const identity = await handle.stat({ bigint: true });
+  await handle.close();
+  // Same path, another file (the original replaced): kept.
+  await rmPath(ours);
+  await writeFile(ours, 'someone else');
+  assert.equal(await removeIfSameFile(ours, identity), false);
+  assert.equal(await readFile(ours, 'utf8'), 'someone else');
+  // A link at that path: kept, and its target untouched.
+  const target = join(root, 'target');
+  await mkdir(target);
+  const link = join(root, 'link');
+  await symlink(target, link, 'junction');
+  assert.equal(await removeIfSameFile(link, await statFile(target, { bigint: true })), false);
+  assert.deepEqual(await readdir(target), []);
+  // Nothing at that path: nothing done.
+  assert.equal(await removeIfSameFile(join(root, 'absent'), identity), false);
+  // The very file: removed.
+  const mine = join(root, 'mine.dll');
+  const h2 = await openFile(mine, 'wx');
+  const id2 = await h2.stat({ bigint: true });
+  await h2.close();
+  assert.equal(await removeIfSameFile(mine, id2), true);
+  await assert.rejects(readFile(mine), { code: 'ENOENT' });
 });

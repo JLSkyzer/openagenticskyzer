@@ -102,3 +102,4 @@ import './placement-format.test.mts';
 import './hardware-view.test.mts';
 import './local-context.test.mts';
 import './cuda-pack-format.test.mts';
+import './cuda-pack-install.test.mts';

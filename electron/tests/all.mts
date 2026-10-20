@@ -99,4 +99,5 @@ import './hardware.test.mts';
 import './offload-estimate.test.mts';
 import './worker-estimate.test.mts';
 import './placement-format.test.mts';
+import './hardware-view.test.mts';
 import './local-context.test.mts';

@@ -5,19 +5,20 @@ import { ContextTab } from './ContextTab';
 import { DangerTab } from './DangerTab';
 import { FolderTab } from './FolderTab';
 import { GeneralTab } from './GeneralTab';
+import { HardwareTab } from './HardwareTab';
 import { PermissionsTab } from './PermissionsTab';
 import { ToolsTab } from './ToolsTab';
 import { Section } from './parts';
 import { useSettingsDraft } from './useSettingsDraft';
 
-type TabId = 'general' | 'appearance' | 'context' | 'permissions' | 'tools' | 'folder' | 'danger';
+type TabId = 'general' | 'appearance' | 'context' | 'hardware' | 'permissions' | 'tools' | 'folder' | 'danger';
 
 function basename(path: string): string {
   return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
 }
 
 // Layout copied from settings.py: maximized dialog, 200px left rail (#111) with a
-// "Paramètres" header and 7 vertical tabs, scrollable content on the right with the
+// "Paramètres" header and 8 vertical tabs (« Matériel » added after Contexte & Mémoire), scrollable content on the right with the
 // Enregistrer / Fermer footer at its end.
 interface SettingsDialogProps {
   activeFolder: string | null;
@@ -48,6 +49,7 @@ export function SettingsDialog({ activeFolder, onClose, onHistoryCleared, onFold
     { id: 'general', label: '🌐 Général' },
     { id: 'appearance', label: '🎨 Apparence' },
     { id: 'context', label: '🧠 Contexte & Mémoire' },
+    { id: 'hardware', label: '🖥️ Matériel' },
     { id: 'permissions', label: '🔒 Permissions' },
     { id: 'tools', label: '🧩 Outils' },
     { id: 'folder', label: `📁 ${activeFolder ? basename(activeFolder) : 'Dossier'}` },
@@ -58,6 +60,7 @@ export function SettingsDialog({ activeFolder, onClose, onHistoryCleared, onFold
     general: <GeneralTab draft={draft} />,
     appearance: <AppearanceTab />,
     context: <ContextTab draft={draft} activeFolder={activeFolder} />,
+    hardware: <HardwareTab draft={draft} />,
     permissions: <PermissionsTab draft={draft} />,
     tools: <ToolsTab activeFolder={activeFolder} />,
     folder: <FolderTab activeFolder={activeFolder} />,

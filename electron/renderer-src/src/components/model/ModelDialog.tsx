@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
-import { addGguf, getModelStatus, listGguf, pickGguf, removeGguf, saveGlobalSettings, type GgufEntry, type ModelStatus } from '../../ipc/bridge';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { addGguf, cancelEstimate, estimateModel, getModelStatus, listGguf, onEstimateEvent, pickGguf, removeGguf, saveGlobalSettings, type EstimateEvent, type GgufEntry, type ModelStatus } from '../../ipc/bridge';
 import { cleanIpcError } from '../../ipc/errors';
 import { Modal } from '../settings/Modal';
+import { memoryLabel, placementLabel } from './placement';
 
 function formatSize(bytes: number): string {
   const gb = bytes / (1024 * 1024 * 1024);
@@ -112,6 +113,88 @@ function LocalModelsSection({ activeId, onActivate }: { activeId: string; onActi
   );
 }
 
+// The background offload estimate of the active model (ruling F3d): it starts only here, once per model while the
+// dialog is open, and only when the status has no placement yet (not loaded, nothing cached). The dialog owns the
+// running job and cancels it when it closes or when another model becomes active. A finished estimate is cached by
+// the worker, so re-reading the status shows it, here and on the model button.
+function useActiveEstimate(status: ModelStatus | null, refresh: () => void) {
+  const [running, setRunning] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Refs, not effect cleanups, carry the job: StrictMode re-runs effects, and the worker answers the same job id for
+  // the same key — a cleanup that cancelled would kill the very estimate the re-run is waiting for.
+  const mounted = useRef(false);
+  const runningRef = useRef<{ estimateId: string; modelId: string } | null>(null);
+  const requested = useRef(new Set<string>());
+  // An end may arrive before the request that started its job has answered: keep it until then.
+  const early = useRef(new Map<string, Omit<EstimateEvent, 'type' | 'event'>>());
+
+  const finish = useCallback((event: Omit<EstimateEvent, 'type' | 'event'>) => {
+    runningRef.current = null;
+    setRunning(null);
+    if (event.state === 'error') setError(cleanIpcError(event.message ?? ''));
+    if (event.state === 'done') refresh();
+  }, [refresh]);
+
+  useEffect(() => onEstimateEvent(event => {
+    if (event.estimateId === runningRef.current?.estimateId) finish(event);
+    else early.current.set(event.estimateId, event);
+  }), [finish]);
+
+  // Closing the dialog cancels the estimate it started.
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      const job = runningRef.current;
+      runningRef.current = null;
+      if (job) void cancelEstimate(job.estimateId).catch(() => {});
+    };
+  }, []);
+
+  const id = status?.id ?? '';
+  const needed = Boolean(id && status?.name && !status.missing && !status.loaded && !status.placement);
+  const activeId = useRef(id);
+  activeId.current = id;
+  useEffect(() => {
+    // Another model became active: its predecessor's estimate is no longer wanted.
+    const job = runningRef.current;
+    if (job && job.modelId !== id) {
+      runningRef.current = null;
+      setRunning(null);
+      void cancelEstimate(job.estimateId).catch(() => {});
+    }
+    if (!needed || requested.current.has(id)) return;
+    requested.current.add(id);
+    setError(null);
+    estimateModel(id)
+      .then(({ estimateId, estimate }) => {
+        if (estimateId === null) {
+          if (estimate && mounted.current) refresh();
+          return;
+        }
+        if (!mounted.current || activeId.current !== id) {
+          void cancelEstimate(estimateId).catch(() => {});
+          return;
+        }
+        const ended = early.current.get(estimateId);
+        if (ended) {
+          finish(ended);
+          return;
+        }
+        runningRef.current = { estimateId, modelId: id };
+        setRunning(estimateId);
+      })
+      .catch(error_ => { if (mounted.current) setError(cleanIpcError(error_)); });
+  }, [id, needed, refresh, finish]);
+
+  const cancel = useCallback(() => {
+    const job = runningRef.current;
+    if (job) void cancelEstimate(job.estimateId).catch(() => {});
+  }, []);
+
+  return { running: running !== null, error, cancel };
+}
+
 // model_modal.py's "Sélectionner un modèle", local only: the active .gguf as the worker sees it (model-status), then
 // the library. No provider, no URL, no key: the model runs in the app, without a connection.
 export function ModelDialog({ onClose }: { onClose(): void }) {
@@ -120,6 +203,7 @@ export function ModelDialog({ onClose }: { onClose(): void }) {
     getModelStatus().then(setStatus).catch(() => {});
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
+  const estimate = useActiveEstimate(status, refresh);
 
   const state = status === null ? null : status.missing ? 'missing' : status.name ? 'active' : 'none';
 
@@ -138,6 +222,30 @@ export function ModelDialog({ onClose }: { onClose(): void }) {
           <span className="text-xs text-gray-400">Modèle actif</span>
           <span className="truncate font-mono text-xs text-purple-200">{status?.name}</span>
           <span className="ml-auto text-xs text-gray-600">local</span>
+        </div>
+      )}
+      {state === 'active' && (status?.placement || estimate.running || estimate.error) && (
+        <div data-testid="oa-model-placement-detail" className="-mt-2 mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 px-3 text-xs text-gray-500">
+          {status?.placement && (
+            <>
+              <span data-source={status.placement.source}>{placementLabel(status.placement)}</span>
+              <span>{memoryLabel(status.placement)}</span>
+            </>
+          )}
+          {estimate.running && (
+            <>
+              <span data-testid="oa-model-estimate-running">Estimation en cours…</span>
+              <button
+                type="button"
+                data-testid="oa-model-estimate-cancel"
+                onClick={estimate.cancel}
+                className="rounded border border-gray-700 px-2 py-0.5 text-gray-300 hover:border-purple-500"
+              >
+                Annuler
+              </button>
+            </>
+          )}
+          {estimate.error && <span data-testid="oa-model-estimate-error" className="text-red-400">{estimate.error}</span>}
         </div>
       )}
       {state === 'missing' && (

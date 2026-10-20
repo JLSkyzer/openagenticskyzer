@@ -77,12 +77,12 @@ app.whenReady().then(async () => {
     const tabs = await js(`Array.from(document.querySelectorAll('[data-testid="oa-settings-tab"]')).map(t => ({ id: t.dataset.tab, text: t.textContent.trim() }))`);
     assert.deepEqual(
       tabs.map(t => t.id),
-      ['general', 'appearance', 'context', 'permissions', 'tools', 'folder', 'danger'],
-      'the 7 tabs, in the NiceGUI order',
+      ['general', 'appearance', 'context', 'hardware', 'permissions', 'tools', 'folder', 'danger'],
+      'the 8 tabs: Matériel after Contexte',
     );
     assert.deepEqual(
       tabs.map(t => t.text),
-      ['🌐 Général', '🎨 Apparence', '🧠 Contexte & Mémoire', '🔒 Permissions', '🧩 Outils', '📁 Dossier', '⚠️ Danger'],
+      ['🌐 Général', '🎨 Apparence', '🧠 Contexte & Mémoire', '🖥️ Matériel', '🔒 Permissions', '🧩 Outils', '📁 Dossier', '⚠️ Danger'],
       'the labels match settings.py, "Dossier" while no folder is active',
     );
 
@@ -153,7 +153,7 @@ app.whenReady().then(async () => {
       'the folder tab shows the active folder name',
     );
 
-    process.stdout.write(`PASS settings dialog shell: 7 tabs, real clicks, Fermer/Escape, maximized without overflow (Electron ${process.versions.electron})\n`);
+    process.stdout.write(`PASS settings dialog shell: 8 tabs, real clicks, Fermer/Escape, maximized without overflow (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshot: ${join(screenshotDir, 'settings-appearance.png')}\n`);
   } finally {
     win?.destroy();

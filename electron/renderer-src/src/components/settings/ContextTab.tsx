@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { getModelStatus, type ModelStatus } from '../../ipc/bridge';
 import type { SettingsDraft } from './useSettingsDraft';
 import { Group, Row, Section, Toggle } from './parts';
-import { MIN_LOCAL_CONTEXT } from '../../../../core/context-budget.mts';
+import { DEFAULT_LOCAL_CONTEXT, MIN_LOCAL_CONTEXT, type LocalContextSetting } from '../../../../core/context-budget.mts';
+import { maxTokensSliderMax } from './hardware-view';
 
 // Node's SettingsService rejects a context limit below 2048 (settings.py's slider started
 // at 2000), so the smallest value the slider can produce is clamped to it.
@@ -12,8 +13,9 @@ const fmt = (n: number) => n.toLocaleString('en-US');
 
 // Mirrors settings.py::_tab_context.
 export function ContextTab({ draft, activeFolder }: { draft: SettingsDraft; activeFolder: string | null }) {
-  // The maximum context is the active .gguf's engine window (model-status): MIN_LOCAL_CONTEXT until it has loaded, or
-  // with no model at all. max_tokens can only cap it (core/context-budget.mts::effectiveWindow), so the slider stops there.
+  // The slider's top follows the « Contexte des modèles locaux » setting (Matériel tab, same draft), never the engine's
+  // window read back from model-status (ruling F6): max_tokens only caps the request window
+  // (core/context-budget.mts::effectiveWindow). MIN_LOCAL_CONTEXT with no model at all.
   const [status, setStatus] = useState<ModelStatus>({ id: '', name: null, missing: false, contextWindow: MIN_LOCAL_CONTEXT, loaded: false });
   useEffect(() => {
     let cancelled = false;
@@ -27,7 +29,7 @@ export function ContextTab({ draft, activeFolder }: { draft: SettingsDraft; acti
     };
   }, [activeFolder]);
 
-  const ctxMax = status.contextWindow;
+  const ctxMax = maxTokensSliderMax({ hasModel: Boolean(status.name), setting: draft.get<LocalContextSetting>('local_context', DEFAULT_LOCAL_CONTEXT) });
   const maxTokens = draft.get<number>('max_tokens', Math.floor(ctxMax / 2));
   const threshold = draft.get<number>('compact_threshold', 70);
 

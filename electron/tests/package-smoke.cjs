@@ -125,6 +125,18 @@ async function main() {
     await assert.rejects(stat(join(openagentHome, 'embeddings-cache')), { code: 'ENOENT' }, 'no embeddings cache is created in the data home');
     process.stdout.write(`knowledge-add in the packaged app: ${JSON.stringify(added.r)}; no embeddings-cache in the data home\n`);
 
+    // The « 🖥️ Matériel » tab in the packaged app: the worker's hardware-info reaches the page in French. The line is
+    // absent until the first answer (the tab renders no line before it), so its text can only come from the worker.
+    const page = pages[0].webSocketDebuggerUrl;
+    await cdpEvaluate(page, "document.getElementById('oa-settings-btn').click()");
+    await waitForCdp(() => cdpEvaluate(page, `!!document.querySelector('[data-testid="oa-settings-tab"][data-tab="hardware"]')`), { timeout: 10000, what: 'the Matériel tab exists' });
+    await cdpEvaluate(page, `document.querySelector('[data-testid="oa-settings-tab"][data-tab="hardware"]').click()`);
+    const backendLine = await waitForCdp(async () => {
+      const value = await cdpEvaluate(page, `document.querySelector('[data-testid="oa-hardware-line"][data-field="backend"]')?.textContent ?? null`);
+      return /^Moteur : (CUDA|Vulkan|Metal|processeur seul)$/.test(value ?? '') ? value : null;
+    }, { timeout: 120000, what: 'the Matériel tab shows the engine backend' });
+    process.stdout.write(`Matériel tab in the packaged app: ${JSON.stringify(backendLine)}\n`);
+
     process.stdout.write('PASS packaged executable launches outside npm start and loads the real UI\n');
   } finally {
     child.kill();

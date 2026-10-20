@@ -105,6 +105,14 @@ app.whenReady().then(async () => {
     await waitFor(async () => /Modèle actif/.test(await text('[data-testid="oa-model-active"]')) && /stories260K\.gguf/.test(await text('[data-testid="oa-model-active"]')), { what: 'active banner shows the local model' });
     assert.match(await text('[data-testid="oa-model-active"]'), /local/);
     assert.equal(await js(`document.querySelector('[data-testid="oa-model-active"]').dataset.state`), 'active');
+    // The background estimate starts only while the dialog is open (ruling F3d) and is cancelled when it closes: wait
+    // for it here. The chip beside the button is absent until model-status carries a placement — nothing is cached in
+    // this fresh home and the model is not loaded yet, so only the finished estimate can make it appear.
+    await waitFor(() => exists('[data-testid="oa-model-placement"][data-source="estimate"]'), { timeout: 180000, what: 'the estimated placement beside the button' });
+    assert.match(await text('[data-testid="oa-model-placement"]'), / \(estimé\)$/, 'before the load the placement says « (estimé) »');
+    assert.match(await text('[data-testid="oa-model-placement-detail"]'), /\(estimé\)/, 'the dialog shows the estimated split and memory');
+    assert.match(await text('#oa-model-btn'), /stories260K/, 'the chip sits beside the button, whose text is unchanged');
+    await writeFile(join(screenshotDir, 'localmodel-1b-estimate.png'), await capturePng(win));
     await click('#oa-model-close-btn');
     await waitFor(async () => /stories260K/.test(await text('#oa-model-btn')), { what: 'the button label follows' });
     await writeFile(join(screenshotDir, 'localmodel-1-active.png'), await capturePng(win));
@@ -113,6 +121,9 @@ app.whenReady().then(async () => {
     await send('Once upon a time');
     await waitFor(async () => (await countOf('[data-testid="oa-assistant-bubble"]')) === 1 && await isIdle(), { timeout: 60000, what: 'real local reply' });
     assert.ok((await text('[data-testid="oa-assistant-bubble"]')).trim().length > 0, 'the real local model produced real text');
+    // After the real load the placement is model.gpuLayers, the truth: no « estimé » any more.
+    await waitFor(() => exists('[data-testid="oa-model-placement"][data-source="loaded"]'), { timeout: 30000, what: 'the loaded placement beside the button' });
+    assert.doesNotMatch(await text('[data-testid="oa-model-placement"]'), /estimé/, 'the loaded placement is not an estimate');
     await writeFile(join(screenshotDir, 'localmodel-2-replied.png'), await capturePng(win));
 
     // ── 4. A real click on ✕ removes it from the library (and clears activation if it was active) ────

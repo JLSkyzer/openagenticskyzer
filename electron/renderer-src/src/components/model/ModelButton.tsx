@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { getModelStatus, onModelEvent, onSettingsChanged, type ModelStatus } from '../../ipc/bridge';
+import { getModelStatus, onEstimateEvent, onModelEvent, onSettingsChanged, type ModelStatus } from '../../ipc/bridge';
 import { useRegisterAction } from '../../state/ActionRegistry';
 import { ModelDialog } from './ModelDialog';
+import { placementLabel } from './placement';
 
 // input_bar.py::model_button — "● name (20 chars max…) ▾", full name as a tooltip. It opens the model selector and
 // shows the .gguf the chat will actually use (model-status); none, or one whose file is gone: « Aucun modèle ».
@@ -13,6 +14,9 @@ export function ModelButton({ activeFolder }: { activeFolder: string | null }) {
   // A turn's model event says an engine has (re)loaded: read the status again — the event names the model of THAT
   // turn, which the user may have changed since; model-status reads the current setting.
   useEffect(() => onModelEvent(() => setVersion(v => v + 1)), []);
+  // The button never starts an estimate (ruling F3d: only the model dialog does, while it is open). A finished one
+  // is cached by the worker, so reading the status again shows its placement.
+  useEffect(() => onEstimateEvent(event => { if (event.state === 'done') setVersion(v => v + 1); }), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -43,7 +47,20 @@ export function ModelButton({ activeFolder }: { activeFolder: string | null }) {
       >
         {label}
       </button>
-      {open && <ModelDialog onClose={() => setOpen(false)} />}
+      {/* Beside the button, never inside it: its text is asserted exactly. Shown only when the status carries a
+          placement — the loaded truth, or an estimate cached by an earlier opening of the dialog. */}
+      {status?.placement && (
+        <span
+          data-testid="oa-model-placement"
+          data-source={status.placement.source}
+          title={status.placement.source === 'estimate' ? 'Répartition estimée avant le chargement' : 'Répartition du modèle chargé'}
+          className="shrink-0 self-center text-xs text-gray-500"
+        >
+          {placementLabel(status.placement)}
+        </span>
+      )}
+      {/* Closing re-reads the status: a cached estimate answers the dialog at once, with no event. */}
+      {open && <ModelDialog onClose={() => { setOpen(false); setVersion(v => v + 1); }} />}
     </>
   );
 }

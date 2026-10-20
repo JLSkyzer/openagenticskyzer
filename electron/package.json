@@ -20,6 +20,7 @@
     "test:layout": "node tests/run-layout-visual.cjs",
     "test:settings": "node tests/run-settings-visual.cjs",
     "test:settings-tabs": "node tests/run-settings-tabs-visual.cjs",
+    "test:hardware": "node tests/run-hardware-visual.cjs",
     "test:settings-folder": "node tests/run-settings-folder-danger-visual.cjs",
     "test:model": "node tests/run-model-selector-visual.cjs",
     "test:branches": "node tests/run-branches-visual.cjs",

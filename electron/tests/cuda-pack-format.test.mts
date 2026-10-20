@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, writeFile, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rename, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -202,12 +202,13 @@ test('extractPack refuses a path outside the allowed prefixes before writing any
   assert.deepEqual(await readdir(outside), []);
 });
 
-test('collectPackFiles takes the CUDA package (not -ext, D-CUDA-3), the runtime DLLs and the NVIDIA licence, and refuses a package of another engine version', async t => {
+test('collectPackFiles takes the CUDA package (not -ext, D-CUDA-3), exactly the two cuBLAS DLLs and the NVIDIA licence, labels the licences, and refuses a package of another engine version', async t => {
   const root = await tempRoot(t);
   const nm = join(root, 'node_modules');
   const put = async (path: string, text: string) => { await mkdir(dirname(join(nm, path)), { recursive: true }); await writeFile(join(nm, path), text); };
   await put('node-llama-cpp/package.json', '{"name":"node-llama-cpp","version":"3.21.1"}');
   await put('@node-llama-cpp/win-x64-cuda/package.json', '{"name":"@node-llama-cpp/win-x64-cuda","version":"3.21.1"}');
+  await put('@node-llama-cpp/win-x64-cuda/LICENSE', 'MIT License\n');
   await put('@node-llama-cpp/win-x64-cuda/dist/index.js', 'export {};\n');
   await put('@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/ggml-cuda.dll', 'cuda build');
   // D-CUDA-3: the CUDA 12 fallback package is present in node_modules but never packed.
@@ -218,37 +219,138 @@ test('collectPackFiles takes the CUDA package (not -ext, D-CUDA-3), the runtime 
   await writeFile(join(runtime, 'cublasLt64_13.dll'), 'cublasLt');
   await writeFile(join(runtime, 'LICENSE.txt'), 'NVIDIA licence\n');
   await writeFile(join(runtime, 'notes.txt'), 'ignored');
+  // In NVIDIA's libcublas archive too, but not needed (D-CUDA-3): ignored, never packed.
+  await writeFile(join(runtime, 'nvblas64_13.dll'), 'nvblas');
 
   assert.equal(DEFAULT_RUNTIME_PLACEMENT, 'cuda-runtime');
-  const { files, nodeLlamaCppVersion } = await collectPackFiles({ nodeModules: nm, runtimeDir: runtime, runtimePlacement: 'cuda-runtime' });
+  const { files, nodeLlamaCppVersion, licences } = await collectPackFiles({ nodeModules: nm, runtimeDir: runtime, runtimePlacement: 'cuda-runtime' });
   assert.equal(nodeLlamaCppVersion, '3.21.1');
-  assert.deepEqual(files.map(f => f.path).sort(), [
-    'cuda-runtime/LICENSE.txt', 'cuda-runtime/cublas64_13.dll', 'cuda-runtime/cublasLt64_13.dll',
+  const mit = [
+    'node_modules/@node-llama-cpp/win-x64-cuda/LICENSE',
     'node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/ggml-cuda.dll',
     'node_modules/@node-llama-cpp/win-x64-cuda/dist/index.js',
     'node_modules/@node-llama-cpp/win-x64-cuda/package.json',
-  ]);
+  ];
+  const nvidia = ['cuda-runtime/LICENSE.txt', 'cuda-runtime/cublas64_13.dll', 'cuda-runtime/cublasLt64_13.dll'];
+  assert.deepEqual(files.map(f => f.path).sort(), [...nvidia, ...mit]);
   assert.equal(await readFile(files.find(f => f.path === 'cuda-runtime/LICENSE.txt')!.source, 'utf8'), 'NVIDIA licence\n');
+  const expectedLicences = [
+    { licence: 'NVIDIA', text: 'cuda-runtime/LICENSE.txt', files: nvidia },
+    { licence: 'MIT', text: 'node_modules/@node-llama-cpp/win-x64-cuda/LICENSE', files: mit },
+  ];
+  assert.deepEqual(licences, expectedLicences);
   const beside = await collectPackFiles({ nodeModules: nm, runtimeDir: runtime, runtimePlacement: 'beside-binaries' });
-  assert.ok(beside.files.some(f => f.path === 'node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/cublas64_13.dll'));
+  const besideDll = 'node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/cublas64_13.dll';
+  assert.ok(beside.files.some(f => f.path === besideDll));
   assert.ok(beside.files.every(f => !f.path.startsWith('cuda-runtime/')));
+  // Beside the binaries, the NVIDIA DLLs keep their NVIDIA label inside the MIT package's folder.
+  assert.ok(beside.licences.find(l => l.licence === 'NVIDIA')!.files.includes(besideDll));
+  assert.ok(!beside.licences.find(l => l.licence === 'MIT')!.files.includes(besideDll));
 
-  // The real CLI, against the fake trees: parts and manifest land in --out.
+  // The real CLI, against the fake trees: parts and manifest land in --out, the manifest labels every file.
   const out = join(root, 'pack');
   const run = promisify(execFile);
   await run(process.execPath, ['--experimental-strip-types', '--no-warnings', 'scripts/cuda-pack.mts', '--runtime', runtime, '--out', out, '--node-modules', nm],
     { cwd: ELECTRON });
   const manifest = JSON.parse(await readFile(join(out, 'manifest.json'), 'utf8'));
-  assert.equal(manifest.files, 6);
+  assert.equal(manifest.files, 7);
   assert.equal(manifest.nodeLlamaCppVersion, '3.21.1');
+  assert.deepEqual(manifest.licences, expectedLicences);
   const dest = join(root, 'dest');
   await extractPack(partsStream(out, '3.21.1', manifest.parts.length), dest);
   assert.equal(await readFile(join(dest, 'cuda-runtime', 'cublasLt64_13.dll'), 'utf8'), 'cublasLt');
+  assert.deepEqual((await readdir(join(dest, 'cuda-runtime'))).sort(), ['LICENSE.txt', 'cublas64_13.dll', 'cublasLt64_13.dll']);
 
-  // No NVIDIA licence: refused (D-CUDA-1). Another engine version: refused.
-  const bare = join(root, 'bare'); await mkdir(bare); await writeFile(join(bare, 'cublas64_13.dll'), 'x');
+  // A licence list that leaves a file unlabelled is refused by writePack.
+  await assert.rejects(writePack(files, join(root, 'bad'), { nodeLlamaCppVersion: '3.21.1', licences: [licences[0]] }), /Licences incohérentes/);
+
+  // A missing cuBLAS DLL: refused. No NVIDIA licence: refused (D-CUDA-1). Another engine version: refused.
+  const half = join(root, 'half'); await mkdir(half);
+  await writeFile(join(half, 'cublas64_13.dll'), 'x'); await writeFile(join(half, 'LICENSE.txt'), 'NVIDIA licence\n');
+  await assert.rejects(collectPackFiles({ nodeModules: nm, runtimeDir: half, runtimePlacement: 'cuda-runtime' }), /cublasLt64_13\.dll/);
+  const bare = join(root, 'bare'); await mkdir(bare);
+  await writeFile(join(bare, 'cublas64_13.dll'), 'x'); await writeFile(join(bare, 'cublasLt64_13.dll'), 'x');
   await assert.rejects(collectPackFiles({ nodeModules: nm, runtimeDir: bare, runtimePlacement: 'cuda-runtime' }), /LICENSE\.txt/);
   await put('@node-llama-cpp/win-x64-cuda/package.json', '{"name":"@node-llama-cpp/win-x64-cuda","version":"3.20.0"}');
   await assert.rejects(collectPackFiles({ nodeModules: nm, runtimeDir: runtime, runtimePlacement: 'cuda-runtime' }),
     { message: 'Version incohérente : @node-llama-cpp/win-x64-cuda 3.20.0 au lieu de 3.21.1' });
+});
+
+test('extractPack keeps to its byte and file budget: a small archive that expands past it is refused and rolled back', async t => {
+  const root = await tempRoot(t);
+  // 1 MiB of zeros gzips to about 1 KB: the header announces it, refused before a byte is written.
+  const bomb = rawPack([{ path: 'cuda-runtime/bomb.dll', bytes: Buffer.alloc(1 << 20) }]);
+  const d1 = await mkdtemp(join(root, 'd-'));
+  await assert.rejects(extractPack(bomb, d1, { maxBytes: 64 * 1024 }), { message: CUDA_PACK_CORRUPT });
+  assert.deepEqual(await readdir(d1), []);
+  // The budget is for the whole pack: the second file goes past it, the first one is rolled back.
+  const two = rawPack([{ path: 'cuda-runtime/a.dll', bytes: Buffer.alloc(600, 1) }, { path: 'cuda-runtime/b.dll', bytes: Buffer.alloc(600, 2) }]);
+  const d2 = await mkdtemp(join(root, 'd-'));
+  await assert.rejects(extractPack(two, d2, { maxBytes: 1000 }), { message: CUDA_PACK_CORRUPT });
+  assert.deepEqual(await readdir(d2), []);
+  // One entry more than maxFiles: refused and rolled back.
+  const three = rawPack(['a', 'b', 'c'].map(n => ({ path: `cuda-runtime/${n}.dll`, bytes: Buffer.from(n) })));
+  const d3 = await mkdtemp(join(root, 'd-'));
+  await assert.rejects(extractPack(three, d3, { maxFiles: 2 }), { message: CUDA_PACK_CORRUPT });
+  assert.deepEqual(await readdir(d3), []);
+  // Within the budget, exactly: it extracts.
+  const d4 = await mkdtemp(join(root, 'd-'));
+  const fits = rawPack(['a', 'b'].map(n => ({ path: `cuda-runtime/${n}.dll`, bytes: Buffer.alloc(500) })));
+  assert.deepEqual(await extractPack(fits, d4, { maxBytes: 1000, maxFiles: 2 }), { files: 2, bytes: 1000 });
+});
+
+test('a file and a directory of the same name are refused as an unsafe path, in either order', async t => {
+  const root = await tempRoot(t);
+  const b = (text: string) => Buffer.from(text);
+  const cases: Array<[Array<{ path: string; bytes: Buffer }>, string]> = [
+    [[{ path: 'cuda-runtime/a/b.dll', bytes: b('1') }, { path: 'cuda-runtime/a', bytes: b('2') }], 'cuda-runtime/a'],
+    [[{ path: 'cuda-runtime/a', bytes: b('2') }, { path: 'cuda-runtime/a/b.dll', bytes: b('1') }], 'cuda-runtime/a/b.dll'],
+    [[{ path: 'cuda-runtime/A/b.dll', bytes: b('1') }, { path: 'cuda-runtime/a', bytes: b('2') }], 'cuda-runtime/a'],
+  ];
+  for (const [entries, named] of cases) {
+    const dest = await mkdtemp(join(root, 'd-'));
+    await assert.rejects(extractPack(rawPack(entries), dest), { message: cudaPackUnsafePath(named) });
+    assert.deepEqual(await readdir(dest), []);
+  }
+  const files = await sources(join(root, 'src1'), { 'cuda-runtime/a/b.dll': '1' });
+  files.push({ path: 'cuda-runtime/a', source: files[0].source });
+  // writePack sorts first: 'cuda-runtime/a' comes before 'cuda-runtime/a/b.dll', which is the one named.
+  await assert.rejects(writePack(files, join(root, 'w'), { nodeLlamaCppVersion: '3.21.1' }), { message: cudaPackUnsafePath('cuda-runtime/a/b.dll') });
+});
+
+test('a folder swapped for a junction between two records is refused, nothing lands outside, and the rollback does not follow it', async t => {
+  const root = await tempRoot(t);
+  const outside = join(root, 'outside'); await mkdir(outside);
+  await writeFile(join(outside, 'sentinel.txt'), 'keep me');
+  const dest = await mkdtemp(join(root, 'd-'));
+  const record = (path: string, bytes: Buffer) => {
+    const header = Buffer.from(JSON.stringify({ path, size: bytes.length, sha256: sha256(bytes) }));
+    const length = Buffer.alloc(4); length.writeUInt32BE(header.length);
+    return Buffer.concat([length, header, bytes]);
+  };
+  // Two gzip members (gunzip reads them as one stream): the swap happens between them, once the first file is on disk.
+  const first = gzipSync(record('cuda-runtime/a.dll', Buffer.from('first')));
+  const second = gzipSync(Buffer.concat([record('cuda-runtime/b.dll', Buffer.from('second')), Buffer.alloc(4)]));
+  let swapped = false;
+  async function* stream(): AsyncIterable<Uint8Array> {
+    yield first;
+    const folder = join(dest, 'cuda-runtime');
+    for (let i = 0; i < 500 && !swapped; i++) {
+      try {
+        if ((await readFile(join(folder, 'a.dll'), 'utf8')) === 'first') {
+          await rename(folder, join(dest, 'moved'));
+          await symlink(outside, folder, 'junction');
+          swapped = true;
+        }
+      } catch { /* not written yet, or its handle still open: retry */ }
+      if (!swapped) await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    yield second;
+  }
+  await assert.rejects(extractPack(stream(), dest), { message: cudaPackUnsafeTarget(dest) });
+  assert.ok(swapped, 'the test swapped the folder');
+  assert.deepEqual(await readdir(outside), ['sentinel.txt']);
+  assert.equal(await readFile(join(outside, 'sentinel.txt'), 'utf8'), 'keep me');
+  // The rollback removed the junction it found under its own name, not what it points to.
+  assert.deepEqual(await readdir(dest), ['moved']);
 });

@@ -10,8 +10,8 @@
 // target must be an empty real directory, no existing link is ever followed, and any failure removes what was made.
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { lstat, mkdir, open, readdir, rm, writeFile, type FileHandle } from 'node:fs/promises';
-import { join } from 'node:path';
+import { lstat, mkdir, open, readdir, realpath, rm, unlink, writeFile, type FileHandle } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { pipeline, Readable } from 'node:stream';
 import { pipeline as pipelineAsync } from 'node:stream/promises';
 import { createGunzip, createGzip } from 'node:zlib';
@@ -24,10 +24,17 @@ export const CUDA_PACK_ALLOWED_PREFIXES = ['node_modules/@node-llama-cpp/win-x64
 export const CUDA_PACK_CORRUPT = "Pack CUDA corrompu (empreinte différente) : rien n'a été installé. Réessaie le téléchargement.";
 
 export interface PackFile { path: string; source: string }      // path: posix, relative, inside the pack
+// Which licence covers which files: NVIDIA's for the cuBLAS DLLs and their LICENSE.txt (never relabelled MIT,
+// D-CUDA-1), MIT for the node-llama-cpp package. `text` is the pack path of the licence text itself.
+export interface PackLicenceGroup { licence: 'NVIDIA' | 'MIT'; text: string; files: string[] }
 export interface CudaPackManifest {
   format: 1; nodeLlamaCppVersion: string; platform: 'win-x64';
   parts: Array<{ name: string; size: number; sha256: string }>; downloadBytes: number; installedBytes: number; files: number;
+  licences: PackLicenceGroup[];
 }
+// Default extraction budget, far above the real pack (≈ 690 MiB, about 25 files) and far below a disk-filling
+// expansion. Task 9 passes the manifest's own installedBytes and files.
+export const CUDA_PACK_DEFAULT_LIMITS = { maxBytes: 4 * 2 ** 30, maxFiles: 1000 } as const;
 
 export function partName(nodeLlamaCppVersion: string, index: number): string {
   return `openagent-cuda-pack-${nodeLlamaCppVersion}-win-x64.part${index}`;
@@ -60,15 +67,34 @@ export function safePackPath(path: string): string {
   return path;
 }
 
-/** Validates every path and refuses two paths that name the same file on Windows (case-insensitive). */
-function checkPaths(paths: string[]): void {
-  const seen = new Set<string>();
-  for (const path of paths) {
+/**
+ * The paths of one pack, as Windows sees them (case-insensitive): each is safePackPath-checked, and a path that names
+ * a file already listed, or a file where a directory is (or the reverse), throws cudaPackUnsafePath for that path.
+ */
+class PackPaths {
+  private files = new Set<string>();
+  private dirs = new Set<string>();
+
+  add(path: string): void {
     safePackPath(path);
     const key = path.toLowerCase();
-    if (seen.has(key)) throw new Error(cudaPackUnsafePath(path));
-    seen.add(key);
+    const segments = key.split('/');
+    const parents = segments.slice(1).map((_, i) => segments.slice(0, i + 1).join('/'));
+    if (this.files.has(key) || this.dirs.has(key) || parents.some(parent => this.files.has(parent))) throw new Error(cudaPackUnsafePath(path));
+    this.files.add(key);
+    for (const parent of parents) this.dirs.add(parent);
   }
+}
+
+function checkLicences(paths: string[], licences: PackLicenceGroup[]): void {
+  const left = new Set(paths);
+  const refuse = (path: string) => { throw new Error(`Licences incohérentes : ${path}`); };
+  for (const group of licences) {
+    if (group.licence !== 'NVIDIA' && group.licence !== 'MIT') refuse(String(group.licence));
+    if (!group.files.includes(group.text)) refuse(group.text);
+    for (const path of group.files) { if (!left.delete(path)) refuse(path); }
+  }
+  for (const path of left) refuse(path);
 }
 
 const compareCodeUnits = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -87,11 +113,15 @@ function uint32(value: number): Buffer {
 }
 
 /** Writes outDir/<partName…> and outDir/manifest.json (2-space JSON, trailing newline). */
-export async function writePack(files: PackFile[], outDir: string, options: { nodeLlamaCppVersion: string; chunkBytes?: number }): Promise<CudaPackManifest> {
+// `licences`, when given, must label every file exactly once (the build script always gives it).
+export async function writePack(files: PackFile[], outDir: string, options: { nodeLlamaCppVersion: string; chunkBytes?: number; licences?: PackLicenceGroup[] }): Promise<CudaPackManifest> {
   const chunkBytes = options.chunkBytes ?? CUDA_PACK_CHUNK_BYTES;
   if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0 || chunkBytes >= 2 ** 31) throw new Error(`chunkBytes invalide : ${chunkBytes}`);
-  checkPaths(files.map(file => file.path));
   const sorted = [...files].sort((a, b) => compareCodeUnits(a.path, b.path));
+  const paths = new PackPaths();
+  for (const file of sorted) paths.add(file.path);
+  const licences = (options.licences ?? []).map(group => ({ ...group, files: [...group.files].sort(compareCodeUnits) }));
+  if (options.licences) checkLicences(sorted.map(file => file.path), licences);
 
   await mkdir(outDir, { recursive: true });
   // A rebuild into the same folder: only this format's own outputs are removed, so no stale part survives.
@@ -163,6 +193,7 @@ export async function writePack(files: PackFile[], outDir: string, options: { no
   const manifest: CudaPackManifest = {
     format: CUDA_PACK_FORMAT, nodeLlamaCppVersion: options.nodeLlamaCppVersion, platform: 'win-x64',
     parts, downloadBytes: parts.reduce((sum, part) => sum + part.size, 0), installedBytes, files: sorted.length,
+    licences,
   };
   await writeFile(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
   return manifest;
@@ -242,32 +273,51 @@ async function prepareTarget(destDir: string): Promise<void> {
 
 /**
  * Extracts a pack's byte stream (its parts, in order) into `destDir`. Each path is checked before anything is created
- * for it; each file's size and sha256 are checked against its header. On any failure everything created is removed.
+ * for it; each file's size and sha256 are checked against its header; the whole pack keeps to `limits` (bytes
+ * written and entries), counted before and while writing. On any failure everything created is removed.
+ *
+ * Links: the target must be an empty real directory, every parent of a file is lstat-checked from `destDir` down
+ * just before the file is opened, and the opened file's real folder is compared with where it should be. A process
+ * of the same user that swaps a folder for a junction at the right instant is outside the threat model (it already
+ * holds every right this extraction has: no privilege is gained); these checks only narrow that window, and a
+ * mismatch found after the open removes the file and rolls everything back.
  */
-export async function extractPack(stream: AsyncIterable<Uint8Array>, destDir: string): Promise<{ files: number; bytes: number }> {
+export async function extractPack(stream: AsyncIterable<Uint8Array>, destDir: string, limits?: { maxBytes?: number; maxFiles?: number }): Promise<{ files: number; bytes: number }> {
+  const maxBytes = limits?.maxBytes ?? CUDA_PACK_DEFAULT_LIMITS.maxBytes;
+  const maxFiles = limits?.maxFiles ?? CUDA_PACK_DEFAULT_LIMITS.maxFiles;
   await prepareTarget(destDir);
+  const realDest = await realpath(destDir);
   const created = new Set<string>();           // top-level entries made here, removed on failure
-  const dirs = new Set<string>();               // directories made here (pack paths), never re-checked
-  const seen = new Set<string>();
+  const dirs = new Set<string>();               // directories made here (pack paths)
+  const paths = new PackPaths();
   // pipeline() destroys every stage with the first error, so the gunzip iterator below rejects with it.
   const gunzip = pipeline(Readable.from(stream, { objectMode: false }), createGunzip(), () => {});
   const reader = new ByteReader(gunzip as AsyncIterable<Buffer>);
   let files = 0;
   let bytes = 0;
+  const unsafeTarget = () => new Error(cudaPackUnsafeTarget(destDir));
+  const samePath = (a: string, b: string) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+
+  /** `destDir` and each parent of the file, from the top down, must be a real directory: never a link or junction. */
+  async function checkParents(segments: string[]): Promise<void> {
+    for (let i = 0; i < segments.length; i++) {
+      const info = await lstat(join(destDir, ...segments.slice(0, i)));
+      if (!info.isDirectory() || info.isSymbolicLink()) throw unsafeTarget();
+    }
+  }
 
   async function makeDirs(segments: string[]): Promise<void> {
     for (let i = 1; i < segments.length; i++) {
       const rel = segments.slice(0, i).join('/');
       if (dirs.has(rel)) continue;
-      const full = join(destDir, ...segments.slice(0, i));
+      await checkParents(segments.slice(0, i));
       try {
-        await mkdir(full);
+        await mkdir(join(destDir, ...segments.slice(0, i)));
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        // Only a directory this extraction made itself can already be there; anything else (a link that appeared
-        // under us) is refused, never followed.
-        const info = await lstat(full);
-        if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(cudaPackUnsafeTarget(destDir));
+        // PackPaths already refused every clash inside the pack, and the target started empty: anything already
+        // there was not made by this extraction.
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw unsafeTarget();
+        throw error;
       }
       if (i === 1) created.add(segments[0]);
       dirs.add(rel);
@@ -280,31 +330,46 @@ export async function extractPack(stream: AsyncIterable<Uint8Array>, destDir: st
       if (headerLength === 0) break;
       if (headerLength > MAX_HEADER_BYTES) throw new Corrupt();
       const header = parseHeader(await reader.take(headerLength));
-      safePackPath(header.path);
-      const key = header.path.toLowerCase();
-      if (seen.has(key)) throw new Error(cudaPackUnsafePath(header.path));
-      seen.add(key);
+      paths.add(header.path);
+      // The budget is checked before anything is created for this entry.
+      if (files + 1 > maxFiles || header.size > maxBytes - bytes) throw new Corrupt();
 
       const segments = header.path.split('/');
       await makeDirs(segments);
+      await checkParents(segments);
       if (segments.length === 1) created.add(segments[0]);
+      const file = join(destDir, ...segments);
       // 'wx': never opens an existing entry, link or not.
-      const handle = await open(join(destDir, ...segments), 'wx');
+      const handle = await open(file, 'wx');
       const hash = createHash('sha256');
+      let written = 0;
       try {
-        for await (const chunk of reader.stream(header.size)) { hash.update(chunk); await handle.write(chunk); }
+        const expected = join(realDest, ...segments.slice(0, -1));
+        const actual = await realpath(dirname(file));
+        if (!samePath(actual, expected)) {
+          // The file was created where it should not be: it is ours ('wx'), so it goes, then everything rolls back.
+          await handle.close().catch(() => {});
+          await rm(join(actual, segments[segments.length - 1]), { force: true });
+          throw unsafeTarget();
+        }
+        for await (const chunk of reader.stream(header.size)) {
+          written += chunk.length;
+          if (bytes + written > maxBytes) throw new Corrupt();
+          hash.update(chunk);
+          await handle.write(chunk);
+        }
       } finally {
-        await handle.close();
+        await handle.close().catch(() => {});
       }
-      if (hash.digest('hex') !== header.sha256) throw new Corrupt();
+      if (written !== header.size || hash.digest('hex') !== header.sha256) throw new Corrupt();
       files += 1;
-      bytes += header.size;
+      bytes += written;
     }
     if (!(await reader.atEnd())) throw new Corrupt();
     return { files, bytes };
   } catch (error) {
     gunzip.destroy();
-    for (const name of created) await rm(join(destDir, name), { recursive: true, force: true, maxRetries: 3 });
+    await rollback(destDir, created);
     // A broken gzip stream (bad data, bad CRC, truncated) is corruption; any other error (disk, abort) is itself.
     const code = (error as NodeJS.ErrnoException).code;
     if (typeof code === 'string' && code.startsWith('Z_')) throw new Corrupt();
@@ -312,3 +377,13 @@ export async function extractPack(stream: AsyncIterable<Uint8Array>, destDir: st
   }
 }
 
+/** Removes what an extraction made. A top-level entry that is now a link is unlinked itself, never followed. */
+async function rollback(destDir: string, created: Set<string>): Promise<void> {
+  for (const name of created) {
+    const path = join(destDir, name);
+    let info;
+    try { info = await lstat(path); } catch { continue; }
+    if (info.isSymbolicLink()) await unlink(path);
+    else await rm(path, { recursive: true, force: true, maxRetries: 3 });
+  }
+}

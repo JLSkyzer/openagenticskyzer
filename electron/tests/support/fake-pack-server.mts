@@ -2,13 +2,14 @@
 // synthetic pack from `dir` on 127.0.0.1 only: no test ever reaches GitHub, NVIDIA or the network.
 //   bytesPerTick: throttles a part to one write of that many bytes every 50 ms (for cancel tests);
 //   tamper:       the name of a part served with one byte flipped;
-//   redirectTo:   every request is answered 302 with this Location (absolute, or relative to the request).
+//   redirectTo:   every request is answered 302 with this Location (absolute, or relative to the request);
+//   stallAfter:   sends that many bytes of each part, then nothing more, the connection held open (idle tests).
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 
-export async function startFakePackServer(dir: string, options: { bytesPerTick?: number; tamper?: string; redirectTo?: string } = {}): Promise<{ url: string; requests: string[]; close(): Promise<void> }> {
+export async function startFakePackServer(dir: string, options: { bytesPerTick?: number; tamper?: string; redirectTo?: string; stallAfter?: number } = {}): Promise<{ url: string; requests: string[]; close(): Promise<void> }> {
   const requests: string[] = [];
   const timers = new Set<NodeJS.Timeout>();
   const server = createServer(async (req, res) => {
@@ -28,6 +29,7 @@ export async function startFakePackServer(dir: string, options: { bytesPerTick?:
       bytes[bytes.length >> 1] ^= 0xff;
     }
     res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': bytes.length });
+    if (options.stallAfter !== undefined) { res.write(bytes.subarray(0, options.stallAfter)); return; }
     const step = options.bytesPerTick;
     if (!step) { res.end(bytes); return; }
     let offset = 0;

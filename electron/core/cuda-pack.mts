@@ -22,6 +22,37 @@ export const CUDA_PACK_MARGIN_BYTES = 268_435_456;
 export const CUDA_PACK_UNAVAILABLE = "Pack CUDA non disponible pour cette version de l'app.";
 export const CUDA_PACK_BUSY = 'Une installation du pack CUDA est déjà en cours.';
 const MAX_REDIRECTS = 5;
+export const CUDA_PACK_IDLE_TIMEOUT_MS = 60_000;
+// The final rename's waits between tries (5 tries, about 2 s in all): an antivirus often holds fresh DLLs a moment.
+const RENAME_DELAYS_MS = [150, 300, 600, 950];
+
+export function cudaPackUnsafeBase(base: string): string {
+  return `Dossier du pack CUDA refusé : ${base} doit être un vrai dossier, sans lien ni jonction.`;
+}
+
+export function cudaPackStalled(part: string, idleMs: number): string {
+  return `Téléchargement du pack CUDA interrompu : aucune donnée reçue depuis ${String(idleMs / 1000).replace('.', ',')} s (${part}). Rien n'a été installé.`;
+}
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * rename(from, to), retried on EPERM, EACCES and EBUSY with growing waits (about 2 s in all): Windows refuses to
+ * rename a folder while a file in it is open, which an antivirus scan of freshly written DLLs does. The last error is
+ * rethrown unchanged.
+ */
+export async function renameWithRetry(from: string, to: string, delaysMs: readonly number[] = RENAME_DELAYS_MS): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (error) {
+      const code = errorCode(error);
+      if ((code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY') || attempt >= delaysMs.length) throw error;
+      await sleep(delaysMs[attempt]);
+    }
+  }
+}
 
 export function cudaPackDiskNotice(required: number, free: number): string {
   return `Espace disque insuffisant pour le pack CUDA : il faut ${formatBytes(required)} libres, il en reste ${formatBytes(free)}.`;
@@ -71,6 +102,8 @@ async function readManifest(path: string): Promise<CudaPackManifest | null> {
   return m as CudaPackManifest;
 }
 
+const errorCode = (error: unknown) => (error as NodeJS.ErrnoException | null)?.code;
+
 async function readMarker(dir: string): Promise<PackMarker | null> {
   try {
     const marker = JSON.parse(await readFile(join(dir, 'pack.json'), 'utf8')) as Partial<PackMarker> | null;
@@ -85,7 +118,6 @@ function abortError(): Error {
   return new DOMException('Téléchargement du pack CUDA annulé.', 'AbortError');
 }
 
-const errorCode = (error: unknown) => (error as NodeJS.ErrnoException | null)?.code;
 
 export class CudaPack {
   private readonly dataHome: string;
@@ -94,19 +126,53 @@ export class CudaPack {
   private readonly engineVersion: string;
   private readonly allowLoopback: boolean;
   private readonly free: (dir: string) => Promise<number>;
+  private readonly idleTimeoutMs: number;
   private installing = false;
 
-  constructor(options: { dataHome: string; manifestPath: string; baseUrl: string; engineVersion: string; allowLoopback?: boolean; freeBytes?: (dir: string) => Promise<number> }) {
+  constructor(options: { dataHome: string; manifestPath: string; baseUrl: string; engineVersion: string; allowLoopback?: boolean; freeBytes?: (dir: string) => Promise<number>; idleTimeoutMs?: number }) {
     this.dataHome = options.dataHome;
     this.manifestPath = options.manifestPath;
     this.baseUrl = options.baseUrl;
     this.engineVersion = options.engineVersion;
     this.allowLoopback = options.allowLoopback ?? false;
     this.free = options.freeBytes ?? freeBytes;
+    this.idleTimeoutMs = options.idleTimeoutMs ?? CUDA_PACK_IDLE_TIMEOUT_MS;
   }
 
   private get base(): string { return join(this.dataHome, 'cuda-pack'); }
   private get current(): string { return join(this.base, 'current'); }
+
+  /**
+   * `<dataHome>/cuda-pack` must be a real directory: a link or junction there would make every removal below run
+   * outside the data home. Absent: created as a real directory when `create`, else reported 'absent'.
+   */
+  private async checkBase(create: boolean): Promise<'ok' | 'absent'> {
+    for (;;) {
+      try {
+        const info = await lstat(this.base);
+        if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(cudaPackUnsafeBase(this.base));
+        return 'ok';
+      } catch (error) {
+        if (errorCode(error) !== 'ENOENT') throw error;
+      }
+      if (!create) return 'absent';
+      await mkdir(this.dataHome, { recursive: true });
+      // Non-recursive: an entry made meanwhile is lstat-checked by the next turn, never trusted.
+      try { await mkdir(this.base); } catch (error) { if (errorCode(error) !== 'EEXIST') throw error; }
+    }
+  }
+
+  /** current/pack.json, read only through real directories (never through a link at cuda-pack or current). */
+  private async installedMarker(): Promise<PackMarker | null> {
+    try {
+      if ((await this.checkBase(false)) !== 'ok') return null;
+      const info = await lstat(this.current);
+      if (info.isSymbolicLink() || !info.isDirectory()) return null;
+    } catch {
+      return null;
+    }
+    return readMarker(this.current);
+  }
 
   /** The shipped manifest, only if it is the pack of this engine version. */
   private async manifest(): Promise<CudaPackManifest | null> {
@@ -120,7 +186,7 @@ export class CudaPack {
     const sizes = { downloadBytes: manifest?.downloadBytes ?? null, installedBytes: manifest?.installedBytes ?? null };
     const base = { ...sizes, expectedVersion: this.engineVersion };
     if (installing) return { state: 'installing', ...base, installedVersion: null };
-    const marker = await readMarker(this.current);
+    const marker = await this.installedMarker();
     if (marker) {
       const state = marker.nodeLlamaCppVersion === this.engineVersion ? 'installed' : 'mismatch';
       return { state, ...base, installedVersion: marker.nodeLlamaCppVersion };
@@ -175,7 +241,7 @@ export class CudaPack {
     const manifest = await this.manifest();
     if (!manifest) throw new Error(CUDA_PACK_UNAVAILABLE);
     if (signal?.aborted) throw abortError();
-    await mkdir(this.base, { recursive: true });
+    await this.checkBase(true);
     const required = manifest.installedBytes + CUDA_PACK_MARGIN_BYTES;
     const free = await this.free(this.dataHome);
     if (free < required) throw new Error(cudaPackDiskNotice(required, free));
@@ -189,17 +255,33 @@ export class CudaPack {
       const self = this;
       async function* parts(): AsyncGenerator<Uint8Array> {
         for (const part of manifest!.parts) {
-          const response = await self.get(self.baseUrl + part.name, signal);
+          // A part that sends nothing for idleTimeoutMs (before its headers or between two chunks) is abandoned.
+          const idle = new AbortController();
+          let timer: NodeJS.Timeout | undefined;
+          const arm = () => { clearTimeout(timer); timer = setTimeout(() => idle.abort(), self.idleTimeoutMs); };
+          const partSignal = signal ? AbortSignal.any([signal, idle.signal]) : idle.signal;
           const hash = createHash('sha256');
           let size = 0;
-          for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
-            size += chunk.length;
-            // A part longer than announced is refused at once, before its excess is passed on.
-            if (size > part.size) throw new Error(CUDA_PACK_CORRUPT);
-            hash.update(chunk);
-            received += chunk.length;
-            onProgress?.(received, total);
-            yield chunk;
+          try {
+            arm();
+            const response = await self.get(self.baseUrl + part.name, partSignal);
+            arm();
+            for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+              clearTimeout(timer);
+              size += chunk.length;
+              // A part longer than announced is refused at once, before its excess is passed on.
+              if (size > part.size) throw new Error(CUDA_PACK_CORRUPT);
+              hash.update(chunk);
+              received += chunk.length;
+              onProgress?.(received, total);
+              yield chunk;
+              arm();                                 // the extractor's own time does not count as idle
+            }
+          } catch (error) {
+            if (idle.signal.aborted && !signal?.aborted) throw new Error(cudaPackStalled(part.name, self.idleTimeoutMs));
+            throw error;
+          } finally {
+            clearTimeout(timer);
           }
           if (size !== part.size || hash.digest('hex') !== part.sha256) throw new Error(CUDA_PACK_CORRUPT);
           verified += 1;
@@ -216,7 +298,7 @@ export class CudaPack {
       await writeFile(join(staging, 'pack.json'), JSON.stringify(marker, null, 2) + '\n');
       await this.removeCurrent();
       if (await exists(this.current)) throw new Error('Le pack CUDA précédent est encore utilisé : redémarre l\'app puis relance l\'installation.');
-      await rename(staging, this.current);
+      await renameWithRetry(staging, this.current);
     } catch (error) {
       if (signal?.aborted) throw abortError();
       throw error;
@@ -242,7 +324,7 @@ export class CudaPack {
 
   async uninstall(): Promise<CudaPackStatus> {
     if (this.installing) throw new Error(CUDA_PACK_BUSY);
-    await this.removeCurrent();
+    if ((await this.checkBase(false)) === 'ok') await this.removeCurrent();
     return this.status();
   }
 
@@ -252,6 +334,13 @@ export class CudaPack {
    */
   async finishPendingRemoval(): Promise<void> {
     if (this.installing) return;
+    try {
+      if ((await this.checkBase(false)) !== 'ok') return;
+    } catch (error) {
+      // Never throws at start: an unsafe folder is left exactly as it is, and said.
+      console.warn(`[cuda-pack] ${(error as Error).message}`);
+      return;
+    }
     let names: string[];
     try { names = await readdir(this.base); } catch { return; }
     for (const name of names) {

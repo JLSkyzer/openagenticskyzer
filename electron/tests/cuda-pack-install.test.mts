@@ -5,13 +5,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CUDA_PACK_CORRUPT, writePack, type CudaPackManifest, type PackFile } from '../core/cuda-pack-format.mts';
 import {
-  CudaPack, CUDA_PACK_MARGIN_BYTES, CUDA_PACK_UNAVAILABLE, cudaPackDiskNotice, cudaPackUrlRefused, freeBytes, releaseBaseUrl,
+  CudaPack, CUDA_PACK_MARGIN_BYTES, CUDA_PACK_UNAVAILABLE, cudaPackDiskNotice, cudaPackStalled, cudaPackUnsafeBase, cudaPackUrlRefused, freeBytes,
+  releaseBaseUrl, renameWithRetry,
 } from '../core/cuda-pack.mts';
 import { startFakePackServer } from './support/fake-pack-server.mts';
 import { removeAtEnd } from './teardown.mts';
@@ -228,4 +229,76 @@ test('freeBytes reads the real disk of a temp folder', async t => {
   removeAtEnd(t, root);
   const free = await freeBytes(root);
   assert.ok(Number.isSafeInteger(free) && free > 0, String(free));
+});
+
+test('a cuda-pack folder that is a junction is never followed: install and uninstall refuse, the start-up cleanup does nothing', async t => {
+  const f = await fixture(t);
+  const server = await serve(t, f.packDir);
+  // Outside the data home: what a junction at <home>/cuda-pack would expose.
+  const outside = join(f.root, 'outside');
+  const sentinels = [['current', 'pack.json'], ['current', 'user-file.txt'], ['.staging-x', 'user-file.txt'], ['.remove-pending-y', 'user-file.txt']];
+  for (const [dir, name] of sentinels) {
+    await mkdir(join(outside, dir), { recursive: true });
+    await writeFile(join(outside, dir, name), name === 'pack.json' ? JSON.stringify({ nodeLlamaCppVersion: ENGINE, parts: [], installedAt: '2026-10-20T00:00:00Z' }) : 'keep me');
+  }
+  const base = join(f.home, 'cuda-pack');
+  await symlink(outside, base, 'junction');
+  const pack = new CudaPack({ dataHome: f.home, manifestPath: f.manifestPath, baseUrl: server.url, engineVersion: ENGINE, allowLoopback: true });
+
+  await assert.rejects(pack.install(), { message: cudaPackUnsafeBase(base) });
+  assert.equal(server.requests.length, 0);
+  await assert.rejects(pack.uninstall(), { message: cudaPackUnsafeBase(base) });
+  await pack.finishPendingRemoval();                 // no throw, nothing removed
+  // A marker reached through the junction is never an installed pack.
+  assert.equal((await pack.status()).state, 'absent');
+  assert.equal(await pack.installedDir(), null);
+  for (const [dir, name] of sentinels) assert.ok((await readFile(join(outside, dir, name), 'utf8')).length > 0, `${dir}/${name} survives`);
+  assert.deepEqual((await readdir(outside)).sort(), ['.remove-pending-y', '.staging-x', 'current']);
+
+  // A file where the folder should be: refused too.
+  const other = join(f.root, 'home2');
+  await mkdir(other);
+  await writeFile(join(other, 'cuda-pack'), 'not a folder');
+  const p2 = new CudaPack({ dataHome: other, manifestPath: f.manifestPath, baseUrl: server.url, engineVersion: ENGINE, allowLoopback: true });
+  await assert.rejects(p2.install(), { message: cudaPackUnsafeBase(join(other, 'cuda-pack')) });
+  await assert.rejects(p2.uninstall(), { message: cudaPackUnsafeBase(join(other, 'cuda-pack')) });
+  await p2.finishPendingRemoval();
+  assert.equal(await readFile(join(other, 'cuda-pack'), 'utf8'), 'not a folder');
+});
+
+test('a part that stops sending is abandoned after the idle timeout, with a clear error and nothing left', async t => {
+  const f = await fixture(t);
+  const server = await serve(t, f.packDir, { stallAfter: 1000 });
+  const pack = new CudaPack({ dataHome: f.home, manifestPath: f.manifestPath, baseUrl: server.url, engineVersion: ENGINE, allowLoopback: true, idleTimeoutMs: 300 });
+  const started = Date.now();
+  await assert.rejects(pack.install(), { message: cudaPackStalled(f.manifest.parts[0].name, 300) });
+  assert.ok(Date.now() - started < 10_000, 'no hang');
+  assert.equal((await pack.status()).state, 'absent');
+  assert.deepEqual(await packEntries(f.home), []);
+});
+
+test('the final rename retries while Windows holds a freshly written file, then gives up with the error', { skip: process.platform !== 'win32' && 'a held file blocks a folder rename only on Windows' }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'oa-cuda-rename-'));
+  removeAtEnd(t, root);
+  // An open handle inside a folder makes Windows refuse to rename it (EPERM): what an antivirus scan does.
+  const from = join(root, 'staging');
+  await mkdir(from);
+  const held = await open(join(from, 'ggml-cuda.dll'), 'w');
+  setTimeout(() => { void held.close(); }, 250);
+  await renameWithRetry(from, join(root, 'current'));
+  assert.deepEqual(await readdir(root), ['current']);
+
+  // Held for longer than every try: the last error comes back, and nothing moved.
+  const from2 = join(root, 'staging2');
+  await mkdir(from2);
+  const held2 = await open(join(from2, 'ggml-cuda.dll'), 'w');
+  try {
+    const started = Date.now();
+    await assert.rejects(renameWithRetry(from2, join(root, 'current2')), { code: 'EPERM' });
+    const spent = Date.now() - started;
+    assert.ok(spent >= 1500 && spent < 6000, `bounded retry: ${spent} ms`);
+  } finally {
+    await held2.close();
+  }
+  assert.deepEqual((await readdir(root)).sort(), ['current', 'staging2']);
 });

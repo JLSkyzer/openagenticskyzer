@@ -3,7 +3,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { hardwareLines, LOCAL_CONTEXT_OPTIONS, maxTokensSliderMax } from '../renderer-src/src/components/settings/hardware-view.ts';
-import type { HardwareInfo } from '../core/hardware.mts';
+// What op hardware-info answers: core/hardware.mts::HardwareInfo plus the worker's backendChoice and restartRequired.
+import type { HardwareInfo } from '../renderer-src/src/ipc/types.ts';
 
 const card: HardwareInfo = {
   backend: 'vulkan',
@@ -13,6 +14,8 @@ const card: HardwareInfo = {
   cpu: { model: 'AMD Ryzen 7 5800X 8-Core Processor', mathCores: 8, logicalCores: 16 },
   nvidia: true,
   notice: null,
+  backendChoice: 'auto',
+  restartRequired: false,
 };
 
 test('hardwareLines in French for a card and for the processor alone; the context choices', () => {

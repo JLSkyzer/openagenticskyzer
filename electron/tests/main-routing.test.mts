@@ -36,6 +36,7 @@ test('main folds nothing into a payload: no connection resolution is left', () =
   assert.equal(main.isBackendOp('hardware-info'), true);
   assert.equal(main.isBackendOp('estimate-model'), true);
   assert.equal(main.isBackendOp('estimate-cancel'), true);
+  for (const op of ['cuda-pack-status', 'cuda-pack-install', 'cuda-pack-cancel', 'cuda-pack-uninstall']) assert.equal(main.isBackendOp(op), true, op);
 });
 
 test('main no longer answers any connection op', async () => {

@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, shell, dialog, session, protocol, Notification, Tray, Menu, nativeImage } = require('electron');
 const path = require('node:path');
 const { homedir } = require('node:os');
-const { writeFileSync } = require('node:fs');
+const { writeFileSync, readFileSync } = require('node:fs');
 const { Worker } = require('node:worker_threads');
 const artifactProtocol = require('./artifact-protocol.cjs');
 const { buildDiamondIconPng, trayMenuTemplate } = require('./tray-icon.cjs');
@@ -20,7 +20,7 @@ let installUpdateNow;
 // really closes it.
 let appQuitting = false;
 const pending = new Map();
-const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','model-status','hardware-info','estimate-model','estimate-cancel','git-status','test-hf-token','migrate-data-dir','init-project','mcp-list','mcp-add','mcp-add-remote','mcp-remove','index-status','knowledge-list','knowledge-add','knowledge-remove','plugin-list','project-trust','trust-project']);
+const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','model-status','hardware-info','estimate-model','estimate-cancel','cuda-pack-status','cuda-pack-install','cuda-pack-cancel','cuda-pack-uninstall','git-status','test-hf-token','migrate-data-dir','init-project','mcp-list','mcp-add','mcp-add-remote','mcp-remove','index-status','knowledge-list','knowledge-add','knowledge-remove','plugin-list','project-trust','trust-project']);
 
 // Exactly the pattern core/export.mts::exportFilename generates — never a filename supplied as-is
 // by the renderer. Constrains what "open-export" (below) is allowed to open, whatever the folder.
@@ -131,18 +131,54 @@ function notifyLongRun(message) {
 }
 
 /**
- * The options main.cjs builds the worker with, packaged or not. The worker's test seam
- * (workerData.testProviderModule, see worker.mjs) is never among them, whatever the environment:
- * tests/test-seam.test.mts proves it, and that startBackend uses this function. Its only datum is where the bundled
- * embedding model lives: build.extraResources copies resources/models to <resources>/models, real files outside
- * app.asar that onnxruntime reads directly; unpackaged, the repository's own resources/models.
+ * The options main.cjs builds the worker with, packaged or not. The worker's test seams (workerData.testProviderModule
+ * and workerData.cudaPackBaseUrl, see worker.mjs) are never among them, whatever the environment:
+ * tests/test-seam.test.mts proves it, and that startBackend uses this function. Its data: where the bundled embedding
+ * model and the CUDA pack's shipped manifest live (build.extraResources puts them under <resources>, real files outside
+ * app.asar; unpackaged, the repository's own resources/), and the gpu_backend choice main read before the worker
+ * starts (prepareGpuBackend).
  */
-function workerOptions({ isPackaged, resourcesPath, appDir }) {
-  return { type: 'module', workerData: { modelsDir: isPackaged ? path.join(resourcesPath, 'models') : path.join(appDir, 'resources', 'models') } };
+function workerOptions({ isPackaged, resourcesPath, appDir, gpuBackend = 'auto' }) {
+  const resources = isPackaged ? resourcesPath : path.join(appDir, 'resources');
+  return { type: 'module', workerData: { modelsDir: path.join(resources, 'models'), cudaPackManifest: path.join(resources, 'cuda-pack', 'manifest.json'), gpuBackend } };
+}
+
+// What prepareGpuBackend decided at app start, for every worker this process starts.
+let gpuStart = { gpuBackend: 'auto' };
+
+/**
+ * Before the first worker (hardware and offload, D-CUDA-2): reads gpu_backend, and when it may use CUDA and this
+ * engine's pack is installed (reached through real folders only, core/cuda-pack.mts::installedPackDir), puts the
+ * pack's cuda-runtime/ first on PATH, where the Windows loader finds cuBLAS. Only possible at start: the backend is
+ * decided once per process (D-CUDA-4). Never stops the start: on any error, auto without the pack.
+ */
+async function prepareGpuBackend(dataHome, env = process.env) {
+  let gpuBackend = 'auto';
+  try {
+    const { SettingsService } = await import('./core/settings.mts');
+    const saved = (await new SettingsService(dataHome).global()).gpu_backend;
+    if (['auto', 'cuda', 'vulkan', 'cpu'].includes(saved)) gpuBackend = saved;
+  } catch (error) {
+    console.error(`[cuda-pack] réglage gpu_backend illisible : ${error instanceof Error ? error.message : String(error)}`);
+  }
+  let runtimeDir = null;
+  if (gpuBackend === 'auto' || gpuBackend === 'cuda') {
+    try {
+      const engineVersion = JSON.parse(readFileSync(path.join(__dirname, 'node_modules', 'node-llama-cpp', 'package.json'), 'utf8')).version;
+      const dir = await (await import('./core/cuda-pack.mts')).installedPackDir(dataHome, engineVersion);
+      if (dir) {
+        runtimeDir = path.join(dir, 'cuda-runtime');
+        env.PATH = env.PATH ? `${runtimeDir}${path.delimiter}${env.PATH}` : runtimeDir;
+      }
+    } catch (error) {
+      console.error(`[cuda-pack] ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return { gpuBackend, runtimeDir };
 }
 
 function startBackend() {
-  backend = new Worker(path.join(__dirname, 'worker.mjs'), workerOptions({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appDir: __dirname }));
+  backend = new Worker(path.join(__dirname, 'worker.mjs'), workerOptions({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appDir: __dirname, gpuBackend: gpuStart.gpuBackend }));
   backend.on('message', message => {
     const done = pending.get(message.id);
     if (done) { pending.delete(message.id); message.ok ? done.resolve(message.result) : done.reject(new Error(message.error)); }
@@ -321,7 +357,8 @@ if (require.main === module) {
       try {
         // The data home is resolved before anything opens: a broken redirect.json stops the start here, with the file to fix.
         // The online-provider secrets are erased there too, before the worker starts (an erasure error never stops it).
-        await prepareDataHome();
+        const { dataHome } = await prepareDataHome();
+        gpuStart = await prepareGpuBackend(dataHome);
       } catch (error) {
         // Nothing has started yet (no window, no worker, no tray): say why, then exit at once with a non-zero code,
         // which also releases the single-instance lock — otherwise every relaunch would hand off to an invisible
@@ -367,4 +404,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { restartApp, workerOptions, resolveMainDataHome, prepareDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, isExportFilename, notificationBodyFor };
+module.exports = { restartApp, workerOptions, prepareGpuBackend, resolveMainDataHome, prepareDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, isExportFilename, notificationBodyFor };

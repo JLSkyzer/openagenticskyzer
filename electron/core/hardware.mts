@@ -1,7 +1,7 @@
 // What this machine offers a local model: the backend the runtime Llama uses, the card(s) and their VRAM, the
 // RAM and the CPU. Free memory is read on every call.
 import os from 'node:os';
-import { runtimeLlama, backendOf } from './llama-runtime.mts';
+import { runtimeLlama, backendOf, runtimeNotice } from './llama-runtime.mts';
 import type { Backend } from './placement.mts';
 
 export interface HardwareInfo {
@@ -32,6 +32,6 @@ export async function readHardware(): Promise<HardwareInfo> {
     ram: { total: os.totalmem(), free: os.freemem() },
     cpu: { model: os.cpus()[0]?.model ?? '', mathCores: llama.cpuMathCores, logicalCores: os.availableParallelism() },
     nvidia: gpuNames.some(name => /nvidia/i.test(name)),
-    notice: null,
+    notice: runtimeNotice(),
   };
 }

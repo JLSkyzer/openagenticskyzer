@@ -73,7 +73,27 @@ app.whenReady().then(async () => {
     estimates = await win.webContents.executeJavaScript('window.__estimates');
     assert.equal(estimates.length, 1, 'unsubscribe stops further estimate delivery');
 
-    process.stdout.write(`PASS preload onAgentEvent and onEstimateEvent filter and unsubscribe (Electron ${process.versions.electron})\n`);
+    // onCudaPackEvent (hardware and offload, Task 10): only the 'cuda-pack' event reaches it, and unsubscribing stops delivery.
+    await win.webContents.executeJavaScript(`
+      window.__cudaPack = [];
+      window.__unsubscribeCudaPack = window.openagent.onCudaPackEvent(event => window.__cudaPack.push(event));
+      true;
+    `);
+    send({ type: 'event', event: 'cuda-pack', installId: 'i1', state: 'progress', receivedBytes: 1, totalBytes: 2 });
+    send({ type: 'event', event: 'estimate', estimateId: 'e3', modelId: 'm1', state: 'cancelled' }); // filtered out
+    send({ type: 'response', id: 'z', ok: true, result: {} }); // filtered out
+    await new Promise(resolve => setTimeout(resolve, 100));
+    let packEvents = await win.webContents.executeJavaScript('window.__cudaPack');
+    assert.equal(packEvents.length, 1, 'only the cuda-pack event reaches onCudaPackEvent');
+    assert.equal(packEvents[0].installId, 'i1');
+    assert.equal(packEvents[0].state, 'progress');
+    await win.webContents.executeJavaScript('window.__unsubscribeCudaPack()');
+    send({ type: 'event', event: 'cuda-pack', installId: 'i1', state: 'done' });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    packEvents = await win.webContents.executeJavaScript('window.__cudaPack');
+    assert.equal(packEvents.length, 1, 'unsubscribe stops further cuda-pack delivery');
+
+    process.stdout.write(`PASS preload onAgentEvent, onEstimateEvent and onCudaPackEvent filter and unsubscribe (Electron ${process.versions.electron})\n`);
   } finally {
     win.destroy();
   }

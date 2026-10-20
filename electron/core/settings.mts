@@ -13,6 +13,9 @@ export const globalDefaults = {
   active_local_model: '',
   // « Contexte des modèles locaux »: the engine context asked for, capped by the model (context-budget.mts::localContextSize).
   local_context: 32768 as number | 'max',
+  // « Moteur » (hardware and offload, Task 10): auto | cuda | vulkan | cpu, applied at the next app start
+  // (core/llama-runtime.mts decides the backend once per worker; main.cjs reads it before creating the worker).
+  gpu_backend: 'auto' as 'auto' | 'cuda' | 'vulkan' | 'cpu',
 };
 export const projectDefaults = {
   agent_mode: 'inherit', ignored_patterns: 'node_modules/, .env, dist/',
@@ -31,6 +34,7 @@ const globalRules: Record<string, Rule> = {
   agent_mode: choice('ask', 'auto', 'plan'), auto_compact: bool, compact_threshold: integer(40, 95),
   max_tokens: v => v === null || integer(2048, 2097152)(v), reserved_tokens: integer(1, 65536),
   local_context: choice(16384, 32768, 65536, 131072, 'max'),
+  gpu_backend: choice('auto', 'cuda', 'vulkan', 'cpu'),
   show_context_bar: bool, session_retention_days: choice(0, 7, 30, 90), animations: bool,
   restore_last_folder: bool, ...permissionRules,
   data_dir: text(1000), hf_token: text(1000),

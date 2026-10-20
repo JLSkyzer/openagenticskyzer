@@ -101,8 +101,17 @@ test('main never passes the test seam to the worker, packaged or not, whatever t
     const { workerOptions } = require('../main.cjs');
     for (const isPackaged of [true, false])
       assert.equal('testProviderModule' in workerOptions({ isPackaged, resourcesPath: 'C:\\r', appDir: 'C:\\a' }).workerData, false);
-    for (const isPackaged of [true, false])
-      assert.deepEqual(Object.keys(workerOptions({ isPackaged, resourcesPath: 'C:\\r', appDir: 'C:\\a' }).workerData), ['modelsDir']);
+    for (const isPackaged of [true, false]) {
+      const { workerData } = workerOptions({ isPackaged, resourcesPath: 'C:\\r', appDir: 'C:\\a' });
+      assert.deepEqual(Object.keys(workerData), ['modelsDir', 'cudaPackManifest', 'gpuBackend']);
+      // Test-only: a download source other than the app's own GitHub release is never passed by main.
+      assert.equal('cudaPackBaseUrl' in workerData, false);
+      assert.equal(workerData.gpuBackend, 'auto', 'no choice read: auto');
+    }
+    assert.equal(workerOptions({ isPackaged: true, resourcesPath: 'C:\\r', appDir: 'C:\\a', gpuBackend: 'cpu' }).workerData.gpuBackend, 'cpu');
+    // The CUDA pack manifest is the copy shipped with the app: extraResources once packaged, resources/ otherwise.
+    assert.equal(workerOptions({ isPackaged: true, resourcesPath: 'C:\\r', appDir: 'C:\\a' }).workerData.cudaPackManifest, 'C:\\r\\cuda-pack\\manifest.json');
+    assert.equal(workerOptions({ isPackaged: false, resourcesPath: 'C:\\r', appDir: 'C:\\a' }).workerData.cudaPackManifest, 'C:\\a\\resources\\cuda-pack\\manifest.json');
     // The bundled embedding model: extraResources once packaged, the repository's resources/models otherwise.
     assert.equal(workerOptions({ isPackaged: true, resourcesPath: 'C:\\r', appDir: 'C:\\a' }).workerData.modelsDir, 'C:\\r\\models');
     assert.equal(workerOptions({ isPackaged: false, resourcesPath: 'C:\\r', appDir: 'C:\\a' }).workerData.modelsDir, 'C:\\a\\resources\\models');

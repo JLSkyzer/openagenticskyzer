@@ -3,8 +3,11 @@ import type {
   Attachment,
   BranchInfo,
   ChatMessage,
+  CudaPackProgress,
+  CudaPackView,
   EstimateEvent,
   FolderListItem,
+  GpuBackendChoice,
   HardwareInfo,
   IndexEvent,
   IndexState,
@@ -80,6 +83,8 @@ export function getIndexStatus(folder: string): Promise<{ state: IndexState; cur
 export interface GlobalSettings {
   theme: 'dark' | 'light';
   accent_color: string;
+  /** « Moteur »: applied at the next app start. */
+  gpu_backend?: GpuBackendChoice;
   [key: string]: unknown;
 }
 
@@ -321,6 +326,28 @@ export function onEstimateEvent(listener: (event: Omit<EstimateEvent, 'type' | '
   return window.openagent.onEstimateEvent(({ type: _type, event: _event, ...rest }) => listener(rest));
 }
 
+// The optional CUDA pack (core/cuda-pack.mts): its state, and whether an app restart is needed to apply what is saved.
+export function getCudaPackStatus(): Promise<CudaPackView> {
+  return request('cuda-pack-status');
+}
+
+// Answered at once with the install's id; its progress and end arrive through onCudaPackEvent.
+export function installCudaPack(): Promise<{ installId: string }> {
+  return request('cuda-pack-install');
+}
+
+export function cancelCudaPackInstall(installId: string): Promise<{ cancelled: boolean }> {
+  return request('cuda-pack-cancel', { installId });
+}
+
+export function uninstallCudaPack(): Promise<CudaPackView> {
+  return request('cuda-pack-uninstall');
+}
+
+export function onCudaPackEvent(listener: (event: CudaPackProgress) => void): () => void {
+  return window.openagent.onCudaPackEvent(({ type: _type, event: _event, ...rest }) => listener(rest as CudaPackProgress));
+}
+
 // Zone Danger: none of these delete project files, only history / sidebar entries / settings.
 export function clearHistory(folder: string): Promise<{ removed_messages: number }> {
   return request('clear-history', { folder });
@@ -347,8 +374,13 @@ export type {
   Attachment,
   BranchInfo,
   ChatMessage,
+  CudaPackEvent,
+  CudaPackProgress,
+  CudaPackState,
+  CudaPackView,
   EstimateEvent,
   FolderListItem,
+  GpuBackendChoice,
   HardwareInfo,
   IndexEvent,
   IndexState,

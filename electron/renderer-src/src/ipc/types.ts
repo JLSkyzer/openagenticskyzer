@@ -62,7 +62,10 @@ export interface Placement {
   fit: Fit;
 }
 
-// Mirrors core/hardware.mts::HardwareInfo.
+// Mirrors core/llama-runtime.mts::GpuBackendChoice (the gpu_backend setting).
+export type GpuBackendChoice = 'auto' | 'cuda' | 'vulkan' | 'cpu';
+
+// Mirrors core/hardware.mts::HardwareInfo, plus what worker.mjs adds to op hardware-info.
 export interface HardwareInfo {
   backend: Backend;
   gpuNames: string[];
@@ -70,8 +73,34 @@ export interface HardwareInfo {
   ram: { total: number; free: number };
   cpu: { model: string; mathCores: number; logicalCores: number };
   nvidia: boolean;
+  /** Why the engine is not on the expected backend (a CUDA pack that failed or is stale), else null. */
+  notice: string | null;
+  /** The gpu_backend this worker started with (the backend is decided once per app start). */
+  backendChoice: GpuBackendChoice;
+  /** What is saved now (pack, gpu_backend) needs an app restart to apply. */
+  restartRequired: boolean;
+}
+
+// Mirrors core/cuda-pack.mts::CudaPackStatus, plus what worker.mjs adds (CudaPackView).
+export type CudaPackState = 'unavailable' | 'absent' | 'installing' | 'installed' | 'mismatch';
+export interface CudaPackView {
+  state: CudaPackState;
+  downloadBytes: number | null;
+  installedBytes: number | null;
+  installedVersion: string | null;
+  expectedVersion: string;
+  restartRequired: boolean;
   notice: string | null;
 }
+
+// A CUDA pack install's progress and end (worker.mjs, op cuda-pack-install).
+export type CudaPackProgress = { installId: string } & (
+  | { state: 'progress'; receivedBytes: number; totalBytes: number }
+  | { state: 'done' }
+  | { state: 'cancelled' }
+  | { state: 'error'; message: string }
+);
+export type CudaPackEvent = { type: 'event'; event: 'cuda-pack' } & CudaPackProgress;
 
 // The end of a background offload estimate (worker.mjs, op estimate-model).
 export interface EstimateEvent {
@@ -165,6 +194,7 @@ export interface OpenAgentBridge {
   onIndexEvent(callback: (event: IndexEvent) => void): () => void;
   onModelEvent(callback: (status: ModelStatus & { type: 'event'; event: 'model' }) => void): () => void;
   onEstimateEvent(callback: (event: EstimateEvent) => void): () => void;
+  onCudaPackEvent(callback: (event: CudaPackEvent) => void): () => void;
   onUpdateStatus(callback: (status: UpdateStatus) => void): () => void;
 }
 

@@ -35,6 +35,20 @@ test('hardware and estimate bridges send their exact ops', async () => {
   ]);
 });
 
+test('CUDA pack bridges send their exact ops and payloads', async () => {
+  calls.length = 0;
+  await bridge.getCudaPackStatus();
+  await bridge.installCudaPack();
+  await bridge.cancelCudaPackInstall('i1');
+  await bridge.uninstallCudaPack();
+  assert.deepEqual(calls, [
+    { op: 'cuda-pack-status', payload: undefined },
+    { op: 'cuda-pack-install', payload: undefined },
+    { op: 'cuda-pack-cancel', payload: { installId: 'i1' } },
+    { op: 'cuda-pack-uninstall', payload: undefined },
+  ]);
+});
+
 test('danger zone bridges call their dedicated ops with the folder', async () => {
   calls.length = 0;
   await bridge.clearHistory('D:\\proj');

@@ -21,6 +21,7 @@ export interface CudaPackStatus { state: CudaPackState; downloadBytes: number | 
 export const CUDA_PACK_MARGIN_BYTES = 268_435_456;
 export const CUDA_PACK_UNAVAILABLE = "Pack CUDA non disponible pour cette version de l'app.";
 export const CUDA_PACK_BUSY = 'Une installation du pack CUDA est déjà en cours.';
+export const CUDA_PACK_TURN_BUSY = "Une réponse du modèle est en cours : attends la fin avant d'installer ou de désinstaller le pack CUDA.";
 const MAX_REDIRECTS = 5;
 export const CUDA_PACK_IDLE_TIMEOUT_MS = 60_000;
 // The final rename's waits between tries (5 tries, about 2 s in all): an antivirus often holds fresh DLLs a moment.
@@ -74,6 +75,19 @@ export function releaseBaseUrl(pkg: { version: string; build: { publish: unknown
   return `https://github.com/${owner}/${repo}/releases/download/v${pkg.version}/`;
 }
 
+/** The only plain-http source accepted, and only from tests: http://127.0.0.1:<port>/… */
+function isTestLoopback(url: URL): boolean {
+  return url.protocol === 'http:' && url.hostname === '127.0.0.1' && url.port !== '';
+}
+
+/** A test download source (worker.mjs, workerData.cudaPackBaseUrl): a loopback URL, else refused at worker start. */
+export function checkTestBaseUrl(value: unknown): string {
+  let parsed: URL | null = null;
+  try { parsed = typeof value === 'string' ? new URL(value) : null; } catch { parsed = null; }
+  if (!parsed || !isTestLoopback(parsed)) throw new Error(cudaPackUrlRefused(String(value)));
+  return value as string;
+}
+
 /** Free bytes for this user on the disk of `dir` (statfs: bavail * bsize). */
 export async function freeBytes(dir: string): Promise<number> {
   const info = await statfs(dir);
@@ -112,6 +126,31 @@ async function readMarker(dir: string): Promise<PackMarker | null> {
   } catch {
     return null;
   }
+}
+
+/** <dataHome>/cuda-pack/current/pack.json, read only through real directories (never through a link or junction). */
+async function installedMarker(dataHome: string): Promise<PackMarker | null> {
+  const base = join(dataHome, 'cuda-pack');
+  const current = join(base, 'current');
+  try {
+    for (const dir of [base, current]) {
+      const info = await lstat(dir);
+      if (info.isSymbolicLink() || !info.isDirectory()) return null;
+    }
+  } catch {
+    return null;
+  }
+  return readMarker(current);
+}
+
+/**
+ * For the main process, before it creates the worker (D-CUDA-2: the pack's runtime folder goes on PATH then):
+ * `<dataHome>/cuda-pack/current` when it holds this engine version's pack, reached through real directories only;
+ * else null. The worker checks again on its own before it activates anything.
+ */
+export async function installedPackDir(dataHome: string, engineVersion: string): Promise<string | null> {
+  const marker = await installedMarker(dataHome);
+  return marker?.nodeLlamaCppVersion === engineVersion ? join(dataHome, 'cuda-pack', 'current') : null;
 }
 
 function abortError(): Error {
@@ -164,14 +203,7 @@ export class CudaPack {
 
   /** current/pack.json, read only through real directories (never through a link at cuda-pack or current). */
   private async installedMarker(): Promise<PackMarker | null> {
-    try {
-      if ((await this.checkBase(false)) !== 'ok') return null;
-      const info = await lstat(this.current);
-      if (info.isSymbolicLink() || !info.isDirectory()) return null;
-    } catch {
-      return null;
-    }
-    return readMarker(this.current);
+    return installedMarker(this.dataHome);
   }
 
   /** The shipped manifest, only if it is the pack of this engine version. */
@@ -201,7 +233,7 @@ export class CudaPack {
   private checkUrl(url: string): URL {
     let parsed: URL;
     try { parsed = new URL(url); } catch { throw new Error(cudaPackUrlRefused(url)); }
-    const loopback = this.allowLoopback && parsed.protocol === 'http:' && parsed.hostname === '127.0.0.1' && parsed.port !== '';
+    const loopback = this.allowLoopback && isTestLoopback(parsed);
     if (parsed.protocol !== 'https:' && !loopback) throw new Error(cudaPackUrlRefused(url));
     return parsed;
   }
@@ -312,6 +344,13 @@ export class CudaPack {
    * maps (EBUSY/EPERM) keeps it: it is renamed aside if Windows allows, else left; finishPendingRemoval() ends it.
    */
   private async removeCurrent(): Promise<void> {
+    // `current` itself a link or junction (the base was checked real): only the link goes, nothing through it.
+    let info;
+    try { info = await lstat(this.current); } catch (error) { if (errorCode(error) === 'ENOENT') return; throw error; }
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      await rm(this.current, { force: true });
+      return;
+    }
     try { await unlink(join(this.current, 'pack.json')); } catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
     try {
       await rm(this.current, { recursive: true, force: true, maxRetries: 3 });

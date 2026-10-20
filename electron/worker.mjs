@@ -1,8 +1,9 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { join, resolve, isAbsolute, relative, sep } from 'node:path';
-import { writeFile, realpath, lstat } from 'node:fs/promises';
+import { writeFile, realpath, lstat, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { getModuleVersion } from 'node-llama-cpp';
 import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
 import { FoldersService } from './core/folders.mts';
@@ -11,7 +12,8 @@ import { localProvider, plannedContextSize } from './core/local-engine.mts';
 import { EstimateCache, estimateAndRemember, estimateKey, hardwareKey, ESTIMATE_BUSY } from './core/offload-estimate.mts';
 import { EstimateJobs } from './core/estimate-jobs.mts';
 import { readHardware } from './core/hardware.mts';
-import { disposeLlama } from './core/llama-runtime.mts';
+import { disposeLlama, setCudaPackSource, setRuntimeStart, backendChoice, restartRequired, runtimeNotice, GPU_BACKEND_CHOICES } from './core/llama-runtime.mts';
+import { CudaPack, releaseBaseUrl, checkTestBaseUrl, CUDA_PACK_BUSY, CUDA_PACK_TURN_BUSY, CUDA_PACK_UNAVAILABLE } from './core/cuda-pack.mts';
 import { offeredTools, runAgent, TOOL_NAME_PATTERN } from './core/agent.mts';
 import { basePrompt } from './core/system-prompt.mts';
 import { workspaceTools } from './core/workspace.mts';
@@ -62,6 +64,33 @@ const testSeam = typeof workerData?.testProviderModule === 'string' && workerDat
   ? await import(pathToFileURL(workerData.testProviderModule).href)
   : null;
 const settings = new SettingsService(dataHome);
+// The CUDA pack (hardware and offload, Task 10). Its manifest is the copy shipped with the app (main.cjs passes
+// where it lives; a worker started without it, in tests, uses the repository's resources/). Its parts come from the
+// app's own GitHub release. TEST SEAM: only a test passes workerData.cudaPackBaseUrl, a loopback URL; anything else
+// there stops the worker at start, and main.cjs never passes it (tests/test-seam.test.mts).
+const testPackBaseUrl = workerData?.cudaPackBaseUrl == null ? null : checkTestBaseUrl(workerData.cudaPackBaseUrl);
+let releaseUrl = '';
+try { releaseUrl = releaseBaseUrl(JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8'))); }
+catch (error) { console.warn(`[cuda-pack] ${error instanceof Error ? error.message : String(error)}`); }
+const cudaPack = new CudaPack({
+  dataHome,
+  manifestPath: typeof workerData?.cudaPackManifest === 'string' && workerData.cudaPackManifest
+    ? workerData.cudaPackManifest
+    : fileURLToPath(new URL('./resources/cuda-pack/manifest.json', import.meta.url)),
+  baseUrl: testPackBaseUrl ?? releaseUrl,
+  engineVersion: await getModuleVersion(),
+  allowLoopback: testPackBaseUrl !== null,
+});
+// Before any install can begin and before any Llama: what an earlier uninstall or install left is finished first.
+await cudaPack.finishPendingRemoval();
+setCudaPackSource(cudaPack);
+// The backend is decided once per worker (core/llama-runtime.mts): main.cjs passes the gpu_backend it read before
+// putting the pack's runtime on PATH; a worker started without it (tests) reads the setting itself.
+const savedBackend = () => settings.global().then(saved => saved.gpu_backend, () => 'auto');
+setRuntimeStart({
+  choice: GPU_BACKEND_CHOICES.includes(workerData?.gpuBackend) ? workerData.gpuBackend : await savedBackend(),
+  packDir: await cudaPack.installedDir().catch(() => null),
+});
 const trust = new ProjectTrustService(dataHome, settings);
 const conversations = new Conversations();
 const folders = new FoldersService(dataHome);
@@ -137,7 +166,7 @@ const mcpDiscoveries = new Map();
 const mcpDiscoveryKey = (folder, server) => JSON.stringify([server.scope === 'project' ? resolve(String(folder)) : null, serverIdentity(server)]);
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'model-status', 'hardware-info', 'estimate-model', 'estimate-cancel', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-add-remote', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'project-trust', 'trust-project', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'model-status', 'hardware-info', 'estimate-model', 'estimate-cancel', 'cuda-pack-status', 'cuda-pack-install', 'cuda-pack-cancel', 'cuda-pack-uninstall', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-add-remote', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'project-trust', 'trust-project', 'shutdown']);
 
 // Anything in `active` on this folder — an agent run or a compaction — is writing its transcript.
 function runningIn(folder) {
@@ -599,6 +628,52 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
   }
 }
 
+/** Whether what is saved now (the pack, gpu_backend) would start another backend than this worker's (D-CUDA-4). */
+async function restartNeeded() {
+  const [dir, saved] = await Promise.all([cudaPack.installedDir().catch(() => null), savedBackend()]);
+  return restartRequired(dir, GPU_BACKEND_CHOICES.includes(saved) ? saved : 'auto');
+}
+async function cudaPackView() {
+  return { ...await cudaPack.status(), restartRequired: await restartNeeded(), notice: runtimeNotice() };
+}
+// The one CUDA pack install of this worker, if any: { id, controller }.
+let cudaInstall = null;
+/** Op cuda-pack-install, up to its answer: reserved before the first await, so two requests cannot both start one. */
+async function reserveCudaPackInstall() {
+  if (cudaInstall) throw new Error(CUDA_PACK_BUSY);
+  // A turn has the machine to itself, and the pack may be the backend it runs on.
+  if (active.size > 0) throw new Error(CUDA_PACK_TURN_BUSY);
+  const job = { id: randomUUID(), controller: new AbortController() };
+  cudaInstall = job;
+  try {
+    if ((await cudaPack.status()).state === 'unavailable') throw new Error(CUDA_PACK_UNAVAILABLE);
+  } catch (error) {
+    cudaInstall = null;
+    throw error;
+  }
+  return job;
+}
+/** The install itself, in the background: progress at most every 250 ms, then one done / cancelled / error event. */
+async function runCudaPackInstall(job) {
+  const post = patch => parentPort.postMessage({ type: 'event', event: 'cuda-pack', installId: job.id, ...patch });
+  let last = -Infinity;
+  const onProgress = (receivedBytes, totalBytes) => {
+    const now = Date.now();
+    if (now - last < 250) return;
+    last = now;
+    post({ state: 'progress', receivedBytes, totalBytes });
+  };
+  let outcome;
+  try {
+    await cudaPack.install({ signal: job.controller.signal, onProgress });
+    outcome = { state: 'done' };
+  } catch (error) {
+    outcome = job.controller.signal.aborted ? { state: 'cancelled' } : { state: 'error', message: error instanceof Error ? error.message : 'Erreur interne' };
+  }
+  if (cudaInstall === job) cudaInstall = null;
+  post(outcome);
+}
+
 function reply(id, ok, result, error) { parentPort.postMessage({ type: 'response', id, ok, ...(ok ? { result } : { error }) }); }
 async function handle(message) {
   const { id, op, payload = {} } = message || {};
@@ -610,7 +685,24 @@ async function handle(message) {
     if (op === 'gguf-remove') result = await ggufLibrary.remove(payload.id);
     if (op === 'model-status') result = await modelStatus(settings, ggufLibrary, estimateCache);
     // payload.refresh is accepted and ignored for now: every call re-reads free memory.
-    if (op === 'hardware-info') result = await readHardware();
+    if (op === 'hardware-info') result = { ...await readHardware(), backendChoice: backendChoice(), restartRequired: await restartNeeded() };
+    if (op === 'cuda-pack-status') result = await cudaPackView();
+    if (op === 'cuda-pack-install') {
+      const job = await reserveCudaPackInstall();
+      reply(id, true, { installId: job.id });
+      void runCudaPackInstall(job);
+      return;
+    }
+    if (op === 'cuda-pack-cancel') {
+      const job = cudaInstall && cudaInstall.id === String(payload.installId ?? '') ? cudaInstall : null;
+      job?.controller.abort();
+      result = { cancelled: Boolean(job) };
+    }
+    if (op === 'cuda-pack-uninstall') {
+      if (active.size > 0) throw new Error(CUDA_PACK_TURN_BUSY);
+      await cudaPack.uninstall();
+      result = await cudaPackView();
+    }
     if (op === 'estimate-model') result = await estimateModel(payload);
     if (op === 'estimate-cancel') result = { cancelled: estimateJobs.cancel(String(payload.estimateId ?? '')) };
     if (op === 'git-status') result = await gitStatus(payload.folder);
@@ -735,6 +827,7 @@ async function handle(message) {
       // whole process trees included — terminating this thread would leave them running.
       for (const run of active.values()) run.controller.abort();
       estimateJobs.cancelAll();
+      cudaInstall?.controller.abort();
       // MCP processes too: a discovery has no abort signal, and a call's session only closes once it unwinds.
       await Promise.all([stopAllServers(), stopAllMcpServers()]);
       // Then the local model and the Llama: several gigabytes of RAM/VRAM, freed rather than left to the exit.

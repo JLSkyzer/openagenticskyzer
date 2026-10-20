@@ -302,3 +302,21 @@ test('the final rename retries while Windows holds a freshly written file, then 
   }
   assert.deepEqual((await readdir(root)).sort(), ['current', 'staging2']);
 });
+
+test('uninstall with a `current` that is a junction inside a real cuda-pack: only the link goes, nothing through it', async t => {
+  const f = await fixture(t);
+  // Outside the data home: the marker and a file a junction at <home>/cuda-pack/current would expose.
+  const outside = join(f.root, 'outside-current');
+  await mkdir(outside, { recursive: true });
+  const marker = JSON.stringify({ nodeLlamaCppVersion: ENGINE, parts: [], installedAt: '2026-10-20T00:00:00Z' });
+  await writeFile(join(outside, 'pack.json'), marker);
+  await writeFile(join(outside, 'user-file.txt'), 'keep me');
+  await mkdir(join(f.home, 'cuda-pack'));
+  await symlink(outside, join(f.home, 'cuda-pack', 'current'), 'junction');
+  const pack = new CudaPack({ dataHome: f.home, manifestPath: f.manifestPath, baseUrl: 'https://example.invalid/', engineVersion: ENGINE });
+
+  assert.equal((await pack.uninstall()).state, 'absent');
+  assert.equal(await readFile(join(outside, 'pack.json'), 'utf8'), marker, 'the outside pack.json survives');
+  assert.equal(await readFile(join(outside, 'user-file.txt'), 'utf8'), 'keep me');
+  assert.deepEqual(await packEntries(f.home), [], 'the link itself is removed');
+});

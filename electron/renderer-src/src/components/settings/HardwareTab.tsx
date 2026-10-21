@@ -183,7 +183,7 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
               data-setting="gpu_backend"
               value={gpuBackend}
               onChange={event => draft.set('gpu_backend', event.target.value)}
-              className="w-72 rounded px-2 py-1 text-xs text-gray-200 outline-none"
+              className="w-auto min-w-0 max-w-full rounded px-2 py-1 text-xs text-gray-200 outline-none"
               style={selectStyle}
             >
               {GPU_BACKEND_OPTIONS.map(option => (

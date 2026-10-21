@@ -63,14 +63,32 @@ export function cudaPackUrlRefused(url: string): string {
   return `Adresse de téléchargement du pack CUDA refusée : ${url}`;
 }
 
-/** `https://github.com/<owner>/<repo>/releases/download/v<version>/`, from the single github entry of build.publish. */
-export function releaseBaseUrl(pkg: { version: string; build: { publish: unknown } }): string {
-  const entries = (Array.isArray(pkg.build.publish) ? pkg.build.publish : [pkg.build.publish]) as Array<Record<string, unknown> | null>;
-  const github = entries.filter(entry => entry?.provider === 'github');
-  const name = /^[A-Za-z0-9_.-]+$/;
-  if (github.length !== 1) throw new Error(`build.publish doit avoir exactement une entrée github (${github.length} trouvée(s)).`);
-  const { owner, repo } = github[0]!;
-  if (typeof owner !== 'string' || typeof repo !== 'string' || !name.test(owner) || !name.test(repo)) throw new Error('build.publish : owner ou repo invalide.');
+const GITHUB_NAME = /^[A-Za-z0-9_.-]+$/;
+
+/**
+ * The GitHub owner/repo of package.json's standard `repository` field, in any npm form: `github:owner/repo`,
+ * `owner/repo`, `https://github.com/owner/repo(.git)` (also `git+https://`), or `{ type, url }` holding one of these.
+ * Anything else throws.
+ */
+export function repositoryOf(repository: unknown): { owner: string; repo: string } {
+  const raw = repository !== null && typeof repository === 'object' ? (repository as { url?: unknown }).url : repository;
+  if (typeof raw !== 'string') throw new Error('package.json : champ repository absent ou invalide.');
+  const match = /^(?:github:|(?:git\+)?https:\/\/github\.com\/)?([^/:]+)\/([^/]+?)(?:\.git)?$/.exec(raw);
+  const owner = match?.[1];
+  const repo = match?.[2];
+  if (!owner || !repo || !GITHUB_NAME.test(owner) || !GITHUB_NAME.test(repo) || owner.startsWith('.') || repo.startsWith('.')) {
+    throw new Error(`package.json : repository n'est pas un dépôt GitHub (${raw}).`);
+  }
+  return { owner, repo };
+}
+
+/**
+ * `https://github.com/<owner>/<repo>/releases/download/v<version>/`, from package.json's `repository` and `version`.
+ * Not from `build.publish`: electron-builder strips `build` from the packaged package.json (it keeps `repository`);
+ * a test keeps the two naming the same repository.
+ */
+export function releaseBaseUrl(pkg: { version?: unknown; repository?: unknown }): string {
+  const { owner, repo } = repositoryOf(pkg.repository);
   if (typeof pkg.version !== 'string' || !/^[0-9A-Za-z.+-]+$/.test(pkg.version)) throw new Error(`Version invalide : ${String(pkg.version)}`);
   return `https://github.com/${owner}/${repo}/releases/download/v${pkg.version}/`;
 }
@@ -167,6 +185,12 @@ export class CudaPack {
   private readonly free: (dir: string) => Promise<number>;
   private readonly idleTimeoutMs: number;
   private installing = false;
+  /**
+   * Why no install can work here (no valid download source), else null. Checked once, in the constructor: an app
+   * that cannot download the pack never offers it (status 'unavailable') and refuses an install before creating
+   * anything.
+   */
+  readonly unavailableReason: string | null;
 
   constructor(options: { dataHome: string; manifestPath: string; baseUrl: string; engineVersion: string; allowLoopback?: boolean; freeBytes?: (dir: string) => Promise<number>; idleTimeoutMs?: number }) {
     this.dataHome = options.dataHome;
@@ -176,6 +200,16 @@ export class CudaPack {
     this.allowLoopback = options.allowLoopback ?? false;
     this.free = options.freeBytes ?? freeBytes;
     this.idleTimeoutMs = options.idleTimeoutMs ?? CUDA_PACK_IDLE_TIMEOUT_MS;
+    this.unavailableReason = this.baseUrlProblem();
+  }
+
+  private baseUrlProblem(): string | null {
+    if (!this.baseUrl) return 'Aucune adresse de téléchargement pour le pack CUDA.';
+    let parsed: URL;
+    try { parsed = new URL(this.baseUrl); } catch { return cudaPackUrlRefused(this.baseUrl); }
+    const loopback = this.allowLoopback && isTestLoopback(parsed);
+    if ((parsed.protocol !== 'https:' && !loopback) || !this.baseUrl.endsWith('/')) return cudaPackUrlRefused(this.baseUrl);
+    return null;
   }
 
   private get base(): string { return join(this.dataHome, 'cuda-pack'); }
@@ -223,6 +257,7 @@ export class CudaPack {
       const state = marker.nodeLlamaCppVersion === this.engineVersion ? 'installed' : 'mismatch';
       return { state, ...base, installedVersion: marker.nodeLlamaCppVersion };
     }
+    if (this.unavailableReason !== null) return { state: 'unavailable', downloadBytes: null, installedBytes: null, expectedVersion: this.engineVersion, installedVersion: null };
     return { state: manifest ? 'absent' : 'unavailable', ...base, installedVersion: null };
   }
 
@@ -260,6 +295,7 @@ export class CudaPack {
 
   async install(options: { signal?: AbortSignal; onProgress?(received: number, total: number): void } = {}): Promise<CudaPackStatus> {
     if (this.installing) throw new Error(CUDA_PACK_BUSY);
+    if (this.unavailableReason !== null) throw new Error(CUDA_PACK_UNAVAILABLE);
     this.installing = true;
     try {
       await this.installOnce(options);

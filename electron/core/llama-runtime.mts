@@ -11,7 +11,7 @@ import { registerHooks } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isMainThread } from 'node:worker_threads';
-import { getLlama, type Llama, type LlamaOptions } from 'node-llama-cpp';
+import { getLlama, Llama, LlamaLogLevel, LlamaLogLevelGreaterThanOrEqual, type LlamaOptions } from 'node-llama-cpp';
 import type { Backend } from './placement.mts';
 import type { CudaPackStatus } from './cuda-pack.mts';
 import { disposeEngine } from './local-engine.mts';
@@ -101,9 +101,42 @@ function activatePack(dir: string): void {
   hookedDir = dir;
 }
 
+const GIB = 1024 ** 3;
+
+/**
+ * The VRAM padding a Llama of `backend` is created with (I-1): undefined keeps node-llama-cpp's default
+ * (min(8 % of the total, 1.6 GiB)). Vulkan on Windows only: ggml-vulkan reads free VRAM from VK_EXT_memory_budget,
+ * the WDDM per-process budget, which a probe found about 1 GiB above nvidia-smi (7188 vs 6193 MiB, 2026-10-21) — the
+ * default padding was swallowed by that gap, and the driver moved 3.8 GiB of a 27B into shared system memory. The
+ * padding is set on the ONE runtime Llama, so the estimate and the load fit layers against the same free VRAM.
+ */
+export function vramPaddingFor(backend: Backend, platform: NodeJS.Platform = process.platform): ((totalVram: number) => number) | undefined {
+  if (backend !== 'vulkan' || platform !== 'win32') return undefined;
+  return totalVram => Math.min(Math.floor(totalVram * 0.2), 2.5 * GIB);
+}
+
+/**
+ * llama.cpp's log, received at « info »: warnings and errors go to node-llama-cpp's own console logger as before;
+ * of the info lines, only the buffer sizes (« Vulkan0 / Vulkan_Host / CPU_Mapped model buffer size », KV and compute
+ * buffers) reach the app log, prefixed [llama.cpp] — they say where a load really put its bytes. The rest of the
+ * info (metadata dumps, one line per tensor) is dropped.
+ */
+export function llamaLogger(level: LlamaLogLevel, message: string): void {
+  if (LlamaLogLevelGreaterThanOrEqual(level, LlamaLogLevel.warn)) {
+    Llama.defaultConsoleLogger(level, message);
+    return;
+  }
+  if (/buffer size/.test(message)) console.info(`[llama.cpp] ${message.trim()}`);
+}
+
 // Every getLlama passes build: 'never': a missing or broken prebuilt binary never starts a download or a compilation.
-const llamaWith = (options: Omit<LlamaOptions, 'build'>) => getLlama({ ...options, build: 'never' });
-const withoutCuda = () => llamaWith({ gpu: { type: 'auto', exclude: ['cuda'] } });
+// `target` is the backend the call aims at, for its VRAM padding (vramPaddingFor); a processor result ignores it.
+function llamaWith(options: Omit<LlamaOptions, 'build' | 'vramPadding' | 'logLevel' | 'logger'>, target: Backend): Promise<Llama> {
+  const vramPadding = vramPaddingFor(target);
+  return getLlama({ ...options, build: 'never', logLevel: LlamaLogLevel.info, logger: llamaLogger, ...(vramPadding ? { vramPadding } : {}) });
+}
+// Without CUDA, a GPU Llama on Windows can only be Vulkan (or the processor, which has no padding).
+const withoutCuda = () => llamaWith({ gpu: { type: 'auto', exclude: ['cuda'] } }, 'vulkan');
 // A load error is never shown raw to the user (the French notice says what happened), but it is logged: the manual
 // CUDA check reads it there.
 function warn(what: string, error: unknown): void {
@@ -112,13 +145,13 @@ function warn(what: string, error: unknown): void {
 
 async function createLlama(): Promise<{ llama: Llama; notice: string | null }> {
   const { choice } = start;
-  if (choice === 'cpu') return { llama: await llamaWith({ gpu: false }), notice: null };
+  if (choice === 'cpu') return { llama: await llamaWith({ gpu: false }, 'cpu'), notice: null };
   if (choice === 'vulkan') {
     try {
-      return { llama: await llamaWith({ gpu: 'vulkan' }), notice: null };
+      return { llama: await llamaWith({ gpu: 'vulkan' }, 'vulkan'), notice: null };
     } catch (error) {
       warn('Vulkan ne se charge pas', error);
-      const llama = await llamaWith({ gpu: false });
+      const llama = await llamaWith({ gpu: false }, 'cpu');
       return { llama, notice: backendFallbackNotice('vulkan', backendOf(llama)) };
     }
   }
@@ -132,7 +165,7 @@ async function createLlama(): Promise<{ llama: Llama; notice: string | null }> {
   if (dir !== null && dir === start.packDir) {
     try {
       activatePack(dir);
-      return { llama: await llamaWith({ gpu: 'cuda' }), notice: null };
+      return { llama: await llamaWith({ gpu: 'cuda' }, 'cuda'), notice: null };
     } catch (error) {
       warn('le pack CUDA ne se charge pas', error);
       const llama = await withoutCuda();
@@ -143,8 +176,11 @@ async function createLlama(): Promise<{ llama: Llama; notice: string | null }> {
     const llama = await withoutCuda();
     return { llama, notice: cudaMissingNotice(backendOf(llama)) };
   }
-  // No gpu option: node-llama-cpp reads NODE_LLAMA_CPP_GPU (default auto).
-  return { llama: await getLlama({ build: 'never' }), notice: null };
+  // No gpu option: node-llama-cpp reads NODE_LLAMA_CPP_GPU (default auto). Without the pack, the packaged app ships
+  // no CUDA binary, so on Windows auto resolves to Vulkan or the processor: the Vulkan padding. (A dev checkout with
+  // @node-llama-cpp/win-x64-cuda installed could resolve to CUDA here: it then gets the Vulkan padding too, only more
+  // conservative; the [placement] log shows the padding in use.)
+  return { llama: await llamaWith({}, 'vulkan'), notice: null };
 }
 
 /** The worker's Llama, created once (see createLlama for the backend). A rejected creation is not cached: the next

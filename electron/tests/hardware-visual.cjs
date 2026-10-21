@@ -250,6 +250,20 @@ app.whenReady().then(async () => {
       el.dispatchEvent(new Event('change', { bubbles: true }));
     })()`);
     assert.equal(await js(`document.querySelector('[data-testid="oa-gpu-backend"]').value`), 'auto', 'the default is auto');
+    // M-3 (final review): the longest label, « Automatique (CUDA si le pack est installé, sinon Vulkan) », is shown
+    // whole: its text, in the select's own font, plus the select's padding and arrow fits the select.
+    const fit = JSON.parse(await js(`(() => {
+      const el = document.querySelector('[data-testid="oa-gpu-backend"]');
+      const style = getComputedStyle(el);
+      const probe = document.createElement('span');
+      probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font:' + style.font;
+      probe.textContent = el.options[el.selectedIndex].text;
+      document.body.appendChild(probe);
+      const text = probe.getBoundingClientRect().width;
+      probe.remove();
+      return JSON.stringify({ text, padding: parseFloat(style.paddingLeft) + parseFloat(style.paddingRight), width: el.clientWidth });
+    })()`));
+    assert.ok(fit.text + fit.padding + 16 <= fit.width, `the « Automatique » label fits its select: ${JSON.stringify(fit)}`);
     assert.equal(await restartShown(), false, 'nothing to restart for yet');
     await selectBackend('cpu');
     await waitFor(restartShown, { what: 'the restart offer after choosing « Processeur seul »' });

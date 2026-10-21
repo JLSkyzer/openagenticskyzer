@@ -293,6 +293,21 @@ test('6. a non-loopback cudaPackBaseUrl is refused at worker start', { timeout: 
   assert.equal((error as Error).message, cudaPackUrlRefused(url));
 });
 
+// C-1 (final review): the release source comes from package.json's `repository` (electron-builder strips `build` from
+// the packaged copy). With the shipped manifest and no test source, the worker offers the pack (absent, with its
+// sizes) and logs no [cuda-pack] warning.
+test('6b. without a test source, the worker reads its release source from package.json: absent with sizes, no [cuda-pack] warning', { timeout: 60000 }, async t => {
+  const f = await fixture(t);
+  const worker = new Worker(WORKER_URL, { env: { ...process.env, OPENAGENT_HOME: f.home }, workerData: { cudaPackManifest: f.manifestPath }, stderr: true });
+  terminateAtEnd(t, worker);
+  let stderr = '';
+  worker.stderr.on('data', chunk => { stderr += chunk; });
+  const status = await callWorker(worker, 'cuda-pack-status');
+  assert.equal(status.state, 'absent', JSON.stringify(status));
+  assert.equal(status.downloadBytes, f.manifest.downloadBytes);
+  assert.doesNotMatch(stderr, /\[cuda-pack\]/);
+});
+
 test('7. main, before the worker: the pack runtime goes first on PATH only for a valid pack and a CUDA-capable choice', { timeout: 60000 }, async t => {
   const { prepareGpuBackend } = createRequire(import.meta.url)('../main.cjs');
   const f = await fixture(t);

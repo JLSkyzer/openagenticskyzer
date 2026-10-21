@@ -97,6 +97,7 @@ import './worker-model.test.mts';
 import './local-only.test.mts';
 import './hardware.test.mts';
 import './offload-estimate.test.mts';
+import './llama-runtime.test.mts';
 import './worker-estimate.test.mts';
 import './placement-format.test.mts';
 import './hardware-view.test.mts';

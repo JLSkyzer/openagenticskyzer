@@ -69,9 +69,13 @@ const settings = new SettingsService(dataHome);
 // app's own GitHub release. TEST SEAM: only a test passes workerData.cudaPackBaseUrl, a loopback URL; anything else
 // there stops the worker at start, and main.cjs never passes it (tests/test-seam.test.mts).
 const testPackBaseUrl = workerData?.cudaPackBaseUrl == null ? null : checkTestBaseUrl(workerData.cudaPackBaseUrl);
+// The release source is read from package.json's `repository` (electron-builder strips `build` from the packaged copy).
+// Unreadable, the source stays empty: the CudaPack then says 'unavailable' and refuses any install, and the reason is
+// logged once below.
 let releaseUrl = '';
+let releaseError = null;
 try { releaseUrl = releaseBaseUrl(JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8'))); }
-catch (error) { console.warn(`[cuda-pack] ${error instanceof Error ? error.message : String(error)}`); }
+catch (error) { releaseError = error instanceof Error ? error.message : String(error); }
 const cudaPack = new CudaPack({
   dataHome,
   manifestPath: typeof workerData?.cudaPackManifest === 'string' && workerData.cudaPackManifest
@@ -81,6 +85,7 @@ const cudaPack = new CudaPack({
   engineVersion: await getModuleVersion(),
   allowLoopback: testPackBaseUrl !== null,
 });
+if (cudaPack.unavailableReason !== null) console.warn(`[cuda-pack] pack CUDA non proposé : ${releaseError ?? cudaPack.unavailableReason}`);
 // Before any install can begin and before any Llama: what an earlier uninstall or install left is finished first.
 await cudaPack.finishPendingRemoval();
 setCudaPackSource(cudaPack);
@@ -516,8 +521,11 @@ async function turnProvider(payload) {
 /**
  * Op estimate-model: where `modelId`'s layers (else the active model's) would go with the context it would be
  * loaded with. A cached estimate answers at once; otherwise a background job starts, the op answers its id, and the
- * job posts one 'estimate' event (done, cancelled or error). Refused during a turn or a compaction (ESTIMATE_BUSY).
+ * job posts one 'estimate' event (done, cancelled or error). Refused during a turn or a compaction: an expected
+ * refusal, so answered as a result ({ busy: true, message: ESTIMATE_BUSY }), never thrown (main logs what is thrown).
  */
+const estimateBusy = () => ({ busy: true, message: ESTIMATE_BUSY, estimateId: null, estimate: null });
+
 async function estimateModel(payload) {
   let model;
   if (payload.modelId) {
@@ -527,14 +535,14 @@ async function estimateModel(payload) {
     model = await activeModel(settings, ggufLibrary);
     if (!model) throw new Error(NO_LOCAL_MODEL);
   }
-  if (active.size > 0) throw new Error(ESTIMATE_BUSY);
+  if (active.size > 0) return estimateBusy();
   const contextSize = await plannedContextSize(model.path, await contextRequestOf(settings));
   const source = { kind: 'file', path: model.path };
   const key = await estimateKey(source, contextSize, await hardwareKey());
   const cached = await estimateCache.get(key);
   if (cached) return { estimateId: null, estimate: cached };
   // Checked again after the awaits above: a turn that started meanwhile has already cancelled every job.
-  if (active.size > 0) throw new Error(ESTIMATE_BUSY);
+  if (active.size > 0) return estimateBusy();
   const modelId = model.id;
   const { id } = estimateJobs.start(key, signal => estimateAndRemember(estimateCache, key, source, { contextSize, signal }), outcome => {
     const { id: estimateId, ...rest } = outcome;

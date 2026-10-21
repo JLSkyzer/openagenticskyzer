@@ -139,6 +139,14 @@ export async function contextOverflow(llama: Llama, insights: GgufInsights, cont
   return required > os.totalmem() + vramTotal ? required : null;
 }
 
+const mib = (bytes: number) => `${Math.round(bytes / 1024 ** 2)} Mio`;
+
+/** The one line a load logs (I-1): where its layers went, against which free VRAM and padding. */
+export function placementLogLine(p: { backend: string; gpuLayers: number; totalLayers: number; useMmap: boolean; vramBefore: { total: number; used: number; free: number } | null; padding: number; contextSize: number }): string {
+  const before = p.vramBefore ? `libre ${mib(p.vramBefore.free)} / total ${mib(p.vramBefore.total)} (utilisée ${mib(p.vramBefore.used)})` : 'illisible';
+  return `[placement] backend ${p.backend} · couches ${p.gpuLayers}/${p.totalLayers} sur la carte · mmap ${p.useMmap ? 'oui' : 'non'} · VRAM avant chargement : ${before} · marge VRAM ${mib(p.padding)} · contexte ${p.contextSize}`;
+}
+
 /**
  * Loads `modelPath` with exactly `contextSize` tokens of context, its layers placed by node-llama-cpp for THAT
  * context (`gpuLayers: { fitContext }`), and keeps it warm. The warm engine is reused only for the same path, the
@@ -156,6 +164,7 @@ async function loadLocked(modelPath: string, contextSize: number): Promise<Loade
   const llama = await runtimeLlama();
   const generation = runtimeGeneration();
   await assertContextCanFit(llama, modelPath, contextSize);
+  const vramBefore = await llama.getVramState().catch(() => null);
   let model: LlamaModel | null = null;
   try {
     nativeLoads += 1;
@@ -164,6 +173,7 @@ async function loadLocked(modelPath: string, contextSize: number): Promise<Loade
     // A fixed size: no silent shrink on failure (node-llama-cpp only retries an 'auto' size, said here anyway).
     const context = await model.createContext({ contextSize, failedCreationRemedy: false });
     loaded = { path: modelPath, requested: contextSize, generation, llama, model, context, chat: new LlamaChat({ contextSequence: context.getSequence() }) };
+    console.info(placementLogLine({ backend: backendOf(llama), gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, useMmap: model.useMmap, vramBefore, padding: llama.vramPaddingSize, contextSize: context.contextSize }));
     return loaded;
   } catch (error) {
     if (model) await disposeModel(model);

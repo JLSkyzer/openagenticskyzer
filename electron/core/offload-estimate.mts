@@ -60,12 +60,14 @@ class DisposableStore extends JsonStore {
   }
 }
 
-/** The estimates already computed, in <dataHome>/estimates.v1.json: the last ESTIMATE_CACHE_LIMIT set, oldest first. */
+/** The estimates already computed, in <dataHome>/estimates.v2.json: the last ESTIMATE_CACHE_LIMIT set, oldest first.
+ * v2 since the Vulkan/Windows VRAM padding (llama-runtime.mts::vramPaddingFor): v1 entries used the old padding and
+ * are never read. */
 export class EstimateCache {
   private readonly file: string;
   private readonly store = new DisposableStore();
   constructor(dataHome: string) {
-    this.file = join(dataHome, 'estimates.v1.json');
+    this.file = join(dataHome, 'estimates.v2.json');
   }
 
   /** The cached estimate, or null. An unreadable cache file reads as empty: it only costs a new estimate, and the
@@ -134,7 +136,8 @@ export async function estimatePlacement(source: ModelSource, options: { contextS
     let insufficient = false;
     try {
       // getVramState, the VRAM padding, the gpu type and offloading support are left to their defaults: the
-      // runtime Llama's own, exactly what loadModel passes by not passing them.
+      // runtime Llama's own (its padding set at creation, llama-runtime.mts::vramPaddingFor), exactly what loadModel
+      // passes by not passing them.
       const resolved = await insights.configurationResolver.resolveModelGpuLayersV2({ fitContext: { contextSize } }, {
         defaultContextFlashAttention: flashAttention,
         defaultContextSwaFullCache: false,

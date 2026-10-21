@@ -4,6 +4,7 @@
   "private": true,
   "description": "Native desktop interface for openagent",
   "main": "main.cjs",
+  "repository": "github:JLSkyzer/openagenticskyzer",
   "scripts": {
     "start": "electron .",
     "renderer:dev": "vite --config renderer-src/vite.config.mts",

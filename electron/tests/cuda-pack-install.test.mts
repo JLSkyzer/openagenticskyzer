@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { CUDA_PACK_CORRUPT, writePack, type CudaPackManifest, type PackFile } from '../core/cuda-pack-format.mts';
 import {
   CudaPack, CUDA_PACK_MARGIN_BYTES, CUDA_PACK_UNAVAILABLE, cudaPackDiskNotice, cudaPackStalled, cudaPackUnsafeBase, cudaPackUrlRefused, freeBytes,
-  releaseBaseUrl, renameWithRetry,
+  releaseBaseUrl, renameWithRetry, repositoryOf,
 } from '../core/cuda-pack.mts';
 import { startFakePackServer } from './support/fake-pack-server.mts';
 import { removeAtEnd } from './teardown.mts';
@@ -199,10 +199,11 @@ test('an installed pack for another engine version is a mismatch and has no inst
 
 test('URLs: https or loopback-for-tests only; redirects followed at most 5 times and never to http', async t => {
   const f = await fixture(t);
-  // Loopback http without allowLoopback: refused before any request.
+  // Loopback http without allowLoopback: not a valid source, so the pack is unavailable and no request is made.
   const server = await serve(t, f.packDir);
   const strict = new CudaPack({ dataHome: f.home, manifestPath: f.manifestPath, baseUrl: server.url, engineVersion: ENGINE });
-  await assert.rejects(strict.install(), { message: cudaPackUrlRefused(server.url + f.manifest.parts[0].name) });
+  assert.equal(strict.unavailableReason, cudaPackUrlRefused(server.url));
+  await assert.rejects(strict.install(), { message: CUDA_PACK_UNAVAILABLE });
   assert.equal(server.requests.length, 0);
 
   // A redirect to plain http elsewhere: refused, never requested (example.invalid never resolves anyway).
@@ -220,8 +221,50 @@ test('URLs: https or loopback-for-tests only; redirects followed at most 5 times
 
   // The real download source: the app's own GitHub release, from package.json (version read from the file).
   assert.equal(releaseBaseUrl(APP_PACKAGE), `https://github.com/JLSkyzer/openagenticskyzer/releases/download/v${APP_PACKAGE.version}/`);
-  assert.throws(() => releaseBaseUrl({ version: '1.0.0', build: { publish: [] } }));
+  assert.throws(() => releaseBaseUrl({ version: '1.0.0' }));
   assert.equal(cudaPackUrlRefused('ftp://x/'), 'Adresse de téléchargement du pack CUDA refusée : ftp://x/');
+});
+
+// C-1 (final review): electron-builder strips `build` from the packaged package.json, so the download source is read
+// from the standard `repository` field, which it keeps. The packaged file's shape: name, version, private,
+// description, main, dependencies, repository (read from the packaged app.asar on 2026-10-21).
+test('releaseBaseUrl reads `repository`: the packaged package.json, without `build`, still names the release', () => {
+  const { build: _build, scripts: _scripts, devDependencies: _dev, ...packaged } = APP_PACKAGE;
+  assert.equal(packaged.build, undefined);
+  assert.equal(releaseBaseUrl(packaged), `https://github.com/JLSkyzer/openagenticskyzer/releases/download/v${APP_PACKAGE.version}/`);
+});
+
+test('`repository` and the github entry of build.publish name the same owner/repo (release-win.cjs uploads by build.publish)', () => {
+  const github = (APP_PACKAGE.build.publish as Array<Record<string, unknown>>).filter(entry => entry.provider === 'github');
+  assert.equal(github.length, 1);
+  assert.deepEqual(repositoryOf(APP_PACKAGE.repository), { owner: github[0].owner, repo: github[0].repo });
+});
+
+test('repositoryOf accepts the npm forms of a GitHub repository and refuses anything else', () => {
+  const want = { owner: 'JLSkyzer', repo: 'openagenticskyzer' };
+  for (const form of [
+    'github:JLSkyzer/openagenticskyzer', 'JLSkyzer/openagenticskyzer', 'https://github.com/JLSkyzer/openagenticskyzer',
+    'https://github.com/JLSkyzer/openagenticskyzer.git', 'git+https://github.com/JLSkyzer/openagenticskyzer.git',
+    { type: 'git', url: 'https://github.com/JLSkyzer/openagenticskyzer.git' }, { type: 'git', url: 'github:JLSkyzer/openagenticskyzer' },
+  ]) assert.deepEqual(repositoryOf(form), want, JSON.stringify(form));
+  for (const bad of [undefined, null, '', 'gitlab:a/b', 'https://gitlab.com/a/b', 'a/b/c', 'a', '../x/y', { url: 42 }, 'https://github.com/a/b?x=1', 'a b/c']) {
+    assert.throws(() => repositoryOf(bad), JSON.stringify(bad));
+  }
+});
+
+test('a CudaPack without a valid download source is unavailable: no install offered, none started, nothing created', async t => {
+  const f = await fixture(t);
+  for (const baseUrl of ['', 'pas une adresse', 'http://example.invalid/', 'https://example.invalid/sans-barre']) {
+    const pack = new CudaPack({ dataHome: f.home, manifestPath: f.manifestPath, baseUrl, engineVersion: ENGINE });
+    assert.ok(pack.unavailableReason, `a reason for ${JSON.stringify(baseUrl)}`);
+    assert.deepEqual(await pack.status(), { state: 'unavailable', downloadBytes: null, installedBytes: null, installedVersion: null, expectedVersion: ENGINE }, JSON.stringify(baseUrl));
+    await assert.rejects(pack.install(), { message: CUDA_PACK_UNAVAILABLE });
+    await assert.rejects(readdir(join(f.home, 'cuda-pack')), { code: 'ENOENT' }, 'no cuda-pack folder, no staging');
+  }
+  // A valid source has no reason, and a loopback test source is valid only when allowed.
+  assert.equal(new CudaPack({ dataHome: f.home, manifestPath: f.manifestPath, baseUrl: 'https://example.invalid/', engineVersion: ENGINE }).unavailableReason, null);
+  assert.ok(new CudaPack({ dataHome: f.home, manifestPath: f.manifestPath, baseUrl: 'http://127.0.0.1:9/', engineVersion: ENGINE }).unavailableReason);
+  assert.equal(new CudaPack({ dataHome: f.home, manifestPath: f.manifestPath, baseUrl: 'http://127.0.0.1:9/', engineVersion: ENGINE, allowLoopback: true }).unavailableReason, null);
 });
 
 test('freeBytes reads the real disk of a temp folder', async t => {

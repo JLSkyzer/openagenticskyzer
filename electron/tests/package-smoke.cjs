@@ -64,6 +64,16 @@ async function main() {
   const committedManifest = await readFile(path.join(__dirname, '..', 'resources', 'cuda-pack', 'manifest.json'));
   assert.ok(packagedManifest.equals(committedManifest), 'the packaged CUDA pack manifest is the committed one');
   process.stdout.write(`CUDA pack manifest packaged: resources/cuda-pack/manifest.json (${packagedManifest.length} bytes, equal to the committed one)\n`);
+  // The CUDA pack's download source (C-1, final review): electron-builder strips `build` from the packaged
+  // package.json, so the worker reads `repository`. The packaged copy must still name this version's release.
+  const asar = require('@electron/asar');
+  const { releaseBaseUrl } = await import('../core/cuda-pack.mts');
+  const packagedPkg = JSON.parse(asar.extractFile(path.join(__dirname, '..', 'release', 'win-unpacked', 'resources', 'app.asar'), 'package.json').toString('utf8'));
+  const committedPkg = JSON.parse(await readFile(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const expectedRelease = `https://github.com/JLSkyzer/openagenticskyzer/releases/download/v${committedPkg.version}/`;
+  assert.equal(packagedPkg.version, committedPkg.version, 'the packaged package.json is this version');
+  assert.equal(releaseBaseUrl(packagedPkg), expectedRelease, `the packaged package.json names the release (keys: ${Object.keys(packagedPkg).join(', ')})`);
+  process.stdout.write(`packaged package.json: repository ${JSON.stringify(packagedPkg.repository)} -> ${expectedRelease}\n`);
   const userData = await mkdtemp(join(tmpdir(), 'openagent-package-userdata-'));
   const openagentHome = await mkdtemp(join(tmpdir(), 'openagent-package-home-'));
   const port = 9334;
@@ -142,6 +152,13 @@ async function main() {
       return /^Moteur : (CUDA|Vulkan|Metal|processeur seul)$/.test(value ?? '') ? value : null;
     }, { timeout: 120000, what: 'the Matériel tab shows the engine backend' });
     process.stdout.write(`Matériel tab in the packaged app: ${JSON.stringify(backendLine)}\n`);
+
+    // The packaged worker offers the CUDA pack: its shipped manifest and its release source are both valid, so the
+    // state is 'absent' with the download size (never 'unavailable', what the stripped `build` now gives).
+    const pack = await cdpEvaluate(page, "window.openagent.request({ op: 'cuda-pack-status' })");
+    assert.equal(pack.state, 'absent', `cuda-pack-status in the packaged app: ${JSON.stringify(pack)}`);
+    assert.ok(pack.downloadBytes > 0, 'the download size is known before any download');
+    process.stdout.write(`cuda-pack-status in the packaged app: ${JSON.stringify(pack)}\n`);
 
     process.stdout.write('PASS packaged executable launches outside npm start and loads the real UI\n');
   } finally {

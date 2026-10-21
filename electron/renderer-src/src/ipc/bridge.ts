@@ -313,9 +313,13 @@ export function getHardwareInfo(refresh = false): Promise<HardwareInfo> {
 }
 
 // Where a model's layers would go (the active one when no id): a cached estimate answers at once (estimateId null);
-// otherwise a background job starts and its end arrives through onEstimateEvent.
-export function estimateModel(modelId?: string): Promise<{ estimateId: string | null; estimate: Placement | null }> {
-  return request('estimate-model', { modelId });
+// otherwise a background job starts and its end arrives through onEstimateEvent. During a turn the worker answers
+// { busy: true, message } (an expected refusal, not logged as an error by main): rejected here with that message,
+// as before.
+export async function estimateModel(modelId?: string): Promise<{ estimateId: string | null; estimate: Placement | null }> {
+  const answer = await request<{ estimateId: string | null; estimate: Placement | null; busy?: true; message?: string }>('estimate-model', { modelId });
+  if (answer?.busy) throw new Error(answer.message);
+  return answer;
 }
 
 export function cancelEstimate(estimateId: string): Promise<{ cancelled: boolean }> {

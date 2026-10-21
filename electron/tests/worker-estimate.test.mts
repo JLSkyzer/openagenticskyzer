@@ -71,10 +71,12 @@ test('estimate-model for the active model answers at once, then an estimate even
   assert.equal(r2.estimateId, null);
   assert.deepEqual(r2.estimate, ended.estimate);
   assert.equal(estimateEvents.length, 1, 'a cache hit posts no event');
-  await access(join(home, 'estimates.v1.json'));
+  await access(join(home, 'estimates.v2.json'));
 });
 
-test('estimate-model during a turn is refused with ESTIMATE_BUSY', { timeout: 120000 }, async t => {
+// An expected refusal, not a failure (M-2, final review): answered as a normal result, so main never logs it as a
+// handler error. The renderer's bridge turns it back into the same message for the user.
+test('estimate-model during a turn answers { busy: true, message: ESTIMATE_BUSY } (a result, not an error)', { timeout: 120000 }, async t => {
   const { worker, folder, model } = await setup(t);
   await activate(worker, model);
   const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'Once upon a time' });
@@ -86,7 +88,7 @@ test('estimate-model during a turn is refused with ESTIMATE_BUSY', { timeout: 12
     };
     worker.on('message', listener);
   });
-  await assert.rejects(callWorker(worker, 'estimate-model', {}), { message: ESTIMATE_BUSY });
+  assert.deepEqual(await callWorker(worker, 'estimate-model', {}), { busy: true, message: ESTIMATE_BUSY, estimateId: null, estimate: null });
   await callWorker(worker, 'stop', { runId });
   await end;
 });

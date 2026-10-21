@@ -35,6 +35,16 @@ test('hardware and estimate bridges send their exact ops', async () => {
   ]);
 });
 
+test('estimateModel turns a busy answer (an expected refusal, not an IPC error) into an Error with its message', async () => {
+  const saved = (globalThis as any).window.openagent.request;
+  (globalThis as any).window.openagent.request = async () => ({ busy: true, message: 'Occupé.', estimateId: null, estimate: null });
+  try {
+    await assert.rejects(bridge.estimateModel('id1'), { message: 'Occupé.' });
+  } finally {
+    (globalThis as any).window.openagent.request = saved;
+  }
+});
+
 test('CUDA pack bridges send their exact ops and payloads', async () => {
   calls.length = 0;
   await bridge.getCudaPackStatus();

@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
@@ -206,4 +207,71 @@ test('--dry-run refuses once the tag v<version> exists on the upstream remote', 
   const refused = spawnSync(process.execPath, [SCRIPT, '--dry-run', '--root', root], { encoding: 'utf8' });
   assert.notEqual(refused.status, 0);
   assert.match(refused.stderr, /Le tag v0\.0\.1-dry existe déjà/);
+});
+
+// The CUDA pack in the release (hardware and offload, Task 12): its parts go to the same draft as the installer, and
+// the pack built for the release must be byte for byte the one the committed manifest (shipped in the app) describes.
+test('packUploadArgs uploads every part to the draft of the version', () => {
+  const { packUploadArgs } = require(SCRIPT);
+  assert.deepEqual(
+    packUploadArgs('0.3.0', 'JLSkyzer/openagenticskyzer', ['a.part1', 'a.part2']),
+    ['release', 'upload', 'v0.3.0', 'a.part1', 'a.part2', '--repo', 'JLSkyzer/openagenticskyzer'],
+  );
+});
+
+test('assertPackMatchesManifest refuses a missing part, another hash, a part of 2 GiB or more; accepts the built pack', async t => {
+  const { assertPackMatchesManifest } = require(SCRIPT);
+  const { writePack } = await import('../core/cuda-pack-format.mts');
+  const root = await mkdtemp(join(tmpdir(), 'openagent-release-pack-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sources = [];
+  // Random bytes: gzip cannot shrink them below the 4096-byte part size, so the pack has several parts.
+  for (const [path, bytes] of [['cuda-runtime/a.dll', randomBytes(30_000)], ['cuda-runtime/LICENSE.txt', 'licence\n']] as const) {
+    const source = join(root, path.replace('/', '-'));
+    await writeFile(source, bytes);
+    sources.push({ path, source });
+  }
+  const built = join(root, 'built');
+  const manifest = await writePack(sources, built, { nodeLlamaCppVersion: '3.21.1', chunkBytes: 4096 });
+  assert.ok(manifest.parts.length >= 2, 'several parts');
+  const committed = JSON.parse(await readFile(join(built, 'manifest.json'), 'utf8'));
+  assert.doesNotThrow(() => assertPackMatchesManifest(committed, built));
+
+  const [first, second] = committed.parts;
+  const huge = structuredClone(committed);
+  huge.parts[1] = { ...second, size: 2 ** 31 };
+  assert.throws(() => assertPackMatchesManifest(huge, built), { message: `Morceau du pack CUDA trop gros (2 Gio ou plus) : ${second.name}` });
+  const other = structuredClone(committed);
+  other.parts[0] = { ...first, sha256: '0'.repeat(64) };
+  assert.throws(() => assertPackMatchesManifest(other, built), { message: `Morceau du pack CUDA différent du manifeste : ${first.name}` });
+  const extra = structuredClone(committed);
+  extra.installedBytes += 1;
+  assert.throws(() => assertPackMatchesManifest(extra, built), { message: 'Le manifeste du pack CUDA ne correspond pas : lance npm run cuda-pack:build puis commite resources/cuda-pack/manifest.json.' });
+
+  const bytes = await readFile(join(built, second.name));
+  bytes[0] ^= 0xff;
+  await writeFile(join(built, second.name), bytes);
+  assert.throws(() => assertPackMatchesManifest(committed, built), { message: `Morceau du pack CUDA différent du manifeste : ${second.name}` });
+  await rm(join(built, second.name));
+  assert.throws(() => assertPackMatchesManifest(committed, built), { message: `Morceau du pack CUDA absent : ${second.name}` });
+});
+
+test('the committed CUDA pack manifest: format 1, the installed node-llama-cpp version, every part under 2 GiB', async () => {
+  const manifest = JSON.parse(await readFile(fileURLToPath(new URL('../resources/cuda-pack/manifest.json', import.meta.url)), 'utf8'));
+  const engine = JSON.parse(await readFile(fileURLToPath(new URL('../node_modules/node-llama-cpp/package.json', import.meta.url)), 'utf8')).version;
+  assert.equal(manifest.format, 1);
+  assert.equal(manifest.nodeLlamaCppVersion, engine);
+  assert.ok(manifest.parts.length >= 1);
+  assert.ok(manifest.parts.every((part: { size: number }) => part.size < 2 ** 31), 'every part under 2 GiB');
+  assert.equal(manifest.downloadBytes, manifest.parts.reduce((sum: number, part: { size: number }) => sum + part.size, 0));
+});
+
+test('--cuda-runtime is required once the app ships a CUDA pack manifest, refused before any git or GitHub call', async t => {
+  // Invalid version on purpose: a script that reached the release checks would say so instead.
+  const root = await cleanRepo(t, 'abc');
+  await mkdir(join(root, 'resources', 'cuda-pack'), { recursive: true });
+  await writeFile(join(root, 'resources', 'cuda-pack', 'manifest.json'), '{}\n');
+  const refused = spawnSync(process.execPath, [SCRIPT, '--dry-run', '--root', root], { encoding: 'utf8' });
+  assert.notEqual(refused.status, 0);
+  assert.equal(refused.stderr.trim(), 'Dossier du runtime CUDA requis : --cuda-runtime <dossier>.');
 });

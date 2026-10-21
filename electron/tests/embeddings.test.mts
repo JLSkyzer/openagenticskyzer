@@ -39,7 +39,8 @@ test('the bundled model is in the repository and packaged as extraResources', ()
   for (const f of EMBEDDING_FILES) assert.ok(statSync(join(DEFAULT_MODELS_DIR, EMBEDDING_MODEL, f)).isFile(), f);
   assert.equal(statSync(join(DEFAULT_MODELS_DIR, EMBEDDING_MODEL, 'onnx/model_quantized.onnx')).size, 22_972_370);
   assert.match(readFileSync(join(DEFAULT_MODELS_DIR, EMBEDDING_MODEL, 'LICENSE'), 'utf8'), /Apache License/);
-  assert.deepEqual(pkg.build.extraResources, [{ from: 'resources/models', to: 'models' }]);
+  // Beside it, only the CUDA pack manifest (hardware and offload, Task 12): nothing else of resources/ is packaged.
+  assert.deepEqual(pkg.build.extraResources, [{ from: 'resources/models', to: 'models' }, { from: 'resources/cuda-pack', to: 'cuda-pack' }]);
 });
 
 test('embed never downloads: an empty models folder fails with EMBEDDINGS_MISSING and stays empty', async t => {

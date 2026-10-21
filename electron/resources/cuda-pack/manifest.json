@@ -1,0 +1,54 @@
+{
+  "format": 1,
+  "nodeLlamaCppVersion": "3.21.1",
+  "platform": "win-x64",
+  "parts": [
+    {
+      "name": "openagent-cuda-pack-3.21.1-win-x64.part1",
+      "size": 561616523,
+      "sha256": "fe4ef3ae951551d178e77d3f865c04a51d98ef44e369f4311f3f260dd0887508"
+    }
+  ],
+  "downloadBytes": 561616523,
+  "installedBytes": 723926032,
+  "files": 25,
+  "licences": [
+    {
+      "licence": "NVIDIA",
+      "text": "cuda-runtime/LICENSE.txt",
+      "files": [
+        "cuda-runtime/LICENSE.txt",
+        "cuda-runtime/cublas64_13.dll",
+        "cuda-runtime/cublasLt64_13.dll"
+      ]
+    },
+    {
+      "licence": "MIT",
+      "text": "node_modules/@node-llama-cpp/win-x64-cuda/LICENSE",
+      "files": [
+        "node_modules/@node-llama-cpp/win-x64-cuda/LICENSE",
+        "node_modules/@node-llama-cpp/win-x64-cuda/README.md",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/_nlcBuildMetadata.json",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/ggml-base.dll",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/ggml-cpu-alderlake.dll",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/ggml-cpu-cannonlake.dll",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/ggml-cpu-cascadelake.dll",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/ggml-cpu-haswell.dll",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/ggml-cpu-icelake.dll",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/ggml-cpu-sandybridge.dll",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/ggml-cpu-skylakex.dll",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/ggml-cpu-sse42.dll",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/ggml-cpu-x64.dll",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/ggml-cuda.dll",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/ggml.cuda.v0.4.0.dll",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/llama-addon.exp",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/llama-addon.lib",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/llama-addon.node",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/llama-common.dll",
+        "node_modules/@node-llama-cpp/win-x64-cuda/bins/win-x64-cuda/llama.cuda.v0.4.0.dll",
+        "node_modules/@node-llama-cpp/win-x64-cuda/dist/index.js",
+        "node_modules/@node-llama-cpp/win-x64-cuda/package.json"
+      ]
+    }
+  ]
+}

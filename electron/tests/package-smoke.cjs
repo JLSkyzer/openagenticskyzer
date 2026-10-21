@@ -4,7 +4,7 @@
 // real window with the real UI entirely outside the dev/test harness.
 const { spawn } = require('node:child_process');
 const path = require('node:path');
-const { mkdtemp, rm, stat, writeFile } = require('node:fs/promises');
+const { mkdtemp, readFile, rm, stat, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
@@ -58,6 +58,12 @@ async function main() {
   for (const file of EMBEDDING_FILES) assert.ok((await stat(path.join(packagedModel, file))).isFile(), `packaged ${file}`);
   assert.equal((await stat(path.join(packagedModel, 'onnx', 'model_quantized.onnx'))).size, 22_972_370, 'the packaged onnx is the committed one');
   process.stdout.write(`bundled embedding model packaged: ${EMBEDDING_FILES.join(', ')} under resources/models/${EMBEDDING_MODEL}\n`);
+  // The CUDA pack manifest (build.extraResources): the packaged copy is the committed one, byte for byte — the app
+  // downloads and checks exactly the parts it names (main.cjs workerOptions: <resources>/cuda-pack/manifest.json).
+  const packagedManifest = await readFile(path.join(__dirname, '..', 'release', 'win-unpacked', 'resources', 'cuda-pack', 'manifest.json'));
+  const committedManifest = await readFile(path.join(__dirname, '..', 'resources', 'cuda-pack', 'manifest.json'));
+  assert.ok(packagedManifest.equals(committedManifest), 'the packaged CUDA pack manifest is the committed one');
+  process.stdout.write(`CUDA pack manifest packaged: resources/cuda-pack/manifest.json (${packagedManifest.length} bytes, equal to the committed one)\n`);
   const userData = await mkdtemp(join(tmpdir(), 'openagent-package-userdata-'));
   const openagentHome = await mkdtemp(join(tmpdir(), 'openagent-package-home-'));
   const port = 9334;

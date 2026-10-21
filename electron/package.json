@@ -132,6 +132,10 @@
       {
         "from": "resources/models",
         "to": "models"
+      },
+      {
+        "from": "resources/cuda-pack",
+        "to": "cuda-pack"
       }
     ],
     "asarUnpack": [

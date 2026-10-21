@@ -1,14 +1,21 @@
 // Run with Electron, not node. The « 🖥️ Matériel » settings tab end to end, through the real built renderer and the
-// REAL worker.mjs (hardware and offload, Task 7): the lines are the worker's own hardware-info in French, « Relire »
-// really re-reads, and « Contexte des modèles locaux » is saved by Enregistrer into config.json. OPENAGENT_HOME is a
-// fresh temporary folder: the user's data is never read or written.
+// REAL worker.mjs (hardware and offload, Tasks 7 and 11): the lines are the worker's own hardware-info in French,
+// « Relire » really re-reads, « Contexte des modèles locaux » is saved by Enregistrer into config.json; the CUDA pack
+// (a small synthetic pack built here with writePack, served by a local server, never downloaded for real) shows its
+// size before any click, is cancelled, installed (D-CUDA-4: then a restart is offered) and removed; « Moteur » offers
+// one restart. « Redémarrer maintenant » sends restart-app to the main process, answered here by this harness, which
+// only counts it (the real relaunch is proven headless by tests/restart-app.cjs). OPENAGENT_HOME is a fresh temporary
+// folder: the user's data is never read or written.
 const { app, BrowserWindow, ipcMain } = require('electron');
 app.disableHardwareAcceleration();
 app.on('window-all-closed', () => {});
 const { Worker } = require('node:worker_threads');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { mkdtemp, rm, mkdir, writeFile, readFile } = require('node:fs/promises');
+const { mkdtemp, rm, mkdir, writeFile, readFile, readdir } = require('node:fs/promises');
+const { readFileSync } = require('node:fs');
+const http = require('node:http');
+const { randomBytes } = require('node:crypto');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
@@ -31,6 +38,40 @@ function flush() {
 }
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+/** Serves the pack's parts from `dir` on 127.0.0.1; `server.bytesPerTick` (512, or 0 for no throttle) can change
+ * between two downloads: the worker's download source is fixed at its start. */
+async function startPackServer(dir) {
+  const timers = new Set();
+  const server = http.createServer(async (req, res) => {
+    const name = decodeURIComponent((req.url || '/').replace(/^\//, ''));
+    if (!/^[A-Za-z0-9._+-]+$/.test(name) || name.startsWith('.')) { res.writeHead(404); res.end(); return; }
+    let bytes;
+    try { bytes = await readFile(join(dir, name)); } catch { res.writeHead(404); res.end(); return; }
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': bytes.length });
+    const step = server.bytesPerTick;
+    if (!step) { res.end(bytes); return; }
+    let offset = 0;
+    const tick = () => {
+      if (res.destroyed) return;
+      res.write(bytes.subarray(offset, offset + step));
+      offset += step;
+      if (offset >= bytes.length) { res.end(); return; }
+      const timer = setTimeout(() => { timers.delete(timer); tick(); }, 50);
+      timers.add(timer);
+    };
+    tick();
+  });
+  server.bytesPerTick = 0;
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  server.url = `http://127.0.0.1:${server.address().port}/`;
+  server.stop = async () => {
+    for (const timer of timers) clearTimeout(timer);
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(() => resolve()));
+  };
+  return server;
+}
+
 app.whenReady().then(async () => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-hardware-'));
   const home = join(root, 'home');
@@ -39,13 +80,39 @@ app.whenReady().then(async () => {
   const screenshotDir = process.env.OPENAGENT_SETTINGS_SCREENSHOT_DIR || home;
   let win;
   let worker;
+  let packServer;
+  let restartRequests = 0;
   try {
     const { hardwareLines } = await import(pathToFileURL(join(__dirname, '..', 'renderer-src', 'src', 'components', 'settings', 'hardware-view.ts')).href);
-    worker = new Worker(path.join(__dirname, '..', 'worker.mjs'), { env: { ...process.env, OPENAGENT_HOME: home } });
+    const { formatBytes } = await import(pathToFileURL(join(__dirname, '..', 'core', 'units.mts')).href);
+    const { writePack } = await import(pathToFileURL(join(__dirname, '..', 'core', 'cuda-pack-format.mts')).href);
+    // A synthetic pack of this engine's version: random bytes (gzip cannot shrink them), so a throttled download
+    // lasts long enough to be cancelled. No NVIDIA file: nothing here is ever loaded.
+    const engine = JSON.parse(readFileSync(join(__dirname, '..', 'node_modules', 'node-llama-cpp', 'package.json'), 'utf8')).version;
+    const sources = [];
+    for (const [file, bytes] of [
+      ['node_modules/@node-llama-cpp/win-x64-cuda/package.json', Buffer.from('{"name":"@node-llama-cpp/win-x64-cuda"}\n')],
+      ['cuda-runtime/cublas64_13.dll', randomBytes(200_000)],
+      ['cuda-runtime/LICENSE.txt', Buffer.from('NVIDIA licence (synthetic).\n')],
+    ]) {
+      const source = join(root, 'src', ...file.split('/'));
+      await mkdir(path.dirname(source), { recursive: true });
+      await writeFile(source, bytes);
+      sources.push({ path: file, source });
+    }
+    const packDir = join(root, 'pack');
+    const manifest = await writePack(sources, packDir, { nodeLlamaCppVersion: engine, chunkBytes: 65536 });
+    packServer = await startPackServer(packDir);
+    worker = new Worker(path.join(__dirname, '..', 'worker.mjs'), {
+      env: { ...process.env, OPENAGENT_HOME: home },
+      workerData: { cudaPackManifest: join(packDir, 'manifest.json'), cudaPackBaseUrl: packServer.url },
+    });
     const pending = new Map();
     worker.on('message', message => {
       const done = pending.get(message.id);
       if (done) { pending.delete(message.id); message.ok ? done.resolve(message.result) : done.reject(new Error(message.error)); }
+      // Events (the CUDA pack's progress and end) reach the page as main.cjs sends them.
+      if (message.type === 'event' && win && !win.isDestroyed()) win.webContents.send('backend-message', message);
     });
     const callWorker = (op, payload = {}) => {
       const id = `${Date.now()}-${Math.random()}`;
@@ -56,6 +123,7 @@ app.whenReady().then(async () => {
     };
     ipcMain.handle('backend-request', (_event, request) => {
       if (request.op === 'open-folder') return project;
+      if (request.op === 'restart-app') { restartRequests++; return { restarting: true }; }
       return callWorker(request.op, request.payload);
     });
 
@@ -119,11 +187,85 @@ app.whenReady().then(async () => {
     // ── 6. One capture for a human look ─────────────────────────────────────────────────
     await writeFile(join(screenshotDir, 'settings-hardware.png'), await capturePng(win));
 
-    process.stdout.write(`PASS hardware tab: the worker's own machine lines, a real re-read, local_context saved (Electron ${process.versions.electron})\n`);
+    // ── 7. The CUDA pack: its size before any click (NVIDIA), or hidden ─────────────────────
+    const cudaState = () => js(`document.querySelector('[data-testid="oa-cuda-pack"]')?.dataset.state ?? null`);
+    const text = selector => js(`document.querySelector(${JSON.stringify(selector)})?.textContent ?? null`);
+    await waitFor(async () => (await cudaState()) !== null, { timeout: 60000, what: 'the CUDA pack block' });
+    const { nvidia } = await callWorker('hardware-info', { refresh: false });
+    let cudaSummary = 'no NVIDIA card: the CUDA block hidden';
+    if (!nvidia) {
+      assert.equal(await cudaState(), 'hidden');
+      assert.equal(await exists('[data-testid="oa-cuda-download-btn"]'), false);
+    } else {
+      assert.equal(await cudaState(), 'absent');
+      assert.equal(await text('[data-testid="oa-cuda-download-btn"]'), `Télécharger le pack CUDA (${formatBytes(manifest.downloadBytes)})`, 'the size before any click');
+
+      // ── 8. Download (throttled), then « Annuler »: nothing left behind ──────────────────
+      packServer.bytesPerTick = 512;
+      await click('[data-testid="oa-cuda-download-btn"]');
+      await waitFor(async () => (await cudaState()) === 'installing', { what: 'data-state="installing" after the click' });
+      assert.equal(await exists('[data-testid="oa-cuda-progress"]'), true, 'a progress bar while installing');
+      await waitFor(() => exists('[data-testid="oa-cuda-cancel-btn"]'), { what: 'the cancel button' });
+      await click('[data-testid="oa-cuda-cancel-btn"]');
+      // Reached only through the cancelled event: « installing » was asserted just before.
+      await waitFor(async () => (await cudaState()) === 'absent', { timeout: 30000, what: 'data-state="absent" after « Annuler »' });
+      const left = await readdir(join(home, 'cuda-pack')).catch(() => []);
+      assert.deepEqual(left.filter(name => name.startsWith('.staging-')), [], 'no staging folder left in <home>/cuda-pack');
+      assert.equal(await exists('[data-testid="oa-cuda-error"]'), false, 'a cancel is not an error');
+
+      // ── 9. Download without throttle: installed, then D-CUDA-4 = restart ────────────────
+      packServer.bytesPerTick = 0;
+      await click('[data-testid="oa-cuda-download-btn"]');
+      // The state before the click is « absent »: « restart » can only come from the finished install.
+      await waitFor(async () => (await cudaState()) === 'restart', { timeout: 60000, what: 'data-state="restart" after the install' });
+      assert.equal(await text('[data-testid="oa-cuda-restart-btn"]'), 'Redémarrer maintenant');
+      assert.equal(await exists('[data-testid="oa-restart-btn"]'), false, "one restart button in the tab: the CUDA block's");
+      await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      await capturePng(win);
+      await writeFile(join(screenshotDir, 'settings-hardware-cuda.png'), await capturePng(win));
+
+      // ── 10. No uninstall button in « restart »: through the page's bridge, then « Relire » ──
+      await js(`window.openagent.request({ op: 'cuda-pack-uninstall', payload: {} })`);
+      const readsBeforeRefresh = Number(await reads());
+      await click('[data-testid="oa-hardware-refresh-btn"]');
+      // Both reads of « Relire »: the pack's state, and hardware-info (whose restartRequired the next step relies on).
+      await waitFor(async () => (await cudaState()) === 'absent' && Number(await reads()) > readsBeforeRefresh, { timeout: 60000, what: 'data-state="absent" and hardware-info read again after the uninstall' });
+      cudaSummary = 'CUDA pack sized, cancelled, installed (restart), removed';
+    }
+
+    // ── 11. « Moteur »: « Processeur seul » offers one restart; saved by it; back to « Automatique » ──
+    const restartShown = () => exists('[data-testid="oa-restart-btn"]');
+    const selectBackend = value => js(`(() => {
+      const el = document.querySelector('[data-testid="oa-gpu-backend"]');
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(el, ${JSON.stringify(value)});
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    assert.equal(await js(`document.querySelector('[data-testid="oa-gpu-backend"]').value`), 'auto', 'the default is auto');
+    assert.equal(await restartShown(), false, 'nothing to restart for yet');
+    await selectBackend('cpu');
+    await waitFor(restartShown, { what: 'the restart offer after choosing « Processeur seul »' });
+    assert.equal(await text('[data-testid="oa-restart"] span'), "Le changement de moteur s'applique au prochain démarrage de l'app.");
+    const readsBefore = Number(await reads());
+    await click('[data-testid="oa-restart-btn"]');
+    await waitFor(() => restartRequests === 1, { what: 'restart-app reached the main process' });
+    assert.equal(JSON.parse(await readFile(join(home, 'config.json'), 'utf8')).gpu_backend, 'cpu', 'the choice was saved before the restart');
+    // The save makes the tab read again: then the worker itself says a restart is needed.
+    await waitFor(async () => Number(await reads()) > readsBefore, { timeout: 60000, what: 'the read after the save' });
+    await selectBackend('auto');
+    await pause(300);
+    assert.equal(await restartShown(), true, '« auto » selected, but « cpu » is saved: still to restart');
+    await click('#oa-settings-save-btn');
+    // True before this save (asserted just above): only the save of « auto » and the read after it hide the offer.
+    await waitFor(async () => !(await restartShown()), { timeout: 60000, what: 'the restart offer gone once « auto » is saved' });
+    assert.equal(JSON.parse(await readFile(join(home, 'config.json'), 'utf8')).gpu_backend, 'auto');
+    assert.equal(restartRequests, 1, 'restart-app sent once');
+
+    process.stdout.write(`PASS hardware tab: the worker's own machine lines, a real re-read, local_context saved; ${cudaSummary}; one engine restart offer (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshot: ${join(screenshotDir, 'settings-hardware.png')}\n`);
   } finally {
     win?.destroy();
     await worker?.terminate();
+    await packServer?.stop();
     if (!process.env.OPENAGENT_SETTINGS_SCREENSHOT_DIR) await rm(root, { recursive: true, force: true });
   }
 }).then(() => flush()).then(() => app.exit(0)).catch(async error => {

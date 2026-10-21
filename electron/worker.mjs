@@ -86,11 +86,21 @@ await cudaPack.finishPendingRemoval();
 setCudaPackSource(cudaPack);
 // The backend is decided once per worker (core/llama-runtime.mts): main.cjs passes the gpu_backend it read before
 // putting the pack's runtime on PATH; a worker started without it (tests) reads the setting itself.
+// The pack is activated only when it is the one main put on PATH (workerData.cudaRuntimeDir, null when none): a
+// worker that disagrees with main (no runtime on PATH, another folder) runs without it, and restartRequired says so.
 const savedBackend = () => settings.global().then(saved => saved.gpu_backend, () => 'auto');
-setRuntimeStart({
-  choice: GPU_BACKEND_CHOICES.includes(workerData?.gpuBackend) ? workerData.gpuBackend : await savedBackend(),
-  packDir: await cudaPack.installedDir().catch(() => null),
+const installedAtStart = await cudaPack.installedDir().catch(error => {
+  console.warn(`[gpu-backend] pack CUDA illisible au démarrage : ${error?.message ?? error}`);
+  return null;
 });
+const samePath = (a, b) => process.platform === 'win32' ? resolve(a).toLowerCase() === resolve(b).toLowerCase() : resolve(a) === resolve(b);
+const mainRuntimeDir = typeof workerData?.cudaRuntimeDir === 'string' && workerData.cudaRuntimeDir ? workerData.cudaRuntimeDir : null;
+const packAgreed = installedAtStart !== null && mainRuntimeDir !== null && samePath(join(installedAtStart, 'cuda-runtime'), mainRuntimeDir);
+const startChoice = GPU_BACKEND_CHOICES.includes(workerData?.gpuBackend) ? workerData.gpuBackend : await savedBackend();
+if (installedAtStart !== null && !packAgreed && (startChoice === 'auto' || startChoice === 'cuda')) {
+  console.warn('[gpu-backend] pack CUDA installé mais absent du PATH de ce démarrage : non activé avant le prochain démarrage');
+}
+setRuntimeStart({ choice: startChoice, packDir: packAgreed ? installedAtStart : null });
 const trust = new ProjectTrustService(dataHome, settings);
 const conversations = new Conversations();
 const folders = new FoldersService(dataHome);

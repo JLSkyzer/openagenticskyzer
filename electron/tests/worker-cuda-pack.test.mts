@@ -18,7 +18,7 @@ import { Worker } from 'node:worker_threads';
 import { getModuleVersion } from 'node-llama-cpp';
 import { writePack, type CudaPackManifest } from '../core/cuda-pack-format.mts';
 import { CUDA_PACK_TURN_BUSY, cudaPackUrlRefused } from '../core/cuda-pack.mts';
-import { cudaFallbackNotice, cudaMismatchNotice } from '../core/llama-runtime.mts';
+import { cudaFallbackNotice, cudaMismatchNotice, cudaMissingNotice } from '../core/llama-runtime.mts';
 import { SettingsService } from '../core/settings.mts';
 import { writeInstalledPack } from './support/fake-cuda-pack.mts';
 import { startFakePackServer } from './support/fake-pack-server.mts';
@@ -128,7 +128,8 @@ function runEvents(worker: WorkerPort): { events: any[]; ended(runId: string): P
 test('1. a corrupt installed pack: the engine falls back with the exact notice, and a real turn still answers', { timeout: 300000 }, async t => {
   const f = await fixture(t);
   await writeInstalledPack(f.home, { engineVersion: ENGINE, corrupt: true });
-  const worker = start(t, f.home, { cudaPackManifest: f.manifestPath });
+  // As main.cjs does once it has put this pack's runtime on PATH (prepareGpuBackend).
+  const worker = start(t, f.home, { cudaPackManifest: f.manifestPath, cudaRuntimeDir: join(f.home, 'cuda-pack', 'current', 'cuda-runtime') });
   const status = await callWorker(worker, 'cuda-pack-status');
   assert.equal(status.state, 'installed', 'the corrupt pack looks installed: only loading it can tell');
   const info = await callWorker(worker, 'hardware-info', {});
@@ -229,6 +230,27 @@ test('5. gpu_backend « cpu » in the settings: the worker runs on the processor
   assert.equal(after.backendChoice, 'cpu', 'the choice this worker started with');
   assert.equal(after.restartRequired, true);
   assert.equal((await callWorker(worker, 'cuda-pack-status')).restartRequired, true);
+});
+
+test("5b. main and the worker must agree on the pack: without main's runtime folder, an installed pack is never activated", { timeout: 180000 }, async t => {
+  // A valid pack of this engine (no addon binary: an activation would fail with cudaFallbackNotice, never silently).
+  const f = await fixture(t, { gpu_backend: 'cuda' });
+  await writeInstalledPack(f.home, { engineVersion: ENGINE, corrupt: false });
+  const worker = start(t, f.home, { cudaPackManifest: f.manifestPath, cudaRuntimeDir: null });
+  assert.equal((await callWorker(worker, 'cuda-pack-status')).state, 'installed');
+  const info = await callWorker(worker, 'hardware-info', {});
+  assert.notEqual(info.backend, 'cuda');
+  assert.equal(info.notice, cudaMissingNotice(info.backend), 'not activated: the plain fallback, not a failed load');
+  assert.equal(info.restartRequired, true, 'the pack is used once main puts it on PATH, at the next start');
+
+  // Another runtime folder than the installed pack's: the same.
+  const g = await fixture(t);
+  await writeInstalledPack(g.home, { engineVersion: ENGINE, corrupt: false });
+  const other = start(t, g.home, { cudaPackManifest: g.manifestPath, cudaRuntimeDir: join(g.root, 'ailleurs', 'cuda-runtime') });
+  const auto = await callWorker(other, 'hardware-info', {});
+  assert.notEqual(auto.backend, 'cuda');
+  assert.equal(auto.notice, null, 'auto without an activated pack: the default engine, no notice');
+  assert.equal(auto.restartRequired, true);
 });
 
 test('6. a non-loopback cudaPackBaseUrl is refused at worker start', { timeout: 60000 }, async t => {

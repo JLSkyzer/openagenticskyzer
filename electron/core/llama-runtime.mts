@@ -104,6 +104,11 @@ function activatePack(dir: string): void {
 // Every getLlama passes build: 'never': a missing or broken prebuilt binary never starts a download or a compilation.
 const llamaWith = (options: Omit<LlamaOptions, 'build'>) => getLlama({ ...options, build: 'never' });
 const withoutCuda = () => llamaWith({ gpu: { type: 'auto', exclude: ['cuda'] } });
+// A load error is never shown raw to the user (the French notice says what happened), but it is logged: the manual
+// CUDA check reads it there.
+function warn(what: string, error: unknown): void {
+  console.warn(`[gpu-backend] ${what} : ${(error as Error | undefined)?.message ?? error}`);
+}
 
 async function createLlama(): Promise<{ llama: Llama; notice: string | null }> {
   const { choice } = start;
@@ -111,23 +116,25 @@ async function createLlama(): Promise<{ llama: Llama; notice: string | null }> {
   if (choice === 'vulkan') {
     try {
       return { llama: await llamaWith({ gpu: 'vulkan' }), notice: null };
-    } catch {
+    } catch (error) {
+      warn('Vulkan ne se charge pas', error);
       const llama = await llamaWith({ gpu: false });
       return { llama, notice: backendFallbackNotice('vulkan', backendOf(llama)) };
     }
   }
   // auto or cuda: the pack installed at start, if it is still this app's own valid pack.
-  const status = source ? await source.status().catch(() => null) : null;
+  const status = source ? await source.status().catch(error => { warn('état du pack CUDA illisible', error); return null; }) : null;
   if (status?.state === 'mismatch') {
     // A stale pack is never activated, and no other CUDA build stands in for it.
     return { llama: await withoutCuda(), notice: cudaMismatchNotice(status.installedVersion ?? '?', status.expectedVersion) };
   }
-  const dir = start.packDir !== null && source ? await source.installedDir().catch(() => null) : null;
+  const dir = start.packDir !== null && source ? await source.installedDir().catch(error => { warn('dossier du pack CUDA illisible', error); return null; }) : null;
   if (dir !== null && dir === start.packDir) {
     try {
       activatePack(dir);
       return { llama: await llamaWith({ gpu: 'cuda' }), notice: null };
-    } catch {
+    } catch (error) {
+      warn('le pack CUDA ne se charge pas', error);
       const llama = await withoutCuda();
       return { llama, notice: cudaFallbackNotice(backendOf(llama)) };
     }

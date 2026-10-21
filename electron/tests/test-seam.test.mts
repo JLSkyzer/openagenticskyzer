@@ -103,11 +103,14 @@ test('main never passes the test seam to the worker, packaged or not, whatever t
       assert.equal('testProviderModule' in workerOptions({ isPackaged, resourcesPath: 'C:\\r', appDir: 'C:\\a' }).workerData, false);
     for (const isPackaged of [true, false]) {
       const { workerData } = workerOptions({ isPackaged, resourcesPath: 'C:\\r', appDir: 'C:\\a' });
-      assert.deepEqual(Object.keys(workerData), ['modelsDir', 'cudaPackManifest', 'gpuBackend']);
+      assert.deepEqual(Object.keys(workerData), ['modelsDir', 'cudaPackManifest', 'gpuBackend', 'cudaRuntimeDir']);
       // Test-only: a download source other than the app's own GitHub release is never passed by main.
       assert.equal('cudaPackBaseUrl' in workerData, false);
       assert.equal(workerData.gpuBackend, 'auto', 'no choice read: auto');
+      assert.equal(workerData.cudaRuntimeDir, null, 'no pack runtime put on PATH: none for the worker either');
     }
+    // What prepareGpuBackend put on PATH, so the worker activates the pack only when it is the same one.
+    assert.equal(workerOptions({ isPackaged: true, resourcesPath: 'C:\\r', appDir: 'C:\\a', cudaRuntimeDir: 'C:\\h\\cuda-pack\\current\\cuda-runtime' }).workerData.cudaRuntimeDir, 'C:\\h\\cuda-pack\\current\\cuda-runtime');
     assert.equal(workerOptions({ isPackaged: true, resourcesPath: 'C:\\r', appDir: 'C:\\a', gpuBackend: 'cpu' }).workerData.gpuBackend, 'cpu');
     // The CUDA pack manifest is the copy shipped with the app: extraResources once packaged, resources/ otherwise.
     assert.equal(workerOptions({ isPackaged: true, resourcesPath: 'C:\\r', appDir: 'C:\\a' }).workerData.cudaPackManifest, 'C:\\r\\cuda-pack\\manifest.json');

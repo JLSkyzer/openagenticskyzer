@@ -135,16 +135,17 @@ function notifyLongRun(message) {
  * and workerData.cudaPackBaseUrl, see worker.mjs) are never among them, whatever the environment:
  * tests/test-seam.test.mts proves it, and that startBackend uses this function. Its data: where the bundled embedding
  * model and the CUDA pack's shipped manifest live (build.extraResources puts them under <resources>, real files outside
- * app.asar; unpackaged, the repository's own resources/), and the gpu_backend choice main read before the worker
- * starts (prepareGpuBackend).
+ * app.asar; unpackaged, the repository's own resources/), and what prepareGpuBackend decided before the worker
+ * starts: the gpu_backend choice, and the pack runtime folder it put on PATH (null if none), so that the worker
+ * activates the pack only when it is that same one.
  */
-function workerOptions({ isPackaged, resourcesPath, appDir, gpuBackend = 'auto' }) {
+function workerOptions({ isPackaged, resourcesPath, appDir, gpuBackend = 'auto', cudaRuntimeDir = null }) {
   const resources = isPackaged ? resourcesPath : path.join(appDir, 'resources');
-  return { type: 'module', workerData: { modelsDir: path.join(resources, 'models'), cudaPackManifest: path.join(resources, 'cuda-pack', 'manifest.json'), gpuBackend } };
+  return { type: 'module', workerData: { modelsDir: path.join(resources, 'models'), cudaPackManifest: path.join(resources, 'cuda-pack', 'manifest.json'), gpuBackend, cudaRuntimeDir } };
 }
 
 // What prepareGpuBackend decided at app start, for every worker this process starts.
-let gpuStart = { gpuBackend: 'auto' };
+let gpuStart = { gpuBackend: 'auto', runtimeDir: null };
 
 /**
  * Before the first worker (hardware and offload, D-CUDA-2): reads gpu_backend, and when it may use CUDA and this
@@ -178,7 +179,7 @@ async function prepareGpuBackend(dataHome, env = process.env) {
 }
 
 function startBackend() {
-  backend = new Worker(path.join(__dirname, 'worker.mjs'), workerOptions({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appDir: __dirname, gpuBackend: gpuStart.gpuBackend }));
+  backend = new Worker(path.join(__dirname, 'worker.mjs'), workerOptions({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appDir: __dirname, gpuBackend: gpuStart.gpuBackend, cudaRuntimeDir: gpuStart.runtimeDir }));
   backend.on('message', message => {
     const done = pending.get(message.id);
     if (done) { pending.delete(message.id); message.ok ? done.resolve(message.result) : done.reject(new Error(message.error)); }

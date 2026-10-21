@@ -219,6 +219,17 @@ test('packUploadArgs uploads every part to the draft of the version', () => {
   );
 });
 
+test('packUploadError says the draft is incomplete, not to publish it, and gives the recovery command', () => {
+  const { packUploadError } = require(SCRIPT);
+  const message = packUploadError('0.3.0', 'JLSkyzer/openagenticskyzer', ['C:\\out\\a.part1', 'C:\\out\\a.part2'], ' HTTP 502 \n');
+  assert.equal(
+    message,
+    'Envoi du pack CUDA sur le brouillon v0.3.0 échoué : HTTP 502\n'
+    + 'Le brouillon v0.3.0 est incomplet (installateur sans pack CUDA) : ne le publie pas.\n'
+    + 'Pour terminer l\'envoi : gh release upload v0.3.0 "C:\\out\\a.part1" "C:\\out\\a.part2" --repo JLSkyzer/openagenticskyzer --clobber',
+  );
+});
+
 test('assertPackMatchesManifest refuses a missing part, another hash, a part of 2 GiB or more; accepts the built pack', async t => {
   const { assertPackMatchesManifest } = require(SCRIPT);
   const { writePack } = await import('../core/cuda-pack-format.mts');

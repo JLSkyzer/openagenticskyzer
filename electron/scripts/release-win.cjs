@@ -146,6 +146,14 @@ function packUploadArgs(version, repo, partPaths) {
   return ['release', 'upload', `v${version}`, ...partPaths, '--repo', repo];
 }
 
+/** The error of a failed pack upload: the draft already holds the installer, so it says not to publish it and how to finish. */
+function packUploadError(version, repo, partPaths, stderr) {
+  const parts = partPaths.map(part => `"${part}"`).join(' ');
+  return `Envoi du pack CUDA sur le brouillon v${version} échoué : ${String(stderr).trim()}\n`
+    + `Le brouillon v${version} est incomplet (installateur sans pack CUDA) : ne le publie pas.\n`
+    +`Pour terminer l'envoi : gh release upload v${version} ${parts} --repo ${repo} --clobber`;
+}
+
 /** size and sha256 of a file, read in chunks (a part can be close to 2 GiB). */
 function hashPart(file) {
   const hash = createHash('sha256');
@@ -226,7 +234,7 @@ function main(argv) {
   // The pack's parts go to the draft electron-builder just created, beside the installer.
   if (pack) {
     const upload = run('gh', packUploadArgs(version, repo, pack.partPaths));
-    if (upload.status !== 0) throw new Error(`Envoi du pack CUDA sur le brouillon v${version} échoué : ${upload.stderr.trim()}`);
+    if (upload.status !== 0) throw new Error(packUploadError(version, repo, pack.partPaths, upload.stderr));
   }
   process.stdout.write(`Brouillon v${version} déposé sur GitHub : relis-le puis publie-le (https://github.com/${repo}/releases).\n`);
   return 0;
@@ -237,4 +245,4 @@ if (require.main === module) {
   catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 1; }
 }
 
-module.exports = { assertReleasable, publishRepo, builderEnv, isTreeDirty, unpushedCommits, remoteTagExists, releaseExists, githubTagExists, packUploadArgs, assertPackMatchesManifest };
+module.exports = { assertReleasable, publishRepo, builderEnv, isTreeDirty, unpushedCommits, remoteTagExists, releaseExists, githubTagExists, packUploadArgs, packUploadError, assertPackMatchesManifest };

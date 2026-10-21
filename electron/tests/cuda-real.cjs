@@ -131,10 +131,23 @@ async function load(home) {
     const entry = await call(worker, 'gguf-add', { path: model });
     await call(worker, 'save-global-settings', { patch: { active_local_model: entry.id } });
 
+    // Every agent event, the turn's end included, is recorded from BEFORE the send: a turn that ends before the send
+    // reply arrives is still seen.
     const events = [];
-    worker.on('message', message => { if (message?.type === 'event' && message.event === 'agent') events.push(message); });
+    let onEnd = null;
+    const isEnd = event => ['done', 'error', 'stopped'].includes(event.kind);
+    worker.on('message', message => {
+      if (message?.type !== 'event' || message.event !== 'agent') return;
+      events.push(message);
+      if (onEnd && isEnd(message)) onEnd();
+    });
     const { runId } = await call(worker, 'send', { folder, branchId: 'main', text: 'Once upon a time' });
-    const end = await waitForEvent(worker, message => message.event === 'agent' && message.runId === runId && ['done', 'error', 'stopped'].includes(message.kind), 10 * 60_000, 'fin du tour');
+    const end = await new Promise((resolve, reject) => {
+      const find = () => events.find(event => event.runId === runId && isEnd(event));
+      const timer = setTimeout(() => reject(new Error('délai dépassé : fin du tour')), 10 * 60_000);
+      onEnd = () => { const found = find(); if (found) { clearTimeout(timer); resolve(found); } };
+      onEnd();
+    });
     const reply = events
       .filter(event => event.runId === runId && event.kind === 'message' && event.message?.role === 'assistant')
       .map(event => String(event.message.content ?? ''))

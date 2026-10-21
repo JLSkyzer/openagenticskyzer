@@ -90,7 +90,10 @@ app.whenReady().then(async () => {
 
     await waitFor(() => exists('[data-testid="oa-folder-entry"]'), { timeout: 15000 });
     await click('[data-testid="oa-folder-entry"]');
-    await waitFor(() => exists('#oa-model-btn'), { timeout: 15000 });
+    // #oa-model-btn is on the page from the start: wait for the sidebar's active entry, set only once activate_folder
+    // has answered — a send before that is dropped by the page (no active folder).
+    await waitFor(() => exists('[data-testid="oa-folder-entry"][data-active="true"]'), { timeout: 15000, what: 'folder opened' });
+    assert.equal(await exists('#oa-model-btn'), true, 'the model button');
 
     // ── 1. Open the selector, import a real .gguf through the (stubbed native) picker ─────────────────
     await click('#oa-model-btn');

@@ -1172,4 +1172,29 @@ Run on 2026-10-18 on the user's machine. Everything was written to a `mkdtemp` s
 
 ## Bilan — Task 13
 
-Empty until Task 13 runs. It receives the window and packaged outcomes, the manual checks and the real-measurement table.
+Run on 2026-10-21 on the user's machine (RTX 4060, 8188 MiB; Electron 44.4.2). Every window, packaged and manual run below was run once. The full bilan, with the proof of each spec objective, the decisions and the known limits, is in `tasks/todo.md`, « Bilan du lot — matériel et débordement ».
+
+**Runs and outcomes (one each).**
+- Pre-flight: full suite 937/937, core `tsc` 5 (baseline), renderer `tsc` 0, `renderer:build` ok. The `waitFor` of `local-model-visual.cjs` was true on the initial state (`#oa-model-btn` is always on the page); fixed before its run to wait for the active folder entry. Also folded in: `packUploadError` (a failed pack upload says the draft is incomplete and how to finish) and `cuda-real.cjs` listening for the turn end before sending (3a0b7c6).
+- Window tests: `test:settings`, `test:hardware`, `test:localmodel`, `test:preload` all PASS.
+- Packaged: `package:win` exit 0 (asar has `llama-runtime`, `hardware`, `offload-estimate`, no `tests/`; manifest byte-equal; no `win-x64-cuda*` in `app.asar.unpacked`); `test:package` PASS. `test:install` not run.
+- Manual real CUDA load (stories260K, pack served from loopback): install PASS (561 616 523 B, restart required), load PASS (cuda, 6/6, ctx 16 384).
+- Static checks: no `contextSizeFor`; `getLlama(` only in `llama-runtime.mts`, `build: 'never'`; no diff on `web-tools.mts` and `hf-token.mts`.
+
+**Real measurement, 27B IQ3_M, ctx 32k.** « mesuré » = per-process perf counters or `nvidia-smi`; « estimé » = shown by the app or announced by llama.cpp.
+
+| Session | Estimate shown (estimé) | Loaded shown | Observed (mesuré) |
+|---|---|---|---|
+| 1. Vulkan, old padding | 25/66 · VRAM 5.9 GiB · RAM 8.5 GiB | 25/66 | `nvidia-smi` +2322 MiB; worker dedicated 2283 MiB + shared 3860 MiB; system RAM +10.3 GiB |
+| 2. Vulkan, padding 1591 MiB | 18/66 · VRAM 4.6 GiB · RAM 9.9 GiB | 18/66; llama.cpp buffers ≈ 4690 MiB (estimé) | dedicated 2735 MiB + shared ≈ 2.1 GiB; `nvidia-smi` 4437/8188 MiB (≈ 3.7 GiB free); first word ≈ 5 min, reply ≈ 6 min (user's observations, minute precision) |
+| 3. CUDA (pack installed) | not read | 25/66; llama.cpp buffers ≈ 6050 MiB (estimé) | dedicated 6223 MiB + shared 142 MiB; `nvidia-smi` ≈ 7.5/8.2 GiB; 2nd reply: tool call ≈ 18:00, end 18:01 (user); the 1st reply's time was not recorded |
+
+**Fix wave after the final review (56a6761).**
+- C-1: the packaged app could not install the CUDA pack (electron-builder strips `build` from the asar `package.json`, so the release URL was empty). The URL now comes from `repository`; a pack with no valid source is « unavailable », never offered; `package-smoke` asserts it on the asar copy. Verified in the packaged app.
+- I-1: Vulkan on Windows gets a VRAM padding of `min(20 %, 2.5 GiB)` on the single runtime Llama; each load logs one `[placement]` line and llama.cpp's buffer sizes; estimates move to `estimates.v2.json`.
+- M-2: a busy estimate is a result, not a logged error.
+- M-3: the « Moteur » select fits its longest label (numeric assertion only; captures not viewed).
+
+**The I-1 hypothesis is refuted.** The review thought Vulkan overstated free VRAM by about 1 GiB (probe: Vulkan free 7188 MiB vs `nvidia-smi` 6193 MiB), causing an over-commit that WDDM demotes to shared memory. With the larger padding (session 2) about 2 GiB still lands in shared memory while about 3.7 GiB of VRAM are physically free. The padding is harmless but is not the cause; the cause is unknown. CUDA does not show the spill.
+
+**Not proven:** no machine without NVIDIA or without Vulkan; no real publication (the release upload path ran in dry-run only); the cause of the Vulkan spill. Bugs and requests for the next lot (stop, status, timer, turn trace, reasoning display, `~/.openagent` folders, two old UI bugs) are listed in the `tasks/todo.md` bilan.

@@ -3464,10 +3464,105 @@ Spec `docs/superpowers/specs/2026-10-17-local-only-models-design.md` (validée, 
 - **test:gitstatus PASS** (troisième et dernier lancement : « PASS git status widget: real branch/dirty via the real worker + real git across 3 folders (Electron 44.4.2) ») ; captures relues : « ⎇ main ✓ » vert avec « ✓ Index prêt », puis « ⎇ main ● » jaune ; la ligne « Opération IPC inconnue » du journal existe dans tous les journaux de tests à fenêtre (préexistante) ; `tasklist` après : aucun processus electron/openagent restant ;
 - non fait : app empaquetée non reconstruite (`Sidebar.tsx` change pour elle).
 
+## Bilan du lot — matériel et débordement (2026-10-18 → 2026-10-21)
+
+Spec `docs/superpowers/specs/2026-10-18-hardware-and-offload-design.md` (validée le 2026-10-18). Plan `docs/superpowers/plans/2026-10-18-hardware-and-offload.md`, 13 tâches en sous-agents, base 87fa712, dernier commit de code 56a6761. Registre : `.superpowers/sdd/2026-10-18-hardware-and-offload/progress.md`.
+
+**État : LIVRÉ** (2026-10-21), avec une limite ouverte importante : sur Vulkan avec une carte NVIDIA, environ 2 Gio du 27B passent en mémoire GPU partagée alors qu'environ 3,7 Gio de VRAM sont libres (cause inconnue, voir « Limites connues »).
+
+**Vérifications de clôture** :
+- suite complète seule : 937/937 (tâche 13, avant la vague finale) ; après la vague finale 947/948, le test en échec étant un balayage de `updater.test` déclenché par un commentaire de la vague, reformulé ; `updater.test` et `cuda-pack-install.test` relancés : 30/30 ; la suite complète n'a PAS été relancée après cette reformulation ;
+- `tsc` cœur : les 5 erreurs préexistantes ; `tsc` renderer : 0 ; `npm run renderer:build` : exit 0 ;
+- statiques : `git grep -n "contextSizeFor\|Floored at 4096" -- electron/core` : rien ; `git grep -n "getLlama(" -- electron/core electron/worker.mjs` : seulement `core/llama-runtime.mts`, deux appels, tous deux `build: 'never'` ; `git diff --stat ea3e07e..HEAD -- electron/core/web-tools.mts electron/core/hf-token.mts` : rien (aucun outil retiré).
+
+**Tests à fenêtre, chacun lancé UNE fois (journaux `.superpowers/runs/`)** :
+- `test:settings` (8 onglets) PASS ; `test:hardware` PASS (pack CUDA fictif dimensionné, annulé, installé, désinstallé ; une seule offre de redémarrage) ; `test:localmodel` PASS (vrai import, vrai tour sur le vrai moteur, pastille « tout sur la carte (estimé) » puis sans « estimé » après le chargement) ; `test:preload` PASS ;
+- après la vague finale : `test:hardware` PASS une seconde fois (assertion M-3 sur la largeur du select) ; ses captures n'ont pas été relues (le dossier de captures n'était pas défini, la racine temporaire est supprimée en fin de test) : la largeur n'est vérifiée que par l'assertion numérique ;
+- 3 lignes « Opération IPC inconnue » dans le journal de `test:hardware` : bruit du faux IPC du test, présent dans les deux lancements.
+
+**Preuves empaquetées (une fois, puis une fois après la vague finale)** :
+- `package:win` exit 0 ; `app.asar` contient `core/llama-runtime.mts`, `core/hardware.mts`, `core/offload-estimate.mts` et aucun `tests/` ; `resources/cuda-pack/manifest.json` identique octet pour octet au fichier commité ; aucun dossier `@node-llama-cpp/win-x64-cuda*` dans `app.asar.unpacked` (le pack n'est jamais dans l'installateur) ;
+- `test:package` PASS : onglet Matériel affiché dans l'app empaquetée (« Moteur : Vulkan »). Après la vague finale, il lit aussi le `package.json` de l'asar (clé `repository` conservée, adresse de release `…/releases/download/v0.2.0/`) et `cuda-pack-status` répond `absent` avec des tailles ;
+- `test:install` NON lancé (installe et désinstalle sur le profil de la machine).
+
+**Vérifications manuelles (une fois chacune)** :
+- CUDA réel avec `tests/cuda-real.cjs --install` puis `--load`, pack servi depuis la boucle locale (561 616 523 octets) : état `installed`, `restartRequired` vrai ; chargement : backend `cuda`, 6/6 couches, contexte 16 384, réponse de 12 161 caractères, aucun avertissement `[gpu-backend]` ;
+- idem dans l'app empaquetée après la vague finale (pack installé dans un dossier temporaire, `openagent.exe` piloté en CDP) : backend `cuda`, 6/6, ligne `[placement]` avec marge 655 Mio ; `app.asar.unpacked` ne contient pas de `win-x64-cuda`, donc les tampons CUDA ne peuvent venir que du pack ;
+- mesure du 27B IQ3_M sur la machine de l'utilisateur : tableau plus bas ;
+- dry-run de `release-win.cjs` (tâche 12) : exit 0, « pack CUDA 1 morceau(x), 561616523 octets, conforme au manifeste », aucun jeton dans le journal, aucune release créée.
+
+**Objectifs de la spec → preuves** :
+1. Voir la machine : `hardware.test.mts` (moteur, carte, VRAM, RAM, processeur ; dégradation si la lecture échoue), `hardware-view.test.mts`, `hardware-visual.cjs` (lignes lues par le worker, relecture réelle, `data-reads` 1 puis 2), `test:package` (onglet dans l'app empaquetée) ; 905e7fa, 39e8d97.
+2. Répartition déterministe : `local-engine.test.mts` (chargement par `gpuLayers: { fitContext }`, contexte exact, erreur française quand rien ne tient, rien de chargé à moitié, rechargement sur réglage changé), `llama-runtime.test.mts` (un seul Llama par worker, `build: 'never'`), `worker-model.test.mts` ; chargé = vrai prouvé par le CUDA réel (6/6 affiché = 6/6 chargé) et par les trois sessions du 27B ; 5757df6, b5d581c, 56a6761.
+3. Contexte plafonné : `local-context.test.mts` (règle `max(16 384, réglage)` plafonnée par l'entraînement, sans croissance avec la mémoire libre, petit modèle gardé à 16 384), réglage « Contexte des modèles locaux » (16k à 128k ou max, 32 768 par défaut) ; 38abaa6, 39e8d97.
+4. Afficher la répartition : `placement-format.test.mts` (libellés français, mémoire toujours « estimé »), `worker-model.test.mts` (événement `model` et op `model-status`), `local-model-visual.cjs` (pastille à côté du bouton, fenêtre de choix, avant et après le chargement) ; 13d6864, 39e8d97.
+5. Estimation réutilisable : `offload-estimate.test.mts` et `worker-estimate.test.mts` (même résolveur que le chargement, cache sur fichier + matériel + contexte, annulation qui laisse le cache intact, refus pendant un tour, annulée par un tour), enfant « ne tient pas » forcé sur le processeur ; source distante typée, non implémentée ; 758b47e, c135e1f, 13d6864 ; cache déplacé en `estimates.v2.json` par 56a6761.
+6. CUDA en option : `cuda-pack-format.test.mts` (flux gzip déterministe, morceaux < 2 Gio, liste blanche de chemins, budget d'octets et de fichiers), `cuda-pack-install.test.mts` (taille avant téléchargement, empreinte par morceau, espace disque, annulation, installation atomique, désinstallation, version du moteur, jamais de lien suivi), `worker-cuda-pack.test.mts` (essai du pack en premier, repli Vulkan/processeur avec avis, hook de résolution), `release-win.test.mts` (pack construit, vérifié contre le manifeste, envoyé sur le même brouillon), `hardware-visual.cjs`, CUDA réel et CUDA empaqueté ; b3a08c2, 62c3cda, ea74cd4, 551fe6b, 0ea1e3f, 2d26a2c, 669a9c5, 7265b16, 3a0b7c6, 56a6761.
+
+**Décisions** :
+- Matériel est un onglet des réglages (8 onglets) ;
+- règle du contexte : `max(16 384, réglage)` plafonné par l'entraînement du modèle ; `max_tokens` ne plafonne pas le moteur, seulement la fenêtre de requête (F6) ;
+- résolveur fin : l'estimation reprend exactement le chargement (`useMmap`, Flash Attention, repli du type de KV) ;
+- cache persistant, clé fichier + matériel + contexte ; une estimation à la fois, annulée par un tour, refusée pendant un tour ; une estimation « occupé » est un résultat, pas une erreur journalisée (M-2) ;
+- la mémoire affichée est toujours « estimé » : `memoryUsage` de node-llama-cpp est une empreinte supposée, pas une mesure ;
+- format du pack : flux gzip déterministe, morceaux de moins de 2 Gio, manifeste d'empreintes embarqué, champ `licences` ; seules `cublas64_13.dll` et `cublasLt64_13.dll` sont emballées, avec la licence NVIDIA ;
+- D-CUDA-1 (licence) : GO, les deux DLL figurent à l'annexe A de l'EULA ; conditions : la licence NVIDIA voyage dans le pack, étiquetée NVIDIA et non MIT, pack proposé aux seules cartes NVIDIA, usage par l'app seule ;
+- D-CUDA-2 (mécanisme) : un hook de résolution du worker redirige `@node-llama-cpp/win-x64-cuda` ; le dossier `cuda-runtime/` est mis en tête du `PATH` par le main avant la création du Worker (`CUDA_PATH` et les DLL à côté de `ggml-cuda.dll` ne fonctionnent pas) ;
+- D-CUDA-3 (placement) : DLL dans `cuda-runtime/`, pas de `win-x64-cuda-ext` ; seule la build CUDA 13 est utilisée ;
+- D-CUDA-4 (bascule) : au prochain démarrage de l'app, pas au prochain chargement (le loader réutilise `ggml-base.dll` et `llama-common.dll` entre moteurs, les DLL ne se déchargent pas) ; un bouton « Redémarrer maintenant » ;
+- choix du moteur (Auto / Vulkan / CUDA / processeur) en réglage de l'onglet Matériel, appliqué après redémarrage (demande de l'utilisateur) ;
+- `build: 'never'` sur tout `getLlama` : l'app ne compile jamais ;
+- pack publié avec chaque release, dry-run seulement : aucune publication sans accord explicite ;
+- l'installation du pack lit son adresse de release dans la clé `repository` du `package.json` (electron-builder retire `build` de la copie empaquetée) ; sans adresse valide, le pack est « indisponible » et jamais proposé ;
+- marge de VRAM de Vulkan sous Windows : `min(20 %, 2,5 Gio)` sur le Llama unique ; chaque chargement journalise une ligne `[placement]` et les tailles de tampons de llama.cpp.
+
+**Mesure réelle — 27B IQ3_M (2026-10-21)**
+
+App empaquetée, dossier de données isolé, contexte 32k, carte RTX 4060 (8188 Mio). « mesuré » : compteurs de performance du processus du worker (`GPU Process Memory`) et `nvidia-smi` ; « estimé » : figure affichée par l'app ou tampons annoncés par llama.cpp (le nombre de couches chargées est lu sur le modèle chargé, pas estimé).
+
+| Session | Estimation affichée | Chargé affiché | Observé |
+|---|---|---|---|
+| 1. Vulkan, ancienne marge | 25/66 couches sur la carte · VRAM 5,9 Gio · RAM 8,5 Gio (estimé) | 25/66 (valeur de la pastille après chargement, sans « estimé ») | `nvidia-smi` 2365 → 4687 Mio, soit +2322 Mio (mesuré) ; worker : dédiée 2283 Mio + partagée 3860 Mio, total ≈ 6,0 Gio (mesuré) ; RAM système 17,9 → 28,2 Gio, mémoire privée du processus 10 677 Mo (mesuré) |
+| 2. Vulkan, marge 1591 Mio | 18/66 couches · VRAM 4,6 Gio · RAM 9,9 Gio (estimé) | 18/66 (pastille après chargement, sans « estimé ») ; `[placement]` : VRAM libre 7186/7956 Mio vue par Vulkan, marge 1591 Mio ; tampons llama.cpp ≈ 4690 Mio (modèle 3590 + KV 512 + RS 37 + calcul 551), CPU mappé 8398 Mio, KV processeur 1536 Mio (estimé) | worker : dédiée 2735 Mio + partagée ≈ 2096 à 2111 Mio ; `nvidia-smi` 4437/8188 Mio, soit ≈ 3,7 Gio encore libres (mesuré) ; processeur du worker ≈ 0,6 cœur au chargement puis ≈ 7 à 8 cœurs pendant le calcul du prompt (mesuré) ; premier mot ≈ 5 min après l'envoi, réponse terminée ≈ 6 min après (observations de l'utilisateur, à la minute près) |
+| 3. CUDA (pack installé) | non relevée | 25/66 ; `[placement]` : VRAM libre 7106/8188 Mio, marge 655 Mio ; tampons ≈ 6050 Mio (modèle 4724 + KV 768 + RS 53 + calcul 505), CPU mappé 7264 Mio, KV processeur 1280 Mio (estimé) | worker : dédiée 6223 Mio + partagée 142 Mio ; `nvidia-smi` 7462 à 7498/8188 Mio (mesuré) ; processeur 5,5 à 6,8 cœurs pendant le prompt, GPU jusqu'à 92 % au chargement (mesuré) ; appel d'outil du second message vers 18:00, réponse terminée à 18:01 (observations de l'utilisateur) ; l'heure exacte de la première réponse n'a pas été relevée |
+
+Écarts :
+- session 1 : dédiée + partagée (≈ 6,0 Gio) correspond à la VRAM estimée (5,9 Gio), mais 3,8 Gio de ce total sont allés en mémoire GPU partagée du système et non en VRAM ;
+- session 2 : la marge plus grande a réduit le nombre de couches (25 → 18) sans supprimer le débordement : environ 2 Gio restent en mémoire partagée avec ≈ 3,7 Gio de VRAM libres. L'hypothèse de la revue finale (Vulkan surestime la VRAM libre, d'où un sur-engagement) est donc **réfutée** comme cause du débordement ;
+- session 3 : sur CUDA le débordement est faible (142 Mio) pour 25/66 couches ;
+- le chiffre de RAM de l'app est une estimation de node-llama-cpp ; aucune mesure de RAM par modèle n'a été faite au-delà de la mémoire privée du processus de la session 1.
+
+**Limites connues** :
+- l'estimation peut différer du chargement quand la VRAM libre change entre-temps (décision de la spec : le chiffre chargé est toujours vrai, l'estimé est marqué) ;
+- un changement de pack demande un redémarrage de l'app (D-CUDA-4) ;
+- la source d'estimation distante est typée mais non implémentée (projet 2) ;
+- le chemin d'envoi de la release n'a jamais été exécuté (dry-run seulement, `gh release upload` vers un brouillon par étiquette non vérifié) et le pack n'est pas encore publié : le bouton « Télécharger » de l'app ne peut pas aboutir tant qu'une release ne le porte pas ;
+- **sur Vulkan avec une carte NVIDIA, environ 2 Gio du 27B se retrouvent en mémoire GPU partagée même avec ≈ 3,7 Gio de VRAM libres.** L'hypothèse de sur-engagement de la revue finale est réfutée par le run du 2026-10-21. La cause racine est inconnue (pistes non testées : placement WDDM des allocations Vulkan, tampons visibles par l'hôte, import par mmap). La marge plus grande sous Vulkan/Windows est sans danger mais ne corrige pas ce débordement. CUDA ne le montre pas ;
+- reste de la vague finale : `@electron/asar` n'est qu'une dépendance de développement transitive utilisée par `package-smoke` ; la moitié Vulkan du test enfant de `llama-runtime` passe sans objet quand Vulkan est absent ; `NODE_LLAMA_CPP_LOG_LEVEL` n'est plus honoré ; `estimates.v1.json` reste orphelin sur disque ;
+- ~645 dossiers `openagent-*` des lots précédents restent dans le dossier temporaire (non touchés).
+
+**Non prouvé** :
+- aucune machine sans NVIDIA ni sans Vulkan n'a été essayée ;
+- aucune publication réelle ; le téléchargement réel du pack depuis GitHub n'a pas eu lieu (le pack a été servi depuis la boucle locale) ;
+- la cause du débordement de Vulkan ;
+- la largeur du select « Moteur » à l'œil (assertion numérique seulement).
+
+**Bugs et demandes relevés pendant la mesure → lot suivant « diagnostic des tours »** :
+- l'arrêt est lent et un chargement de modèle ne peut pas être interrompu (revue finale M-1 : l'arrêt attend `idle()` ou le chargement sans signal) ; à reproduire : l'utilisation GPU de 35 à 39 % vue après l'arrêt venait d'autres programmes, pas du tour (relevé avec l'app fermée) ;
+- aucun statut dans le chat pendant le réveil, le chargement et la réflexion ;
+- un minuteur sous chaque réponse (temps jusqu'au premier mot, total), avec les durées journalisées ;
+- un journal complet de chaque tour (phases, durées, jetons, réflexion, appels d'outils, arrêt) pour déboguer le cœur et le cerveau de l'IA ;
+- la réflexion fuit dans la réponse avec un `</think>` littéral (la balise ouvrante vient probablement du gabarit de conversation, l'analyseur ne la voit jamais) : afficher la réflexion à part, dans un bloc repliable ;
+- créer au démarrage les sous-dossiers de `~/.openagent` que l'app lit (inventaire à faire) ;
+- bugs d'interface plus anciens : une bulle à longs jetons défile horizontalement ; le texte du chat vide s'affiche alors qu'un dossier est actif ;
+- à vérifier : l'erreur `electron-updater` GitHubProvider vue dans le journal de l'app empaquetée.
+
+**Mineurs différés (registre)** : T2 `formatBytes` aux bords 1024 Mio et NaN ; T3 assistant GGUF qui ne corrige que `context_length` en uint32 ; T4 aucun test ne fige la correspondance `InsufficientMemoryError` → `localModelTooBig`, `completeLocal` utilise le chat hors verrou ; T5 `ESTIMATE_BUSY` pour la compaction non testé ; T6 course envoi pendant estimation fermée par raisonnement et test unitaire, pas par un test du worker ; T7 message d'`settings-tabs-visual.cjs:99` devenu trompeur, curseur « max » plafonné à 131 072 ; T8 code mort ligne 290 ; T9 reconstruction du pack pour la même version du moteur non proposée comme mise à jour ; T10 l'avis de repli dit toujours Vulkan même sur le processeur ; T11 0 % affiché jusqu'à la première progression après remontage, `HardwareTab` d'environ 230 lignes ; T12 saut de ligne littéral dans le gabarit du dry-run.
+
 ## À faire — lots suivants (demandes de l'utilisateur, 2026-10-17)
 
 1. **Modèles 100 % locaux** — LIVRÉ (2026-10-18, voir « Bilan du lot — modèles 100 % locaux ») : `test:model` PASS à sa relance ; `test:gitstatus` PASS à son troisième et dernier lancement, après la relecture du témoin git quand l'index est prêt (97783e4). (conception `docs/superpowers/specs/2026-10-17-local-only-models-design.md`) : la sélection du modèle ne propose plus que les fichiers `.gguf` locaux ; clés des fournisseurs en ligne effacées ; modèle d'embeddings livré dans l'app. **Aucun outil ni réglage retiré** (outils web, jeton Hugging Face, images… restent).
 2. **Vision + débordement VRAM → RAM/CPU** :
    - vision : les modèles `.gguf` de vision (modèle + projecteur `mmproj`) décrivent les captures envoyées, via `llama-mtmd-cli` de llama.cpp livré dans l'app (node-llama-cpp 3.x n'accepte pas d'image ; la v4, qui l'apportera, n'est pas publiée au 2026-10-17 — issue withcatai/node-llama-cpp#88) ; le modèle de discussion est déchargé pendant l'appel pour ne pas doubler la mémoire ;
-   - débordement : demandé depuis longtemps par l'utilisateur et **jamais porté** depuis Python (`estimate_gpu_layers` dans `utils/utils.py`, étiquette `python-final`, servait à LM Studio / llama.cpp serveur) ; le moteur `.gguf` actuel s'en remet au réglage par défaut de node-llama-cpp, **non vérifié** : mesurer un modèle plus gros que la VRAM, reprendre une répartition explicite si nécessaire, afficher couches GPU / CPU.
+   - débordement : **LIVRÉ le 2026-10-21, voir « Bilan du lot — matériel et débordement »** ; demandé depuis longtemps par l'utilisateur et **jamais porté** depuis Python (`estimate_gpu_layers` dans `utils/utils.py`, étiquette `python-final`, servait à LM Studio / llama.cpp serveur) ; le moteur `.gguf` actuel s'en remet au réglage par défaut de node-llama-cpp, **non vérifié** : mesurer un modèle plus gros que la VRAM, reprendre une répartition explicite si nécessaire, afficher couches GPU / CPU.
 3. **Audit des outils** (demandé le 2026-10-17, après le lot 1) : « tout doit être conservé, voire ajouté s'il en manque » — comparer les outils de l'agent à ceux de l'ancienne app Python (`python-final`) et à ce qu'on attend d'un agent de code, proposer ceux qui manquent.

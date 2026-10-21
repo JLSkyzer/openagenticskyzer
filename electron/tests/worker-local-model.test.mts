@@ -7,30 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 import { LOCAL_MODEL_MISSING } from '../core/active-model.mts';
-
-function callWorker(worker: Worker, op: string, payload?: unknown): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const id = `local-${Math.random()}`;
-    const listener = (message: any) => {
-      if (message.id !== id) return;
-      worker.off('message', listener);
-      message.ok ? resolve(message.result) : reject(new Error(message.error));
-    };
-    worker.on('message', listener);
-    worker.postMessage({ id, op, payload });
-  });
-}
-async function waitDone(worker: Worker, runId: string, events: any[] = []) {
-  await new Promise<void>(resolve => {
-    const listener = (message: any) => {
-      if (message?.type === 'event' && message.runId === runId) {
-        events.push(message);
-        if (['done', 'error', 'stopped'].includes(message.kind)) { worker.off('message', listener); resolve(); }
-      }
-    };
-    worker.on('message', listener);
-  });
-}
+import { callWorker, recordAgentEvents } from './support/worker-events.mts';
 
 async function setup(t: { after(fn: () => unknown): void }) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-local-'));
@@ -50,9 +27,11 @@ async function setup(t: { after(fn: () => unknown): void }) {
 
 test('worker::send with an active_local_model runs a real turn on the real .gguf, WITHOUT any connection at all, and saves it', { timeout: 180000 }, async t => {
   const { worker, folder } = await setup(t);
+  const rec = recordAgentEvents(worker);
   const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'Once upon a time' });
   const events: any[] = [];
-  await waitDone(worker, runId, events);
+  events.push(...await rec.until(runId, { timeoutMs: 170000 }));
+  rec.stop();
   assert.equal(events.at(-1).kind, 'done', JSON.stringify(events.find(e => e.kind === 'error')));
   const saved = await callWorker(worker, 'messages', { folder, branchId: 'main' });
   assert.equal(saved[0].content, 'Once upon a time');

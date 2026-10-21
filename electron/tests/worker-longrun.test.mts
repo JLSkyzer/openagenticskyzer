@@ -8,34 +8,7 @@ import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 import { testWorkerOptions } from './support/test-model-provider.mts';
-
-function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const id = `test-${Math.random()}`;
-    const listener = (message: any) => {
-      if (message.id !== id) return;
-      worker.off('message', listener);
-      message.ok ? resolve(message.result) : reject(new Error(message.error));
-    };
-    worker.on('message', listener);
-    worker.postMessage({ id, op, payload });
-  });
-}
-
-function collectAgentEvents(worker: Worker, runId: string) {
-  const events: any[] = [];
-  const listener = (message: any) => {
-    if (message?.type === 'event' && message.event === 'agent' && message.runId === runId) events.push(message);
-  };
-  worker.on('message', listener);
-  return { events, stop: () => worker.off('message', listener) };
-}
-
-async function waitUntilDone(events: any[]) {
-  while (!events.some(e => ['done', 'error', 'stopped'].includes(e.kind))) {
-    await new Promise(resolve => setTimeout(resolve, 10));
-  }
-}
+import { callWorker, recordAgentEvents } from './support/worker-events.mts';
 
 async function fakeProviderRoot(t: any) {
   const server = createServer((_request, response) => {
@@ -60,10 +33,10 @@ test('a real turn finishing above OPENAGENT_LONG_RUN_MS is flagged longRunning w
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home, { OPENAGENT_LONG_RUN_MS: '1' }));
   terminateAtEnd(t, worker);
 
+  const rec = recordAgentEvents(worker);
   const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
-  const { events, stop } = collectAgentEvents(worker, runId);
-  await waitUntilDone(events);
-  stop();
+  const events = await rec.until(runId);
+  rec.stop();
 
   const done = events.find(e => e.kind === 'done');
   assert.ok(done, 'the turn completed');
@@ -83,10 +56,10 @@ test('the same fast turn is NOT flagged longRunning under the real 10s default t
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home));
   terminateAtEnd(t, worker);
 
+  const rec = recordAgentEvents(worker);
   const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
-  const { events, stop } = collectAgentEvents(worker, runId);
-  await waitUntilDone(events);
-  stop();
+  const events = await rec.until(runId);
+  rec.stop();
 
   const done = events.find(e => e.kind === 'done');
   assert.ok(done);
@@ -111,13 +84,13 @@ test('a Stop is never flagged longRunning, even past the threshold — the user 
   const worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home, { OPENAGENT_LONG_RUN_MS: '1' }));
   terminateAtEnd(t, worker);
 
+  const rec = recordAgentEvents(worker);
   const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
   await providerCalled;
   await callWorker(worker, 'stop', { runId });
 
-  const { events, stop } = collectAgentEvents(worker, runId);
-  await waitUntilDone(events);
-  stop();
+  const events = await rec.until(runId);
+  rec.stop();
   const stopped = events.find(e => e.kind === 'stopped');
   assert.ok(stopped);
   assert.equal(stopped.longRunning, undefined);

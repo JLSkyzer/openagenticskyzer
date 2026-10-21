@@ -8,34 +8,7 @@ import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 import { testWorkerOptions } from './support/test-model-provider.mts';
-
-function callWorker(worker: Worker, op: string, payload: unknown): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const id = `test-${Math.random()}`;
-    const listener = (message: any) => {
-      if (message.id !== id) return;
-      worker.off('message', listener);
-      message.ok ? resolve(message.result) : reject(new Error(message.error));
-    };
-    worker.on('message', listener);
-    worker.postMessage({ id, op, payload });
-  });
-}
-
-function collectAgentEvents(worker: Worker, runId: string) {
-  const events: any[] = [];
-  const listener = (message: any) => {
-    if (message?.type === 'event' && message.event === 'agent' && message.runId === runId) events.push(message);
-  };
-  worker.on('message', listener);
-  return { events, stop: () => worker.off('message', listener) };
-}
-
-async function waitUntilDone(events: any[]) {
-  while (!events.some(e => ['done', 'error', 'stopped'].includes(e.kind))) {
-    await new Promise(resolve => setTimeout(resolve, 20));
-  }
-}
+import { callWorker, recordAgentEvents } from './support/worker-events.mts';
 
 test('worker::send runs a real agent turn: streams events, executes create_file, and persists the transcript', async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-send-'));
@@ -74,12 +47,12 @@ test('worker::send runs a real agent turn: streams events, executes create_file,
   // tested in worker-tools.test.mts. The user's own saved choice is respected.
   await callWorker(worker, 'save-global-settings', { patch: { files_ask: false } });
   const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
+  const rec = recordAgentEvents(worker);
   const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'crée un fichier notes.md', testModel });
   assert.match(runId, /.+/);
 
-  const { events, stop } = collectAgentEvents(worker, runId);
-  await waitUntilDone(events);
-  stop();
+  const events = await rec.until(runId);
+  rec.stop();
 
   const kinds = events.map(e => e.kind);
   assert.equal(kinds.at(-1), 'done', `expected the run to finish with 'done', got: ${kinds.join(',')}`);
@@ -118,12 +91,12 @@ test('worker::send persists whatever was produced so far when the run is stopped
   terminateAtEnd(t, worker);
 
   const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
+  const rec = recordAgentEvents(worker);
   const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
-  const { events, stop } = collectAgentEvents(worker, runId);
   await providerCalled;
   await callWorker(worker, 'stop', { runId });
-  await waitUntilDone(events);
-  stop();
+  const events = await rec.until(runId);
+  rec.stop();
 
   assert.equal(events.at(-1).kind, 'stopped');
   const persisted = await callWorker(worker, 'messages', { folder: project, branchId: 'main' });
@@ -153,10 +126,10 @@ async function earlyFailureSetup(t: any, prefix: string) {
   terminateAtEnd(t, worker);
   const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model' };
   const send = async (text: string, keep?: number) => {
+    const rec = recordAgentEvents(worker);
     const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text, testModel, ...(keep === undefined ? {} : { keep }) });
-    const { events, stop } = collectAgentEvents(worker, runId);
-    await waitUntilDone(events);
-    stop();
+    const events = await rec.until(runId);
+    rec.stop();
     return events;
   };
   // A real conversation, saved by two real turns.
@@ -220,10 +193,10 @@ test('worker::send asks for no more output than the window leaves beside the rea
   terminateAtEnd(t, worker);
   await callWorker(worker, 'save-global-settings', { patch: { max_tokens: 8000 } });
   const testModel = { base_url: `http://127.0.0.1:${port}/v1`, model: 'test-model', contextWindow: 32_000, outputCap: 16_384 };
+  const rec = recordAgentEvents(worker);
   const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
-  const { events, stop } = collectAgentEvents(worker, runId);
-  await waitUntilDone(events);
-  stop();
+  const events = await rec.until(runId);
+  rec.stop();
   assert.equal(events.at(-1).kind, 'done');
   const [body] = bodies;
   const estimate = estimateRequestTokens(body.messages[0].content, body.tools ?? [], body.messages.slice(1));

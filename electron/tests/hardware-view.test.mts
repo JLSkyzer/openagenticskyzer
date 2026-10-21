@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  backendChoiceView, CUDA_PACK_UNAVAILABLE_TEXT, cudaMismatchText, cudaPackView, GPU_BACKEND_OPTIONS, hardwareLines,
+  adoptInstall, backendChoiceView, CUDA_PACK_UNAVAILABLE_TEXT, cudaMismatchText, cudaPackView, GPU_BACKEND_OPTIONS, hardwareLines,
   isPackFailureNotice, LOCAL_CONTEXT_OPTIONS, maxTokensSliderMax,
 } from '../renderer-src/src/components/settings/hardware-view.ts';
 // What op hardware-info answers: core/hardware.mts::HardwareInfo plus the worker's backendChoice and restartRequired.
@@ -59,7 +59,7 @@ test('hardwareLines in French for a card and for the processor alone; the contex
 // 1_288_490_189 bytes is a test input (formatBytes → '1,2 Gio'), not the real pack's size.
 const absentPack: CudaPackView = {
   state: 'absent', downloadBytes: 1_288_490_189, installedBytes: 2_500_000_000, installedVersion: null,
-  expectedVersion: '3.18.1', restartRequired: false, notice: null,
+  expectedVersion: '3.18.1', restartRequired: false, notice: null, install: null,
 };
 const installedPack: CudaPackView = { ...absentPack, state: 'installed', installedVersion: '3.18.1' };
 
@@ -79,8 +79,9 @@ test('cudaPackView: hidden without NVIDIA, the size before download, progress an
     button: { id: 'download', label: 'Télécharger le pack à jour (1,2 Gio)' },
   });
   const failed = "Le pack CUDA n'a pas pu se charger : l'app utilise Vulkan à la place.";
+  // The notice itself is the tab's notice line (hardwareLines): the block does not repeat it.
   assert.deepEqual(cudaPackView(installedPack, { ...card, notice: failed }, null), {
-    state: 'failed', text: failed, button: { id: 'uninstall', label: 'Désinstaller' },
+    state: 'failed', text: "Le pack CUDA est installé mais n'a pas pu se charger (voir le message ci-dessus).", button: { id: 'uninstall', label: 'Désinstaller' },
   });
   assert.deepEqual(cudaPackView({ ...installedPack, restartRequired: true }, card, null), {
     state: 'restart', text: "Pack CUDA installé : redémarre l'app pour l'utiliser.", button: { id: 'restart', label: 'Redémarrer maintenant' },
@@ -137,4 +138,16 @@ test('backendChoiceView: the four choices in French; the restart offer once, onl
   assert.deepEqual(backendChoiceView({ ...card, restartRequired: true }, 'auto', 'absent'), { restart: offer }, 'saved, but this run started with another');
   assert.deepEqual(backendChoiceView({ ...card, restartRequired: true }, 'cpu', 'restart'), { restart: null }, 'the CUDA block already offers the one restart button');
   assert.deepEqual(backendChoiceView({ ...card, backendChoice: 'cpu' }, 'cpu', 'hidden'), { restart: null });
+});
+
+test('adoptInstall: a view mounted mid-install takes over its id and progress; never one it already follows', () => {
+  const running = { ...absentPack, state: 'installing' as const, install: { installId: 'i-1', receivedBytes: 1000, totalBytes: 4000 } };
+  assert.deepEqual(adoptInstall(running, null), { installId: 'i-1', progress: { received: 1000, total: 4000 } });
+  assert.equal(adoptInstall(running, 'i-1'), null, 'already followed');
+  assert.equal(adoptInstall(absentPack, null), null, 'nothing running');
+  // Adopted, the block is back to its progress and « Annuler ».
+  const adopted = adoptInstall(running, null)!;
+  assert.deepEqual(cudaPackView(running, card, adopted.progress), {
+    state: 'installing', text: 'Téléchargement du pack CUDA… 25 %', button: { id: 'cancel', label: 'Annuler' },
+  });
 });

@@ -89,7 +89,8 @@ export function cudaPackView(view: CudaPackView, info: HardwareInfo, progress: {
     };
   }
   if (view.state === 'installed') {
-    if (isPackFailureNotice(info.notice)) return { state: 'failed', text: info.notice!, button: { id: 'uninstall', label: 'Désinstaller' } };
+    // The notice itself is already the tab's notice line (hardwareLines): not repeated here.
+    if (isPackFailureNotice(info.notice)) return { state: 'failed', text: "Le pack CUDA est installé mais n'a pas pu se charger (voir le message ci-dessus).", button: { id: 'uninstall', label: 'Désinstaller' } };
     if (view.restartRequired) return { state: 'restart', text: "Pack CUDA installé : redémarre l'app pour l'utiliser.", button: { id: 'restart', label: 'Redémarrer maintenant' } };
     return { state: 'installed', text: "Pack CUDA installé : utilisé au prochain chargement d'un modèle.", button: { id: 'uninstall', label: 'Désinstaller' } };
   }
@@ -98,6 +99,15 @@ export function cudaPackView(view: CudaPackView, info: HardwareInfo, progress: {
     text: "Le pack CUDA accélère les cartes NVIDIA. Il est téléchargé depuis la release de l'app et installé dans son dossier de données.",
     button: { id: 'download', label: sized('Télécharger le pack CUDA', view.downloadBytes) },
   };
+}
+
+/**
+ * A view mounted while an install runs (the tab was left mid-install) takes over that install: its id, so « Annuler »
+ * works and its events are followed, and its last progress. Null when nothing runs or the view already follows it.
+ */
+export function adoptInstall(view: CudaPackView, followed: string | null): { installId: string; progress: { received: number; total: number } } | null {
+  if (view.install === null || view.install.installId === followed) return null;
+  return { installId: view.install.installId, progress: { received: view.install.receivedBytes, total: view.install.totalBytes } };
 }
 
 /** « Moteur » (the gpu_backend setting), applied at the next app start. */

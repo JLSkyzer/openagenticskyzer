@@ -91,6 +91,8 @@ export interface CudaPackView {
   expectedVersion: string;
   restartRequired: boolean;
   notice: string | null;
+  /** The running install (its id and last progress), so a view opened mid-install can follow and cancel it; else null. */
+  install: { installId: string; receivedBytes: number; totalBytes: number } | null;
 }
 
 // A CUDA pack install's progress and end (worker.mjs, op cuda-pack-install).

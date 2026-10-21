@@ -205,6 +205,15 @@ app.whenReady().then(async () => {
       await click('[data-testid="oa-cuda-download-btn"]');
       await waitFor(async () => (await cudaState()) === 'installing', { what: 'data-state="installing" after the click' });
       assert.equal(await exists('[data-testid="oa-cuda-progress"]'), true, 'a progress bar while installing');
+      // Leaving the tab mid-install unmounts it; back on it, the new view adopts the running install (its id and
+      // progress, from cuda-pack-status): the progress bar and « Annuler » come back.
+      await click('[data-testid="oa-settings-tab"][data-tab="general"]');
+      await waitFor(async () => (await js(`document.querySelector('[data-testid="oa-settings-panel"]')?.dataset.tab`)) === 'general', { what: 'the Général panel is shown' });
+      assert.equal(await cudaState(), null, 'the Matériel tab is unmounted');
+      await click('[data-testid="oa-settings-tab"][data-tab="hardware"]');
+      // Null right after the remount (no block before the reads): only the adopted install makes these true.
+      await waitFor(async () => (await cudaState()) === 'installing' && (await exists('[data-testid="oa-cuda-progress"]')), { timeout: 30000, what: 'the adopted install: installing, with a progress bar' });
+      assert.match(await text('[data-testid="oa-cuda-pack"] span:nth-of-type(2)'), /^Téléchargement du pack CUDA… \d+ %$/, 'its progress, not « en cours… »');
       await waitFor(() => exists('[data-testid="oa-cuda-cancel-btn"]'), { what: 'the cancel button' });
       await click('[data-testid="oa-cuda-cancel-btn"]');
       // Reached only through the cancelled event: « installing » was asserted just before.

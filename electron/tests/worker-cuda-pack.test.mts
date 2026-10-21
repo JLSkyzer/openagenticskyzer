@@ -174,7 +174,7 @@ test('3. cuda-pack-install through the worker: progress events, then done; insta
   const before = await callWorker(worker, 'cuda-pack-status');
   assert.deepEqual(before, {
     state: 'absent', downloadBytes: f.manifest.downloadBytes, installedBytes: f.manifest.installedBytes, installedVersion: null,
-    expectedVersion: ENGINE, restartRequired: false, notice: null,
+    expectedVersion: ENGINE, restartRequired: false, notice: null, install: null,
   });
   const { installId } = await callWorker(worker, 'cuda-pack-install');
   assert.equal(typeof installId, 'string');
@@ -197,6 +197,37 @@ test('3. cuda-pack-install through the worker: progress events, then done; insta
   const removed = await callWorker(worker, 'cuda-pack-uninstall');
   assert.equal(removed.state, 'absent');
   assert.equal(removed.restartRequired, false, 'back to what this worker started with');
+});
+
+test('3b. cuda-pack-status names the running install and its progress: a view opened mid-install can cancel it', { timeout: 120000 }, async t => {
+  const f = await fixture(t);
+  // Sends the first 100 bytes of the first part (the whole synthetic pack is a few hundred), then holds the connection
+  // open: the install stays running.
+  const server = await startFakePackServer(f.packDir, { stallAfter: 100 });
+  t.after(() => server.close());
+  const worker = start(t, f.home, { cudaPackManifest: f.manifestPath, cudaPackBaseUrl: server.url });
+  const ended = new Promise<any>(resolve => worker.on('message', (message: any) => {
+    if (message?.type === 'event' && message.event === 'cuda-pack' && message.state !== 'progress') resolve(message);
+  }));
+  const { installId } = await callWorker(worker, 'cuda-pack-install');
+  let status: any;
+  const deadline = Date.now() + 30000;
+  for (;;) {
+    status = await callWorker(worker, 'cuda-pack-status');
+    if (status.install?.receivedBytes > 0) break;
+    assert.ok(Date.now() < deadline, `no progress in cuda-pack-status: ${JSON.stringify(status)}`);
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(status.install.installId, installId, 'the running install, by its id');
+  assert.equal(status.install.totalBytes, f.manifest.downloadBytes);
+  assert.ok(status.install.receivedBytes <= status.install.totalBytes);
+  // What a freshly mounted view does: cancel with the id it read from the status.
+  assert.deepEqual(await callWorker(worker, 'cuda-pack-cancel', { installId: status.install.installId }), { cancelled: true });
+  const end = await ended;
+  assert.equal(end.state, 'cancelled', JSON.stringify(end));
+  const after = await callWorker(worker, 'cuda-pack-status');
+  assert.equal(after.install, null, 'no install once it has ended');
+  assert.equal(after.state, 'absent');
 });
 
 test('4. installing or uninstalling during a turn is refused with CUDA_PACK_TURN_BUSY', { timeout: 180000 }, async t => {

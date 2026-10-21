@@ -643,17 +643,21 @@ async function restartNeeded() {
   const [dir, saved] = await Promise.all([cudaPack.installedDir().catch(() => null), savedBackend()]);
   return restartRequired(dir, GPU_BACKEND_CHOICES.includes(saved) ? saved : 'auto');
 }
+// `install`: the running install's id and last progress, so that a view opened mid-install (the settings tab was left
+// and reopened) follows it and can cancel it; null when none runs.
 async function cudaPackView() {
-  return { ...await cudaPack.status(), restartRequired: await restartNeeded(), notice: runtimeNotice() };
+  const job = cudaInstall;
+  const install = job ? { installId: job.id, receivedBytes: job.received, totalBytes: job.total } : null;
+  return { ...await cudaPack.status(), restartRequired: await restartNeeded(), notice: runtimeNotice(), install };
 }
-// The one CUDA pack install of this worker, if any: { id, controller }.
+// The one CUDA pack install of this worker, if any: { id, controller, received, total }.
 let cudaInstall = null;
 /** Op cuda-pack-install, up to its answer: reserved before the first await, so two requests cannot both start one. */
 async function reserveCudaPackInstall() {
   if (cudaInstall) throw new Error(CUDA_PACK_BUSY);
   // A turn has the machine to itself, and the pack may be the backend it runs on.
   if (active.size > 0) throw new Error(CUDA_PACK_TURN_BUSY);
-  const job = { id: randomUUID(), controller: new AbortController() };
+  const job = { id: randomUUID(), controller: new AbortController(), received: 0, total: 0 };
   cudaInstall = job;
   try {
     if ((await cudaPack.status()).state === 'unavailable') throw new Error(CUDA_PACK_UNAVAILABLE);
@@ -668,6 +672,8 @@ async function runCudaPackInstall(job) {
   const post = patch => parentPort.postMessage({ type: 'event', event: 'cuda-pack', installId: job.id, ...patch });
   let last = -Infinity;
   const onProgress = (receivedBytes, totalBytes) => {
+    job.received = receivedBytes;
+    job.total = totalBytes;
     const now = Date.now();
     if (now - last < 250) return;
     last = now;

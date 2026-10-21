@@ -13,7 +13,7 @@ import {
 } from '../../ipc/bridge';
 import { cleanIpcError } from '../../ipc/errors';
 import { DEFAULT_LOCAL_CONTEXT, type LocalContextSetting } from '../../../../core/context-budget.mts';
-import { backendChoiceView, cudaPackView, GPU_BACKEND_OPTIONS, hardwareLines, LOCAL_CONTEXT_OPTIONS } from './hardware-view';
+import { adoptInstall, backendChoiceView, cudaPackView, GPU_BACKEND_OPTIONS, hardwareLines, LOCAL_CONTEXT_OPTIONS } from './hardware-view';
 import type { SettingsDraft } from './useSettingsDraft';
 import { Group, Row, Section } from './parts';
 
@@ -33,12 +33,24 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
   const [packError, setPackError] = useState<string | null>(null);
   const [packBusy, setPackBusy] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
-  // The install this view started: its events are the only ones it follows. An end that arrives before the
-  // install's own answer (two IPC channels) is kept until that answer names it.
+  // The settings save before a restart failed: its message is draft.error, shown beside the button.
+  const [restartSaveFailed, setRestartSaveFailed] = useState(false);
+  // The install this view follows (started here, or adopted from cuda-pack-status when the tab was left mid-install):
+  // its events are the only ones it follows. The last end of an install it did not follow is kept (one, overwritten),
+  // for an end that arrives before the install's own answer (two IPC channels) or before an adoption.
   const installId = useRef<string | null>(null);
-  const endedEarly = useRef(new Map<string, string | null>());
+  const lastForeignEnd = useRef<{ installId: string; message: string | null } | null>(null);
 
-  const readPack = useCallback(() => getCudaPackStatus().then(setPack).catch(error_ => setPackError(cleanIpcError(error_))), []);
+  const readPack = useCallback(() => getCudaPackStatus()
+    .then(view => {
+      const adopted = installId.current === null ? adoptInstall(view, null) : null;
+      if (adopted && lastForeignEnd.current?.installId !== adopted.installId) {
+        installId.current = adopted.installId;
+        setProgress(adopted.progress);
+      }
+      setPack(view);
+    })
+    .catch(error_ => setPackError(cleanIpcError(error_))), []);
   const read = useCallback((refresh: boolean) => {
     setReading(true);
     setError(null);
@@ -61,12 +73,16 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
   }, [read]);
   useEffect(() => onCudaPackEvent(event => {
     if (event.installId !== installId.current) {
-      if (event.state !== 'progress') endedEarly.current.set(event.installId, event.state === 'error' ? event.message : null);
+      // Not followed (another view's, or one whose answer has not arrived yet): kept, and the state read again.
+      if (event.state !== 'progress') {
+        lastForeignEnd.current = { installId: event.installId, message: event.state === 'error' ? event.message : null };
+        void read(false);
+      }
       return;
     }
     if (event.state === 'progress') setProgress({ received: event.receivedBytes, total: event.totalBytes });
     else finish(event.state === 'error' ? event.message : null);
-  }), [finish]);
+  }), [finish, read]);
 
   // A save may change what needs a restart (gpu_backend): read again once it is done.
   const wasSaving = useRef(false);
@@ -85,9 +101,10 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
     setPackBusy(true);
     try {
       const started = await installCudaPack();
-      if (endedEarly.current.has(started.installId)) {
-        finish(endedEarly.current.get(started.installId) ?? null);
-        endedEarly.current.delete(started.installId);
+      const early = lastForeignEnd.current;
+      if (early?.installId === started.installId) {
+        lastForeignEnd.current = null;
+        finish(early.message);
         return;
       }
       installId.current = started.installId;
@@ -118,10 +135,15 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
   // a restart must start with what the user sees selected.
   const restart = async () => {
     setRestartError(null);
-    if (!(await draft.commit({}))) return;
+    setRestartSaveFailed(false);
+    if (!(await draft.commit({}))) {
+      setRestartSaveFailed(true);
+      return;
+    }
     try { await restartApp(); } catch (error_) { setRestartError(cleanIpcError(error_)); }
   };
   const onCudaButton = { download, cancel, uninstall, restart };
+  const shownRestartError = restartError ?? (restartSaveFailed ? draft.error : null);
 
   return (
     <div className="flex flex-col gap-5">
@@ -175,7 +197,7 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
               <button type="button" data-testid="oa-restart-btn" disabled={draft.saving} onClick={() => void restart()} className={buttonClass}>
                 {choice.restart.button.label}
               </button>
-              {restartError && <span data-testid="oa-restart-error" className="text-xs text-red-400">{restartError}</span>}
+              {shownRestartError && <span data-testid="oa-restart-error" className="text-xs text-red-400">{shownRestartError}</span>}
             </div>
           )}
           {cuda && (
@@ -203,7 +225,7 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
                   {cuda.button.label}
                 </button>
               )}
-              {cuda.button?.id === 'restart' && restartError && <span data-testid="oa-restart-error" className="text-xs text-red-400">{restartError}</span>}
+              {cuda.button?.id === 'restart' && shownRestartError && <span data-testid="oa-restart-error" className="text-xs text-red-400">{shownRestartError}</span>}
             </div>
           )}
           {packError && <span data-testid="oa-cuda-error" className="block px-4 py-2 text-xs text-red-400">{packError}</span>}

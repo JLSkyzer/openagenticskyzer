@@ -77,6 +77,20 @@ test('piecesOfChunk: a thought or comment segment is reasoning, a plain chunk go
   assert.deepEqual(piecesOfChunk({ type: 'segment', segmentType: 'thought', text: '' }, s), [], 'a segment-start chunk with no text gives no piece');
 });
 
+test('piecesOfChunk: once the wrapper sent a segment, the <think> fallback is off — a stray </think> in the answer stays text (ruling T2-m1)', () => {
+  const s = new ReasoningSplitter();
+  assert.deepEqual(piecesOfChunk({ type: 'segment', segmentType: 'thought', text: 'je pense' }, s), [{ kind: 'thought', text: 'je pense' }]);
+  const pieces = [...piecesOfChunk({ text: 'Réponse ' }, s), ...piecesOfChunk({ text: 'avec </think> dedans' }, s), ...s.end()];
+  assert.deepEqual(pieces.map(piece => piece.kind).filter(kind => kind !== 'text'), [], 'no moved piece, no thought');
+  assert.equal(s.text, 'Réponse avec </think> dedans');
+
+  const empty = new ReasoningSplitter();
+  assert.deepEqual(piecesOfChunk({ type: 'segment', segmentType: 'thought', text: '' }, empty), [], 'a segment start with no text gives no piece');
+  piecesOfChunk({ text: 'a</think>b' }, empty);
+  empty.end();
+  assert.deepEqual({ text: empty.text, reasoning: empty.reasoning }, { text: 'a</think>b', reasoning: '' }, 'it marks the splitter all the same');
+});
+
 test('ReplyAccumulator: segment thoughts and a bare </think> both reach the reasoning, in arrival order, with their duration', () => {
   let now = 0;
   const segments = new ReplyAccumulator(() => now);

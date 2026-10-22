@@ -30,6 +30,15 @@ async function until(check: () => boolean, what: string, timeout = 15000) {
   }
 }
 const finished = (events: any[]) => events.some(e => ['done', 'error', 'stopped'].includes(e.kind));
+/** What the screen holds once the run ended: the posted messages, with the terminal event's timing on the last
+ * assistant one, where the renderer attaches it and the worker saves it. */
+function shown(events: any[]): any[] {
+  const posted = events.filter(e => e.kind === 'message').map(e => e.message);
+  const { timing } = events.at(-1);
+  const last = posted.findLastIndex(message => message.role === 'assistant');
+  if (timing && last !== -1) posted[last] = { ...posted[last], timing };
+  return posted;
+}
 
 type Reply = (response: ServerResponse) => void;
 const json = (body: unknown): Reply => response => {
@@ -171,7 +180,7 @@ test('the closing messages of a Stop are posted at the same indices the file sav
   run.stop();
   const posted = run.events.filter(e => e.kind === 'message').map(e => e.message);
   assert.deepEqual(posted.at(-1), { role: 'tool', tool_call_id: 'c1', content: "Interrompu par l'utilisateur" }, 'the closing message reaches the screen');
-  assert.deepEqual((await saved()).slice(1), posted, 'after the typed message, the file holds exactly what the screen received, in order');
+  assert.deepEqual((await saved()).slice(1), shown(run.events), 'after the typed message, the file holds exactly what the screen received, in order');
 });
 
 test('a dangling call of an OLDER turn is left as saved (not closed mid-list), and is never sent again', async t => {
@@ -188,5 +197,5 @@ test('a dangling call of an OLDER turn is left as saved (not closed mid-list), a
   assert.deepEqual(transcript.map((m: any) => [m.role, m.tool_call_id ?? null, m.content]), [
     ['user', null, 'avant'], ['assistant', null, ''], ['user', null, 'lance'], ['assistant', null, ''], ['tool', 'c1', "Interrompu par l'utilisateur"],
   ], 'only the call of THIS run is closed');
-  assert.deepEqual(transcript.slice(3), run.events.filter(e => e.kind === 'message').map(e => e.message), 'screen and file agree');
+  assert.deepEqual(transcript.slice(3), shown(run.events), 'screen and file agree');
 });

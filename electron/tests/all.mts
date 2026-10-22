@@ -108,3 +108,6 @@ import './local-context.test.mts';
 import './cuda-pack-format.test.mts';
 import './cuda-pack-install.test.mts';
 import './worker-cuda-pack.test.mts';
+import './turn-clock.test.mts';
+import './turn-window.test.mts';
+import './worker-turn-phases.test.mts';

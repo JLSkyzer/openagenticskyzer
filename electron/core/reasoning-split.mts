@@ -70,6 +70,12 @@ export class ReasoningSplitter {
     }
   }
 
+  /** The chat wrapper sent a segment: it handles the thoughts itself, so the <think> fallback is off from here on,
+   * as after a first tag (ruling T2-m1) — a stray </think> in the answer stays text. */
+  segmentSeen(): void {
+    this.#sawTag = true;
+  }
+
   end(): SplitPiece[] {
     const pieces: SplitPiece[] = [];
     this.#emit(pieces, this.#mode, this.#held);
@@ -108,9 +114,13 @@ export function splitReasoning(full: string): { reasoning: string; text: string 
 }
 
 /** One onResponseChunk chunk as pieces: a segment (thought or comment) is reasoning as it is, a plain chunk goes
- * through the <think> fallback. A segment chunk with no text (a segment start or end) gives no piece. */
+ * through the <think> fallback, which any segment turns off (ReasoningSplitter.segmentSeen). A segment chunk with no
+ * text (a segment start or end) gives no piece. */
 export function piecesOfChunk(chunk: { type?: 'segment'; segmentType?: string; text: string }, splitter: ReasoningSplitter): SplitPiece[] {
-  if (chunk.type === 'segment') return chunk.text ? [{ kind: 'thought', text: chunk.text }] : [];
+  if (chunk.type === 'segment') {
+    splitter.segmentSeen();
+    return chunk.text ? [{ kind: 'thought', text: chunk.text }] : [];
+  }
   return splitter.push(chunk.text);
 }
 

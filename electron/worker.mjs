@@ -26,7 +26,8 @@ import { compactMessages, planCompaction, SUMMARY_PREFIX } from './core/compact.
 import { PromptLibrary } from './core/prompts.mts';
 import { readProjectMemory } from './core/project-memory.mts';
 import { validateAttachments } from './core/attachments.mts';
-import { effectiveWindow } from './core/context-budget.mts';
+import { turnWindow } from './core/turn-window.mts';
+import { TurnClock } from './core/turn-clock.mts';
 import { activeModel, modelStatus, turnModelStatus, contextRequestOf, NO_LOCAL_MODEL, LOCAL_MODEL_MISSING } from './core/active-model.mts';
 import { closeDanglingCalls } from './core/request-context.mts';
 import { buildHtml, buildJson, buildMarkdown, exportFilename, renderEntries } from './core/export.mts';
@@ -194,15 +195,13 @@ function compactingIn(folder) {
 }
 
 /** The window a request must fit in (H3): the engine's real context size, capped by max_tokens when the user set
- * one (core/context-budget.mts). Shared by agent turns and compaction, so the two can never size a request differently. */
-async function windowFor(provider, maxTokens) {
-  // provider.contextWindow() loads the engine. Its run is registered in `active` by now, so estimate-model refuses
-  // any new estimate (ESTIMATE_BUSY): cancelling again here catches one that started before that registration, and
-  // idle() waits until a cancelled run has really ended — the native resolver only notices the abort between its own
-  // steps — so the load never overlaps an estimate.
-  estimateJobs.cancelAll();
-  await estimateJobs.idle();
-  return effectiveWindow(await provider.contextWindow(), maxTokens);
+ * one (core/turn-window.mts). Shared by agent turns and compaction, so the two can never size a request differently.
+ * provider.contextWindow() loads the engine. Its run is registered in `active` by now, so estimate-model refuses any
+ * new estimate (ESTIMATE_BUSY): turnWindow cancels again one that started before that registration and waits for a
+ * cancelled run to end. `options.signal` (the run's stop) cuts that wait and the load short; `options.onLoad` follows
+ * the load. */
+function windowFor(provider, maxTokens, options = {}) {
+  return turnWindow(estimateJobs, provider, maxTokens, options);
 }
 
 /** Tells the page the model this turn runs on and the window its engine really runs with — known once windowFor has
@@ -224,9 +223,10 @@ async function runCompaction(compactionId, folder, branchId, before, { provider,
   let outcome;
   try {
     // max_tokens is a global setting only (core/settings.mts), so the global config is the whole answer here.
-    const window = await windowFor(provider, (await settings.global()).max_tokens);
+    const { signal } = active.get(compactionId).controller;
+    const window = await windowFor(provider, (await settings.global()).max_tokens, { signal });
     postModelStatus(model);
-    const after = await compactMessages({ provider, messages: before, contextWindow: window, signal: active.get(compactionId).controller.signal });
+    const after = await compactMessages({ provider, messages: before, contextWindow: window, signal });
     await conversations.replaceIfUnchanged(folder, branchId, before, after);
     // context_bar.py::trigger_compact parity: persist the summary itself into the project's
     // memory so it survives a later clear-history/re-compaction. Awaited (not fire-and-forget)
@@ -487,6 +487,13 @@ function servedMessages(messages) {
   return messages.map(message => ({ ...message, role: normalizeRole(message.role) }));
 }
 
+/** Puts `timing` on the last assistant message of `messages` at an index >= `from` (this run's own), if any. */
+function withTiming(messages, from, timing) {
+  for (let i = messages.length - 1; i >= from; i--) {
+    if (messages[i].role === 'assistant') { messages[i] = { ...messages[i], timing }; return; }
+  }
+}
+
 function lastAssistantSummary(messages) {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === 'assistant' && typeof messages[i].content === 'string' && messages[i].content.trim()) {
@@ -555,9 +562,24 @@ async function estimateModel(payload) {
 async function runSend(runId, folder, branchId, text, keep, attachments, { provider, model }) {
   const controller = new AbortController();
   const accumulated = [];
-  active.set(runId, { controller, folder });
   const post = message => parentPort.postMessage({ type: 'event', event: 'agent', runId, ...message });
   const startedAt = Date.now();
+  // The turn's figures (core/turn-clock.mts), joined to done, to stopped and to the saved reply.
+  const clock = new TurnClock(startedAt);
+  // The phase the page shows while the turn runs. A post equal to the last one (same phase, progress and tool) is
+  // skipped, and after « stopping » none is posted: the stop op posts it through the run's entry (ruling M7).
+  let lastPhase = '';
+  let stopping = false;
+  const phase = (name, extra = {}) => {
+    if (stopping) return;
+    const key = JSON.stringify([name, extra.progress ?? null, extra.tool ?? null]);
+    if (key === lastPhase) return;
+    lastPhase = key;
+    if (name === 'stopping') stopping = true;
+    post({ kind: 'phase', phase: name, ...extra });
+  };
+  // stopRequestedAt: when the user asked to stop (the stop op), for the stop latency.
+  active.set(runId, { controller, folder, kind: 'send', post, phase, stopRequestedAt: null });
   // Wraps a terminal post (done/stopped/error) with a longRunning flag once the turn has taken
   // at least LONG_RUN_MS — main.cjs raises a native notification only when this is set.
   const finish = (kind, extra = {}) => {
@@ -570,7 +592,10 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
   // show — cleared once that turn's real 'message' event lands. Declared here (not
   // inside the try block) so the catch block below can actually see it.
   let partialText = '';
+  // The reasoning streamed beside it (thinking events), kept with the partial reply on a stop.
+  let partialReasoning = '';
   try {
+    phase('preparing');
     // The page already shows the user message (send-started), so the turn is assembled FIRST: from here on, any
     // failure (tools, instructions, the model) saves history + this message, and the file stays aligned with the
     // screen — edit and regenerate cut both at the same index. Only an unreadable conversation file stops here,
@@ -588,10 +613,26 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     const { instructions } = await buildInstructions({ folder, home: dataHome, base: basePrompt({ tools: offered, mode: agentSettings.mode, platform: process.platform }) });
     const emit = event => {
       const { type: kind, ...rest } = event;
-      if (kind === 'delta') partialText += rest.text;
+      // A generation's figures feed the clock only, and never end anything: pieces may still follow (ruling T2-m4).
+      if (kind === 'stats') { clock.stats(rest); return; }
+      if (kind === 'turn') { phase('reading'); clock.readStart(); }
+      if (kind === 'thinking') {
+        // `moved`: what was streamed as the answer was reasoning (a bare </think>, core/reasoning-split.mts).
+        clock.chunk(rest.moved ? 'moved' : 'thought');
+        if (rest.moved) partialText = '';
+        partialReasoning += rest.text;
+        phase('thinking');
+      }
+      // An empty delta (a provider's empty content) is no word of the answer yet.
+      if (kind === 'delta' && rest.text) {
+        clock.chunk('text');
+        partialText += rest.text;
+        phase('writing');
+      }
+      if (kind === 'tool-start') phase('tool', { tool: rest.tool });
       if (kind === 'message') {
         accumulated.push(rest.message);
-        if (rest.message.role === 'assistant') partialText = '';
+        if (rest.message.role === 'assistant') { partialText = ''; partialReasoning = ''; }
       }
       const enriched = { kind, ...rest };
       if (kind === 'tool-start') enriched.category = toolCategory.get(rest.tool);
@@ -604,15 +645,26 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
       signal.addEventListener('abort', () => { pendingPermissions.delete(requestId); reject(signal.reason); }, { once: true });
       post({ kind: 'permission-request', requestId, tool: request.tool, category: toolCategory.get(request.tool), arguments: request.arguments });
     });
-    const contextTokens = await windowFor(provider, effective.max_tokens);
+    // A real load (none for a warm engine) shows « loading », its progress in whole percents. Once the run is
+    // aborted, the load going on natively behind the stop reports nothing more; a load that fails or is stopped never
+    // calls 'end', so the turn has no loadMs, and its terminal event closes the phase (ruling T2-m5).
+    const onLoad = event => {
+      if (controller.signal.aborted) return;
+      if (event.kind === 'start') { clock.loadStart(); phase('loading'); }
+      if (event.kind === 'progress') phase('loading', { progress: Math.min(100, Math.max(0, Math.floor(event.progress * 100))) });
+      if (event.kind === 'end') clock.loadEnd();
+    };
+    const contextTokens = await windowFor(provider, effective.max_tokens, { signal: controller.signal, onLoad });
     postModelStatus(model);
     const result = await runAgent({
       provider, messages: collected, instructions, tools, contextWindow: contextTokens,
       settings: agentSettings,
       signal: controller.signal, confirm, emit,
     });
+    const timing = clock.timing();
+    withTiming(result, collected.length, timing);
     await conversations.save(folder, branchId, result);
-    finish('done', { summary: lastAssistantSummary(result) });
+    finish('done', { summary: lastAssistantSummary(result), timing });
   } catch (error) {
     const aborted = error?.name === 'AbortError';
     const message = error instanceof Error ? error.message : 'Erreur interne';
@@ -626,11 +678,14 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     // Text already streamed is kept whatever ended the turn — a Stop, a provider gone silent (idle
     // timeout), a cut stream — exactly like a completed message, so the screen and the saved
     // transcript agree.
-    if (partialText.trim()) {
-      const partial = { role: 'assistant', content: partialText };
+    if (partialText.trim() || partialReasoning.trim()) {
+      const partial = { role: 'assistant', content: partialText, ...(partialReasoning.trim() ? { reasoning: partialReasoning } : {}) };
       produced.push(partial);
       post({ kind: 'message', message: partial });
     }
+    // A stop's figures go on the last reply this run produced; a run stopped before any reply saves none.
+    const timing = aborted ? clock.timing() : null;
+    if (timing) withTiming(produced, 0, timing);
     // Persist whatever the model/tools actually produced even on Stop/error — losing an
     // in-flight tool-call's already-emitted messages would silently discard real work. A failure after
     // `collected` is assembled (tools, instructions, the model) saves history + the user message, as the
@@ -639,7 +694,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     if (collected.length) await conversations.save(folder, branchId, [...collected, ...produced]).catch(() => {});
     // A Stop is the user's own action, taken while they're already looking at the app — never
     // worth an OS notification, unlike a completion or a failure reached while they stepped away.
-    if (aborted) post({ kind: 'stopped' });
+    if (aborted) post({ kind: 'stopped', timing });
     else finish('error', { message });
   } finally {
     active.delete(runId);
@@ -845,7 +900,17 @@ async function handle(message) {
       void runSend(runId, payload.folder, payload.branchId || 'main', payload.text, keep, attachments, turn);
       return;
     }
-    if (op === 'stop') { active.get(payload.runId)?.controller.abort(); result = { stopped: true }; }
+    if (op === 'stop') {
+      // A turn says « stopping » at once, then aborts: the stop takes effect at the next point that checks it (a
+      // prompt being read by node-llama-cpp is not one: it ends first). A compaction is only aborted.
+      const run = active.get(payload.runId);
+      if (run?.kind === 'send') {
+        run.stopRequestedAt ??= Date.now();
+        run.phase('stopping');
+      }
+      run?.controller.abort();
+      result = { stopped: true };
+    }
     if (op === 'shutdown') {
       // The app is closing: abort what is running and stop every dev server run_command started,
       // whole process trees included — terminating this thread would leave them running.

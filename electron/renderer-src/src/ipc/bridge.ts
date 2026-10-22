@@ -181,6 +181,11 @@ export function migrateDataDir(newDir: string): Promise<DataDirMigrationResult> 
 export function restartApp(): Promise<{ restarting: boolean }> {
   return request('restart-app');
 }
+// Answered by the main process: <data home>/logs/turns (the turn log, core/turn-log.mts), created when missing, opened
+// in the system's file explorer.
+export function openTurnLogs(): Promise<{ opened: boolean }> {
+  return request('open-turn-logs');
+}
 
 export interface ProjectInitResult { success: boolean; message: string }
 export function initProject(folder: string, overwrite: boolean): Promise<ProjectInitResult> {

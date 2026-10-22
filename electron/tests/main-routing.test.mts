@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, symlink } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { turnLogDir } from '../core/turn-log.mts';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
@@ -8,7 +12,7 @@ const require = createRequire(import.meta.url);
 const main = require('../main.cjs');
 
 // Answered by main.cjs itself (native dialogs, the opener, artifacts, updates), before the allow-list.
-const HANDLED_BY_MAIN = ['open-folder', 'open-export', 'artifact-put', 'pick-gguf', 'pick-data-dir', 'pick-knowledge-file', 'update-status', 'update-check', 'update-install-now', 'restart-app'];
+const HANDLED_BY_MAIN = ['open-folder', 'open-export', 'artifact-put', 'pick-gguf', 'pick-data-dir', 'pick-knowledge-file', 'update-status', 'update-check', 'update-install-now', 'restart-app', 'open-turn-logs'];
 
 test('every operation the renderer bridge calls is known to main.cjs', async () => {
   // A new bridge function whose op was forgotten in main.cjs only fails at runtime, with "Opération IPC
@@ -28,6 +32,39 @@ test('restart-app (« Redémarrer maintenant » after a data-folder migration) i
   const mainSource = await readFile(fileURLToPath(new URL('../main.cjs', import.meta.url)), 'utf8');
   assert.match(mainSource, /request\.op === 'restart-app'\) return restartApp\(\)/, 'main.cjs answers it with restartApp()');
   assert.equal(typeof main.restartApp, 'function');
+});
+
+test('open-turn-logs is answered by main: it creates logs/turns and opens exactly that folder', async t => {
+  assert.equal(main.isBackendOp('open-turn-logs'), false, 'the worker never receives it');
+  const mainSource = await readFile(fileURLToPath(new URL('../main.cjs', import.meta.url)), 'utf8');
+  assert.match(mainSource, /request\.op === 'open-turn-logs'\)/, 'main.cjs answers it before the allow-list');
+  const home = await mkdtemp(join(tmpdir(), 'openagent-open-turn-logs-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  // Never the real shell.openPath: it would open Explorer on the machine running the tests.
+  const opened: string[] = [];
+  const result = await main.openTurnLogs(home, async (target: string) => { opened.push(target); return ''; });
+  assert.deepEqual(opened, [join(home, 'logs', 'turns')]);
+  assert.equal(opened[0], turnLogDir(home), 'the folder core/turn-log.mts writes into');
+  assert.ok((await stat(opened[0])).isDirectory());
+  assert.deepEqual(result, { opened: true, dir: turnLogDir(home) });
+});
+
+test('open-turn-logs reports the opener\'s error', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'openagent-open-turn-logs-error-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  await assert.rejects(main.openTurnLogs(home, async () => 'Accès refusé'), { message: 'Accès refusé' });
+});
+
+test('open-turn-logs never opens nor creates through a linked logs folder', async t => {
+  // core/turn-log.mts writes only into real folders; a junction planted as logs/ could point anywhere.
+  const home = await mkdtemp(join(tmpdir(), 'openagent-open-turn-logs-link-'));
+  const elsewhere = await mkdtemp(join(tmpdir(), 'openagent-open-turn-logs-target-'));
+  t.after(() => Promise.all([rm(home, { recursive: true, force: true }), rm(elsewhere, { recursive: true, force: true })]));
+  await symlink(elsewhere, join(home, 'logs'), 'junction');
+  const opened: string[] = [];
+  await assert.rejects(main.openTurnLogs(home, async (target: string) => { opened.push(target); return ''; }), /n'est pas un vrai dossier/);
+  assert.deepEqual(opened, [], 'nothing is opened');
+  assert.equal(existsSync(join(elsewhere, 'turns')), false, 'nothing is created behind the link');
 });
 
 test('main folds nothing into a payload: no connection resolution is left', () => {

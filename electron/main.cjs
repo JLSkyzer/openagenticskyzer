@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, shell, dialog, session, protocol, Notificat
 const path = require('node:path');
 const { homedir } = require('node:os');
 const { writeFileSync, readFileSync } = require('node:fs');
+const { mkdir, lstat } = require('node:fs/promises');
 const { Worker } = require('node:worker_threads');
 const artifactProtocol = require('./artifact-protocol.cjs');
 const { buildDiamondIconPng, trayMenuTemplate } = require('./tray-icon.cjs');
@@ -16,6 +17,9 @@ let tray;
 let backend;
 let updater;
 let installUpdateNow;
+// The data home resolved by prepareDataHome at startup (both processes resolve it only then): « Ouvrir le dossier des
+// journaux » opens its logs/turns.
+let startupDataHome;
 // Set by 'before-quit' (see the app lifecycle below) and by a Windows session end: from then on, closing the window
 // really closes it.
 let appQuitting = false;
@@ -284,6 +288,27 @@ function restartApp() {
   return { restarting: true };
 }
 
+/**
+ * « Ouvrir le dossier des journaux » (Réglages › Général): `<dataHome>/logs/turns`, created when missing, then handed to
+ * the opener (shell.openPath; a parameter for tests, which must never open Explorer). Like core/turn-log.mts, never
+ * through a link: logs/ and logs/turns/ are made one level at a time and must be real folders, or nothing is opened.
+ * The opener's error text (shell.openPath answers '' on success) is thrown as is.
+ */
+async function openTurnLogs(dataHome, openPath) {
+  if (typeof dataHome !== 'string' || !dataHome) throw new Error('Dossier de données indisponible');
+  await mkdir(dataHome, { recursive: true });
+  let dir = dataHome;
+  for (const name of ['logs', 'turns']) {
+    dir = path.join(dir, name);
+    try { await mkdir(dir); } catch (error) { if (error?.code !== 'EEXIST') throw error; }
+    const info = await lstat(dir);
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`${dir} n'est pas un vrai dossier : il n'est pas ouvert`);
+  }
+  const error = await openPath(dir);
+  if (error) throw new Error(error);
+  return { opened: true, dir };
+}
+
 async function handleBackendRequest(event, request) {
   if (event.sender !== mainWindow?.webContents || !request || typeof request.op !== 'string') throw new Error('Requête IPC invalide');
   if (request.op === 'open-folder') { const picked = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] }); return picked.canceled ? null : picked.filePaths[0]; }
@@ -325,6 +350,7 @@ async function handleBackendRequest(event, request) {
     return installUpdateNow();
   }
   if (request.op === 'restart-app') return restartApp();
+  if (request.op === 'open-turn-logs') return openTurnLogs(startupDataHome, target => shell.openPath(target));
   if (!allowed.has(request.op)) throw new Error('Opération IPC inconnue');
   if (!backend) throw new Error('Moteur Node indisponible');
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -359,6 +385,7 @@ if (require.main === module) {
         // The data home is resolved before anything opens: a broken redirect.json stops the start here, with the file to fix.
         // The online-provider secrets are erased there too, before the worker starts (an erasure error never stops it).
         const { dataHome } = await prepareDataHome();
+        startupDataHome = dataHome;
         gpuStart = await prepareGpuBackend(dataHome);
       } catch (error) {
         // Nothing has started yet (no window, no worker, no tray): say why, then exit at once with a non-zero code,
@@ -405,4 +432,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { restartApp, workerOptions, prepareGpuBackend, resolveMainDataHome, prepareDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, isExportFilename, notificationBodyFor };
+module.exports = { restartApp, openTurnLogs, workerOptions, prepareGpuBackend, resolveMainDataHome, prepareDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, isExportFilename, notificationBodyFor };

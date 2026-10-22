@@ -93,6 +93,31 @@ app.whenReady().then(async () => {
     // The row shows the real data_home (since 3e113ad), which here is the isolated home this test created.
     assert.equal((await js(`document.querySelector('[data-testid="oa-data-dir"]').textContent`)).toLowerCase(), (await realpath(home)).toLowerCase(), 'the data directory row shows the isolated data home');
 
+    // « Journal des tours » (core/turn-log.mts): the three levels, « Complet (défaut) » shown on a fresh home.
+    assert.deepEqual(
+      await js(`[...document.querySelector('${q('turn_log')}').options].map(o => [o.value, o.textContent])`),
+      [['full', 'Complet (défaut)'], ['metadata', 'Sans contenu'], ['off', 'Désactivé']],
+      'the turn log offers its three levels, in French',
+    );
+    assert.equal(await js(`(() => { const s = document.querySelector('${q('turn_log')}'); return s.options[s.selectedIndex].textContent; })()`), 'Complet (défaut)');
+    await setValue(q('turn_log'), 'metadata');
+    assert.equal(await value('turn_log'), 'metadata', 'the select follows the choice');
+    // « Ouvrir le dossier des journaux »: present and usable — never clicked here, it would open Explorer.
+    await js(`document.querySelector('[data-testid="oa-open-turn-logs"]').scrollIntoView({ block: 'center' })`);
+    await pause(150);
+    const openLogs = await js(`(() => {
+      const button = document.querySelector('[data-testid="oa-open-turn-logs"]');
+      if (!button) return null;
+      const box = button.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      return { text: button.textContent.trim(), disabled: button.disabled, width: box.width, height: box.height, onTop: !!hit && button.contains(hit) };
+    })()`);
+    assert.ok(openLogs, 'the « Ouvrir le dossier des journaux » button exists');
+    assert.equal(openLogs.text, 'Ouvrir le dossier des journaux');
+    assert.equal(openLogs.disabled, false, 'it is enabled');
+    assert.ok(openLogs.width > 0 && openLogs.height > 0 && openLogs.onTop, `it is visible and nothing covers it: ${JSON.stringify(openLogs)}`);
+    await writeFile(join(screenshotDir, 'settings-general.png'), await capturePng(win));
+
     // ── Contexte ──────────────────────────────────────────────────────────────────
     await openTab('context');
     assert.match(await js(`document.querySelector('[data-testid="oa-ctx-caption"]').textContent`), /^Max du modèle actif \(aucun modèle\) : 16,384 tokens$/, 'no .gguf active: the caption says so, with MIN_LOCAL_CONTEXT as the max');
@@ -129,8 +154,8 @@ app.whenReady().then(async () => {
     assert.match(await js(`document.querySelector('[data-testid="oa-settings-status"]')?.textContent || ''`), /Paramètres sauvegardés/);
     const saved = await config();
     assert.deepEqual(
-      { agent_mode: saved.agent_mode, animations: saved.animations, hf_token: saved.hf_token, max_tokens: saved.max_tokens, reserved_tokens: saved.reserved_tokens, auto_compact: saved.auto_compact, compact_threshold: saved.compact_threshold, show_context_bar: saved.show_context_bar, session_retention_days: saved.session_retention_days, permission_mode: saved.permission_mode, files_ask: saved.files_ask },
-      { agent_mode: 'plan', animations: false, hf_token: SECRET, max_tokens: 12000, reserved_tokens: 4096, auto_compact: false, compact_threshold: 80, show_context_bar: false, session_retention_days: 90, permission_mode: 'strict', files_ask: false },
+      { agent_mode: saved.agent_mode, animations: saved.animations, hf_token: saved.hf_token, max_tokens: saved.max_tokens, reserved_tokens: saved.reserved_tokens, auto_compact: saved.auto_compact, compact_threshold: saved.compact_threshold, show_context_bar: saved.show_context_bar, session_retention_days: saved.session_retention_days, permission_mode: saved.permission_mode, files_ask: saved.files_ask, turn_log: saved.turn_log },
+      { agent_mode: 'plan', animations: false, hf_token: SECRET, max_tokens: 12000, reserved_tokens: 4096, auto_compact: false, compact_threshold: 80, show_context_bar: false, session_retention_days: 90, permission_mode: 'strict', files_ask: false, turn_log: 'metadata' },
       'every edited value reached config.json',
     );
     assert.equal('restore_last_folder' in saved, false, 'a key the user did not touch is not written');
@@ -145,6 +170,7 @@ app.whenReady().then(async () => {
     assert.equal(await js(`document.querySelector('[data-setting="agent_mode"]:checked').value`), 'plan');
     assert.equal(await checked('animations'), false);
     assert.match(await js(`document.querySelector('${q('hf_token')}').placeholder`), /configuré/i, 'a stored token is shown as configured, never as its value');
+    assert.equal(await value('turn_log'), 'metadata', 'the saved turn-log level comes back');
     await openTab('context');
     assert.equal(await value('max_tokens'), '12000');
     assert.equal(await value('reserved_tokens'), '4096');
@@ -167,7 +193,7 @@ app.whenReady().then(async () => {
     await writeFile(join(screenshotDir, 'settings-context.png'), await capturePng(win));
 
     process.stdout.write(`PASS settings tabs: real edits persist exactly, token never returns, invalid save rejected (Electron ${process.versions.electron})\n`);
-    process.stdout.write(`Screenshot: ${join(screenshotDir, 'settings-context.png')}\n`);
+    process.stdout.write(`Screenshots: ${join(screenshotDir, 'settings-general.png')}, ${join(screenshotDir, 'settings-context.png')}\n`);
   } finally {
     win?.destroy();
     worker?.terminate();

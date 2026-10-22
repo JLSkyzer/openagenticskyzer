@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import type { SettingsDraft } from './useSettingsDraft';
 import { Group, Row, Section, Toggle } from './parts';
-import { checkForUpdates, getUpdateStatus, migrateDataDir, onUpdateStatus, pickDataDir, restartApp, testHfToken, type UpdateStatus } from '../../ipc/bridge';
+import { checkForUpdates, getUpdateStatus, migrateDataDir, onUpdateStatus, openTurnLogs, pickDataDir, restartApp, testHfToken, type UpdateStatus } from '../../ipc/bridge';
+import { cleanIpcError } from '../../ipc/errors';
+import { TURN_LOG_OPTIONS } from './general-view';
 import { useToast } from '../../state/ToastProvider';
 import { migrationSummary } from '../../state/data-dir';
 
@@ -84,6 +86,11 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
       notify(`Redémarrage impossible : ${error instanceof Error ? error.message : 'erreur inconnue'}`, 'negative');
       setRestarting(false);
     }
+  };
+
+  const openLogs = async () => {
+    try { await openTurnLogs(); }
+    catch (error) { notify(cleanIpcError(error), 'negative'); }
   };
 
   const handleTestToken = async () => {
@@ -202,6 +209,26 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
                 </div>
               </div>
             )}
+          </div>
+          <div className="border-t border-gray-900">
+            <Row label="Journal des tours" hint="Complet : tout le tour, textes compris, secrets masqués. Sans contenu : événements et durées seulement. Conservé 14 jours." last>
+              <select
+                data-setting="turn_log"
+                value={draft.get<string>('turn_log', 'full')}
+                onChange={event => draft.set('turn_log', event.target.value)}
+                className="w-40 rounded px-2 py-1 text-xs text-gray-200 outline-none"
+                style={{ background: '#1a1a1a', border: '1px solid #2a2a2a' }}
+              >
+                {TURN_LOG_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </Row>
+            <div className="px-4 pb-3">
+              <button data-testid="oa-open-turn-logs" onClick={() => void openLogs()} className={button}>
+                Ouvrir le dossier des journaux
+              </button>
+            </div>
           </div>
         </Group>
       </div>

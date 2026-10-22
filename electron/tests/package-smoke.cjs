@@ -131,6 +131,15 @@ async function main() {
     assert.ok(Array.isArray(folders), 'the worker still answers after the refused install');
     process.stdout.write(`install-now refused: ${JSON.stringify(refusal)}; worker answered list_folders (${folders.length} folder(s))\n`);
 
+    // The data folder explains itself (core/data-folders.mts, packaged through core/**): the worker answers only once
+    // its start-up is done, so the isolated home (OPENAGENT_HOME, no redirect: it IS the data home) now holds
+    // LISEZMOI.txt and the knowledge/, tools/ and logs/ folders. Checked before knowledge-add, which would create
+    // knowledge/ by itself.
+    const readme = await readFile(join(openagentHome, 'LISEZMOI.txt'), 'utf8');
+    assert.match(readme, /^Dossier de données d’openagent\. Ce fichier est régénéré à chaque démarrage/, 'LISEZMOI.txt was written by the packaged worker');
+    for (const name of ['knowledge', 'tools', 'logs']) assert.ok((await stat(join(openagentHome, name))).isDirectory(), `${name}/ was created at start`);
+    process.stdout.write('data home at start: LISEZMOI.txt, knowledge/, tools/ and logs/ present\n');
+
     // A real offline embedding inside the packaged app: knowledge-add reads and embeds a temporary .md with the bundled
     // model (workerData.modelsDir = <resources>/models), and nothing is downloaded or cached in the data home.
     const note = join(openagentHome, 'smoke-note.md');

@@ -34,6 +34,7 @@ import { activeModel, modelStatus, turnModelStatus, contextRequestOf, NO_LOCAL_M
 import { closeDanglingCalls } from './core/request-context.mts';
 import { buildHtml, buildJson, buildMarkdown, exportFilename, renderEntries } from './core/export.mts';
 import { cleanupOldFolders } from './core/cleanup.mts';
+import { ensureDataFolders, writeReadme } from './core/data-folders.mts';
 import { gitStatus } from './core/git-status.mts';
 import { testHfToken } from './core/hf-token.mts';
 import { migrateDataDir } from './core/data-dir.mts';
@@ -152,6 +153,11 @@ async function triggerIndexing(folder) {
 // projects unused beyond session_retention_days (0 = keep forever). Run once at startup, before the worker starts
 // taking requests. Never let a corrupt config/folders file crash the worker.
 await cleanupOldFolders(folders, (await settings.global().catch(() => ({ session_retention_days: 0 }))).session_retention_days, dataHome).catch(() => {});
+// The data folder explains itself (core/data-folders.mts): knowledge/, tools/ and logs/ created when missing, and
+// LISEZMOI.txt — the one file the app rewrites there — regenerated. In the data home only (a redirected home, not the
+// default one). A failure is logged and never stops the worker; no existing file is modified or moved.
+await ensureDataFolders(dataHome).catch(error => console.error(`[data-home] dossiers non créés : ${error instanceof Error ? error.message : error}`));
+await writeReadme(dataHome).catch(error => console.error(`[data-home] LISEZMOI.txt non écrit : ${error instanceof Error ? error.message : error}`));
 // The turn log (core/turn-log.mts): one file per day, kept 14 days — expired days are removed here, once, at start.
 const turnLog = new TurnLog(dataHome);
 await pruneTurnLogs(dataHome, new Date()).catch(error => console.error(`[turn-log] nettoyage impossible : ${error instanceof Error ? error.message : error}`));

@@ -115,3 +115,4 @@ import './worker-turn-phases.test.mts';
 import './turn-log.test.mts';
 import './worker-turn-log.test.mts';
 import './turn-status.test.mts';
+import './data-folders.test.mts';

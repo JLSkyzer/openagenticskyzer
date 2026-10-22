@@ -1,4 +1,4 @@
-// The model engine: with core/llama-runtime.mts and core/offload-estimate.mts, one of the modules that import node-llama-cpp, a native binding loaded only
+// The model engine: with core/llama-runtime.mts, core/offload-estimate.mts and core/thought-prefill.mts, one of the modules that import node-llama-cpp, a native binding loaded only
 // ("réveiller le modèle sélectionné"), never at module load time. Bridges to `local-provider.mts`'s pure
 // mappers, so the agent loop (agent.mts) keeps its OpenAI-shaped messages (model-types.mts).
 // The Llama belongs to llama-runtime.mts (one per worker). That module and this one import each other, so neither
@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import os from 'node:os';
-import { LlamaChat, InsufficientMemoryError, readGgufFileInfo, GgufInsights, GgmlType, type Llama, type LlamaModel, type LlamaContext } from 'node-llama-cpp';
+import { LlamaChat, JinjaTemplateChatWrapper, InsufficientMemoryError, readGgufFileInfo, GgufInsights, GgmlType, type Llama, type LlamaModel, type LlamaContext } from 'node-llama-cpp';
 import { historyFromMessages, responseToMessage, toGgufFunctions } from './local-provider.mts';
 import type { ChatMessage, ChatWrapperInfo, CompletionOptions, ModelProvider, ToolSchema, WindowOptions } from './model-types.mts';
 import { localContextSize, DEFAULT_LOCAL_CONTEXT, type LocalContextSetting } from './context-budget.mts';
@@ -14,6 +14,7 @@ import { runtimeLlama, runtimeGeneration, backendOf } from './llama-runtime.mts'
 import { fitOf, type Placement } from './placement.mts';
 import { untilAborted } from './abortable.mts';
 import { ReplyAccumulator, type SplitPiece } from './reasoning-split.mts';
+import { opensThought, type ThoughtSegment } from './thought-prefill.mts';
 
 /** What the engine context is sized from: the « Contexte des modèles locaux » setting. max_tokens takes no part
  * (ruling F6): it caps the request window only (context-budget.mts::effectiveWindow). */
@@ -260,7 +261,14 @@ function keep(p: { modelPath: string; contextSize: number; generation: number; l
   const { llama, model, context } = p;
   const chat = new LlamaChat({ contextSequence: context.getSequence() });
   // The segments as plain JSON, once (ruling T2-m2): the log line and the turn log's model-ready show the same value.
-  const wrapper: ChatWrapperInfo = { name: chat.chatWrapper.wrapperName, segments: JSON.parse(JSON.stringify(chat.chatWrapper.settings.segments ?? null)) };
+  const segments = chat.chatWrapper.settings.segments;
+  // Does the template open <think> itself? Then every reply starts as reasoning (core/thought-prefill.mts).
+  const thinks = opensThought({
+    template: model.fileInfo.metadata?.tokenizer?.chat_template,
+    reasoning: chat.chatWrapper instanceof JinjaTemplateChatWrapper ? chat.chatWrapper.reasoning ?? true : true,
+    thought: segments?.thought as ThoughtSegment | undefined,
+  });
+  const wrapper: ChatWrapperInfo = { name: chat.chatWrapper.wrapperName, segments: JSON.parse(JSON.stringify(segments ?? null)), opensThought: thinks };
   loaded = { path: p.modelPath, requested: p.contextSize, generation: p.generation, llama, model, context, chat, wrapper };
   console.info(placementLogLine({ backend: backendOf(llama), gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, useMmap: model.useMmap, vramBefore: p.vramBefore, padding: llama.vramPaddingSize, contextSize: context.contextSize, fallback: p.fallback }));
   console.info(chatWrapperLogLine(wrapper));
@@ -268,10 +276,11 @@ function keep(p: { modelPath: string; contextSize: number; generation: number; l
   return loaded;
 }
 
-/** The one line a load logs about its chat template: the wrapper node-llama-cpp chose and its thought segments
- * (null: the template declares none, and a reasoning model's tags are then caught by reasoning-split.mts only). */
+/** The one line a load logs about its chat template: the wrapper node-llama-cpp chose, its thought segments (null:
+ * the template declares none, and a reasoning model's tags are then caught by reasoning-split.mts only), and whether
+ * the template opens <think> itself (every reply then starts as reasoning). */
 export function chatWrapperLogLine(info: ChatWrapperInfo): string {
-  return `[chat] wrapper ${info.name} · segments ${JSON.stringify(info.segments ?? null)}`;
+  return `[chat] wrapper ${info.name} · segments ${JSON.stringify(info.segments ?? null)} · réflexion ouverte par le modèle de conversation : ${info.opensThought ? 'oui' : 'non'}`;
 }
 
 /** The chat wrapper of the loaded `modelPath`, or null when it is not the model loaded now. Never loads anything. */
@@ -347,12 +356,14 @@ export const LOCAL_OUTPUT_CAP = 8192;
  * included; a stop during the load reports none, since no generation ran.
  */
 export async function completeLocal(options: LocalCompletionOptions): Promise<ChatMessage & { content: string }> {
-  const { chat } = await engineFor(options.modelPath, options.contextRequest ?? DEFAULT_CONTEXT_REQUEST, { signal: options.signal });
-  const reply = new ReplyAccumulator();
+  const { chat, wrapper } = await engineFor(options.modelPath, options.contextRequest ?? DEFAULT_CONTEXT_REQUEST, { signal: options.signal });
+  const reply = new ReplyAccumulator(undefined, { startInThought: wrapper.opensThought });
   const deliver = (pieces: SplitPiece[]) => {
     for (const piece of pieces) {
       if (piece.kind === 'text') options.onDelta?.(piece.text);
-      else options.onReasoning?.(piece.kind === 'moved' ? { text: piece.text, moved: true } : { text: piece.text });
+      else if (piece.kind === 'moved') options.onReasoning?.({ text: piece.text, moved: true });
+      else if (piece.kind === 'movedBack') options.onReasoning?.({ text: piece.text, movedBack: true });
+      else options.onReasoning?.({ text: piece.text });
     }
   };
   const meter = chat.sequence.tokenMeter;

@@ -338,7 +338,9 @@ test('c. a real load reports start, rising progress ending at 1, then end with i
   assert.ok(last.wrapper.name.length > 0);
   assert.deepEqual(loadedChatWrapper(modelPath), last.wrapper);
   assert.equal(loadedChatWrapper(`${modelPath}.other`), null);
-  assert.equal(chatWrapperLogLine({ name: 'Qwen', segments: { thought: { prefix: '<think>' } } }), '[chat] wrapper Qwen · segments {"thought":{"prefix":"<think>"}}');
+  assert.equal(chatWrapperLogLine({ name: 'Qwen', segments: { thought: { prefix: '<think>' } }, opensThought: false }), '[chat] wrapper Qwen · segments {"thought":{"prefix":"<think>"}} · réflexion ouverte par le modèle de conversation : non');
+  assert.equal(chatWrapperLogLine({ name: 'JinjaTemplate', segments: null, opensThought: true }), '[chat] wrapper JinjaTemplate · segments null · réflexion ouverte par le modèle de conversation : oui');
+  assert.equal(last.wrapper.opensThought, false, 'stories260K has no think: the reply never starts as reasoning (Task 5b)');
   const again: LoadEvent[] = [];
   await localProvider(modelPath).contextWindow({ onLoad: e => again.push(e) });
   assert.deepEqual(again, [], 'the warm engine was reused: no load, no event');

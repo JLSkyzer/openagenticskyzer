@@ -244,6 +244,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           return { ...state, phase };
         case 'delta':
           return { ...state, streamingText: state.streamingText + event.text };
+        case 'thinking':
+          // Only a reasoning given back as the answer changes the streamed text here.
+          return event.movedBack ? { ...state, streamingText: state.streamingText + event.text } : state;
         case 'tool-start': {
           // tool-start carries no arguments: the detail comes from the assistant message that made the call.
           const detail = toolDetail(event.tool, callsById(state.messages).get(event.id)?.arguments);

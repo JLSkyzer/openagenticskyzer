@@ -55,3 +55,24 @@ test('TurnClock: a moved piece clears firstTextMs until the next text (ruling S1
   instant.stats(stats(5, 0));
   assert.equal(Object.hasOwn(instant.timing(), 'tokensPerSecond'), false, 'no rate when generationMs is 0');
 });
+
+test('TurnClock: a movedBack piece (startInThought with no </think>) sets firstTextMs to the step\'s first chunk', () => {
+  let t = 0;
+  const clock = new TurnClock(0, () => t);
+  clock.readStart();
+  t = 200; clock.chunk('thought');   // provisional reasoning: no first word yet
+  t = 600; clock.chunk('thought');
+  assert.equal(Object.hasOwn(clock.timing(), 'firstTextMs'), false);
+  t = 900; clock.chunk('movedBack'); // the end: it was the answer all along
+  t = 1000;
+  assert.deepEqual(clock.timing(), { readMs: 200, firstTextMs: 200, totalMs: 1000 });
+
+  t = 0;
+  const twoSteps = new TurnClock(0, () => t);
+  twoSteps.readStart();
+  t = 100; twoSteps.chunk('thought');
+  t = 300; twoSteps.readStart();     // the next step after a tool
+  t = 500; twoSteps.chunk('thought');
+  t = 800; twoSteps.chunk('movedBack');
+  assert.equal(twoSteps.timing().firstTextMs, 500, 'the first chunk of the step given back, not of the turn');
+});

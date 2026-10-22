@@ -124,3 +124,12 @@ test('reducer: a failed stop brings back the worker phase; a late failure after 
   assert.equal(chatReducer(ended, { type: 'stop-failed', error: 'late' }), ended);
   assert.equal(chatReducer(initialChatState, { type: 'stop-failed', error: 'late' }), initialChatState);
 });
+
+test('reducer: a thinking movedBack piece (the template opened <think>, no </think> came) is the answer: it streams as text', () => {
+  const running = started();
+  const thought = chatReducer(running, agent('r1', 'thinking', { text: 'Bonjour' }));
+  assert.equal(thought.streamingText, '', 'a provisional reasoning is not shown as the answer');
+  const back = chatReducer(thought, agent('r1', 'thinking', { text: 'Bonjour toi', movedBack: true }));
+  assert.equal(back.streamingText, 'Bonjour toi');
+  assert.equal(chatReducer(back, agent('old', 'thinking', { text: 'x', movedBack: true })), back, 'another run changes nothing');
+});

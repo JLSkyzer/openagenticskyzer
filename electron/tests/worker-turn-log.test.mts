@@ -139,6 +139,7 @@ test('2. a stories260K turn stopped while writing logs model-ready, generation a
   assert.equal(ready.contextSize, 16384, JSON.stringify(ready));
   assert.equal(typeof ready.wrapper, 'string');
   assert.ok(ready.wrapper.length > 0, JSON.stringify(ready));
+  assert.equal(ready.opensThought, false, 'stories260K has no think: no reply starts as reasoning (Task 5b)');
   assert.ok(ready.loadMs > 0, JSON.stringify(ready));
   const generation = lines.find(line => line.event === 'generation');
   assert.ok(generation, JSON.stringify(lines.map(line => line.event)));

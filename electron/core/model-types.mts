@@ -24,7 +24,8 @@ export interface ChatMessage {
 /** A turn's figures, in ms: load, reading the request, first word of the answer, whole turn; output tokens and rate. */
 export interface TurnTiming { loadMs?: number; readMs?: number; firstTextMs?: number; totalMs: number; outputTokens?: number; tokensPerSecond?: number }
 /** The chat wrapper node-llama-cpp chose for a loaded model: its name and its segments (thought tags), as logged. */
-export interface ChatWrapperInfo { name: string; segments: unknown }
+/** `opensThought`: the chat template opens <think> in the generation prompt (core/thought-prefill.mts). */
+export interface ChatWrapperInfo { name: string; segments: unknown; opensThought: boolean }
 /** A model load as it happens: started, progress in (0, 1], ended (its time and chat wrapper). Only a real load
  * reports: a reused warm engine reports nothing. */
 export type LoadEvent = { kind: 'start' } | { kind: 'progress'; progress: number } | { kind: 'end'; ms: number; wrapper: ChatWrapperInfo };
@@ -39,8 +40,9 @@ export interface CompletionOptions {
   // The output asked for; the engine's own cap (outputCap) when absent.
   maxTokens?: number;
   // The reasoning as it streams, apart from the answer; `moved: true` takes back everything onDelta sent so far
-  // (a bare </think>, core/reasoning-split.mts).
-  onReasoning?: (piece: { text: string; moved?: true }) => void;
+  // (a bare </think>, core/reasoning-split.mts); `movedBack: true` is the reverse: all the reasoning sent so far was
+  // the answer, `text` (the template opened <think> and no </think> came).
+  onReasoning?: (piece: { text: string; moved?: true; movedBack?: true }) => void;
   onStats?: (stats: GenerationStats) => void;
 }
 /** What the agent loop and compaction need from a model: the built-in engine (local-engine.mts::localProvider). */

@@ -2,9 +2,21 @@
 // Two sources: the chat wrapper's own segments (node-llama-cpp's onResponseChunk, `type: 'segment'`), and, for a
 // template that does not declare them, the <think>…</think> tags read in the plain text. A template that opens
 // <think> itself (in the prompt) leaves the model writing only the closing </think>: everything shown before it was
-// reasoning, and is taken back (`moved`).
+// reasoning, and is taken back (`moved`) — or, when that template was detected at load (core/thought-prefill.mts), the
+// reply starts as reasoning (`startInThought`) and, if no </think> ever comes, is given back as the answer (`movedBack`).
 
-export type SplitPiece = { kind: 'text'; text: string } | { kind: 'thought'; text: string } | { kind: 'moved'; text: string };
+export type SplitPiece =
+  | { kind: 'text'; text: string }
+  | { kind: 'thought'; text: string }
+  /** All the text shown so far was reasoning (a bare </think>). */
+  | { kind: 'moved'; text: string }
+  /** All the reasoning shown so far was the answer (startInThought and no </think>, or a wrapper segment came). */
+  | { kind: 'movedBack'; text: string };
+
+export interface SplitOptions {
+  /** The chat template opened <think> in the generation prompt: the reply is reasoning until its first </think>. */
+  startInThought?: boolean;
+}
 
 const OPEN = '<think>';
 const CLOSE = '</think>';
@@ -18,13 +30,27 @@ const CLOSE = '</think>';
  * - a chunk's tail that may start a tag is held until the next push; end() flushes it as the current kind, so an
  *   unterminated <think> stays reasoning;
  * - no empty piece, and the tags themselves are never part of a piece.
+ * With `startInThought`, the reply begins in thought, provisionally:
+ * - the first </think> switches to text (the reasoning is kept), and the rules above apply from there;
+ * - a <think> the model writes anyway before any reasoning is dropped (it opens the thought explicitly);
+ * - with no </think> by end(), or when a wrapper segment comes first (segmentSeen), the provisional reasoning, held
+ *   tail included, is given back as text in ONE `movedBack` piece: no answer is ever hidden.
  */
 export class ReasoningSplitter {
   #mode: 'text' | 'thought' = 'text';
   #sawTag = false;
+  /** startInThought, before any tag or segment: the reasoning so far may still be the answer. */
+  #provisional = false;
   #held = '';
   #text = '';
   #reasoning = '';
+
+  constructor(options: SplitOptions = {}) {
+    if (options.startInThought) {
+      this.#mode = 'thought';
+      this.#provisional = true;
+    }
+  }
 
   /** The answer so far: the text pieces, minus what a `moved` piece took back. */
   get text(): string { return this.#text; }
@@ -51,12 +77,22 @@ export class ReasoningSplitter {
       }
       const before = rest.slice(0, at);
       rest = rest.slice(at + tag.length);
-      if (tag === OPEN) {
+      if (tag === OPEN && this.#mode === 'thought') {
+        // Provisional only (#activeTags): the model opened the thought itself, unless reasoning came first — then
+        // the tag is quoted text and stays in the reasoning.
+        if ((this.#reasoning + before).trim()) {
+          this.#emit(pieces, 'thought', before + OPEN);
+          continue;
+        }
+        this.#emit(pieces, 'thought', before);
+        this.#provisional = false;
+      } else if (tag === OPEN) {
         this.#emit(pieces, 'text', before);
         this.#mode = 'thought';
       } else if (this.#mode === 'thought') {
         this.#emit(pieces, 'thought', before);
         this.#mode = 'text';
+        this.#provisional = false;
       } else {
         // A bare </think>: what was shown as the answer was the reasoning.
         if (this.#text) {
@@ -71,20 +107,36 @@ export class ReasoningSplitter {
   }
 
   /** The chat wrapper sent a segment: it handles the thoughts itself, so the <think> fallback is off from here on,
-   * as after a first tag (ruling T2-m1) — a stray </think> in the answer stays text. */
-  segmentSeen(): void {
+   * as after a first tag (ruling T2-m1) — a stray </think> in the answer stays text.
+   * A provisional reasoning (startInThought) was the answer after all: it is given back (`movedBack`). */
+  segmentSeen(): SplitPiece[] {
     this.#sawTag = true;
+    if (!this.#provisional) return [];
+    this.#mode = 'text';
+    return this.#giveBack();
   }
 
   end(): SplitPiece[] {
+    if (this.#provisional) return this.#giveBack();
     const pieces: SplitPiece[] = [];
     this.#emit(pieces, this.#mode, this.#held);
     this.#held = '';
     return pieces;
   }
 
+  /** The provisional reasoning and the held tail, as text, in one piece. */
+  #giveBack(): SplitPiece[] {
+    const text = this.#reasoning + this.#held;
+    this.#provisional = false;
+    this.#reasoning = '';
+    this.#held = '';
+    if (!text) return [];
+    this.#text += text;
+    return [{ kind: 'movedBack', text }];
+  }
+
   #activeTags(): string[] {
-    if (this.#mode === 'thought') return [CLOSE];
+    if (this.#mode === 'thought') return this.#provisional ? [OPEN, CLOSE] : [CLOSE];
     return this.#sawTag ? [] : [OPEN, CLOSE];
   }
 
@@ -118,8 +170,8 @@ export function splitReasoning(full: string): { reasoning: string; text: string 
  * text (a segment start or end) gives no piece. */
 export function piecesOfChunk(chunk: { type?: 'segment'; segmentType?: string; text: string }, splitter: ReasoningSplitter): SplitPiece[] {
   if (chunk.type === 'segment') {
-    splitter.segmentSeen();
-    return chunk.text ? [{ kind: 'thought', text: chunk.text }] : [];
+    const given = splitter.segmentSeen();
+    return chunk.text ? [...given, { kind: 'thought', text: chunk.text }] : given;
   }
   return splitter.push(chunk.text);
 }
@@ -129,10 +181,12 @@ export function piecesOfChunk(chunk: { type?: 'segment'; segmentType?: string; t
  * splitter's, ruling S2), and how long the reasoning took (`now` in ms, injected for the tests):
  * - from the first thought piece to the first text piece after it;
  * - a moved reasoning (bare </think>) from the reply's first chunk to that </think> (ruling S1);
- * - a reasoning never followed by text: to end().
+ * - a reasoning never followed by text: to end();
+ * - with startInThought, from the first chunk (the first thought piece) to the </think>; a reasoning given back
+ *   (`movedBack`) is no reasoning at all: no text, no duration.
  */
 export class ReplyAccumulator {
-  readonly #splitter = new ReasoningSplitter();
+  readonly #splitter: ReasoningSplitter;
   readonly #now: () => number;
   #reasoning = '';
   #firstChunkAt: number | undefined;
@@ -140,8 +194,9 @@ export class ReplyAccumulator {
   #reasoningEnd: number | undefined;
   #endedAt: number | undefined;
 
-  constructor(now: () => number = () => performance.now()) {
+  constructor(now: () => number = () => performance.now(), options: SplitOptions = {}) {
     this.#now = now;
+    this.#splitter = new ReasoningSplitter(options);
   }
 
   get text(): string { return this.#splitter.text; }
@@ -169,6 +224,13 @@ export class ReplyAccumulator {
     for (const piece of pieces) {
       if (piece.kind === 'text') {
         if (this.#reasoningStart !== undefined) this.#reasoningEnd ??= now;
+        continue;
+      }
+      if (piece.kind === 'movedBack') {
+        // Only a provisional reasoning is given back, and it comes before any other: none is left.
+        this.#reasoning = '';
+        this.#reasoningStart = undefined;
+        this.#reasoningEnd = undefined;
         continue;
       }
       this.#reasoning += piece.text;

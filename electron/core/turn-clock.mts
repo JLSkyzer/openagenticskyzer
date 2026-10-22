@@ -14,6 +14,8 @@ export class TurnClock {
   #loadEnd: number | undefined;
   #readStart: number | undefined;
   #firstChunk: number | undefined;
+  /** The current step's first piece (a step starts at readStart). */
+  #stepFirstChunk: number | undefined;
   #firstText: number | undefined;
   #stats = false;
   #outputTokens = 0;
@@ -28,19 +30,26 @@ export class TurnClock {
   loadStart(): void { this.#loadStart ??= this.#now(); }
   loadEnd(): void { if (this.#loadStart !== undefined) this.#loadEnd ??= this.#now(); }
 
-  /** The model starts reading a request: the first call is the read start. */
-  readStart(): void { this.#readStart ??= this.#now(); }
+  /** The model starts reading a request (one per step): the first call is the read start. */
+  readStart(): void {
+    this.#readStart ??= this.#now();
+    this.#stepFirstChunk = undefined;
+  }
 
   /**
    * A piece of the reply. The first one ends readMs; the first 'text' one sets firstTextMs. A 'moved' piece is
    * reasoning that had been streamed as text (a bare </think>, core/reasoning-split.mts): it clears firstTextMs,
-   * which the next 'text' piece sets again (ruling S1).
+   * which the next 'text' piece sets again (ruling S1). A 'movedBack' piece is the reverse: a reply streamed as
+   * reasoning (the template opened <think>, and no </think> came) was the answer, whose first word was the step's
+   * first piece.
    */
-  chunk(kind: 'thought' | 'text' | 'moved'): void {
+  chunk(kind: 'thought' | 'text' | 'moved' | 'movedBack'): void {
     const now = this.#now();
     this.#firstChunk ??= now;
+    this.#stepFirstChunk ??= now;
     if (kind === 'text') this.#firstText ??= now;
     else if (kind === 'moved') this.#firstText = undefined;
+    else if (kind === 'movedBack') this.#firstText ??= this.#stepFirstChunk;
   }
 
   /** One generation's figures, summed over the turn's steps. Not the end of the stream: pieces may still follow. */

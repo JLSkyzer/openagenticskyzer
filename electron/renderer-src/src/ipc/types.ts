@@ -139,6 +139,10 @@ export interface TurnTiming { loadMs?: number; readMs?: number; firstTextMs?: nu
 export type AgentEvent =
   | { type: 'event'; event: 'agent'; runId: string; kind: 'turn'; step: number }
   | { type: 'event'; event: 'agent'; runId: string; kind: 'delta'; text: string }
+  // The reasoning as it streams (core/model-types.mts::onReasoning): `moved` takes back the text streamed so far as
+  // reasoning; `movedBack` is the reverse — the template opened <think>, no </think> came, and `text` (all the
+  // reasoning streamed so far) was the answer.
+  | { type: 'event'; event: 'agent'; runId: string; kind: 'thinking'; text: string; moved?: true; movedBack?: true }
   | { type: 'event'; event: 'agent'; runId: string; kind: 'message'; message: ChatMessage }
   | {
       // worker.mjs only enriches agent.mts's own emit({type:'tool-start', id, tool})

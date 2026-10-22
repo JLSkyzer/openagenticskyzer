@@ -125,3 +125,87 @@ test('ReplyAccumulator: segment thoughts and a bare </think> both reach the reas
   assert.equal(plain.reasoning, '');
   assert.equal(plain.reasoningMs, undefined, 'no reasoning, no duration');
 });
+
+// Task 5b: the chat template opened <think> itself (core/thought-prefill.mts), so the reply is reasoning from its first
+// token until </think>.
+function streamFrom(chunks: readonly string[]) {
+  const splitter = new ReasoningSplitter({ startInThought: true });
+  const pieces: SplitPiece[] = [];
+  for (const chunk of chunks) pieces.push(...splitter.push(chunk));
+  pieces.push(...splitter.end());
+  return { text: splitter.text, reasoning: splitter.reasoning, pieces };
+}
+
+test('startInThought: the reply is reasoning until a </think> arriving mid-chunk, then the answer', () => {
+  const { text, reasoning, pieces } = streamFrom(['Let me think', ' about it</think>\n\nBonjour', ' toi']);
+  assert.deepEqual(pieces, [
+    { kind: 'thought', text: 'Let me think' },
+    { kind: 'thought', text: ' about it' },
+    { kind: 'text', text: '\n\nBonjour' },
+    { kind: 'text', text: ' toi' },
+  ]);
+  assert.deepEqual({ text, reasoning }, { text: '\n\nBonjour toi', reasoning: 'Let me think about it' });
+});
+
+test('startInThought: a </think> split across two chunks, at every position', () => {
+  const full = 'pensée</think>Réponse';
+  for (let i = 0; i <= full.length; i++) {
+    const { text, reasoning, pieces } = streamFrom([full.slice(0, i), full.slice(i)]);
+    assert.deepEqual({ text, reasoning }, { text: 'Réponse', reasoning: 'pensée' }, `split at ${i}`);
+    assert.equal(pieces.some(p => p.kind === 'text' && p.text.includes('pens')), false, `no reasoning shown as the answer, split at ${i}`);
+    assert.equal(pieces.some(p => /<\/?t/.test(p.text)), false, `no tag piece, split at ${i}`);
+    assert.equal(pieces.some(p => p.text === ''), false, 'no empty piece');
+  }
+});
+
+test('startInThought: no </think> at all — everything is given back as the answer in one movedBack piece at the end', () => {
+  const { text, reasoning, pieces } = streamFrom(['Bonjour', ' toi</thi']);
+  assert.deepEqual(pieces, [
+    { kind: 'thought', text: 'Bonjour' },
+    { kind: 'thought', text: ' toi' },
+    { kind: 'movedBack', text: 'Bonjour toi</thi' },
+  ]);
+  assert.deepEqual({ text, reasoning }, { text: 'Bonjour toi</thi', reasoning: '' }, 'no answer is ever hidden');
+  assert.deepEqual(streamFrom([]).pieces, [], 'an empty reply gives nothing back');
+});
+
+test('startInThought: a stray second </think> after the first is literal text; a leading <think> the model writes anyway is dropped', () => {
+  assert.deepEqual(streamFrom(['a</think>b </think> c']).text, 'b </think> c');
+  assert.deepEqual(streamFrom(['a</think>b <think> c']), { text: 'b <think> c', reasoning: 'a', pieces: [{ kind: 'thought', text: 'a' }, { kind: 'text', text: 'b <think> c' }] });
+  const opened = streamFrom(['\n<thi', 'nk>\npensée</think>Salut']);
+  assert.deepEqual({ text: opened.text, reasoning: opened.reasoning }, { text: 'Salut', reasoning: '\n\npensée' });
+  assert.equal(opened.pieces.some(p => p.text.includes('<think>')), false);
+  assert.deepEqual(splitReasoningFrom('pensée <think> citée</think>ok'), { reasoning: 'pensée <think> citée', text: 'ok' }, 'once the reasoning has begun, a <think> in it is quoted text');
+});
+
+function splitReasoningFrom(full: string) {
+  const { text, reasoning } = streamFrom([full]);
+  return { reasoning, text };
+}
+
+test('startInThought: a wrapper segment ends the provisional reasoning — what came before is given back as text, the segment is reasoning', () => {
+  const s = new ReasoningSplitter({ startInThought: true });
+  assert.deepEqual(piecesOfChunk({ text: 'x' }, s), [{ kind: 'thought', text: 'x' }]);
+  assert.deepEqual(piecesOfChunk({ type: 'segment', segmentType: 'thought', text: 'je pense' }, s), [{ kind: 'movedBack', text: 'x' }, { kind: 'thought', text: 'je pense' }]);
+  assert.deepEqual(piecesOfChunk({ text: 'Réponse </think>' }, s), [{ kind: 'text', text: 'Réponse </think>' }]);
+  assert.deepEqual(s.end(), []);
+  assert.deepEqual({ text: s.text, reasoning: s.reasoning }, { text: 'xRéponse </think>', reasoning: '' }, 'segment thoughts are kept by the accumulator, not the splitter (ruling S2)');
+  const quiet = new ReasoningSplitter({ startInThought: true });
+  assert.deepEqual(piecesOfChunk({ type: 'segment', segmentType: 'thought', text: '' }, quiet), [], 'nothing streamed before: nothing given back');
+  assert.deepEqual(piecesOfChunk({ text: 'Bonjour' }, quiet), [{ kind: 'text', text: 'Bonjour' }]);
+});
+
+test('ReplyAccumulator startInThought: reasoningMs runs from the first chunk to </think>; a reply given back has no reasoning', () => {
+  let now = 0;
+  const closed = new ReplyAccumulator(() => now, { startInThought: true });
+  now = 100; closed.chunk({ text: 'je pense' });
+  now = 900; closed.chunk({ text: '</think>Salut' });
+  now = 1000; closed.end();
+  assert.deepEqual({ reasoning: closed.reasoning, text: closed.text, ms: closed.reasoningMs }, { reasoning: 'je pense', text: 'Salut', ms: 800 });
+
+  now = 0;
+  const back = new ReplyAccumulator(() => now, { startInThought: true });
+  now = 100; back.chunk({ text: 'Bonjour' });
+  now = 200; assert.deepEqual(back.end(), [{ kind: 'movedBack', text: 'Bonjour' }]);
+  assert.deepEqual({ reasoning: back.reasoning, text: back.text, ms: back.reasoningMs }, { reasoning: '', text: 'Bonjour', ms: undefined });
+});

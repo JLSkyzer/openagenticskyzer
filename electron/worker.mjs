@@ -230,7 +230,7 @@ function logModelReady(model, contextTokens, loadMs, log) {
       event: 'model-ready', backend: placement?.backend ?? null,
       ...(placement ? { gpuLayers: placement.gpuLayers, totalLayers: placement.totalLayers } : {}),
       contextSize: placement?.contextSize ?? (status.loaded ? status.contextWindow : contextTokens),
-      ...(wrapper ? { wrapper: wrapper.name, segments: wrapper.segments } : {}),
+      ...(wrapper ? { wrapper: wrapper.name, segments: wrapper.segments, opensThought: wrapper.opensThought } : {}),
       ...(loadMs === undefined ? {} : { loadMs }),
     });
   } catch { /* a line missing never fails the turn */ }
@@ -702,7 +702,14 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
         return;
       }
       if (kind === 'turn') { step = rest.step; phase('reading'); clock.readStart(); }
-      if (kind === 'thinking') {
+      if (kind === 'thinking' && rest.movedBack) {
+        // `movedBack`: the template opened <think> but no </think> came — what was streamed as reasoning was the
+        // answer (core/reasoning-split.mts, startInThought).
+        clock.chunk('movedBack');
+        partialReasoning = '';
+        partialText += rest.text;
+        phase('writing');
+      } else if (kind === 'thinking') {
         // `moved`: what was streamed as the answer was reasoning (a bare </think>, core/reasoning-split.mts).
         clock.chunk(rest.moved ? 'moved' : 'thought');
         if (rest.moved) partialText = '';

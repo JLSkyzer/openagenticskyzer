@@ -49,6 +49,7 @@ import './worker-gguf.test.mts';
 import './local-provider.test.mts';
 import './local-engine.test.mts';
 import './reasoning-split.test.mts';
+import './thought-prefill.test.mts';
 import './low-vram-fallback.test.mts';
 import './worker-local-model.test.mts';
 import './ui-plumbing.test.mts';

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { announcedLabel, formatDuration, formatElapsed, phaseLabel, turnStatusView } from '../renderer-src/src/state/turn-status.ts';
+import { announcedLabel, formatDuration, formatElapsed, phaseLabel, reasoningSummary, timingLine, turnStatusView } from '../renderer-src/src/state/turn-status.ts';
 import { chatReducer, initialChatState, type ChatState } from '../renderer-src/src/state/reducer.ts';
 
 const agent = (runId: string, kind: string, extra: object = {}) =>
@@ -129,7 +129,58 @@ test('reducer: a thinking movedBack piece (the template opened <think>, no </thi
   const running = started();
   const thought = chatReducer(running, agent('r1', 'thinking', { text: 'Bonjour' }));
   assert.equal(thought.streamingText, '', 'a provisional reasoning is not shown as the answer');
+  assert.equal(thought.streamingReasoning, 'Bonjour', 'it streams as reasoning until then');
   const back = chatReducer(thought, agent('r1', 'thinking', { text: 'Bonjour toi', movedBack: true }));
   assert.equal(back.streamingText, 'Bonjour toi');
+  assert.equal(back.streamingReasoning, '', 'the reasoning given back is no reasoning any more (ruling 5b)');
   assert.equal(chatReducer(back, agent('old', 'thinking', { text: 'x', movedBack: true })), back, 'another run changes nothing');
+});
+
+// Task 6: the timing line under each reply and the « Réflexion » block.
+test('timingLine: the spec example, a warm turn, a turn with no token count', () => {
+  assert.equal(timingLine({ firstTextMs: 4200, totalMs: 12800, tokensPerSecond: 8.3, loadMs: 35000 }), '1ᵉʳ mot 4,2 s · total 12,8 s · 8,3 tok/s · chargement 35 s');
+  assert.equal(timingLine({ firstTextMs: 4200, totalMs: 12800, tokensPerSecond: 8.3 }), '1ᵉʳ mot 4,2 s · total 12,8 s · 8,3 tok/s');
+  assert.equal(timingLine({ totalMs: 900 }), 'total 0,9 s');
+});
+
+test('reasoningSummary', () => {
+  assert.equal(reasoningSummary({ streaming: true }), 'Réflexion…');
+  assert.equal(reasoningSummary({ streaming: false, ms: 3400 }), 'Réflexion · 3,4 s');
+  assert.equal(reasoningSummary({ streaming: false }), 'Réflexion');
+});
+
+test('reducer: thinking streams the reasoning; a moved piece takes the streamed text back', () => {
+  assert.equal(initialChatState.streamingReasoning, '');
+  const running = started();
+  const text = chatReducer(running, agent('r1', 'delta', { text: 'I think' }));
+  assert.equal(text.streamingText, 'I think');
+  const moved = chatReducer(text, agent('r1', 'thinking', { text: 'I think', moved: true }));
+  assert.equal(moved.streamingText, '');
+  assert.equal(moved.streamingReasoning, 'I think');
+  const more = chatReducer(moved, agent('r1', 'thinking', { text: ' hard' }));
+  assert.equal(more.streamingReasoning, 'I think hard');
+  assert.equal(chatReducer(more, agent('old', 'thinking', { text: 'x' })), more, 'another run changes nothing');
+  const reply = chatReducer(more, agent('r1', 'message', { message: { role: 'assistant', content: 'Réponse', reasoning: 'I think hard' } }));
+  assert.equal(reply.streamingReasoning, '');
+  assert.equal(chatReducer(more, agent('r1', 'stopped', {})).streamingReasoning, '', 'a stopped turn leaves no streamed reasoning');
+});
+
+test("reducer: the run's timing lands on its last reply, never on an earlier turn's", () => {
+  const loaded = chatReducer(initialChatState, { type: 'folder-loaded', messages: [{ role: 'user', content: 'avant' }, { role: 'assistant', content: 'A' }] });
+  const running = started(loaded);
+  assert.equal(running.runStartIndex, 3, "right after the run's user message");
+  const call = { id: 'c1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.txt"}' } };
+  let state = chatReducer(running, agent('r1', 'message', { message: { role: 'assistant', content: '', tool_calls: [call] } }));
+  state = chatReducer(state, agent('r1', 'message', { message: { role: 'tool', tool_call_id: 'c1', content: 'contenu' } }));
+  state = chatReducer(state, agent('r1', 'message', { message: { role: 'assistant', content: 'C' } }));
+  const timing = { firstTextMs: 4200, totalMs: 12800, tokensPerSecond: 8.3 };
+  const done = chatReducer(state, agent('r1', 'done', { timing }));
+  assert.deepEqual(done.messages[5].timing, timing, 'C, the last reply of the run');
+  assert.equal(done.messages[1].timing, undefined, 'A, an earlier turn');
+  assert.equal(done.messages[3].timing, undefined, 'B, the tool call');
+  assert.equal(done.runStartIndex, null);
+  const bare = started(loaded);
+  const stopped = chatReducer(bare, agent('r1', 'stopped', { timing }));
+  assert.equal(stopped.messages, bare.messages, 'no reply in the run: the same array');
+  assert.equal(stopped.runStartIndex, null);
 });

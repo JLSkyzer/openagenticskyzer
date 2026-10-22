@@ -1,4 +1,4 @@
-import type { AgentEvent, Attachment, BranchInfo, ChatMessage } from '../ipc/bridge';
+import type { AgentEvent, Attachment, BranchInfo, ChatMessage, TurnTiming } from '../ipc/bridge';
 // Explicit `.ts`: the unit tests load this file with Node itself (type stripping), which does not resolve
 // extension-less imports the way Vite does.
 import { extractArtifact, type Artifact } from './artifacts.ts';
@@ -27,6 +27,8 @@ export interface ChatState {
   messages: RenderedMessage[];
   liveToolStarts: Record<string, ToolMeta>;
   streamingText: string;
+  // The reasoning of the reply being written (`thinking` events), shown in its « Réflexion » block.
+  streamingReasoning: string;
   agentRunning: boolean;
   runId: string | null;
   error: string | null;
@@ -60,12 +62,16 @@ export interface ChatState {
   // The worker's phase while stopping (the one shown before the click, then any it posted since): what the line shows
   // again if the stop never reached the worker (stop-failed). null outside a stop.
   phaseBeforeStop: TurnPhase | null;
+  // Where the running turn's messages start: right after its user message (send-started). The turn's timing goes on
+  // its last reply at or after this index, never on an earlier turn's. null outside a turn.
+  runStartIndex: number | null;
 }
 
 export const initialChatState: ChatState = {
   messages: [],
   liveToolStarts: {},
   streamingText: '',
+  streamingReasoning: '',
   agentRunning: false,
   runId: null,
   error: null,
@@ -82,6 +88,7 @@ export const initialChatState: ChatState = {
   turnStartedAt: null,
   stopping: false,
   phaseBeforeStop: null,
+  runStartIndex: null,
 };
 
 export type ChatAction =
@@ -103,15 +110,16 @@ export type ChatAction =
   | { type: 'permission-decided' }
   | { type: 'clear-error' };
 
-// What every terminal event (done, stopped, error) resets: the status line and the stop in progress.
-const turnEnded = { phase: null, turnStartedAt: null, stopping: false, phaseBeforeStop: null } as const;
+// What every terminal event (done, stopped, error) resets: the status line, the stop in progress, the streamed
+// reasoning and where the run started.
+const turnEnded = { phase: null, turnStartedAt: null, stopping: false, phaseBeforeStop: null, streamingReasoning: '', runStartIndex: null } as const;
 
-/** Puts the turn's `timing` on the last assistant message of THIS run (after the run's user message, never an earlier
+/** Puts the turn's `timing` on the last assistant message of THIS run (at or after `runStartIndex`, never an earlier
  * turn's reply), as worker.mjs::withTiming does in the saved file — its message events go out before the timing is
- * known. A run with no assistant message, or no timing: no change. */
-function withRunTiming(messages: RenderedMessage[], timing: unknown): RenderedMessage[] {
+ * known. A run with no assistant message, or no timing: no change (the same array). */
+function withRunTiming(messages: RenderedMessage[], timing: TurnTiming | undefined, runStartIndex: number | null): RenderedMessage[] {
   if (!timing) return messages;
-  const from = lastUserIndex(messages) + 1;
+  const from = runStartIndex ?? lastUserIndex(messages) + 1;
   for (let index = messages.length - 1; index >= from; index--) {
     if (messages[index].role === 'assistant') return messages.map((message, i) => (i === index ? { ...message, timing } : message));
   }
@@ -149,6 +157,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         messages: withToolCards(action.messages),
         truncatedTo: null,
         streamingText: '',
+        streamingReasoning: '',
         liveToolStarts: {},
         pendingPermission: null,
         error: null,
@@ -172,19 +181,22 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       if (state.agentRunning || state.compacting) return state;
       return { ...state, messages: state.messages.slice(0, action.keep), truncatedTo: action.keep, error: null, notice: null };
 
-    case 'send-started':
+    case 'send-started': {
+      // `keep` (🔄 regenerate) cuts the view before the message is added — in the same step, so a send
+      // that the worker refuses never leaves a half-cut view behind.
+      const messages = [
+        ...(action.keep === undefined ? state.messages : state.messages.slice(0, action.keep)),
+        { role: 'user' as const, content: action.text, ...(action.attachments?.length ? { attachments: action.attachments } : {}) },
+      ];
       return {
         ...state,
-        // `keep` (🔄 regenerate) cuts the view before the message is added — in the same step, so a send
-        // that the worker refuses never leaves a half-cut view behind.
-        messages: [
-          ...(action.keep === undefined ? state.messages : state.messages.slice(0, action.keep)),
-          { role: 'user', content: action.text, ...(action.attachments?.length ? { attachments: action.attachments } : {}) },
-        ],
+        messages,
+        runStartIndex: messages.length,
         truncatedTo: null,
         agentRunning: true,
         runId: action.runId,
         streamingText: '',
+        streamingReasoning: '',
         liveToolStarts: {},
         error: null,
         phase: { phase: 'preparing' },
@@ -192,6 +204,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         stopping: false,
         phaseBeforeStop: null,
       };
+    }
 
     // Shown at once, before the worker's own « stopping » arrives, and held until the turn's terminal event.
     case 'stop-requested':
@@ -245,8 +258,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         case 'delta':
           return { ...state, streamingText: state.streamingText + event.text };
         case 'thinking':
-          // Only a reasoning given back as the answer changes the streamed text here.
-          return event.movedBack ? { ...state, streamingText: state.streamingText + event.text } : state;
+          // `movedBack`: the reasoning streamed so far was the answer (the template opened <think>, no </think> came).
+          if (event.movedBack) return { ...state, streamingText: state.streamingText + event.text, streamingReasoning: '' };
+          // `moved`: the text streamed so far was reasoning (a bare </think>): it leaves the answer.
+          if (event.moved) return { ...state, streamingText: '', streamingReasoning: state.streamingReasoning + event.text };
+          return { ...state, streamingReasoning: state.streamingReasoning + event.text };
         case 'tool-start': {
           // tool-start carries no arguments: the detail comes from the assistant message that made the call.
           const detail = toolDetail(event.tool, callsById(state.messages).get(event.id)?.arguments);
@@ -271,6 +287,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             ...state,
             messages: [...state.messages, message],
             streamingText: message.role === 'assistant' ? '' : state.streamingText,
+            streamingReasoning: message.role === 'assistant' ? '' : state.streamingReasoning,
           };
         }
         case 'permission-request':
@@ -291,7 +308,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           const found = reply < 0 ? null : extractArtifact(state.messages[reply].content);
           return {
             ...state, agentRunning: false, runId: null, streamingText: '', liveToolStarts: {}, pendingPermission: null,
-            ...turnEnded, messages: withRunTiming(state.messages, event.timing),
+            ...turnEnded, messages: withRunTiming(state.messages, event.timing, state.runStartIndex),
             completedTurns: state.completedTurns + 1,
             artifact: found ?? state.artifact,
           };
@@ -303,7 +320,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           // "pending" tool card or a stale permission banner would stay stuck forever.
           return {
             ...state, agentRunning: false, runId: null, streamingText: '', liveToolStarts: {}, pendingPermission: null,
-            ...turnEnded, messages: withRunTiming(state.messages, event.timing),
+            ...turnEnded, messages: withRunTiming(state.messages, event.timing, state.runStartIndex),
           };
         case 'error':
           // An error carries no timing (worker.mjs): the line goes, nothing is attached.

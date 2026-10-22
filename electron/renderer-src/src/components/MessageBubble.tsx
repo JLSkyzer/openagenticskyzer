@@ -1,6 +1,8 @@
 import { Markdown } from '../markdown/Markdown';
-import type { Attachment } from '../ipc/bridge';
+import type { Attachment, TurnTiming } from '../ipc/bridge';
 import { attachmentIcon } from '../state/upload';
+import { timingLine } from '../state/turn-status';
+import { ReasoningBlock } from './ReasoningBlock';
 
 // Styles copied from chat.py::_render_message: user bubble bg-indigo-950/text-purple-200
 // right-aligned, AI bubble bg #1a1a1a with a square top-left corner (border-radius:
@@ -79,7 +81,19 @@ export function UserBubble({ content, attachments, onFork, onEdit }: { content: 
 
 // `onRegenerate` is only passed for the last reply while nothing is running (chat.py: `is_last_ai and not
 // state.agent_running`): the 🔄 button is absent, not disabled.
-export function AssistantBubble({ content, streaming = false, onRegenerate }: { content: string; streaming?: boolean; onRegenerate?: () => void }) {
+//
+// `reasoning` shows in a « Réflexion » block above the answer (`reasoningOpen`: open while the model reasons, in the
+// streaming bubble). `timing` is the line under the bubble — outside `oa-assistant-bubble`, whose text the window tests
+// read as the answer.
+export function AssistantBubble({ content, streaming = false, onRegenerate, reasoning, reasoningMs, reasoningOpen = false, timing }: {
+  content: string;
+  streaming?: boolean;
+  onRegenerate?: () => void;
+  reasoning?: string;
+  reasoningMs?: number;
+  reasoningOpen?: boolean;
+  timing?: TurnTiming;
+}) {
   return (
     <div className="flex flex-col gap-1 px-4 py-1">
       <div className="flex gap-2">
@@ -91,10 +105,16 @@ export function AssistantBubble({ content, streaming = false, onRegenerate }: { 
           style={{ borderRadius: '2px 10px 10px 10px' }}
           data-testid="oa-assistant-bubble"
         >
+          {reasoning?.trim() ? <ReasoningBlock text={reasoning} open={reasoningOpen} streaming={streaming && reasoningOpen} ms={reasoningMs} /> : null}
           <Markdown>{content}</Markdown>
           {streaming && <span className="oa-typing-caret" aria-hidden="true" />}
         </div>
       </div>
+      {timing && (
+        <div data-testid="oa-reply-timing" className="ml-9 text-[10px]" style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+          {timingLine(timing)}
+        </div>
+      )}
       {onRegenerate && (
         <button
           type="button"

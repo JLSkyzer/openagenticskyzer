@@ -1,6 +1,6 @@
 // The status line of a running turn (components/TurnStatus.tsx): its French label and the durations it shows.
 // Pure, so the unit tests load it with Node itself.
-import type { TurnPhaseName } from '../ipc/bridge';
+import type { TurnPhaseName, TurnTiming } from '../ipc/bridge';
 
 export interface TurnPhase { phase: TurnPhaseName; progress?: number; tool?: string }
 
@@ -58,4 +58,22 @@ export interface TurnStatusView {
 /** Everything TurnStatus shows at `now`. */
 export function turnStatusView(phase: TurnPhase, turnStartedAt: number | null, now: number): TurnStatusView {
   return { announced: announcedLabel(phase), label: phaseLabel(phase), timer: turnStartedAt === null ? null : formatElapsed(now - turnStartedAt) };
+}
+
+/** The line under a finished reply: '1ᵉʳ mot 4,2 s · total 12,8 s · 8,3 tok/s · chargement 35 s', each part only when
+ * its figure exists (a warm turn has no load, a provider that gives no token count has no rate). */
+export function timingLine(timing: TurnTiming): string {
+  const parts: string[] = [];
+  if (timing.firstTextMs !== undefined) parts.push(`1ᵉʳ mot ${formatDuration(timing.firstTextMs)}`);
+  if (timing.totalMs !== undefined) parts.push(`total ${formatDuration(timing.totalMs)}`);
+  if (timing.tokensPerSecond !== undefined) parts.push(`${timing.tokensPerSecond.toFixed(1).replace('.', ',')} tok/s`);
+  if (timing.loadMs !== undefined) parts.push(`chargement ${formatDuration(timing.loadMs)}`);
+  return parts.join(' · ');
+}
+
+/** The « Réflexion » block's summary: 'Réflexion…' while the model reasons, then 'Réflexion · 3,4 s' when the duration
+ * is known, else 'Réflexion'. */
+export function reasoningSummary(input: { streaming: boolean; ms?: number }): string {
+  if (input.streaming) return 'Réflexion…';
+  return input.ms === undefined ? 'Réflexion' : `Réflexion · ${formatDuration(input.ms)}`;
 }

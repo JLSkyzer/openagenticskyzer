@@ -22,7 +22,7 @@ export function ChatView() {
     // The error banner is the last thing in the list: without it here, an error raised while the view
     // is already full (a failed compaction, a refused send) appeared below the fold, out of sight. The status line
     // too: a phase that shows it again (Stop during a permission prompt) must not land below the fold.
-  }, [state.messages, state.streamingText, state.liveToolStarts, state.pendingPermission, state.error, state.phase]);
+  }, [state.messages, state.streamingText, state.streamingReasoning, state.liveToolStarts, state.pendingPermission, state.error, state.phase]);
 
   // Like ui.notify(): shown briefly, then gone on its own.
   useEffect(() => {
@@ -74,13 +74,18 @@ export function ChatView() {
               );
             }
             // A tool-only turn (the model called a tool without any commentary) has empty
-            // content — an empty bubble would just be visual noise before the tool card.
+            // content — an empty bubble would just be visual noise before the tool card. A reply stopped (or failed)
+            // while the model was still reasoning has no answer but its reasoning: that one shows, as its block.
             if (message.role === 'assistant') {
-              if (!message.content.trim()) return null;
+              const reasoning = typeof message.reasoning === 'string' ? message.reasoning : '';
+              if (!message.content.trim() && !reasoning.trim()) return null;
               return (
                 <AssistantBubble
                   key={index}
                   content={message.content}
+                  reasoning={reasoning}
+                  reasoningMs={message.reasoningMs}
+                  timing={message.timing}
                   onRegenerate={index === lastAssistant && !state.agentRunning && !state.compacting ? () => void regenerate() : undefined}
                 />
               );
@@ -93,7 +98,15 @@ export function ChatView() {
           {pendingTools.map(([id, meta]) => (
             <ToolMessage key={id} tool={meta.tool} category={meta.category} detail={meta.detail} content="" pending />
           ))}
-          {state.agentRunning && state.streamingText && <AssistantBubble content={state.streamingText} streaming />}
+          {/* The block is open while the model reasons (through a Stop clicked meanwhile), then the user's (ruling M4). */}
+          {state.agentRunning && (state.streamingText || state.streamingReasoning.trim()) && (
+            <AssistantBubble
+              content={state.streamingText}
+              reasoning={state.streamingReasoning}
+              reasoningOpen={(state.stopping ? state.phaseBeforeStop : state.phase)?.phase === 'thinking'}
+              streaming
+            />
+          )}
           {showTurnStatus && <TurnStatus />}
           <PermissionBanner />
           {state.error && (

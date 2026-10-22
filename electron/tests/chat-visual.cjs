@@ -303,7 +303,49 @@ app.whenReady().then(async () => {
     }, { what: 'the view at the bottom of a long conversation' });
     await writeFile(join(screenshotDir, 'chat-7-long.png'), await capturePng(win));
 
-    process.stdout.write(`PASS real conversation through the UI creates a file and renders markdown; tool cards (name, badge, detail, diff) survive a reopen; Shift+Enter and the double send proven (Electron ${process.versions.electron})\n`);
+    // ── 11. A saved reply with its reasoning and its timing (Task 6) ─────────────
+    // Modelled on step 6: a seeded conversation, reloaded through another folder. Nothing on screen had a « Réflexion »
+    // block or a timing line before (the scripted provider gives neither), so the waits below are not true on arrival.
+    assert.equal(await js(`!!document.querySelector('[data-testid="oa-reasoning"], [data-testid="oa-reply-timing"]')`), false, 'no block, no timing line before the seed');
+    await callWorker('save-messages', {
+      folder: project, branchId: 'main', messages: [
+        { role: 'user', content: 'Dis bonjour.' },
+        {
+          role: 'assistant', content: 'Bonjour.', reasoning: 'Je réfléchis en français.', reasoningMs: 3400,
+          timing: { firstTextMs: 4200, totalMs: 12800, tokensPerSecond: 8.3, loadMs: 35000 },
+        },
+      ],
+    });
+    await openEntry('other');
+    await waitFor(async () => (await topBarShows('other')) && (await js(`document.querySelectorAll('[data-testid="oa-assistant-bubble"]').length`)) === 0, { what: 'the other folder, with no reply' });
+    await openEntry('project');
+    await waitFor(() => js(`!!document.querySelector('[data-testid="oa-reasoning"]')`), { what: 'the seeded reply with its reasoning block' });
+    assert.equal(await js(`document.querySelectorAll('[data-testid="oa-assistant-bubble"]').length`), 1, 'the one seeded reply');
+    assert.equal(await js(`document.querySelector('[data-testid="oa-reasoning-summary"]').textContent`), 'Réflexion · 3,4 s');
+    assert.equal(await js(`document.querySelector('[data-testid="oa-reasoning"]').open`), false, 'a finished reply shows its reasoning folded');
+    assert.equal(await js(`document.querySelector('[data-testid="oa-reply-timing"]').textContent`), '1ᵉʳ mot 4,2 s · total 12,8 s · 8,3 tok/s · chargement 35 s');
+    assert.equal(await js(`!!document.querySelector('[data-testid="oa-assistant-bubble"] [data-testid="oa-reply-timing"]')`), false, 'the timing line sits outside the bubble');
+    assert.ok((await lastBubble()).endsWith('Bonjour.'), 'the answer under its block');
+    await writeFile(join(screenshotDir, 'chat-8-reasoning-folded.png'), await capturePng(win));
+    // A REAL click on the summary (Chromium's own input pipeline), not element.click().
+    const summary = await js(`(() => {
+      const r = document.querySelector('[data-testid="oa-reasoning-summary"]').getBoundingClientRect();
+      return { x: Math.round(r.left + Math.min(20, r.width / 2)), y: Math.round(r.top + r.height / 2) };
+    })()`);
+    win.webContents.sendInputEvent({ type: 'mouseMove', x: summary.x, y: summary.y });
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: summary.x, y: summary.y, button: 'left', clickCount: 1 });
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: summary.x, y: summary.y, button: 'left', clickCount: 1 });
+    await waitFor(() => js(`document.querySelector('[data-testid="oa-reasoning"]').open`), { timeout: 5000, what: 'the block opened by the click' });
+    assert.equal(await js(`document.querySelector('[data-testid="oa-reasoning-text"]').textContent`), 'Je réfléchis en français.');
+    const reasoningInView = await js(`(() => {
+      const r = document.querySelector('[data-testid="oa-reasoning-text"]').getBoundingClientRect();
+      const view = document.querySelector('[data-testid="oa-chat-scroll"]').getBoundingClientRect();
+      return { rect: [r.left, r.top, r.right, r.bottom], inside: r.width > 0 && r.height > 0 && r.top >= view.top && r.bottom <= view.bottom && r.left >= 0 && r.right <= window.innerWidth };
+    })()`);
+    assert.ok(reasoningInView.inside, `the reasoning lies in the viewport: ${JSON.stringify(reasoningInView.rect)}`);
+    await writeFile(join(screenshotDir, 'chat-9-reasoning-open.png'), await capturePng(win));
+
+    process.stdout.write(`PASS real conversation through the UI creates a file and renders markdown; tool cards (name, badge, detail, diff) survive a reopen; Shift+Enter and the double send proven; a saved reply shows its timing and folded reasoning (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshots: ${screenshotDir}\n`);
   } finally {
     win?.destroy();

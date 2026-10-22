@@ -151,6 +151,16 @@ app.whenReady().then(async () => {
     assert.equal(await exists('[data-testid="oa-turn-status"]'), false, 'the status line is gone once the reply is done');
     process.stdout.write(`Turn status seen: ${statuses.map(entry => entry.label).join(' → ')}\n`);
     assert.ok((await text('[data-testid="oa-assistant-bubble"]')).trim().length > 0, 'the real local model produced real text');
+    // Task 6: the timing line under the reply, attached by `done` in the same step that makes the view idle. The first
+    // turn loads the model, so all four parts are there. It sits outside the bubble, whose text is the answer alone.
+    assert.equal(await countOf('[data-testid="oa-reply-timing"]'), 1, 'one timing line, under the one reply');
+    const timingText = await text('[data-testid="oa-reply-timing"]');
+    assert.match(timingText, /^1ᵉʳ mot .+ s · total .+ s · .+ tok\/s · chargement .+$/, `the timing line: ${timingText}`);
+    assert.equal(await js(`!!document.querySelector('[data-testid="oa-assistant-bubble"] [data-testid="oa-reply-timing"]')`), false, 'the timing line is not inside the bubble');
+    // stories260K never reasons: no « Réflexion » block.
+    assert.equal(await exists('[data-testid="oa-reasoning"]'), false, 'no reasoning block for a model that does not reason');
+    process.stdout.write(`Timing line: ${timingText}\n`);
+    await writeFile(join(screenshotDir, 'localmodel-2b-timing.png'), await capturePng(win));
     // After the real load the placement is model.gpuLayers, the truth: no « estimé » any more.
     await waitFor(() => exists('[data-testid="oa-model-placement"][data-source="loaded"]'), { timeout: 30000, what: 'the loaded placement beside the button' });
     assert.doesNotMatch(await text('[data-testid="oa-model-placement"]'), /estimé/, 'the loaded placement is not an estimate');

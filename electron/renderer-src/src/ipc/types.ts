@@ -7,6 +7,11 @@ export interface ChatMessage {
   // A user message's files (📎 / paste / drop), kept beside what was typed.
   attachments?: Attachment[];
   tool_call_id?: string;
+  // An assistant reply's reasoning, kept apart from its answer, and how long it took (core/reasoning-split.mts).
+  reasoning?: string;
+  reasoningMs?: number;
+  // The turn's figures, on the last reply of the turn (worker.mjs::withTiming).
+  timing?: TurnTiming;
   [key: string]: unknown;
 }
 

@@ -8,7 +8,9 @@ import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
 import { FoldersService } from './core/folders.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
-import { localProvider, plannedContextSize } from './core/local-engine.mts';
+import { localProvider, plannedContextSize, loadedChatWrapper } from './core/local-engine.mts';
+import { TurnLog, pruneTurnLogs, mcpSecretValues } from './core/turn-log.mts';
+import { isSensitiveFile, protectedPathMatcher } from './core/file-filter.mts';
 import { EstimateCache, estimateAndRemember, estimateKey, hardwareKey, ESTIMATE_BUSY } from './core/offload-estimate.mts';
 import { EstimateJobs } from './core/estimate-jobs.mts';
 import { readHardware } from './core/hardware.mts';
@@ -150,6 +152,9 @@ async function triggerIndexing(folder) {
 // projects unused beyond session_retention_days (0 = keep forever). Run once at startup, before the worker starts
 // taking requests. Never let a corrupt config/folders file crash the worker.
 await cleanupOldFolders(folders, (await settings.global().catch(() => ({ session_retention_days: 0 }))).session_retention_days, dataHome).catch(() => {});
+// The turn log (core/turn-log.mts): one file per day, kept 14 days — expired days are removed here, once, at start.
+const turnLog = new TurnLog(dataHome);
+await pruneTurnLogs(dataHome, new Date()).catch(error => console.error(`[turn-log] nettoyage impossible : ${error instanceof Error ? error.message : error}`));
 // index_status parity: main.py sets state.active_folder to the last-used folder at startup when
 // restore_last_folder is on, and a background thread indexes it from there. This worker mirrors
 // that for the INDEX only (pre-warms it) — it does not select a folder as "active" in the renderer,
@@ -213,6 +218,24 @@ function postModelStatus(model) {
   } catch { /* the page keeps its last status; the turn goes on */ }
 }
 
+/** The turn log's model-ready line, from the same sources as postModelStatus: where the loaded model really sits, the
+ * context it runs with (the request window for a model that is not a loaded .gguf), its chat wrapper and the load
+ * time (`loadMs`, none for a warm engine). Best-effort like postModelStatus. */
+function logModelReady(model, contextTokens, loadMs, log) {
+  try {
+    const status = turnModelStatus(model);
+    const placement = status.placement;
+    const wrapper = model ? loadedChatWrapper(model.path) : null;
+    log({
+      event: 'model-ready', backend: placement?.backend ?? null,
+      ...(placement ? { gpuLayers: placement.gpuLayers, totalLayers: placement.totalLayers } : {}),
+      contextSize: placement?.contextSize ?? (status.loaded ? status.contextWindow : contextTokens),
+      ...(wrapper ? { wrapper: wrapper.name, segments: wrapper.segments } : {}),
+      ...(loadMs === undefined ? {} : { loadMs }),
+    });
+  } catch { /* a line missing never fails the turn */ }
+}
+
 /**
  * Summarises a branch in the background and reports through events (like `send`: the IPC round trip
  * is capped at 30 s, a summary is not). Nothing is written unless the model answered AND the branch
@@ -254,7 +277,8 @@ async function registerTools(folder) {
   const others = await nonPluginTools(folder, effective, projectTrust);
   const { tools: pluginTools, errors: pluginErrors } = await pluginToolsBeside(folder, others, projectTrust);
   for (const error of pluginErrors) console.error(`[plugin] ${error}`);
-  return { effective, tools: [...others, ...pluginTools] };
+  // projectTrust too: the turn log masks the secrets of exactly the MCP servers this turn runs (ruling M6).
+  return { effective, tools: [...others, ...pluginTools], projectTrust };
 }
 
 /** The MCP servers a turn in `folder` runs, in its order: the project's .mcp.json ones only once the project is
@@ -566,10 +590,32 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
   const startedAt = Date.now();
   // The turn's figures (core/turn-clock.mts), joined to done, to stopped and to the saved reply.
   const clock = new TurnClock(startedAt);
+  // The turn log (core/turn-log.mts). Its secrets and protected paths are known once registerTools has returned:
+  // the lines before that wait in `pendingLog` (openLog writes them through the logger), and nothing is logged
+  // after the `end` line.
+  const pendingLog = [];
+  let logger = null;
+  let logClosed = false;
+  const log = event => {
+    if (logClosed) return;
+    if (logger) logger.write(event); else pendingLog.push(event);
+  };
+  const openLog = (level, secrets, isProtected) => {
+    logger = turnLog.begin({ runId, folder, level, secrets: secrets.filter(Boolean), isProtected });
+    for (const event of pendingLog.splice(0)) logger.write(event);
+  };
+  // The level and hf_token, read once. Unreadable settings log nothing (`off`): the token to mask is not known.
+  let logLevel = 'off';
+  let hfToken = '';
+  log({ event: 'turn-start', model: model?.name ?? null, text, attachments: attachments.length, ...(keep === undefined ? {} : { keep }) });
   // The phase the page shows while the turn runs. A post equal to the last one (same phase, progress and tool) is
-  // skipped, and after « stopping » none is posted: the stop op posts it through the run's entry (ruling M7).
+  // skipped, and after « stopping » none is posted: the stop op posts it through the run's entry (ruling M7), so its
+  // line is logged here too.
   let lastPhase = '';
   let stopping = false;
+  // The phase shown now and since when, for each phase line's `previous` and `previousMs`.
+  let shownPhase = null;
+  let shownSince = 0;
   const phase = (name, extra = {}) => {
     if (stopping) return;
     const key = JSON.stringify([name, extra.progress ?? null, extra.tool ?? null]);
@@ -577,6 +623,11 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     lastPhase = key;
     if (name === 'stopping') stopping = true;
     post({ kind: 'phase', phase: name, ...extra });
+    // A new phase closes the one shown (previousMs, its duration); a progress or another tool in the same phase does not.
+    const now = Date.now();
+    const changed = name !== shownPhase;
+    log({ event: 'phase', phase: name, previous: shownPhase, previousMs: changed && shownPhase !== null ? now - shownSince : null, ...extra });
+    if (changed) { shownPhase = name; shownSince = now; }
   };
   // stopRequestedAt: when the user asked to stop (the stop op), for the stop latency.
   active.set(runId, { controller, folder, kind: 'send', post, phase, stopRequestedAt: null });
@@ -594,8 +645,34 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
   let partialText = '';
   // The reasoning streamed beside it (thinking events), kept with the partial reply on a stop.
   let partialReasoning = '';
+  // For the turn log: the model call in progress (agent `turn` step), each tool call's name and arguments (from the
+  // assistant message that made it) and when it started (its tool-start; none for a refused or invalid call).
+  let step = 0;
+  const calls = new Map();
+  const toolStarts = new Map();
+  const logTool = (message, ok) => {
+    const content = typeof message.content === 'string' ? message.content : '';
+    const call = calls.get(message.tool_call_id);
+    const startedAt = toolStarts.get(message.tool_call_id);
+    log({
+      event: 'tool', tool: message.name ?? call?.name ?? '', ...(message.category ? { category: message.category } : {}),
+      arguments: call ? call.arguments : null, ...(startedAt === undefined ? {} : { durationMs: Date.now() - startedAt }),
+      ok: ok ?? !content.startsWith('Erreur : '), result: content,
+    });
+  };
+  // The `end` line closes the log, and the terminal event is posted only once it is on disk (flush never rejects).
+  const endLog = async event => {
+    log(event);
+    logClosed = true;
+    await logger?.flush();
+  };
   try {
     phase('preparing');
+    const globalConfig = await settings.global().catch(() => null);
+    if (globalConfig) {
+      logLevel = globalConfig.turn_log;
+      hfToken = typeof globalConfig.hf_token === 'string' ? globalConfig.hf_token : '';
+    }
     // The page already shows the user message (send-started), so the turn is assembled FIRST: from here on, any
     // failure (tools, instructions, the model) saves history + this message, and the file stays aligned with the
     // screen — edit and regenerate cut both at the same index. Only an unreadable conversation file stops here,
@@ -604,7 +681,12 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     const history = servedMessages(keep === undefined ? saved : saved.slice(0, keep));
     // What was typed stays in `content`; the files ride beside it and are expanded only when the model is called.
     collected = [...history, { role: 'user', content: text, ...(attachments.length ? { attachments } : {}) }];
-    const { effective, tools } = await registerTools(folder);
+    const { effective, tools, projectTrust } = await registerTools(folder);
+    // The turn log masks hf_token and the secrets of the MCP servers this turn runs, and never logs a file tool's
+    // arguments and result on a sensitive or protected path — tested as the file tools test it, relative to the project.
+    const protectedRel = protectedPathMatcher(effective.ignored_patterns);
+    openLog(logLevel, [hfToken, ...mcpSecretValues(await mcpServersFor(folder, projectTrust))],
+      path => isSensitiveFile(path) || protectedRel(relative(folder, resolve(folder, path))));
     const toolCategory = new Map(tools.map(tool => [tool.name, tool.category]));
     const agentSettings = agentSettingsOf(effective);
     // The prompt names exactly the tools offered this turn, adds the mode's instruction and, under
@@ -614,8 +696,12 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     const emit = event => {
       const { type: kind, ...rest } = event;
       // A generation's figures feed the clock only, and never end anything: pieces may still follow (ruling T2-m4).
-      if (kind === 'stats') { clock.stats(rest); return; }
-      if (kind === 'turn') { phase('reading'); clock.readStart(); }
+      if (kind === 'stats') {
+        clock.stats(rest);
+        log({ event: 'generation', step, inputTokens: rest.inputTokens, outputTokens: rest.outputTokens, generationMs: rest.generationMs });
+        return;
+      }
+      if (kind === 'turn') { step = rest.step; phase('reading'); clock.readStart(); }
       if (kind === 'thinking') {
         // `moved`: what was streamed as the answer was reasoning (a bare </think>, core/reasoning-split.mts).
         clock.chunk(rest.moved ? 'moved' : 'thought');
@@ -629,10 +715,20 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
         partialText += rest.text;
         phase('writing');
       }
-      if (kind === 'tool-start') phase('tool', { tool: rest.tool });
+      if (kind === 'tool-start') { toolStarts.set(rest.id, Date.now()); phase('tool', { tool: rest.tool }); }
       if (kind === 'message') {
         accumulated.push(rest.message);
-        if (rest.message.role === 'assistant') { partialText = ''; partialReasoning = ''; }
+        if (rest.message.role === 'assistant') {
+          partialText = ''; partialReasoning = '';
+          const { content, reasoning, tool_calls: toolCalls = [] } = rest.message;
+          for (const call of toolCalls) {
+            let args = call.function?.arguments;
+            try { args = JSON.parse(args); } catch { /* kept as the model wrote it */ }
+            calls.set(call.id, { name: call.function?.name, arguments: args });
+          }
+          log({ event: 'reply', step, ...(reasoning ? { reasoning } : {}), text: typeof content === 'string' ? content : '', toolCalls: toolCalls.length });
+        }
+        if (rest.message.role === 'tool') logTool(rest.message);
       }
       const enriched = { kind, ...rest };
       if (kind === 'tool-start') enriched.category = toolCategory.get(rest.tool);
@@ -656,6 +752,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     };
     const contextTokens = await windowFor(provider, effective.max_tokens, { signal: controller.signal, onLoad });
     postModelStatus(model);
+    logModelReady(model, contextTokens, clock.timing().loadMs, log);
     const result = await runAgent({
       provider, messages: collected, instructions, tools, contextWindow: contextTokens,
       settings: agentSettings,
@@ -664,6 +761,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     const timing = clock.timing();
     withTiming(result, collected.length, timing);
     await conversations.save(folder, branchId, result);
+    await endLog({ event: 'end', kind: 'done', timing });
     finish('done', { summary: lastAssistantSummary(result), timing });
   } catch (error) {
     const aborted = error?.name === 'AbortError';
@@ -673,8 +771,11 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     // run's messages: an older turn's dangling call is never sent again (H3), and closing it would insert a
     // message mid-list in the file but at the end on screen. Posted too: the screen must hold the same
     // messages as the file, at the same indices (edit/regenerate cut both at the same index).
+    // A turn that failed before registerTools returned still logs what it queued, masked with hf_token and the token
+    // patterns: the MCP secrets are not known then (ruling M5), and no file tool has run.
+    if (!logger) openLog(logLevel, [hfToken], path => isSensitiveFile(path) || protectedPathMatcher('')(path));
     const { messages: produced, added } = closeDanglingCalls(accumulated, aborted ? "Interrompu par l'utilisateur" : `Interrompu : ${message}`);
-    for (const closing of added) post({ kind: 'message', message: closing });
+    for (const closing of added) { post({ kind: 'message', message: closing }); logTool(closing, false); }
     // Text already streamed is kept whatever ended the turn — a Stop, a provider gone silent (idle
     // timeout), a cut stream — exactly like a completed message, so the screen and the saved
     // transcript agree.
@@ -682,6 +783,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
       const partial = { role: 'assistant', content: partialText, ...(partialReasoning.trim() ? { reasoning: partialReasoning } : {}) };
       produced.push(partial);
       post({ kind: 'message', message: partial });
+      log({ event: 'reply', step, ...(partial.reasoning ? { reasoning: partial.reasoning } : {}), text: partialText, toolCalls: 0 });
     }
     // A stop's figures go on the last reply this run produced; a run stopped before any reply saves none.
     const timing = aborted ? clock.timing() : null;
@@ -692,6 +794,12 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     // screen shows them. Only a conversation file that could not be read leaves `collected` empty: saving []
     // would empty the branch, or overwrite a file deliberately kept because it could not be read.
     if (collected.length) await conversations.save(folder, branchId, [...collected, ...produced]).catch(() => {});
+    // The stop latency: from the user's stop to here (a stop by the app closing has none). An error logs the turn's
+    // figures too (ruling T3-m1); its event carries none.
+    const stopRequestedAt = active.get(runId)?.stopRequestedAt;
+    await endLog(aborted
+      ? { event: 'end', kind: 'stopped', timing, ...(typeof stopRequestedAt === 'number' ? { stopLatencyMs: Date.now() - stopRequestedAt } : {}) }
+      : { event: 'end', kind: 'error', timing: clock.timing(), message });
     // A Stop is the user's own action, taken while they're already looking at the app — never
     // worth an OS notification, unlike a completion or a failure reached while they stepped away.
     if (aborted) post({ kind: 'stopped', timing });
@@ -788,7 +896,11 @@ async function handle(message) {
     // OPENAGENT_HF_ENDPOINT lets tests point this at a local fake server instead of the real
     // HuggingFace API — never set outside tests.
     if (op === 'test-hf-token') result = await testHfToken(payload.token, process.env.OPENAGENT_HF_ENDPOINT ? { baseUrl: process.env.OPENAGENT_HF_ENDPOINT } : undefined);
-    if (op === 'migrate-data-dir') result = await migrateDataDir(dataHome, defaultHome, payload.newDir);
+    if (op === 'migrate-data-dir') {
+      result = await migrateDataDir(dataHome, defaultHome, payload.newDir);
+      // The data home moved: a turn line now would recreate logs/turns in the old one. Nothing more until the restart.
+      turnLog.suspend();
+    }
     if (op === 'init-project') result = await initializeProject(payload.folder, Boolean(payload.overwrite));
     if (op === 'plugin-list') {
       const folder = payload.folder ?? null;

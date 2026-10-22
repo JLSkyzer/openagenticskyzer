@@ -259,7 +259,8 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
 function keep(p: { modelPath: string; contextSize: number; generation: number; llama: Llama; model: LlamaModel; context: LlamaContext; vramBefore: { total: number; used: number; free: number } | null; fallback: boolean; startedAt: number; onLoad?: EngineOptions['onLoad'] }): Loaded {
   const { llama, model, context } = p;
   const chat = new LlamaChat({ contextSequence: context.getSequence() });
-  const wrapper: ChatWrapperInfo = { name: chat.chatWrapper.wrapperName, segments: chat.chatWrapper.settings.segments };
+  // The segments as plain JSON, once (ruling T2-m2): the log line and the turn log's model-ready show the same value.
+  const wrapper: ChatWrapperInfo = { name: chat.chatWrapper.wrapperName, segments: JSON.parse(JSON.stringify(chat.chatWrapper.settings.segments ?? null)) };
   loaded = { path: p.modelPath, requested: p.contextSize, generation: p.generation, llama, model, context, chat, wrapper };
   console.info(placementLogLine({ backend: backendOf(llama), gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, useMmap: model.useMmap, vramBefore: p.vramBefore, padding: llama.vramPaddingSize, contextSize: context.contextSize, fallback: p.fallback }));
   console.info(chatWrapperLogLine(wrapper));

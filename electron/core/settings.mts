@@ -1,5 +1,6 @@
 import { join, isAbsolute } from 'node:path';
 import { JsonStore, metadataDirectory, object } from './json-store.mts';
+import type { TurnLogLevel } from './turn-log.mts';
 
 export const globalDefaults = {
   agent_mode: 'auto', auto_compact: true, compact_threshold: 70,
@@ -16,6 +17,8 @@ export const globalDefaults = {
   // « Moteur » (hardware and offload, Task 10): auto | cuda | vulkan | cpu, applied at the next app start
   // (core/llama-runtime.mts decides the backend once per worker; main.cjs reads it before creating the worker).
   gpu_backend: 'auto' as 'auto' | 'cuda' | 'vulkan' | 'cpu',
+  // « Journal des tours » (core/turn-log.mts): full (the default, the user's request) | metadata (no contents) | off.
+  turn_log: 'full' as TurnLogLevel,
 };
 export const projectDefaults = {
   agent_mode: 'inherit', ignored_patterns: 'node_modules/, .env, dist/',
@@ -35,6 +38,7 @@ const globalRules: Record<string, Rule> = {
   max_tokens: v => v === null || integer(2048, 2097152)(v), reserved_tokens: integer(1, 65536),
   local_context: choice(16384, 32768, 65536, 131072, 'max'),
   gpu_backend: choice('auto', 'cuda', 'vulkan', 'cpu'),
+  turn_log: choice('full', 'metadata', 'off'),
   show_context_bar: bool, session_retention_days: choice(0, 7, 30, 90), animations: bool,
   restore_last_folder: bool, ...permissionRules,
   data_dir: text(1000), hf_token: text(1000),

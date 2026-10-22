@@ -258,6 +258,24 @@ test('5c. other path keys, array values and array-shaped arguments are checked t
   assert.equal(tools[6].result, 'ordinaire');
 });
 
+test('13. a secret equal to or inside a content field name never keeps that content at metadata', async t => {
+  for (const secret of ['result', 'tex', 'reasoning', 'arguments']) {
+    const dataHome = await home(t);
+    const logger = begin(new TurnLog(dataHome, () => NOW), 'metadata', { secrets: [secret] });
+    logger.write({ event: 'reply', step: 0, reasoning: 'PENSEE-PRIVEE', text: 'TEXTE-PRIVE', toolCalls: 0 });
+    logger.write({ event: 'tool', tool: 'run_command', arguments: { command: 'ARGUMENT-PRIVE' }, durationMs: 1, ok: true, result: 'RESULTAT-PRIVE' });
+    await logger.flush();
+    const raw = await readFile(turnLogFile(dataHome, NOW), 'utf8');
+    for (const content of ['PENSEE-PRIVEE', 'TEXTE-PRIVE', 'ARGUMENT-PRIVE', 'RESULTAT-PRIVE']) {
+      assert.ok(!raw.includes(content), `secret « ${secret} »: ${content} survived at metadata`);
+    }
+    const [reply, tool] = raw.split('\n').filter(Boolean).map(line => JSON.parse(line));
+    assert.equal(reply.event, 'reply', 'the schema keys stay as written');
+    assert.equal(tool.tool, 'run_command');
+    assert.equal(tool.durationMs, 1);
+  }
+});
+
 /** Runs `fn` with console.error captured; returns what it printed. */
 async function capturingErrors(fn: () => Promise<void>): Promise<string[]> {
   const errors: string[] = [];

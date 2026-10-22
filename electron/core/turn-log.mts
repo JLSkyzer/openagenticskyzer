@@ -3,7 +3,8 @@
 // No secret may ever reach it, at any level: every event goes through the same pipeline before it is written —
 // sensitive file tools masked, then exact secrets and token patterns masked (redaction BEFORE the truncation, so a token
 // cut in two by the truncation is already gone), then the level (metadata drops the contents, full truncates them).
-// Object keys are redacted like values: the worker parses the model's tool arguments, whose keys the model chooses.
+// Nested object keys are redacted like values: the worker parses the model's tool arguments, whose keys the model
+// chooses. The event's own top-level keys are the schema and are never renamed; metadata drops the contents first.
 // The writer and the prune never follow a link: `logs` and `logs/turns` must be real folders, and a day file a real
 // file with a single link — anything else planted there is left alone, and nothing is written for that day.
 //
@@ -205,9 +206,12 @@ function prepare(event: TurnLogEvent, input: TurnLogInput): Record<string, unkno
       current = { ...current, arguments: named, result: SENSITIVE_FILE_MASK };
     }
   }
-  current = redact(current, input.secrets) as Record<string, unknown>;
+  // The contents go BEFORE any redaction, and the event's own top-level keys (the schema the worker writes, never the
+  // model) are not redacted: a secret equal to, or inside, a field name (« result », « tex ») would otherwise rename
+  // that key and keep its content at metadata. Every value, nested keys included, is still redacted.
   if (input.level === 'metadata') for (const key of CONTENT_FIELDS) delete current[key];
-  else current = truncateFields(current) as Record<string, unknown>;
+  current = Object.fromEntries(Object.entries(current).map(([key, value]) => [key, redact(value, input.secrets)]));
+  if (input.level === 'full') current = truncateFields(current) as Record<string, unknown>;
   return current;
 }
 

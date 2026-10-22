@@ -8,6 +8,7 @@ import { PermissionBanner } from './PermissionBanner';
 import { BranchSelector } from './BranchSelector';
 import { ProjectTrustBanner } from './ProjectTrustBanner';
 import { UpdateBanner } from './UpdateBanner';
+import { TurnStatus } from './TurnStatus';
 
 const NOTICE_MS = 3500;
 
@@ -19,8 +20,9 @@ export function ChatView() {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
     // The error banner is the last thing in the list: without it here, an error raised while the view
-    // is already full (a failed compaction, a refused send) appeared below the fold, out of sight.
-  }, [state.messages, state.streamingText, state.liveToolStarts, state.pendingPermission, state.error]);
+    // is already full (a failed compaction, a refused send) appeared below the fold, out of sight. The status line
+    // too: a phase that shows it again (Stop during a permission prompt) must not land below the fold.
+  }, [state.messages, state.streamingText, state.liveToolStarts, state.pendingPermission, state.error, state.phase]);
 
   // Like ui.notify(): shown briefly, then gone on its own.
   useEffect(() => {
@@ -31,8 +33,9 @@ export function ChatView() {
 
   const lastAssistant = lastAssistantIndex(state.messages);
   const pendingTools = Object.entries(state.liveToolStarts);
-  const waitingForFirstToken =
-    state.agentRunning && !state.streamingText && pendingTools.length === 0 && !state.pendingPermission;
+  // The status line replaces the typing dots for the whole turn. During a permission prompt the banner speaks, as the
+  // dots let it, except once Stop is clicked: « Arrêt en cours… » shows at once whatever is pending (ruling S9).
+  const showTurnStatus = state.agentRunning && (!state.pendingPermission || state.stopping);
   // An error on an otherwise empty view must still be shown, not hidden behind the welcome screen.
   const hasContent = state.messages.length > 0 || state.agentRunning || state.error !== null;
 
@@ -91,11 +94,7 @@ export function ChatView() {
             <ToolMessage key={id} tool={meta.tool} category={meta.category} detail={meta.detail} content="" pending />
           ))}
           {state.agentRunning && state.streamingText && <AssistantBubble content={state.streamingText} streaming />}
-          {waitingForFirstToken && (
-            <div className="flex items-center gap-2 px-4 py-2">
-              <span className="oa-typing-dots" aria-label="En cours…" />
-            </div>
-          )}
+          {showTurnStatus && <TurnStatus />}
           <PermissionBanner />
           {state.error && (
             <div data-testid="oa-chat-error" className="mx-4 my-2 rounded border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-400">

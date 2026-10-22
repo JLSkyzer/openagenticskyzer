@@ -392,5 +392,7 @@ export type {
   Placement,
   ProjectSettings,
   PromptEntry,
+  TurnPhaseName,
+  TurnTiming,
   UpdateStatus,
 } from './types';

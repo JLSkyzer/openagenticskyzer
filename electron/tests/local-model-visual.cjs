@@ -121,8 +121,35 @@ app.whenReady().then(async () => {
     await writeFile(join(screenshotDir, 'localmodel-1-active.png'), await capturePng(win));
 
     // ── 3. A real turn, on the real engine, with NO remote connection configured at all ──────────────
+    // The status line during the real turn. stories260K can load and answer in about a second, faster than a poll, so
+    // an observer installed before the send records every state of the line; the record is empty before the send (no
+    // run, no line).
+    await js(`(() => {
+      const seen = window.__oaTurnStatus = [];
+      const check = () => {
+        const line = document.querySelector('[data-testid="oa-turn-status"]');
+        if (!line) return;
+        const entry = { phase: line.dataset.phase, label: line.querySelector('[data-testid="oa-turn-label"]')?.textContent ?? '' };
+        const last = seen.at(-1);
+        if (!last || last.phase !== entry.phase || last.label !== entry.label) seen.push(entry);
+      };
+      check();
+      new MutationObserver(check).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+    })()`);
+    assert.deepEqual(await js('window.__oaTurnStatus'), [], 'no status line before the send');
     await send('Once upon a time');
+    const MODEL_PHASES = ['loading', 'reading', 'writing'];
+    await waitFor(async () => (await js('window.__oaTurnStatus')).some(entry => MODEL_PHASES.includes(entry.phase)), { timeout: 60000, what: 'the status line in loading, reading or writing' });
+    const lineLive = await js(`['loading', 'reading', 'writing'].includes(document.querySelector('[data-testid="oa-turn-status"]')?.dataset.phase)`);
+    await writeFile(join(screenshotDir, 'localmodel-2a-turn-status.png'), await capturePng(win));
+    if (!lineLive) process.stdout.write('note: the turn had left loading/reading/writing before the capture\n');
     await waitFor(async () => (await countOf('[data-testid="oa-assistant-bubble"]')) === 1 && await isIdle(), { timeout: 60000, what: 'real local reply' });
+    const statuses = await js('window.__oaTurnStatus');
+    for (const entry of statuses.filter(entry => MODEL_PHASES.includes(entry.phase))) {
+      assert.match(entry.label, /^(Chargement du modèle…( \d+ %)?|Lecture du message…|Écriture…)$/, `the label of ${entry.phase}: ${JSON.stringify(statuses)}`);
+    }
+    assert.equal(await exists('[data-testid="oa-turn-status"]'), false, 'the status line is gone once the reply is done');
+    process.stdout.write(`Turn status seen: ${statuses.map(entry => entry.label).join(' → ')}\n`);
     assert.ok((await text('[data-testid="oa-assistant-bubble"]')).trim().length > 0, 'the real local model produced real text');
     // After the real load the placement is model.gpuLayers, the truth: no « estimé » any more.
     await waitFor(() => exists('[data-testid="oa-model-placement"][data-source="loaded"]'), { timeout: 30000, what: 'the loaded placement beside the button' });

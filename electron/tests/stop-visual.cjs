@@ -44,7 +44,9 @@ app.whenReady().then(async () => {
   let server;
   let worker;
   try {
-    const chunks = ['Voici ', 'une ', 'réponse ', 'assez ', 'longue ', 'pour ', 'être ', 'interrompue.'];
+    // 28 chunks, one every 250 ms: « interrompue. » comes 7 s after the start, well after the click (about 3 s in, once
+    // the status line's timer has been read twice, 2.2 s apart) — the stop proof needs a stream still running (B1).
+    const chunks = ['Voici ', 'une ', 'réponse ', 'assez ', 'longue ', ...Array.from({ length: 20 }, () => 'encore '), 'pour ', 'être ', 'interrompue.'];
     let clientClosed = false;
     server = createServer((request, response) => {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -112,8 +114,48 @@ app.whenReady().then(async () => {
       return text.includes('Voici ') && text.includes('une ');
     });
 
+    // The status line: absent before the first delta (no run, then « Préparation » / « Lecture »), « writing » once text
+    // streams. It must be SEEN, inside the scrolling chat, not just in the DOM (lesson 2026-09-21).
+    await waitFor(() => win.webContents.executeJavaScript(
+      "document.querySelector('[data-testid=\"oa-turn-status\"][data-phase=\"writing\"]') !== null",
+    ));
+    const placement = await win.webContents.executeJavaScript(`
+      (() => {
+        const line = document.querySelector('[data-testid="oa-turn-status"]').getBoundingClientRect();
+        const view = document.querySelector('[data-testid="oa-chat-scroll"]').getBoundingClientRect();
+        return { line: [line.top, line.bottom, line.left, line.right], view: [view.top, view.bottom, view.left, view.right] };
+      })()
+    `);
+    assert.ok(
+      placement.line[0] >= placement.view[0] && placement.line[1] <= placement.view[1] && placement.line[2] >= placement.view[2] && placement.line[3] <= placement.view[3],
+      `the status line lies inside the visible chat: ${JSON.stringify(placement)}`,
+    );
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('[data-testid=\"oa-turn-label\"]').textContent"), 'Écriture…');
+    // The timer runs: two reads 2.2 s apart differ (it ticks every second, in whole seconds).
+    const readTimer = () => win.webContents.executeJavaScript("document.querySelector('[data-testid=\"oa-turn-timer\"]')?.textContent ?? null");
+    const timerFirst = await readTimer();
+    await new Promise(resolve => setTimeout(resolve, 2200));
+    const timerSecond = await readTimer();
+    assert.match(timerFirst ?? '', /^\d+ s$/, `the timer shows whole seconds: ${timerFirst}`);
+    assert.notEqual(timerSecond, timerFirst, `the timer moved in 2.2 s: ${timerFirst} → ${timerSecond}`);
+
     const shotStreaming = await win.webContents.capturePage();
     await writeFile(join(screenshotDir, 'stop-1-streaming.png'), shotStreaming.toPNG());
+
+    // Records whether, at any moment from here, the button was disabled and the line said « Arrêt en cours… »: the
+    // stop may be too fast for a poll to see it.
+    await win.webContents.executeJavaScript(`
+      (() => {
+        const seen = window.__oaStopSeen = { disabled: false, stopping: false };
+        const check = () => {
+          if (document.getElementById('oa-send-btn')?.disabled) seen.disabled = true;
+          if (document.querySelector('[data-testid="oa-turn-label"]')?.textContent === 'Arrêt en cours…') seen.stopping = true;
+        };
+        check();
+        new MutationObserver(check).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+      })();
+    `);
+    assert.deepEqual(await win.webContents.executeJavaScript('window.__oaStopSeen'), { disabled: false, stopping: false }, 'nothing is stopping before the click');
 
     const textAtClick = await win.webContents.executeJavaScript(
       "Array.from(document.querySelectorAll('[data-testid=\"oa-assistant-bubble\"]')).at(-1)?.textContent || ''",
@@ -123,7 +165,19 @@ app.whenReady().then(async () => {
 
     // Click Stop.
     await win.webContents.executeJavaScript("document.getElementById('oa-send-btn').click()");
+    // One capture while stopping, when the stop has not ended yet.
+    if (await win.webContents.executeJavaScript("document.getElementById('oa-send-btn')?.disabled === true")) {
+      const shotStopping = await win.webContents.capturePage();
+      await writeFile(join(screenshotDir, 'stop-1b-stopping.png'), shotStopping.toPNG());
+    } else {
+      process.stdout.write('note: the stop ended before a capture of « Arrêt en cours… » could be taken\n');
+    }
     await waitFor(() => win.webContents.executeJavaScript("document.getElementById('oa-send-btn')?.textContent === '➤'"));
+    const seen = await win.webContents.executeJavaScript('window.__oaStopSeen');
+    assert.equal(seen.disabled, true, 'the button was disabled between the click and the end of the turn');
+    assert.equal(seen.stopping, true, 'the line said « Arrêt en cours… » between the click and the end of the turn');
+    assert.equal(await win.webContents.executeJavaScript("document.getElementById('oa-send-btn').disabled"), false, 'the button is enabled again once stopped');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('[data-testid=\"oa-turn-status\"]') === null"), true, 'the status line is gone once stopped');
 
     const textAfterStop = await win.webContents.executeJavaScript(
       "Array.from(document.querySelectorAll('[data-testid=\"oa-assistant-bubble\"]')).at(-1)?.textContent || ''",
@@ -156,7 +210,12 @@ app.whenReady().then(async () => {
     // Markdown rendering trims trailing whitespace in a paragraph (normal, expected) —
     // compare trimmed on both sides rather than raw bytes.
     assert.equal(persisted[1].content.trim(), textAfterStop.trim(), 'the persisted transcript matches what the UI is showing');
-    assert.equal(persisted[1].content, 'Voici une ', 'the exact accumulated delta text (untrimmed) is what got saved');
+    // The click comes after the timer check, so how many chunks arrived varies; what was saved is still exactly the
+    // first chunks, untrimmed.
+    assert.ok(
+      chunks.some((_, n) => n >= 2 && chunks.slice(0, n).join('') === persisted[1].content),
+      `the exact accumulated delta text (untrimmed) is what got saved: ${JSON.stringify(persisted[1].content)}`,
+    );
 
     process.stdout.write(`PASS Stop mid-stream keeps the partial reply visible and persists it exactly (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshots: ${screenshotDir}\n`);

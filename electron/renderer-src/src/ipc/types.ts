@@ -128,6 +128,11 @@ export interface ProjectSettings {
   search_ask?: boolean;
 }
 
+// A turn's phase as the worker posts it (worker.mjs::runSend's phase()), mirroring core/model-types.mts.
+export type TurnPhaseName = 'preparing' | 'loading' | 'reading' | 'thinking' | 'writing' | 'tool' | 'stopping';
+// A turn's figures, joined to its done / stopped (mirrors core/model-types.mts::TurnTiming).
+export interface TurnTiming { loadMs?: number; readMs?: number; firstTextMs?: number; totalMs: number; outputTokens?: number; tokensPerSecond?: number }
+
 // Mirrors the events worker.mjs posts on the existing `backend-message` channel for an
 // agent run (agent.mts::runAgent's `emit` option, enriched with runId/category) — see
 // the "Canal IPC streaming" section of the socle plan.
@@ -157,8 +162,11 @@ export type AgentEvent =
       category?: string;
       arguments: Record<string, unknown>;
     }
-  | { type: 'event'; event: 'agent'; runId: string; kind: 'done' }
-  | { type: 'event'; event: 'agent'; runId: string; kind: 'stopped' }
+  // `loading` carries its progress in whole percents once the load reports one, `tool` the tool's name.
+  | { type: 'event'; event: 'agent'; runId: string; kind: 'phase'; phase: TurnPhaseName; progress?: number; tool?: string }
+  // `timing` is optional: older tests post them bare.
+  | { type: 'event'; event: 'agent'; runId: string; kind: 'done'; timing?: TurnTiming }
+  | { type: 'event'; event: 'agent'; runId: string; kind: 'stopped'; timing?: TurnTiming }
   | { type: 'event'; event: 'agent'; runId: string; kind: 'error'; message: string }
   // A compaction reuses the agent event channel with its own id in `runId`: `messages` is the whole
   // conversation as saved, summary first.

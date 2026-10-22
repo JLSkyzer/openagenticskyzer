@@ -194,11 +194,14 @@ export function InputBar() {
         >
           📎
         </button>
+        {/* Disabled from the Stop click until the turn has really ended (stopped, or a done that beat it). */}
         <button
           id="oa-send-btn"
           onClick={() => (state.agentRunning ? stopRun() : handleSend())}
+          disabled={state.stopping}
+          {...(state.stopping ? { title: 'Arrêt en cours…', 'aria-label': 'Arrêt en cours…' } : {})}
           className="oa-send-btn flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-white"
-          style={{ background: state.agentRunning ? '#b91c1c' : '#9333ea', border: 'none', cursor: 'pointer' }}
+          style={{ background: state.agentRunning ? '#b91c1c' : '#9333ea', border: 'none', cursor: state.stopping ? 'wait' : 'pointer', opacity: state.stopping ? 0.6 : 1 }}
         >
           {state.agentRunning ? '■' : '➤'}
         </button>

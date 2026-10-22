@@ -323,8 +323,10 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
       const text = now.messages[index].content;
       // The message goes again WITH its files (the original lost them, which silently changed the question).
       const attachments = now.messages[index].attachments;
+      // The timer runs from the click, not from the worker's reply (which comes after the model is checked).
+      const startedAt = Date.now();
       const { runId } = await sendMessage(folder, now.currentBranchId, text, index, attachments);
-      dispatch({ type: 'send-started', runId, text, keep: index, attachments });
+      dispatch({ type: 'send-started', runId, text, keep: index, attachments, startedAt });
     } catch (error) {
       dispatch({ type: 'show-error', error: error instanceof Error ? error.message : 'Impossible de régénérer la réponse' });
     }
@@ -339,8 +341,9 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
       // After ✏️ the view is shorter than what is saved: hand the cut over so the worker applies it.
       const keep = state.truncatedTo ?? undefined;
       try {
+        const startedAt = Date.now();
         const { runId } = await sendMessage(activeFolder, state.currentBranchId, text, keep, attachments);
-        dispatch({ type: 'send-started', runId, text, keep, attachments });
+        dispatch({ type: 'send-started', runId, text, keep, attachments, startedAt });
       } catch (error) {
         // Without this, a rejected IPC call (e.g. no .gguf active, or its file gone) left the
         // send silently doing nothing — no message, no error, no way out of the input box
@@ -351,8 +354,17 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
     [activeFolder, state.currentBranchId, state.truncatedTo],
   );
 
+  // « Arrêt en cours… » and a disabled button at once, until the turn's stopped (or done) arrives. A stop that never
+  // reached the worker gives the button back with the reason, rather than a button stuck disabled.
   const stopRun = useCallback(async () => {
-    if (state.runId) await stop(state.runId);
+    const runId = state.runId;
+    if (!runId) return;
+    dispatch({ type: 'stop-requested' });
+    try {
+      await stop(runId);
+    } catch (error) {
+      dispatch({ type: 'stop-failed', error: cleanIpcError(error) });
+    }
   }, [state.runId]);
 
   const decide = useCallback(

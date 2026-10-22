@@ -113,3 +113,4 @@ import './turn-window.test.mts';
 import './worker-turn-phases.test.mts';
 import './turn-log.test.mts';
 import './worker-turn-log.test.mts';
+import './turn-status.test.mts';

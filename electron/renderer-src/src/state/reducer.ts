@@ -2,8 +2,9 @@ import type { AgentEvent, Attachment, BranchInfo, ChatMessage } from '../ipc/bri
 // Explicit `.ts`: the unit tests load this file with Node itself (type stripping), which does not resolve
 // extension-less imports the way Vite does.
 import { extractArtifact, type Artifact } from './artifacts.ts';
-import { lastAssistantIndex } from './editing.ts';
+import { lastAssistantIndex, lastUserIndex } from './editing.ts';
 import { callsById, toolCard, toolDetail, withToolCards, type RenderedMessage } from './tool-cards.ts';
+import type { TurnPhase } from './turn-status.ts';
 
 // A message as shown, tool results with their card (name, category, detail): see tool-cards.ts.
 export type { RenderedMessage } from './tool-cards.ts';
@@ -50,6 +51,12 @@ export interface ChatState {
   // The side preview (artifact_panel.py): the first html/svg/mermaid/markdown block of the last reply that
   // ended normally. null = panel closed.
   artifact: Artifact | null;
+  // The running turn's status line (TurnStatus): the phase the worker last posted, and when the message was sent (the
+  // timer's start; null for a send-started that gave none). Both null outside a turn.
+  phase: TurnPhase | null;
+  turnStartedAt: number | null;
+  // Stop was clicked and the turn has not ended yet: the line says « Arrêt en cours… » and the button is disabled.
+  stopping: boolean;
 }
 
 export const initialChatState: ChatState = {
@@ -68,6 +75,9 @@ export const initialChatState: ChatState = {
   completedTurns: 0,
   truncatedTo: null,
   artifact: null,
+  phase: null,
+  turnStartedAt: null,
+  stopping: false,
 };
 
 export type ChatAction =
@@ -79,13 +89,30 @@ export type ChatAction =
   | { type: 'compaction-started'; id: string }
   | { type: 'show-error'; error: string }
   | { type: 'clear-notice' }
-  | { type: 'send-started'; runId: string; text: string; keep?: number; attachments?: Attachment[] }
+  | { type: 'send-started'; runId: string; text: string; keep?: number; attachments?: Attachment[]; startedAt?: number }
+  | { type: 'stop-requested' }
+  | { type: 'stop-failed'; error: string }
   | { type: 'messages-truncated'; keep: number }
   | { type: 'artifact-closed' }
   | { type: 'send-failed'; error: string }
   | { type: 'agent-event'; event: AgentEvent }
   | { type: 'permission-decided' }
   | { type: 'clear-error' };
+
+// What every terminal event (done, stopped, error) resets: the status line and the stop in progress.
+const turnEnded = { phase: null, turnStartedAt: null, stopping: false } as const;
+
+/** Puts the turn's `timing` on the last assistant message of THIS run (after the run's user message, never an earlier
+ * turn's reply), as worker.mjs::withTiming does in the saved file — its message events go out before the timing is
+ * known. A run with no assistant message, or no timing: no change. */
+function withRunTiming(messages: RenderedMessage[], timing: unknown): RenderedMessage[] {
+  if (!timing) return messages;
+  const from = lastUserIndex(messages) + 1;
+  for (let index = messages.length - 1; index >= from; index--) {
+    if (messages[index].role === 'assistant') return messages.map((message, i) => (i === index ? { ...message, timing } : message));
+  }
+  return messages;
+}
 
 export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   switch (action.type) {
@@ -156,7 +183,19 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         streamingText: '',
         liveToolStarts: {},
         error: null,
+        phase: { phase: 'preparing' },
+        turnStartedAt: action.startedAt ?? null,
+        stopping: false,
       };
+
+    // Shown at once, before the worker's own « stopping » arrives, and held until the turn's terminal event.
+    case 'stop-requested':
+      if (!state.agentRunning || !state.runId) return state;
+      return { ...state, stopping: true, phase: { phase: 'stopping' } };
+
+    // The stop never reached the worker: the turn goes on, so the button comes back. The line waits for the next phase.
+    case 'stop-failed':
+      return { ...state, stopping: false, phase: state.phase?.phase === 'stopping' ? null : state.phase, error: action.error };
 
     case 'send-failed':
       // The IPC round trip itself failed (e.g. a rejected connection resolution) before
@@ -187,6 +226,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       switch (event.kind) {
         case 'turn':
           return state;
+        case 'phase':
+          // After Stop, the line says « Arrêt en cours… » whatever the worker was still doing.
+          if (state.stopping && event.phase !== 'stopping') return state;
+          return {
+            ...state,
+            phase: { phase: event.phase, ...(event.progress === undefined ? {} : { progress: event.progress }), ...(event.tool === undefined ? {} : { tool: event.tool }) },
+          };
         case 'delta':
           return { ...state, streamingText: state.streamingText + event.text };
         case 'tool-start': {
@@ -228,10 +274,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         case 'done': {
           // input_bar.py: only a turn that ENDED looks for an artifact; one found replaces the open one, none
           // found leaves it alone.
+          // A done that beat a Stop still ends the turn as done (ruling T3-m2).
           const reply = lastAssistantIndex(state.messages);
           const found = reply < 0 ? null : extractArtifact(state.messages[reply].content);
           return {
             ...state, agentRunning: false, runId: null, streamingText: '', liveToolStarts: {}, pendingPermission: null,
+            ...turnEnded, messages: withRunTiming(state.messages, event.timing),
             completedTurns: state.completedTurns + 1,
             artifact: found ?? state.artifact,
           };
@@ -241,10 +289,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           // on a decision (or mid tool-execute) leaves no further event for that call
           // (agent.mts re-throws the abort before building one), so without this a
           // "pending" tool card or a stale permission banner would stay stuck forever.
-          return { ...state, agentRunning: false, runId: null, streamingText: '', liveToolStarts: {}, pendingPermission: null };
+          return {
+            ...state, agentRunning: false, runId: null, streamingText: '', liveToolStarts: {}, pendingPermission: null,
+            ...turnEnded, messages: withRunTiming(state.messages, event.timing),
+          };
         case 'error':
+          // An error carries no timing (worker.mjs): the line goes, nothing is attached.
           return {
             ...state,
+            ...turnEnded,
             agentRunning: false,
             runId: null,
             streamingText: '',

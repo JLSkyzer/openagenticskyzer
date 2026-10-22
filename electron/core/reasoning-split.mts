@@ -34,7 +34,10 @@ const CLOSE = '</think>';
  * - the first </think> switches to text (the reasoning is kept), and the rules above apply from there;
  * - a <think> the model writes anyway before any reasoning is dropped (it opens the thought explicitly);
  * - with no </think> by end(), or when a wrapper segment comes first (segmentSeen), the provisional reasoning, held
- *   tail included, is given back as text in ONE `movedBack` piece: no answer is ever hidden.
+ *   tail included, is given back as text in ONE `movedBack` piece: no answer is ever hidden;
+ * - whitespace before any provisional reasoning is held, not streamed: it joins the reasoning's first real piece, and a
+ *   reply that is only whitespace is given back silently — no piece, so no phase flip, no first word, no leading
+ *   newline in the answer (ruling 5b-m1).
  */
 export class ReasoningSplitter {
   #mode: 'text' | 'thought' = 'text';
@@ -42,6 +45,8 @@ export class ReasoningSplitter {
   /** startInThought, before any tag or segment: the reasoning so far may still be the answer. */
   #provisional = false;
   #held = '';
+  /** Provisional whitespace not streamed yet (ruling 5b-m1). */
+  #quiet = '';
   #text = '';
   #reasoning = '';
 
@@ -130,7 +135,8 @@ export class ReasoningSplitter {
     this.#provisional = false;
     this.#reasoning = '';
     this.#held = '';
-    if (!text) return [];
+    this.#quiet = '';
+    if (!text.trim()) return [];
     this.#text += text;
     return [{ kind: 'movedBack', text }];
   }
@@ -142,6 +148,14 @@ export class ReasoningSplitter {
 
   #emit(pieces: SplitPiece[], kind: 'text' | 'thought', text: string): void {
     if (!text) return;
+    if (kind === 'thought') {
+      text = this.#quiet + text;
+      this.#quiet = '';
+      if (this.#provisional && !this.#reasoning && !text.trim()) {
+        this.#quiet = text;
+        return;
+      }
+    }
     pieces.push({ kind, text });
     if (kind === 'text') this.#text += text;
     else this.#reasoning += text;

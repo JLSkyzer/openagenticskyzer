@@ -209,3 +209,19 @@ test('ReplyAccumulator startInThought: reasoningMs runs from the first chunk to 
   now = 200; assert.deepEqual(back.end(), [{ kind: 'movedBack', text: 'Bonjour' }]);
   assert.deepEqual({ reasoning: back.reasoning, text: back.text, ms: back.reasoningMs }, { reasoning: '', text: 'Bonjour', ms: undefined });
 });
+
+test('startInThought: whitespace before the reasoning is not streamed, and a whitespace-only reply is given back silently (ruling 5b-m1)', () => {
+  assert.deepEqual(streamFrom(['\n', ' \n']), { text: '', reasoning: '', pieces: [] }, 'no piece at all: no phase flip, no first word');
+  const segment = new ReasoningSplitter({ startInThought: true });
+  assert.deepEqual(piecesOfChunk({ text: '\n' }, segment), []);
+  assert.deepEqual(piecesOfChunk({ type: 'segment', segmentType: 'thought', text: 'je pense' }, segment), [{ kind: 'thought', text: 'je pense' }]);
+  assert.deepEqual(piecesOfChunk({ text: 'Réponse' }, segment), [{ kind: 'text', text: 'Réponse' }]);
+  assert.equal(segment.text, 'Réponse', 'no leading \n in the answer');
+  const closed = streamFrom(['\n', '</think>\n\nSalut']);
+  assert.deepEqual(closed.pieces, [{ kind: 'text', text: '\n\nSalut' }], 'an empty reasoning streams no thought');
+  assert.deepEqual(streamFrom(['\n', 'pensée</think>ok']).pieces, [{ kind: 'thought', text: '\npensée' }, { kind: 'text', text: 'ok' }], 'held whitespace joins the first real piece');
+  assert.deepEqual(streamFrom(['\n', 'Bonjour']).pieces, [{ kind: 'thought', text: '\nBonjour' }, { kind: 'movedBack', text: '\nBonjour' }], 'a real reply is still given back whole');
+  const accumulator = new ReplyAccumulator(() => 0, { startInThought: true });
+  assert.deepEqual([...accumulator.chunk({ text: '\n' }), ...accumulator.end()], []);
+  assert.deepEqual({ reasoning: accumulator.reasoning, text: accumulator.text, ms: accumulator.reasoningMs }, { reasoning: '', text: '', ms: undefined });
+});

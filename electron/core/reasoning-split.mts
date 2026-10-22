@@ -67,6 +67,8 @@ export class ReasoningSplitter {
   get text(): string { return this.#text; }
   /** The thought and moved pieces so far. */
   get reasoning(): string { return this.#reasoning; }
+  /** The reply is inside a <think> (or a provisional reasoning): a plain chunk that leaves it ends the reasoning. */
+  get inThought(): boolean { return this.#mode === 'thought'; }
 
   push(chunk: string): SplitPiece[] {
     const pieces: SplitPiece[] = [];
@@ -211,9 +213,10 @@ export function piecesOfChunk(chunk: { type?: 'segment'; segmentType?: string; t
 /**
  * One reply as it streams: its answer, its reasoning from BOTH sources in arrival order (segment thoughts are not the
  * splitter's, ruling S2), and how long the reasoning took (`now` in ms, injected for the tests):
- * - from the first thought piece to the first text piece after it;
+ * - from the first thought piece to the moment the reply leaves the thought (a </think>, or the first plain chunk after a
+ *   thought segment) — not to the first text piece, which a tool call never streams;
  * - a moved reasoning (bare </think>) from the reply's first chunk to that </think> (ruling S1);
- * - a reasoning never followed by text: to end();
+ * - a reasoning still open when the reply ends (no </think>, a stop): to end();
  * - with startInThought, from the first chunk (the first thought piece) to the </think>; a reasoning given back
  *   (`movedBack`) is no reasoning at all: no text, no duration.
  */
@@ -242,7 +245,11 @@ export class ReplyAccumulator {
   chunk(chunk: { type?: 'segment'; segmentType?: string; text: string }): SplitPiece[] {
     const now = this.#now();
     this.#firstChunkAt ??= now;
-    return this.#record(piecesOfChunk(chunk, this.#splitter), now);
+    const pieces = this.#record(piecesOfChunk(chunk, this.#splitter), now);
+    // The reasoning ends when the reply leaves it: a </think> read, or the first plain chunk after a thought segment —
+    // not at the first text piece, which may never come (whitespace is held, and a tool call is not streamed).
+    if (chunk.type !== 'segment' && !this.#splitter.inThought && this.#reasoningStart !== undefined) this.#reasoningEnd ??= now;
+    return pieces;
   }
 
   end(): SplitPiece[] {
@@ -254,10 +261,7 @@ export class ReplyAccumulator {
 
   #record(pieces: SplitPiece[], now: number): SplitPiece[] {
     for (const piece of pieces) {
-      if (piece.kind === 'text') {
-        if (this.#reasoningStart !== undefined) this.#reasoningEnd ??= now;
-        continue;
-      }
+      if (piece.kind === 'text') continue;
       if (piece.kind === 'movedBack') {
         // Only a provisional reasoning is given back, and it comes before any other: none is left.
         this.#reasoning = '';

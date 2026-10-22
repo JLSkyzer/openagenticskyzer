@@ -240,3 +240,36 @@ test('after </think>, whitespace before the answer is held: it joins the first r
   // A reply with no reasoning keeps its whitespace as it streams (nothing to hold it for).
   assert.deepEqual(stream(['\n', 'Bonjour']).pieces, [{ kind: 'text', text: '\n' }, { kind: 'text', text: 'Bonjour' }]);
 });
+
+test('ReplyAccumulator: the reasoning ends when the thought closes, not at the first text — a tool call after </think> adds nothing (review fix 2)', () => {
+  let now = 0;
+  const tool = new ReplyAccumulator(() => now, { startInThought: true });
+  now = 100; tool.chunk({ text: 'je pense' });
+  now = 1000; tool.chunk({ text: '</think>' });
+  now = 2000; tool.chunk({ text: '\n\n' });
+  now = 10000; tool.end();
+  assert.deepEqual({ reasoning: tool.reasoning, text: tool.text, ms: tool.reasoningMs }, { reasoning: 'je pense', text: '', ms: 900 }, 'a tool call alone after </think>');
+
+  now = 0;
+  const answer = new ReplyAccumulator(() => now, { startInThought: true });
+  now = 100; answer.chunk({ text: 'je pense' });
+  now = 1000; answer.chunk({ text: '</think>' });
+  now = 2000; answer.chunk({ text: '\n\n' });
+  now = 3000; answer.chunk({ text: 'Bonjour' });
+  now = 4000; answer.end();
+  assert.deepEqual({ text: answer.text, ms: answer.reasoningMs }, { text: '\n\nBonjour', ms: 900 }, 'an answer after </think>\n\n');
+
+  now = 0;
+  const tagged = new ReplyAccumulator(() => now);
+  now = 100; tagged.chunk({ text: '<think>je pense' });
+  now = 1000; tagged.chunk({ text: '</think>\n\n' });
+  now = 10000; tagged.end();
+  assert.equal(tagged.reasoningMs, 900, 'a <think> pair, the close and the blank line in one chunk');
+
+  now = 0;
+  const segment = new ReplyAccumulator(() => now);
+  now = 100; segment.chunk({ type: 'segment', segmentType: 'thought', text: 'je pense' });
+  now = 1000; segment.chunk({ text: '\n\n' });
+  now = 10000; segment.end();
+  assert.equal(segment.reasoningMs, 900, 'a thought segment ends at the first plain chunk after it');
+});

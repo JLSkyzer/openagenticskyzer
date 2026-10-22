@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatDuration, formatElapsed, phaseLabel } from '../renderer-src/src/state/turn-status.ts';
+import { announcedLabel, formatDuration, formatElapsed, phaseLabel, turnStatusView } from '../renderer-src/src/state/turn-status.ts';
 import { chatReducer, initialChatState, type ChatState } from '../renderer-src/src/state/reducer.ts';
 
 const agent = (runId: string, kind: string, extra: object = {}) =>
@@ -86,4 +86,41 @@ test('reducer: stop-requested shows stopping at once and holds it; stopped clear
   const failed = chatReducer(stopping, { type: 'stop-failed', error: 'x' });
   assert.equal(failed.stopping, false);
   assert.equal(failed.error, 'x');
+});
+
+test('the live region speaks the phase only: a timer tick never changes it, a load is announced every 10 %', () => {
+  const writing = { phase: 'writing' as const };
+  const before = turnStatusView(writing, 1000, 5_400);
+  const after = turnStatusView(writing, 1000, 6_400);
+  assert.notEqual(after.timer, before.timer, 'the visible timer ticked');
+  assert.equal(after.announced, before.announced, 'the live region did not change on the tick');
+  assert.equal(before.announced, 'Écriture…');
+  assert.equal(turnStatusView(writing, null, 6_400).timer, null);
+  // The visible label keeps the exact percent; the live region moves in steps of 10.
+  const at42 = turnStatusView({ phase: 'loading', progress: 42 }, 1000, 2000);
+  const at49 = turnStatusView({ phase: 'loading', progress: 49 }, 1000, 2000);
+  assert.equal(at42.label, 'Chargement du modèle… 42 %');
+  assert.equal(at49.label, 'Chargement du modèle… 49 %');
+  assert.equal(at42.announced, 'Chargement du modèle… 40 %');
+  assert.equal(at49.announced, at42.announced);
+  assert.equal(announcedLabel({ phase: 'loading', progress: 50 }), 'Chargement du modèle… 50 %');
+  assert.equal(announcedLabel({ phase: 'loading', progress: 100 }), 'Chargement du modèle… 100 %');
+  assert.equal(announcedLabel({ phase: 'loading' }), 'Chargement du modèle…');
+  assert.equal(announcedLabel({ phase: 'tool', tool: 'internet_search' }), 'Outil : internet_search…');
+});
+
+test('reducer: a failed stop brings back the worker phase; a late failure after the turn changes nothing', () => {
+  const reading = chatReducer(started(), agent('r1', 'phase', { phase: 'reading' }));
+  const stopping = chatReducer(reading, { type: 'stop-requested' });
+  const failed = chatReducer(stopping, { type: 'stop-failed', error: 'x' });
+  assert.deepEqual(failed.phase, { phase: 'reading' }, 'the phase shown before the stop');
+  assert.equal(failed.stopping, false);
+  // A phase the worker posted during the stop is the one it is really in: that one comes back.
+  const moved = chatReducer(stopping, agent('r1', 'phase', { phase: 'writing' }));
+  assert.deepEqual(moved.phase, { phase: 'stopping' }, 'still stopping on screen');
+  assert.deepEqual(chatReducer(moved, { type: 'stop-failed', error: 'x' }).phase, { phase: 'writing' });
+  // The turn ended before the stop's rejection came back: nothing to restore, no error to show.
+  const ended = chatReducer(stopping, agent('r1', 'stopped', {}));
+  assert.equal(chatReducer(ended, { type: 'stop-failed', error: 'late' }), ended);
+  assert.equal(chatReducer(initialChatState, { type: 'stop-failed', error: 'late' }), initialChatState);
 });

@@ -38,3 +38,24 @@ export function formatElapsed(ms: number): string {
   const seconds = Math.floor(Math.max(0, ms) / 1000);
   return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} min ${twoDigits(seconds % 60)} s`;
 }
+
+/** What a screen reader is told: the label, with a load's progress in steps of 10 % so a percent-by-percent load is not
+ * read out at every percent. The visible label keeps the exact percent. */
+export function announcedLabel(phase: TurnPhase): string {
+  if (phase.phase === 'loading' && phase.progress !== undefined) return phaseLabel({ ...phase, progress: Math.floor(phase.progress / 10) * 10 });
+  return phaseLabel(phase);
+}
+
+export interface TurnStatusView {
+  /** The live region's text (role="status"): changes only with the phase, never with the timer. */
+  announced: string;
+  /** The visible label, hidden from screen readers (the live region speaks for it). */
+  label: string;
+  /** The visible timer, hidden from screen readers; null when the send time is unknown. */
+  timer: string | null;
+}
+
+/** Everything TurnStatus shows at `now`. */
+export function turnStatusView(phase: TurnPhase, turnStartedAt: number | null, now: number): TurnStatusView {
+  return { announced: announcedLabel(phase), label: phaseLabel(phase), timer: turnStartedAt === null ? null : formatElapsed(now - turnStartedAt) };
+}

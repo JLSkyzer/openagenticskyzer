@@ -57,6 +57,9 @@ export interface ChatState {
   turnStartedAt: number | null;
   // Stop was clicked and the turn has not ended yet: the line says « Arrêt en cours… » and the button is disabled.
   stopping: boolean;
+  // The worker's phase while stopping (the one shown before the click, then any it posted since): what the line shows
+  // again if the stop never reached the worker (stop-failed). null outside a stop.
+  phaseBeforeStop: TurnPhase | null;
 }
 
 export const initialChatState: ChatState = {
@@ -78,6 +81,7 @@ export const initialChatState: ChatState = {
   phase: null,
   turnStartedAt: null,
   stopping: false,
+  phaseBeforeStop: null,
 };
 
 export type ChatAction =
@@ -100,7 +104,7 @@ export type ChatAction =
   | { type: 'clear-error' };
 
 // What every terminal event (done, stopped, error) resets: the status line and the stop in progress.
-const turnEnded = { phase: null, turnStartedAt: null, stopping: false } as const;
+const turnEnded = { phase: null, turnStartedAt: null, stopping: false, phaseBeforeStop: null } as const;
 
 /** Puts the turn's `timing` on the last assistant message of THIS run (after the run's user message, never an earlier
  * turn's reply), as worker.mjs::withTiming does in the saved file — its message events go out before the timing is
@@ -186,16 +190,20 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         phase: { phase: 'preparing' },
         turnStartedAt: action.startedAt ?? null,
         stopping: false,
+        phaseBeforeStop: null,
       };
 
     // Shown at once, before the worker's own « stopping » arrives, and held until the turn's terminal event.
     case 'stop-requested':
       if (!state.agentRunning || !state.runId) return state;
-      return { ...state, stopping: true, phase: { phase: 'stopping' } };
+      if (state.stopping) return state;
+      return { ...state, stopping: true, phase: { phase: 'stopping' }, phaseBeforeStop: state.phase };
 
-    // The stop never reached the worker: the turn goes on, so the button comes back. The line waits for the next phase.
+    // The stop never reached the worker: the turn goes on, so the button and the worker's phase come back. A late
+    // rejection, after the turn ended, changes nothing.
     case 'stop-failed':
-      return { ...state, stopping: false, phase: state.phase?.phase === 'stopping' ? null : state.phase, error: action.error };
+      if (!state.agentRunning || !state.stopping) return state;
+      return { ...state, stopping: false, phase: state.phaseBeforeStop, phaseBeforeStop: null, error: action.error };
 
     case 'send-failed':
       // The IPC round trip itself failed (e.g. a rejected connection resolution) before
@@ -228,11 +236,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           return state;
         case 'phase':
           // After Stop, the line says « Arrêt en cours… » whatever the worker was still doing.
-          if (state.stopping && event.phase !== 'stopping') return state;
-          return {
-            ...state,
-            phase: { phase: event.phase, ...(event.progress === undefined ? {} : { progress: event.progress }), ...(event.tool === undefined ? {} : { tool: event.tool }) },
-          };
+          const phase = { phase: event.phase, ...(event.progress === undefined ? {} : { progress: event.progress }), ...(event.tool === undefined ? {} : { tool: event.tool }) };
+          if (state.stopping) {
+            if (event.phase !== 'stopping') return { ...state, phaseBeforeStop: phase };
+            return state;
+          }
+          return { ...state, phase };
         case 'delta':
           return { ...state, streamingText: state.streamingText + event.text };
         case 'tool-start': {

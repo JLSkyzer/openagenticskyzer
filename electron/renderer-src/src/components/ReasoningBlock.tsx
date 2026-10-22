@@ -1,31 +1,32 @@
-import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
+import type { SyntheticEvent } from 'react';
 import { reasoningSummary } from '../state/turn-status';
 
 /**
  * A reply's reasoning, folded under « Réflexion » (plain text, never markdown: it is the model's draft, not its answer).
- * `open` is where the block starts and, until the user opens or folds it, where it follows: the streaming bubble passes
- * « the model is reasoning » (open while it thinks, folded once it writes), a finished message passes false. Once the
- * user has clicked the summary, the block is theirs.
+ * `open` is where the block stands until the user opens or folds it: the streaming bubble passes « the model is
+ * reasoning » (open while it thinks, folded once it writes), a finished message passes false. `chosen` is the user's
+ * choice once made (ChatState.reasoningChoices, kept by message index, so it survives the streamed bubble turning into
+ * the saved reply); it wins over `open`.
  */
-export function ReasoningBlock({ text, open: wanted, streaming = false, ms }: { text: string; open: boolean; streaming?: boolean; ms?: number }) {
-  const [open, setOpen] = useState(wanted);
-  const userChose = useRef(false);
+export function ReasoningBlock({ text, open: wanted, chosen, onChoose, streaming = false, ms }: {
+  text: string;
+  open: boolean;
+  chosen?: boolean;
+  onChoose?: (open: boolean) => void;
+  streaming?: boolean;
+  ms?: number;
+}) {
+  const shown = chosen ?? wanted;
 
-  useEffect(() => {
-    if (!userChose.current) setOpen(wanted);
-  }, [wanted]);
-
-  // `toggle` also fires after a change made by the code (the `open` prop): only a change the state did not ask for is
-  // the user's.
+  // `toggle` also fires after a change made by the code (the `open` prop): only a change that the shown state did not
+  // ask for is the user's.
   const onToggle = (event: SyntheticEvent<HTMLDetailsElement>) => {
     const now = event.currentTarget.open;
-    if (now === open) return;
-    userChose.current = true;
-    setOpen(now);
+    if (now !== shown) onChoose?.(now);
   };
 
   return (
-    <details data-testid="oa-reasoning" open={open} onToggle={onToggle} className="mb-2">
+    <details data-testid="oa-reasoning" open={shown} onToggle={onToggle} className="mb-2">
       <summary data-testid="oa-reasoning-summary" className="cursor-pointer select-none text-[11px]" style={{ color: 'var(--text-muted)' }}>
         {reasoningSummary({ streaming, ms })}
       </summary>

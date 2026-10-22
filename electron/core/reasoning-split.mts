@@ -37,7 +37,9 @@ const CLOSE = '</think>';
  *   tail included, is given back as text in ONE `movedBack` piece: no answer is ever hidden;
  * - whitespace before any provisional reasoning is held, not streamed: it joins the reasoning's first real piece, and a
  *   reply that is only whitespace is given back silently — no piece, so no phase flip, no first word, no leading
- *   newline in the answer (ruling 5b-m1).
+ *   newline in the answer (ruling 5b-m1);
+ * - likewise, once some reasoning came, whitespace before the answer's first real text is held and joins it, or is
+ *   dropped by end() when no answer follows: a bare blank line after </think> is no first word (review M4).
  */
 export class ReasoningSplitter {
   #mode: 'text' | 'thought' = 'text';
@@ -47,6 +49,10 @@ export class ReasoningSplitter {
   #held = '';
   /** Provisional whitespace not streamed yet (ruling 5b-m1). */
   #quiet = '';
+  /** Some reasoning came (a thought, a moved piece or a wrapper segment): whitespace before the answer is held. */
+  #reasoned = false;
+  /** Whitespace after the reasoning, before any answer: not streamed yet (review M4). */
+  #quietText = '';
   #text = '';
   #reasoning = '';
 
@@ -104,6 +110,7 @@ export class ReasoningSplitter {
           pieces.push({ kind: 'moved', text: this.#text });
           this.#reasoning += this.#text;
           this.#text = '';
+          this.#reasoned = true;
         }
         this.#emit(pieces, 'thought', before);
       }
@@ -116,6 +123,7 @@ export class ReasoningSplitter {
    * A provisional reasoning (startInThought) was the answer after all: it is given back (`movedBack`). */
   segmentSeen(): SplitPiece[] {
     this.#sawTag = true;
+    this.#reasoned = true;
     if (!this.#provisional) return [];
     this.#mode = 'text';
     return this.#giveBack();
@@ -126,6 +134,8 @@ export class ReasoningSplitter {
     const pieces: SplitPiece[] = [];
     this.#emit(pieces, this.#mode, this.#held);
     this.#held = '';
+    // Whitespace after the reasoning that no answer followed (a tool call alone): dropped.
+    this.#quietText = '';
     return pieces;
   }
 
@@ -155,8 +165,16 @@ export class ReasoningSplitter {
         this.#quiet = text;
         return;
       }
+    } else if (this.#reasoned && !this.#text) {
+      text = this.#quietText + text;
+      this.#quietText = '';
+      if (!text.trim()) {
+        this.#quietText = text;
+        return;
+      }
     }
     pieces.push({ kind, text });
+    if (kind === 'thought') this.#reasoned = true;
     if (kind === 'text') this.#text += text;
     else this.#reasoning += text;
   }

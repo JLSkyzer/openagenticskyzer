@@ -1,6 +1,6 @@
 // The status line of a running turn (components/TurnStatus.tsx): its French label and the durations it shows.
 // Pure, so the unit tests load it with Node itself.
-import type { TurnPhaseName, TurnTiming } from '../ipc/bridge';
+import type { ChatMessage, TurnPhaseName, TurnTiming } from '../ipc/bridge';
 
 export interface TurnPhase { phase: TurnPhaseName; progress?: number; tool?: string }
 
@@ -66,7 +66,9 @@ export function timingLine(timing: TurnTiming): string {
   const parts: string[] = [];
   if (timing.firstTextMs !== undefined) parts.push(`1ᵉʳ mot ${formatDuration(timing.firstTextMs)}`);
   if (timing.totalMs !== undefined) parts.push(`total ${formatDuration(timing.totalMs)}`);
-  if (timing.tokensPerSecond !== undefined) parts.push(`${timing.tokensPerSecond.toFixed(1).replace('.', ',')} tok/s`);
+  // A rate that rounds to 0 says nothing: never « 0,0 tok/s ».
+  const rate = timing.tokensPerSecond === undefined ? 0 : Math.round(timing.tokensPerSecond * 10) / 10;
+  if (rate > 0) parts.push(`${rate.toFixed(1).replace('.', ',')} tok/s`);
   if (timing.loadMs !== undefined) parts.push(`chargement ${formatDuration(timing.loadMs)}`);
   return parts.join(' · ');
 }
@@ -76,4 +78,14 @@ export function timingLine(timing: TurnTiming): string {
 export function reasoningSummary(input: { streaming: boolean; ms?: number }): string {
   if (input.streaming) return 'Réflexion…';
   return input.ms === undefined ? 'Réflexion' : `Réflexion · ${formatDuration(input.ms)}`;
+}
+
+/** How ChatView shows a saved assistant message: its bubble when it has an answer or a reasoning (a reply stopped while
+ * the model reasoned shows its block); its timing line alone when it is an empty tool-call reply that carries the turn's
+ * figures (a stop during a tool or a permission prompt puts them there); else nothing — an empty bubble before a tool
+ * card would be noise. */
+export function assistantDisplay(message: ChatMessage): 'bubble' | 'timing' | 'none' {
+  const reasoning = typeof message.reasoning === 'string' ? message.reasoning : '';
+  if (message.content.trim() || reasoning.trim()) return 'bubble';
+  return message.timing ? 'timing' : 'none';
 }

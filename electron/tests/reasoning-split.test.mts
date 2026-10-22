@@ -225,3 +225,18 @@ test('startInThought: whitespace before the reasoning is not streamed, and a whi
   assert.deepEqual([...accumulator.chunk({ text: '\n' }), ...accumulator.end()], []);
   assert.deepEqual({ reasoning: accumulator.reasoning, text: accumulator.text, ms: accumulator.reasoningMs }, { reasoning: '', text: '', ms: undefined });
 });
+
+test('after </think>, whitespace before the answer is held: it joins the first real text, and is dropped if none comes (review M4)', () => {
+  const closed = streamFrom(['pensée</think>', '\n\n', 'Salut']);
+  assert.deepEqual(closed.pieces, [{ kind: 'thought', text: 'pensée' }, { kind: 'text', text: '\n\nSalut' }], 'no whitespace-only text piece: no first word, no « Écriture… » yet');
+  assert.equal(closed.text, '\n\nSalut');
+  const toolOnly = streamFrom(['pensée</think>\n\n']);
+  assert.deepEqual(toolOnly.pieces, [{ kind: 'thought', text: 'pensée' }], 'nothing follows: the whitespace is dropped');
+  assert.deepEqual({ text: toolOnly.text, reasoning: toolOnly.reasoning }, { text: '', reasoning: 'pensée' });
+  // The same after a bare </think> (no startInThought) and after a <think>…</think> pair.
+  const bare = stream(['I think', '</think>', '\n', 'Answer']);
+  assert.deepEqual(bare.pieces.filter(p => p.kind === 'text'), [{ kind: 'text', text: 'I think' }, { kind: 'text', text: '\nAnswer' }]);
+  assert.deepEqual(stream(['<think>a</think>', ' \n']).pieces, [{ kind: 'thought', text: 'a' }]);
+  // A reply with no reasoning keeps its whitespace as it streams (nothing to hold it for).
+  assert.deepEqual(stream(['\n', 'Bonjour']).pieces, [{ kind: 'text', text: '\n' }, { kind: 'text', text: 'Bonjour' }]);
+});

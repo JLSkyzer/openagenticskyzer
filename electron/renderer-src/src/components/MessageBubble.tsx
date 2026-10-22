@@ -85,13 +85,16 @@ export function UserBubble({ content, attachments, onFork, onEdit }: { content: 
 // `reasoning` shows in a « Réflexion » block above the answer (`reasoningOpen`: open while the model reasons, in the
 // streaming bubble). `timing` is the line under the bubble — outside `oa-assistant-bubble`, whose text the window tests
 // read as the answer.
-export function AssistantBubble({ content, streaming = false, onRegenerate, reasoning, reasoningMs, reasoningOpen = false, timing }: {
+// `reasoningChosen` / `onReasoningChoose`: the user's open/fold choice, kept by the chat state (ReasoningBlock).
+export function AssistantBubble({ content, streaming = false, onRegenerate, reasoning, reasoningMs, reasoningOpen = false, reasoningChosen, onReasoningChoose, timing }: {
   content: string;
   streaming?: boolean;
   onRegenerate?: () => void;
   reasoning?: string;
   reasoningMs?: number;
   reasoningOpen?: boolean;
+  reasoningChosen?: boolean;
+  onReasoningChoose?: (open: boolean) => void;
   timing?: TurnTiming;
 }) {
   return (
@@ -105,16 +108,12 @@ export function AssistantBubble({ content, streaming = false, onRegenerate, reas
           style={{ borderRadius: '2px 10px 10px 10px' }}
           data-testid="oa-assistant-bubble"
         >
-          {reasoning?.trim() ? <ReasoningBlock text={reasoning} open={reasoningOpen} streaming={streaming && reasoningOpen} ms={reasoningMs} /> : null}
+          {reasoning?.trim() ? <ReasoningBlock text={reasoning} open={reasoningOpen} chosen={reasoningChosen} onChoose={onReasoningChoose} streaming={streaming && reasoningOpen} ms={reasoningMs} /> : null}
           <Markdown>{content}</Markdown>
           {streaming && <span className="oa-typing-caret" aria-hidden="true" />}
         </div>
       </div>
-      {timing && (
-        <div data-testid="oa-reply-timing" className="ml-9 text-[10px]" style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-          {timingLine(timing)}
-        </div>
-      )}
+      {timing && <ReplyTiming timing={timing} />}
       {onRegenerate && (
         <button
           type="button"
@@ -127,6 +126,20 @@ export function AssistantBubble({ content, streaming = false, onRegenerate, reas
           🔄
         </button>
       )}
+    </div>
+  );
+}
+
+/** A turn's figures under its last reply. Shown alone (in its own row) when that reply is an empty tool call: a stop
+ * during a tool or a permission prompt puts the timing there (state/turn-status.ts::assistantDisplay). */
+export function ReplyTiming({ timing, alone = false }: { timing: TurnTiming; alone?: boolean }) {
+  return (
+    <div
+      data-testid="oa-reply-timing"
+      className={alone ? 'ml-9 px-4 py-1 text-[10px]' : 'ml-9 text-[10px]'}
+      style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}
+    >
+      {timingLine(timing)}
     </div>
   );
 }

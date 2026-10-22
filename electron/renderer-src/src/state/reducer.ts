@@ -65,6 +65,10 @@ export interface ChatState {
   // Where the running turn's messages start: right after its user message (send-started). The turn's timing goes on
   // its last reply at or after this index, never on an earlier turn's. null outside a turn.
   runStartIndex: number | null;
+  // The user's open/fold choices on « Réflexion » blocks, by message index. The streaming bubble uses the index its
+  // message will take (messages.length), so a choice made while the model reasons stays with the saved reply. Cleared
+  // whenever the indices may change meaning (another conversation, branch, cut view, summary).
+  reasoningChoices: Record<number, boolean>;
 }
 
 export const initialChatState: ChatState = {
@@ -89,6 +93,7 @@ export const initialChatState: ChatState = {
   stopping: false,
   phaseBeforeStop: null,
   runStartIndex: null,
+  reasoningChoices: {},
 };
 
 export type ChatAction =
@@ -108,7 +113,8 @@ export type ChatAction =
   | { type: 'send-failed'; error: string }
   | { type: 'agent-event'; event: AgentEvent }
   | { type: 'permission-decided' }
-  | { type: 'clear-error' };
+  | { type: 'clear-error' }
+  | { type: 'reasoning-toggled'; index: number; open: boolean };
 
 // What every terminal event (done, stopped, error) resets: the status line, the stop in progress, the streamed
 // reasoning and where the run started.
@@ -145,6 +151,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         currentBranchId: action.id,
         messages: withToolCards(action.messages),
         truncatedTo: null,
+        reasoningChoices: {},
         error: null,
         notice: `Branche '${action.label}' créée.`,
       };
@@ -156,6 +163,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         currentBranchId: action.id,
         messages: withToolCards(action.messages),
         truncatedTo: null,
+        reasoningChoices: {},
         streamingText: '',
         streamingReasoning: '',
         liveToolStarts: {},
@@ -179,7 +187,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     // Like fork and switch, a cut replaces what is on screen: ignored while a run or a summary owns it.
     case 'messages-truncated':
       if (state.agentRunning || state.compacting) return state;
-      return { ...state, messages: state.messages.slice(0, action.keep), truncatedTo: action.keep, error: null, notice: null };
+      return { ...state, messages: state.messages.slice(0, action.keep), truncatedTo: action.keep, reasoningChoices: {}, error: null, notice: null };
 
     case 'send-started': {
       // `keep` (🔄 regenerate) cuts the view before the message is added — in the same step, so a send
@@ -192,6 +200,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ...state,
         messages,
         runStartIndex: messages.length,
+        reasoningChoices: action.keep === undefined ? state.reasoningChoices : {},
         truncatedTo: null,
         agentRunning: true,
         runId: action.runId,
@@ -226,6 +235,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'clear-error':
       return { ...state, error: null };
 
+    case 'reasoning-toggled':
+      return { ...state, reasoningChoices: { ...state.reasoningChoices, [action.index]: action.open } };
+
     case 'artifact-closed':
       return { ...state, artifact: null };
 
@@ -239,7 +251,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       if (event.kind === 'compacted' || event.kind === 'compact-failed') {
         if (!state.compacting || event.runId !== state.compactionId) return state;
         if (event.kind === 'compact-failed') return { ...state, compacting: false, compactionId: null, error: event.message };
-        return { ...state, compacting: false, compactionId: null, messages: withToolCards(event.messages), error: null, notice: 'Contexte compressé avec résumé IA.' };
+        return { ...state, compacting: false, compactionId: null, messages: withToolCards(event.messages), reasoningChoices: {}, error: null, notice: 'Contexte compressé avec résumé IA.' };
       }
       // A stale event from a run that Stop already superseded — ignore it rather than
       // corrupting the view of the (now different) active run.

@@ -80,6 +80,8 @@ interface ChatContextValue {
   // ✕ of the side preview (artifact_panel.py::_close_artifact).
   closeArtifact(): void;
   dismissNotice(): void;
+  // The user opened or folded the « Réflexion » block of the message at `index` (ChatState.reasoningChoices).
+  chooseReasoning(index: number, open: boolean): void;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
@@ -334,6 +336,7 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
 
   const dismissNotice = useCallback(() => dispatch({ type: 'clear-notice' }), []);
   const closeArtifact = useCallback(() => dispatch({ type: 'artifact-closed' }), []);
+  const chooseReasoning = useCallback((index: number, open: boolean) => dispatch({ type: 'reasoning-toggled', index, open }), []);
 
   const send = useCallback(
     async (text: string, attachments?: Attachment[]) => {
@@ -378,7 +381,7 @@ export function ChatProvider({ activeFolder, initialMessages, onBranchChange: on
 
   return (
     <ChatContext.Provider
-      value={{ state, activeFolder, context: { usage, settings: contextSettings }, indexStatus, compact, send, stopRun, decide, forkFrom, switchBranch, editMessage, draft, regenerate, closeArtifact, dismissNotice }}
+      value={{ state, activeFolder, context: { usage, settings: contextSettings }, indexStatus, compact, send, stopRun, decide, forkFrom, switchBranch, editMessage, draft, regenerate, closeArtifact, dismissNotice, chooseReasoning }}
     >
       {children}
     </ChatContext.Provider>

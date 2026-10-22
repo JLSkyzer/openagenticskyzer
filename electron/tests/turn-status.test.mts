@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { announcedLabel, formatDuration, formatElapsed, phaseLabel, reasoningSummary, timingLine, turnStatusView } from '../renderer-src/src/state/turn-status.ts';
+import { announcedLabel, assistantDisplay, formatDuration, formatElapsed, phaseLabel, reasoningSummary, timingLine, turnStatusView } from '../renderer-src/src/state/turn-status.ts';
 import { chatReducer, initialChatState, type ChatState } from '../renderer-src/src/state/reducer.ts';
 
 const agent = (runId: string, kind: string, extra: object = {}) =>
@@ -183,4 +183,37 @@ test("reducer: the run's timing lands on its last reply, never on an earlier tur
   const stopped = chatReducer(bare, agent('r1', 'stopped', { timing }));
   assert.equal(stopped.messages, bare.messages, 'no reply in the run: the same array');
   assert.equal(stopped.runStartIndex, null);
+});
+
+// Task 6, fix round 1.
+test('timingLine: a rate that rounds to 0 is left out, never « 0,0 tok/s »', () => {
+  assert.equal(timingLine({ totalMs: 1000, tokensPerSecond: 0.04 }), 'total 1 s');
+  assert.equal(timingLine({ totalMs: 1000, tokensPerSecond: 0 }), 'total 1 s');
+  assert.equal(timingLine({ totalMs: 1000, tokensPerSecond: 0.05 }), 'total 1 s · 0,1 tok/s');
+});
+
+test('assistantDisplay: an empty tool-call reply that carries the turn timing shows its timing line alone', () => {
+  assert.equal(assistantDisplay({ role: 'assistant', content: '' }), 'none', 'a tool call alone: nothing');
+  assert.equal(assistantDisplay({ role: 'assistant', content: ' \n' }), 'none');
+  assert.equal(assistantDisplay({ role: 'assistant', content: '', timing: { totalMs: 900 } }), 'timing', 'a stop during a tool call or a prompt');
+  assert.equal(assistantDisplay({ role: 'assistant', content: '', reasoning: 'je pense' }), 'bubble', 'stopped while reasoning (ruling 5b c)');
+  assert.equal(assistantDisplay({ role: 'assistant', content: '', reasoning: ' ' }), 'none');
+  assert.equal(assistantDisplay({ role: 'assistant', content: 'Bonjour', timing: { totalMs: 900 } }), 'bubble');
+});
+
+test("reducer: the user's open/fold choice on the streamed « Réflexion » block stays with the saved reply", () => {
+  const running = started();
+  const thinking = chatReducer(running, agent('r1', 'thinking', { text: 'je pense' }));
+  const index = thinking.messages.length;
+  const folded = chatReducer(thinking, { type: 'reasoning-toggled', index, open: true });
+  assert.deepEqual(folded.reasoningChoices, { [index]: true });
+  const saved = chatReducer(folded, agent('r1', 'message', { message: { role: 'assistant', content: 'ok', reasoning: 'je pense' } }));
+  assert.equal(saved.messages[index].content, 'ok', 'the streamed bubble becomes the message at that index');
+  const done = chatReducer(saved, agent('r1', 'done', { timing: { totalMs: 900 } }));
+  assert.deepEqual(done.reasoningChoices, { [index]: true }, 'kept after the turn');
+  assert.deepEqual(chatReducer(done, { type: 'folder-loaded', messages: [] }).reasoningChoices, {}, 'another conversation: no choice');
+  assert.deepEqual(chatReducer(done, { type: 'messages-truncated', keep: 1 }).reasoningChoices, {}, 'a cut view: indices change');
+  assert.deepEqual(chatReducer(done, { type: 'branch-switched', id: 'b', messages: [] }).reasoningChoices, {});
+  assert.deepEqual(chatReducer(done, { type: 'send-started', runId: 'r2', text: 'x', keep: 1 }).reasoningChoices, {}, 'a regenerate cuts the view');
+  assert.deepEqual(chatReducer(done, { type: 'send-started', runId: 'r2', text: 'x' }).reasoningChoices, { [index]: true }, 'a plain send keeps them');
 });

@@ -304,9 +304,14 @@ app.whenReady().then(async () => {
     await writeFile(join(screenshotDir, 'chat-7-long.png'), await capturePng(win));
 
     // ── 11. A saved reply with its reasoning and its timing (Task 6) ─────────────
-    // Modelled on step 6: a seeded conversation, reloaded through another folder. Nothing on screen had a « Réflexion »
-    // block or a timing line before (the scripted provider gives neither), so the waits below are not true on arrival.
-    assert.equal(await js(`!!document.querySelector('[data-testid="oa-reasoning"], [data-testid="oa-reply-timing"]')`), false, 'no block, no timing line before the seed');
+    // Modelled on step 6: a seeded conversation, reloaded through another folder. The live turns of steps 8 and 9 went
+    // through the worker, whose `done` always carries a timing (totalMs at least): their replies show a timing line.
+    // The scripted provider never reasons, so no « Réflexion » block is on screen yet: the wait for it below is not true
+    // on arrival.
+    const liveTimings = await js(`[...document.querySelectorAll('[data-testid="oa-reply-timing"]')].map(line => line.textContent)`);
+    assert.ok(liveTimings.length >= 1, 'the live replies carry a timing line');
+    assert.match(liveTimings.at(-1), /total \d/, `the last live reply's timing line: ${JSON.stringify(liveTimings)}`);
+    assert.equal(await js(`!!document.querySelector('[data-testid="oa-reasoning"]')`), false, 'no reasoning block before the seed');
     await callWorker('save-messages', {
       folder: project, branchId: 'main', messages: [
         { role: 'user', content: 'Dis bonjour.' },
@@ -323,7 +328,7 @@ app.whenReady().then(async () => {
     assert.equal(await js(`document.querySelectorAll('[data-testid="oa-assistant-bubble"]').length`), 1, 'the one seeded reply');
     assert.equal(await js(`document.querySelector('[data-testid="oa-reasoning-summary"]').textContent`), 'Réflexion · 3,4 s');
     assert.equal(await js(`document.querySelector('[data-testid="oa-reasoning"]').open`), false, 'a finished reply shows its reasoning folded');
-    assert.equal(await js(`document.querySelector('[data-testid="oa-reply-timing"]').textContent`), '1ᵉʳ mot 4,2 s · total 12,8 s · 8,3 tok/s · chargement 35 s');
+    assert.deepEqual(await js(`[...document.querySelectorAll('[data-testid="oa-reply-timing"]')].map(line => line.textContent)`), ['1ᵉʳ mot 4,2 s · total 12,8 s · 8,3 tok/s · chargement 35 s'], 'only the seeded reply, with its saved timing');
     assert.equal(await js(`!!document.querySelector('[data-testid="oa-assistant-bubble"] [data-testid="oa-reply-timing"]')`), false, 'the timing line sits outside the bubble');
     assert.ok((await lastBubble()).endsWith('Bonjour.'), 'the answer under its block');
     await writeFile(join(screenshotDir, 'chat-8-reasoning-folded.png'), await capturePng(win));

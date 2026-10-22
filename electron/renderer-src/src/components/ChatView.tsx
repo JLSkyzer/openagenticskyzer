@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { useChat } from '../state/ChatProvider';
 import { lastAssistantIndex } from '../state/editing';
-import { AssistantBubble, UserBubble } from './MessageBubble';
+import { assistantDisplay } from '../state/turn-status';
+import { AssistantBubble, ReplyTiming, UserBubble } from './MessageBubble';
 import { ToolMessage } from './ToolMessage';
 import { EmptyState } from './EmptyState';
 import { PermissionBanner } from './PermissionBanner';
@@ -13,7 +14,7 @@ import { TurnStatus } from './TurnStatus';
 const NOTICE_MS = 3500;
 
 export function ChatView() {
-  const { state, forkFrom, editMessage, regenerate, dismissNotice } = useChat();
+  const { state, forkFrom, editMessage, regenerate, dismissNotice, chooseReasoning } = useChat();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -75,16 +76,20 @@ export function ChatView() {
             }
             // A tool-only turn (the model called a tool without any commentary) has empty
             // content — an empty bubble would just be visual noise before the tool card. A reply stopped (or failed)
-            // while the model was still reasoning has no answer but its reasoning: that one shows, as its block.
+            // while the model was still reasoning has no answer but its reasoning: that one shows, as its block. An empty
+            // tool-call reply that carries the turn's timing (a stop during a tool or a prompt) shows that line alone.
             if (message.role === 'assistant') {
-              const reasoning = typeof message.reasoning === 'string' ? message.reasoning : '';
-              if (!message.content.trim() && !reasoning.trim()) return null;
+              const display = assistantDisplay(message);
+              if (display === 'none') return null;
+              if (display === 'timing') return message.timing ? <ReplyTiming key={index} timing={message.timing} alone /> : null;
               return (
                 <AssistantBubble
                   key={index}
                   content={message.content}
-                  reasoning={reasoning}
+                  reasoning={typeof message.reasoning === 'string' ? message.reasoning : ''}
                   reasoningMs={message.reasoningMs}
+                  reasoningChosen={state.reasoningChoices[index]}
+                  onReasoningChoose={open => chooseReasoning(index, open)}
                   timing={message.timing}
                   onRegenerate={index === lastAssistant && !state.agentRunning && !state.compacting ? () => void regenerate() : undefined}
                 />
@@ -104,6 +109,9 @@ export function ChatView() {
               content={state.streamingText}
               reasoning={state.streamingReasoning}
               reasoningOpen={(state.stopping ? state.phaseBeforeStop : state.phase)?.phase === 'thinking'}
+              // The index the reply will take once saved: the user's choice made now stays with it.
+              reasoningChosen={state.reasoningChoices[state.messages.length]}
+              onReasoningChoose={open => chooseReasoning(state.messages.length, open)}
               streaming
             />
           )}

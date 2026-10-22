@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import os from 'node:os';
-import { LlamaChat, InsufficientMemoryError, readGgufFileInfo, GgufInsights, type Llama, type LlamaModel, type LlamaContext } from 'node-llama-cpp';
+import { LlamaChat, InsufficientMemoryError, readGgufFileInfo, GgufInsights, GgmlType, type Llama, type LlamaModel, type LlamaContext } from 'node-llama-cpp';
 import { historyFromMessages, responseToMessage, toGgufFunctions } from './local-provider.mts';
 import type { ChatMessage, ModelProvider, ToolSchema } from './model-types.mts';
 import { localContextSize, DEFAULT_LOCAL_CONTEXT, type LocalContextSetting } from './context-budget.mts';
@@ -122,11 +122,12 @@ export function warmContext(): LlamaContext | null {
  * - the requirement is the KV cache alone (no weights, no graph overhead), at f16, which is what loadModel uses here;
  * - the room is ALL the RAM plus ALL the VRAM, free or not; a card whose VRAM cannot be read counts as unlimited.
  * The V1 estimate is arithmetic on the header (plus constant lookups in the already loaded binding): no tensor is
- * allocated, unlike the V2 simulation.
+ * allocated, unlike the V2 simulation. Returns the insights, which the processor fallback (cpuFallback) reuses.
  */
-async function assertContextCanFit(llama: Llama, modelPath: string, contextSize: number): Promise<void> {
+async function assertContextCanFit(llama: Llama, modelPath: string, contextSize: number): Promise<GgufInsights> {
   const insights = await GgufInsights.from(await readGgufFileInfo(modelPath), llama);
   if ((await contextOverflow(llama, insights, contextSize)) !== null) throw new Error(localModelTooBig(contextSize));
+  return insights;
 }
 
 /** The pre-check itself, shared with the offload estimate (core/offload-estimate.mts), which must not run native
@@ -141,17 +142,42 @@ export async function contextOverflow(llama: Llama, insights: GgufInsights, cont
 
 const mib = (bytes: number) => `${Math.round(bytes / 1024 ** 2)} Mio`;
 
-/** The one line a load logs (I-1): where its layers went, against which free VRAM and padding. */
-export function placementLogLine(p: { backend: string; gpuLayers: number; totalLayers: number; useMmap: boolean; vramBefore: { total: number; used: number; free: number } | null; padding: number; contextSize: number }): string {
+/** The one line a load logs (I-1): where its layers went, against which free VRAM and padding, and whether the card
+ * was too full for even 0 layers by node-llama-cpp's rule (the processor fallback, cpuFallback). */
+export function placementLogLine(p: { backend: string; gpuLayers: number; totalLayers: number; useMmap: boolean; vramBefore: { total: number; used: number; free: number } | null; padding: number; contextSize: number; fallback?: boolean }): string {
   const before = p.vramBefore ? `libre ${mib(p.vramBefore.free)} / total ${mib(p.vramBefore.total)} (utilisée ${mib(p.vramBefore.used)})` : 'illisible';
-  return `[placement] backend ${p.backend} · couches ${p.gpuLayers}/${p.totalLayers} sur la carte · mmap ${p.useMmap ? 'oui' : 'non'} · VRAM avant chargement : ${before} · marge VRAM ${mib(p.padding)} · contexte ${p.contextSize}`;
+  const fallback = p.fallback ? ' · repli processeur (carte pleine)' : '';
+  return `[placement] backend ${p.backend} · couches ${p.gpuLayers}/${p.totalLayers} sur la carte${fallback} · mmap ${p.useMmap ? 'oui' : 'non'} · VRAM avant chargement : ${before} · marge VRAM ${mib(p.padding)} · contexte ${p.contextSize}`;
+}
+
+export interface CpuFallback { fits: boolean; ramBytes: number; vramBytes: number }
+
+/**
+ * Whether `insights`' model, with 0 layers on the card and `contextSize` tokens of context, fits in the RAM: the one
+ * rule for the processor fallback, used by the load (loadLocked) and by the estimate (offload-estimate.mts), so the
+ * figure shown is the one loaded. Needed because node-llama-cpp's fitContext resolution THROWS InsufficientMemoryError
+ * when even 0 layers needs some VRAM (a compute buffer stays on the card), instead of answering 0 layers
+ * (3.21.1, resolveModelGpuLayersOption.js). The fit is fitOf's: the RAM estimate against all the RAM (os.totalmem()).
+ * The estimates are node-llama-cpp's V2 ones with what loadModel and createContext use here: f16 KV cache,
+ * flash attention 'auto' when supported, no full SWA cache. `internal`: node-llama-cpp's simulator session, if any.
+ */
+export async function cpuFallback(insights: GgufInsights, contextSize: number, useMmap: boolean, options: { ramTotal?: number; internal?: object } = {}): Promise<CpuFallback> {
+  const { ramTotal = os.totalmem(), internal = {} } = options;
+  const flashAttention = insights.flashAttentionSupported ? 'auto' as const : false;
+  const model = await insights.estimateModelResourceRequirementsV2({ gpuLayers: 0, useMmap, ...internal });
+  const context = await insights.estimateContextResourceRequirementsV2({
+    contextSize, modelGpuLayers: 0, flashAttention, swaFullCache: false, kvCacheKeyType: GgmlType.F16, kvCacheValueType: GgmlType.F16, useMmap, ...internal,
+  });
+  const ramBytes = model.cpuRam + context.cpuRam;
+  return { fits: ramBytes <= ramTotal, ramBytes, vramBytes: model.gpuVram + context.gpuVram };
 }
 
 /**
  * Loads `modelPath` with exactly `contextSize` tokens of context, its layers placed by node-llama-cpp for THAT
  * context (`gpuLayers: { fitContext }`), and keeps it warm. The warm engine is reused only for the same path, the
- * same requested size and the same runtime Llama; anything else reloads. When the machine cannot hold it even with
- * no layer on the card, nothing stays loaded and the error is localModelTooBig(contextSize).
+ * same requested size and the same runtime Llama; anything else reloads. When the card is too full for even 0 layers,
+ * it loads on the processor if the RAM holds it (cpuFallback). When the machine cannot hold it even with no layer on
+ * the card, nothing stays loaded and the error is localModelTooBig(contextSize).
  */
 export async function loadLocalModel(modelPath: string, contextSize: number): Promise<Placement> {
   // The placement is read inside the lock: a load queued behind this one may dispose this context.
@@ -163,7 +189,7 @@ async function loadLocked(modelPath: string, contextSize: number): Promise<Loade
   await disposeLocked();
   const llama = await runtimeLlama();
   const generation = runtimeGeneration();
-  await assertContextCanFit(llama, modelPath, contextSize);
+  const insights = await assertContextCanFit(llama, modelPath, contextSize);
   const vramBefore = await llama.getVramState().catch(() => null);
   let model: LlamaModel | null = null;
   try {
@@ -172,14 +198,37 @@ async function loadLocked(modelPath: string, contextSize: number): Promise<Loade
     liveModels += 1;
     // A fixed size: no silent shrink on failure (node-llama-cpp only retries an 'auto' size, said here anyway).
     const context = await model.createContext({ contextSize, failedCreationRemedy: false });
-    loaded = { path: modelPath, requested: contextSize, generation, llama, model, context, chat: new LlamaChat({ contextSequence: context.getSequence() }) };
-    console.info(placementLogLine({ backend: backendOf(llama), gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, useMmap: model.useMmap, vramBefore, padding: llama.vramPaddingSize, contextSize: context.contextSize }));
-    return loaded;
+    return keep({ modelPath, contextSize, generation, llama, model, context, vramBefore, fallback: false });
   } catch (error) {
     if (model) await disposeModel(model);
-    if (error instanceof InsufficientMemoryError) throw new Error(localModelTooBig(contextSize));
-    throw error;
+    if (!(error instanceof InsufficientMemoryError)) throw error;
   }
+  // The card cannot take even 0 layers by node-llama-cpp's rule (a game holding the VRAM): the processor, when the
+  // RAM holds it. useMmap is explicit: with ignoreMemorySafetyChecks, a numeric gpuLayers and useMmap 'auto',
+  // node-llama-cpp turns mmap OFF when nothing fits and copies the whole model into RAM. ignoreMemorySafetyChecks
+  // skips its VRAM check at 0 layers, and its RAM check with it: cpuFallback is that RAM check.
+  const useMmap = llama.supportsMmap;
+  if (!(await cpuFallback(insights, contextSize, useMmap)).fits) throw new Error(localModelTooBig(contextSize));
+  nativeLoads += 1;
+  model = await llama.loadModel({ modelPath, gpuLayers: 0, useMmap, ignoreMemorySafetyChecks: true });
+  liveModels += 1;
+  let context: LlamaContext;
+  try {
+    context = await model.createContext({ contextSize, failedCreationRemedy: false, ignoreMemorySafetyChecks: true });
+  } catch (error) {
+    // Even 0 layers keeps a compute buffer on the card: an allocation the full card refuses ends here.
+    await disposeModel(model);
+    console.warn(`[placement] repli processeur : le contexte n'a pas pu être créé : ${(error as Error | undefined)?.message ?? error}`);
+    throw new Error(localModelTooBig(contextSize));
+  }
+  return keep({ modelPath, contextSize, generation, llama, model, context, vramBefore, fallback: true });
+}
+
+function keep(p: { modelPath: string; contextSize: number; generation: number; llama: Llama; model: LlamaModel; context: LlamaContext; vramBefore: { total: number; used: number; free: number } | null; fallback: boolean }): Loaded {
+  const { llama, model, context } = p;
+  loaded = { path: p.modelPath, requested: p.contextSize, generation: p.generation, llama, model, context, chat: new LlamaChat({ contextSequence: context.getSequence() }) };
+  console.info(placementLogLine({ backend: backendOf(llama), gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, useMmap: model.useMmap, vramBefore: p.vramBefore, padding: llama.vramPaddingSize, contextSize: context.contextSize, fallback: p.fallback }));
+  return loaded;
 }
 
 /** Where the loaded `modelPath` really sits (model.gpuLayers, never an estimate), or null when it is not the model

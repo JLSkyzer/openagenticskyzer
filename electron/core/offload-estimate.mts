@@ -9,7 +9,7 @@ import { readGgufFileInfo, GgufInsights, InsufficientMemoryError, GgmlType } fro
 import { JsonStore } from './json-store.mts';
 import { runtimeLlama, backendOf } from './llama-runtime.mts';
 import { readHardware } from './hardware.mts';
-import { contextOverflow } from './local-engine.mts';
+import { contextOverflow, cpuFallback } from './local-engine.mts';
 import { fitOf, type Backend, type Placement } from './placement.mts';
 
 /** Where the model file is. 'remote' is prepared for reading a model's header over the network (project 2): the
@@ -60,14 +60,15 @@ class DisposableStore extends JsonStore {
   }
 }
 
-/** The estimates already computed, in <dataHome>/estimates.v2.json: the last ESTIMATE_CACHE_LIMIT set, oldest first.
- * v2 since the Vulkan/Windows VRAM padding (llama-runtime.mts::vramPaddingFor): v1 entries used the old padding and
- * are never read. */
+/** The estimates already computed, in <dataHome>/estimates.v3.json: the last ESTIMATE_CACHE_LIMIT set, oldest first.
+ * v2 came with the Vulkan/Windows VRAM padding (llama-runtime.mts::vramPaddingFor); v3 with the processor fallback
+ * (local-engine.mts::cpuFallback) and « auto » resolved to CUDA keeping CUDA's padding. Older files are never read:
+ * their « ne tient pas » for a full card is no longer what the load does. */
 export class EstimateCache {
   private readonly file: string;
   private readonly store = new DisposableStore();
   constructor(dataHome: string) {
-    this.file = join(dataHome, 'estimates.v2.json');
+    this.file = join(dataHome, 'estimates.v3.json');
   }
 
   /** The cached estimate, or null. An unreadable cache file reads as empty: it only costs a new estimate, and the
@@ -99,7 +100,9 @@ interface InsightsInternals {
  * loadLocalModel's `llama.loadModel({ modelPath, gpuLayers: { fitContext: { contextSize } } })` resolves (ruling F8):
  * the same useMmap, flash-attention and KV-cache types, the same resolver, the same runtime Llama. After each phase,
  * onPhase(phase), then the signal is checked. A size the machine cannot hold even with no layer on the card is
- * answered « ne tient pas » (fit 'none') by the Task 4 pre-check, before any native estimation.
+ * answered « ne tient pas » (fit 'none') by the Task 4 pre-check, before any native estimation. A card too full for
+ * even 0 layers gets loadLocked's processor fallback, by the same cpuFallback: 0 layers (fit 'cpu') when the RAM holds
+ * it, else « ne tient pas ».
  */
 export async function estimatePlacement(source: ModelSource, options: { contextSize: number; signal?: AbortSignal; onPhase?(phase: EstimatePhase): void }): Promise<Placement> {
   const { contextSize, signal } = options;
@@ -133,7 +136,8 @@ export async function estimatePlacement(source: ModelSource, options: { contextS
   try {
     let gpuLayers = 0;
     let resolvedMmap = useMmap !== false;
-    let insufficient = false;
+    // Set when the card cannot take even 0 layers: the processor fallback loadLocked takes, by the same rule.
+    let fallback: Awaited<ReturnType<typeof cpuFallback>> | null = null;
     try {
       // getVramState, the VRAM padding, the gpu type and offloading support are left to their defaults: the
       // runtime Llama's own (its padding set at creation, llama-runtime.mts::vramPaddingFor), exactly what loadModel
@@ -151,20 +155,27 @@ export async function estimatePlacement(source: ModelSource, options: { contextS
       resolvedMmap = resolved.useMmap;
     } catch (error) {
       if (!(error instanceof InsufficientMemoryError)) throw error;
-      insufficient = true;
+      // loadLocked's fallback passes useMmap: llama.supportsMmap, which is `useMmap !== false` here.
+      fallback = await cpuFallback(insights, contextSize, resolvedMmap, { internal });
     }
     step('layers');
 
-    const model = await insights.estimateModelResourceRequirementsV2({ gpuLayers, useMmap: resolvedMmap, ...internal });
-    const context = await insights.estimateContextResourceRequirementsV2({
-      contextSize, modelGpuLayers: gpuLayers, flashAttention, swaFullCache: false, kvCacheKeyType: kvCacheType, kvCacheValueType: kvCacheType, useMmap: resolvedMmap, ...internal,
-    });
-    const vramBytes = model.gpuVram + context.gpuVram;
-    const ramBytes = model.cpuRam + context.cpuRam;
+    let vramBytes: number;
+    let ramBytes: number;
+    if (fallback) {
+      ({ vramBytes, ramBytes } = fallback);
+    } else {
+      const model = await insights.estimateModelResourceRequirementsV2({ gpuLayers, useMmap: resolvedMmap, ...internal });
+      const context = await insights.estimateContextResourceRequirementsV2({
+        contextSize, modelGpuLayers: gpuLayers, flashAttention, swaFullCache: false, kvCacheKeyType: kvCacheType, kvCacheValueType: kvCacheType, useMmap: resolvedMmap, ...internal,
+      });
+      vramBytes = model.gpuVram + context.gpuVram;
+      ramBytes = model.cpuRam + context.cpuRam;
+    }
     step('resources');
     return {
       source: 'estimate', backend, gpuLayers, totalLayers, contextSize, vramBytes, ramBytes, memoryMeasured: false,
-      fit: fitOf({ backend, gpuLayers, totalLayers, ramBytes, ramTotal: os.totalmem(), insufficient }),
+      fit: fitOf({ backend, gpuLayers, totalLayers, ramBytes, ramTotal: os.totalmem(), insufficient: fallback !== null && !fallback.fits }),
     };
   } finally {
     await session?.dispose().catch(() => {});

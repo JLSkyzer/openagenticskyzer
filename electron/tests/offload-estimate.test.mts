@@ -101,7 +101,7 @@ test('an abort during a phase rejects with AbortError and nothing is cached', { 
   const cache = new EstimateCache(home);
   const source: ModelSource = { kind: 'file', path: stories };
   const key = await estimateKey(source, 16384, await hardwareKey());
-  const file = join(home, 'estimates.v2.json');
+  const file = join(home, 'estimates.v3.json');
   const phases: EstimatePhase[] = ['stat', 'read', 'insights', 'layers', 'resources'];
   for (const phase of phases) {
     const controller = new AbortController();
@@ -138,7 +138,7 @@ test('the cache key follows the file size and mtime, the hardware and the contex
   assert.notEqual(await estimateKey({ kind: 'remote', url: 'https://example.invalid/m.gguf' }, 16384, hardware), base);
 });
 
-test('EstimateCache persists in estimates.v2.json and keeps the last 64', async t => {
+test('EstimateCache persists in estimates.v3.json and keeps the last 64', async t => {
   const home = await tempHome(t);
   const cache = new EstimateCache(home);
   assert.equal(await cache.get('key 0'), null);
@@ -147,9 +147,9 @@ test('EstimateCache persists in estimates.v2.json and keeps the last 64', async 
   assert.deepEqual(await reopened.get(`key ${ESTIMATE_CACHE_LIMIT}`), sample(ESTIMATE_CACHE_LIMIT));
   assert.deepEqual(await reopened.get('key 1'), sample(1));
   assert.equal(await reopened.get('key 0'), null, 'the oldest of 65 is dropped');
-  const saved = JSON.parse(await readFile(join(home, 'estimates.v2.json'), 'utf8'));
+  const saved = JSON.parse(await readFile(join(home, 'estimates.v3.json'), 'utf8'));
   assert.equal(saved.entries.length, ESTIMATE_CACHE_LIMIT);
-  await assert.rejects(access(join(home, 'estimates.v2.json.pre-electron.bak')), { code: 'ENOENT' }, 'a cache keeps no backup copy');
+  await assert.rejects(access(join(home, 'estimates.v3.json.pre-electron.bak')), { code: 'ENOENT' }, 'a cache keeps no backup copy');
 });
 
 // I-1 (final review): estimates computed with the old Vulkan padding (estimates.v1.json) are never reused.
@@ -159,10 +159,18 @@ test('an estimate left in estimates.v1.json (older VRAM padding) is not reused',
   assert.equal(await new EstimateCache(home).get('key 1'), null);
 });
 
-// The file is a disposable cache: a corrupt one costs the estimates it held, never a refused write.
-test('a corrupt estimates.v2.json reads as empty and is replaced by a fresh file on the next set', async t => {
+// Task 1b (turn diagnostics): a v2 entry may say « ne tient pas » for a full card, where the load now falls back to the
+// processor; it is never reused.
+test('an estimate left in estimates.v2.json (before the processor fallback) is not reused', async t => {
   const home = await tempHome(t);
-  const file = join(home, 'estimates.v2.json');
+  await writeFile(join(home, 'estimates.v2.json'), JSON.stringify({ entries: [{ key: 'key 1', placement: { ...sample(1), fit: 'none' } }] }));
+  assert.equal(await new EstimateCache(home).get('key 1'), null);
+});
+
+// The file is a disposable cache: a corrupt one costs the estimates it held, never a refused write.
+test('a corrupt estimates.v3.json reads as empty and is replaced by a fresh file on the next set', async t => {
+  const home = await tempHome(t);
+  const file = join(home, 'estimates.v3.json');
   await writeFile(file, '{ "entries": [ broken');
   const cache = new EstimateCache(home);
   assert.equal(await cache.get('key 1'), null);

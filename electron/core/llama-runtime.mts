@@ -11,7 +11,7 @@ import { registerHooks } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isMainThread } from 'node:worker_threads';
-import { getLlama, Llama, LlamaLogLevel, LlamaLogLevelGreaterThanOrEqual, type LlamaOptions } from 'node-llama-cpp';
+import { getLlama, getLlamaGpuTypes, Llama, LlamaLogLevel, LlamaLogLevelGreaterThanOrEqual, type LlamaOptions } from 'node-llama-cpp';
 import type { Backend } from './placement.mts';
 import type { CudaPackStatus } from './cuda-pack.mts';
 import { disposeEngine } from './local-engine.mts';
@@ -176,11 +176,37 @@ async function createLlama(): Promise<{ llama: Llama; notice: string | null }> {
     const llama = await withoutCuda();
     return { llama, notice: cudaMissingNotice(backendOf(llama)) };
   }
-  // No gpu option: node-llama-cpp reads NODE_LLAMA_CPP_GPU (default auto). Without the pack, the packaged app ships
-  // no CUDA binary, so on Windows auto resolves to Vulkan or the processor: the Vulkan padding. (A dev checkout with
-  // @node-llama-cpp/win-x64-cuda installed could resolve to CUDA here: it then gets the Vulkan padding too, only more
-  // conservative; the [placement] log shows the padding in use.)
-  return { llama: await llamaWith({}, 'vulkan'), notice: null };
+  return { llama: await autoLlama(), notice: null };
+}
+
+/**
+ * NODE_LLAMA_CPP_GPU as node-llama-cpp reads it (bindings/types.js parseNodeLlamaCppGpuOption, 3.21.1): unset,
+ * « auto » or an unknown value is 'auto'; « false », « off », « none », « disable », « disabled » the processor.
+ */
+export function envGpuChoice(value: string | undefined): Backend | 'auto' {
+  if (value === undefined || value === '') return 'auto';
+  if (['false', 'off', 'none', 'disable', 'disabled'].includes(value)) return 'cpu';
+  return value === 'cuda' || value === 'vulkan' || value === 'metal' ? value : 'auto';
+}
+
+/**
+ * « auto » without a pack, resolved here one backend at a time instead of by getLlama's own auto, so the Llama is
+ * created with the padding of the backend it really is: a padding is fixed at creation and its function only sees
+ * the total VRAM. Same order as node-llama-cpp's auto (getLlama → getGpuTypesToUseForOption('auto'), which is
+ * getLlamaGpuTypes('supported')): CUDA when its driver and runtime are found, then Vulkan, then the processor.
+ * A NODE_LLAMA_CPP_GPU other than auto is node-llama-cpp's choice, passed through.
+ */
+async function autoLlama(): Promise<Llama> {
+  const forced = envGpuChoice(process.env.NODE_LLAMA_CPP_GPU);
+  if (forced !== 'auto') return llamaWith({}, forced);
+  if ((await getLlamaGpuTypes('supported')).includes('cuda')) {
+    try {
+      return await llamaWith({ gpu: 'cuda' }, 'cuda');
+    } catch (error) {
+      warn('CUDA (auto) ne se charge pas', error);
+    }
+  }
+  return withoutCuda();
 }
 
 /** The worker's Llama, created once (see createLlama for the backend). A rejected creation is not cached: the next

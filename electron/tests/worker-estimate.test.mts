@@ -71,7 +71,7 @@ test('estimate-model for the active model answers at once, then an estimate even
   assert.equal(r2.estimateId, null);
   assert.deepEqual(r2.estimate, ended.estimate);
   assert.equal(estimateEvents.length, 1, 'a cache hit posts no event');
-  await access(join(home, 'estimates.v2.json'));
+  await access(join(home, 'estimates.v3.json'));
 });
 
 // An expected refusal, not a failure (M-2, final review): answered as a normal result, so main never logs it as a

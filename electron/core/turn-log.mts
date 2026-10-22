@@ -3,7 +3,20 @@
 // No secret may ever reach it, at any level: every event goes through the same pipeline before it is written —
 // sensitive file tools masked, then exact secrets and token patterns masked (redaction BEFORE the truncation, so a token
 // cut in two by the truncation is already gone), then the level (metadata drops the contents, full truncates them).
-import { appendFile, mkdir, readdir, unlink } from 'node:fs/promises';
+// Object keys are redacted like values: the worker parses the model's tool arguments, whose keys the model chooses.
+// The writer and the prune never follow a link: `logs` and `logs/turns` must be real folders, and a day file a real
+// file with a single link — anything else planted there is left alone, and nothing is written for that day.
+//
+// Known limits:
+// - an untrusted project's .mcp.json is never read by a turn, so its exact values are not masked (only the token
+//   patterns apply to them, should the user or the model repeat one);
+// - an exact secret is masked only as written: an escaped form (JSON \u…, URL %xx, base64) or a part of it is not;
+// - isProtected tests the path as typed: an 8.3 short name or another case of a protected name is not recognised
+//   here (the file tools refuse those on disk, so their result is an error);
+// - tool arguments that are not JSON are logged as written, with only the secrets and patterns masked;
+// - two keys masked to the same text keep the last one's value;
+// - a link planted between the checks and the write (a race with another local program) is not excluded.
+import { lstat, mkdir, open, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { TurnTiming } from './model-types.mts';
 import { expandServerPlaceholders, type McpServerConfig } from './mcp-config.mts';
@@ -57,25 +70,26 @@ function redactText(text: string, secrets: readonly string[]): string {
 }
 
 /** A deep copy of `value` in which every string has its exact secrets (longest first) then its token patterns
- * replaced by MASK. Object keys are kept as they are. */
+ * replaced by MASK — object keys included (a model-chosen key can hold a token). */
 export function redact(value: unknown, secrets: readonly string[]): unknown {
   const ordered = [...new Set(secrets.filter(secret => typeof secret === 'string' && secret.length > 0))].sort((a, b) => b.length - a.length);
   const walk = (item: unknown): unknown => {
     if (typeof item === 'string') return redactText(item, ordered);
     if (Array.isArray(item)) return item.map(walk);
-    if (item && typeof item === 'object') return Object.fromEntries(Object.entries(item).map(([key, inner]) => [key, walk(inner)]));
+    if (item && typeof item === 'object') return Object.fromEntries(Object.entries(item).map(([key, inner]) => [redactText(key, ordered), walk(inner)]));
     return item;
   };
   return walk(value);
 }
 
-/** A deep copy of `value` in which every string longer than `limit` keeps its first `limit` characters, followed by
- * how many were cut. */
+/** A deep copy of `value` in which every string — object keys included — longer than `limit` keeps its first `limit`
+ * characters, followed by how many were cut. */
 export function truncateFields(value: unknown, limit: number = TURN_LOG_FIELD_LIMIT): unknown {
+  const cut = (text: string) => (text.length > limit ? `${text.slice(0, limit)}…[tronqué : ${text.length - limit} caractères de plus]` : text);
   const walk = (item: unknown): unknown => {
-    if (typeof item === 'string') return item.length > limit ? `${item.slice(0, limit)}…[tronqué : ${item.length - limit} caractères de plus]` : item;
+    if (typeof item === 'string') return cut(item);
     if (Array.isArray(item)) return item.map(walk);
-    if (item && typeof item === 'object') return Object.fromEntries(Object.entries(item).map(([key, inner]) => [key, walk(inner)]));
+    if (item && typeof item === 'object') return Object.fromEntries(Object.entries(item).map(([key, inner]) => [cut(key), walk(inner)]));
     return item;
   };
   return walk(value);
@@ -144,26 +158,41 @@ export interface TurnLogInput {
 
 const NO_LOG: TurnLogger = { write() {}, flush: async () => {} };
 
-// The argument keys that name a file: `path` (the workspace tools), `file` (git_diff, git_blame, git_log) and `files`
-// (git_add: names separated by spaces, quotes around a name with spaces).
-const PATH_KEYS = ['path', 'file', 'files'] as const;
+// The argument keys that name a file: `path` (the workspace tools), `file` (git_diff, git_blame, git_log), `files`
+// (git_add: names separated by spaces, quotes around a name with spaces), and the spellings a model or an extension
+// tool may use instead (`file_path`, `filePath`, `paths`). A value may be a string or an array of strings.
+const PATH_KEYS = ['path', 'file', 'files', 'file_path', 'filePath', 'paths'] as const;
 
-/** The string path arguments of a tool call, under their own keys; null when it names none. */
-function namedPaths(args: unknown): Record<string, string> | null {
-  if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
-  const named: Record<string, string> = {};
+const stringsOf = (value: unknown): string[] =>
+  typeof value === 'string' ? [value] : Array.isArray(value) ? value.flatMap(stringsOf) : [];
+
+/** The path arguments of a tool call — under their own keys for an object; for an array (a model may send one), its
+ * strings and its objects' path arguments — or null when it names none. */
+function namedPaths(args: unknown): Record<string, unknown> | unknown[] | null {
+  if (Array.isArray(args)) {
+    const named = args.flatMap((item): unknown[] => {
+      if (typeof item === 'string') return [item];
+      const inner = item && typeof item === 'object' ? namedPaths(item) : null;
+      return inner ? [inner] : [];
+    });
+    return named.length ? named : null;
+  }
+  if (!args || typeof args !== 'object') return null;
+  const named: Record<string, unknown> = {};
   for (const key of PATH_KEYS) {
     const value = (args as Record<string, unknown>)[key];
-    if (typeof value === 'string') named[key] = value;
+    if (stringsOf(value).length) named[key] = Array.isArray(value) ? stringsOf(value) : value;
   }
   return Object.keys(named).length ? named : null;
 }
 
-/** Every path those arguments name: `files` also word by word, quotes removed (more paths tested is the safe side). */
-function pathsOf(named: Record<string, string>): string[] {
-  const paths = Object.values(named);
-  if (named.files !== undefined) paths.push(...named.files.split(/\s+/).map(word => word.replace(/^["']|["']$/g, '')).filter(Boolean));
-  return paths;
+/** Every path those arguments name, each string also word by word, quotes removed (`files` is a list in one string;
+ * more paths tested is the safe side). */
+function pathsOf(named: unknown): string[] {
+  const whole = Array.isArray(named) ? named.flatMap(item => (typeof item === 'string' ? [item] : pathsOf(item)))
+    : named && typeof named === 'object' ? Object.values(named).flatMap(stringsOf) : [];
+  const words = whole.flatMap(text => text.split(/\s+/).map(word => word.replace(/^["']|["']$/g, '')).filter(Boolean));
+  return [...whole, ...words];
 }
 
 /** The event as it may be written: the pipeline of the module header, in that order. A file tool whose path is
@@ -222,8 +251,8 @@ export class TurnLog {
         }
         chain = chain.then(async () => {
           if (this.#suspended) return;
-          await mkdir(turnLogDir(this.#dataHome), { recursive: true });
-          await appendFile(file, line, 'utf8');
+          await realLogDir(this.#dataHome, { create: true });
+          await appendDayLine(file, line);
         }).catch(report);
       },
       flush: () => chain,
@@ -235,7 +264,8 @@ export class TurnLog {
  * files named exactly AAAA-MM-JJ.jsonl with a real date; anything else stays. Returns the removed names, sorted. A
  * missing folder removes nothing. Deleted, not archived: an app-written diagnostic, not user data. */
 export async function pruneTurnLogs(dataHome: string, now: Date, days: number = TURN_LOG_RETENTION_DAYS): Promise<string[]> {
-  const dir = turnLogDir(dataHome);
+  const dir = await realLogDir(dataHome, { create: false });
+  if (dir === null) return [];
   let entries;
   try { entries = await readdir(dir, { withFileTypes: true }); }
   catch (error: any) { if (error?.code === 'ENOENT') return []; throw error; }
@@ -252,4 +282,50 @@ export async function pruneTurnLogs(dataHome: string, now: Date, days: number = 
     removed.push(entry.name);
   }
   return removed.sort();
+}
+
+/**
+ * `<dataHome>/logs/turns`, once `logs` and `logs/turns` are checked to be real folders — never a link or a junction,
+ * whose target could be outside the data home (the prune would delete there, the writer write there). `create` makes
+ * what is missing, one level at a time; without it, a missing folder gives null. Throws for anything else.
+ */
+async function realLogDir(dataHome: string, { create }: { create: boolean }): Promise<string | null> {
+  let dir = dataHome;
+  for (const name of ['logs', 'turns']) {
+    dir = join(dir, name);
+    let stats;
+    try { stats = await lstat(dir); }
+    catch (error: any) {
+      if (error?.code !== 'ENOENT') throw error;
+      if (!create) return null;
+      await mkdir(dir).catch((made: any) => { if (made?.code !== 'EEXIST') throw made; });
+      stats = await lstat(dir);
+    }
+    if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error(`${dir} n'est pas un vrai dossier : rien n'y est écrit ni supprimé`);
+  }
+  return dir;
+}
+
+/**
+ * Appends `line` to the day file `file` only when it is the app's own: missing (then created), or a regular file with a
+ * single link. A link, a junction or a hard link planted under that name is left alone and the line is not written
+ * (reported once by the logger): following it would write turn contents wherever it points, and replacing it would
+ * delete something the app did not make. The opened file is checked again (a hard link made after the lstat).
+ */
+async function appendDayLine(file: string, line: string): Promise<void> {
+  const notOurs = () => new Error(`${file} n'est pas un fichier ordinaire du journal : jour non écrit`);
+  try {
+    const stats = await lstat(file);
+    if (stats.isSymbolicLink() || !stats.isFile() || stats.nlink !== 1) throw notOurs();
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  const handle = await open(file, 'a');
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile() || stats.nlink !== 1) throw notOurs();
+    await handle.appendFile(line, 'utf8');
+  } finally {
+    await handle.close();
+  }
 }

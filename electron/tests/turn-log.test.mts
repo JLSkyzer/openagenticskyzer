@@ -2,7 +2,7 @@
 // retention, never throwing, the suspension after a migration, the MCP secrets, and the setting.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, writeFile, link, symlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -213,6 +213,109 @@ test('9. turn_log setting: full by default, the three values accepted, anything 
   }
   for (const bad of ['FULL', 'none', null]) {
     await assert.rejects(settings.saveGlobal({ turn_log: bad }), { message: 'Paramètre invalide : turn_log' });
+  }
+});
+
+test('10. a token or an exact secret in an object KEY is masked too, at full and at metadata', async t => {
+  const ghp = 'ghp_' + 'k'.repeat(36);
+  const exact = 'cle-exacte-9090';
+  for (const level of ['full', 'metadata'] as const) {
+    const dataHome = await home(t);
+    const logger = begin(new TurnLog(dataHome, () => NOW), level, { secrets: [exact] });
+    logger.write({ event: 'tool', tool: 'run_command', arguments: { [ghp]: 1, nested: { [`x ${exact} y`]: 'v' } }, ok: true, result: 'r' });
+    logger.write({ event: 'model-ready', backend: 'cpu', contextSize: 16384, wrapper: 'w', segments: { [ghp]: { [exact]: 'p' } } });
+    await logger.flush();
+    const raw = await readFile(turnLogFile(dataHome, NOW), 'utf8');
+    assert.ok(!raw.includes(ghp) && !raw.includes('k'.repeat(36)), `${level}: the token key reached the log`);
+    assert.ok(!raw.includes(exact), `${level}: the exact-secret key reached the log`);
+    const [, ready] = raw.split('\n').filter(Boolean).map(line => JSON.parse(line));
+    assert.deepEqual(ready.segments, { [MASK]: { [MASK]: 'p' } }, level);
+  }
+});
+
+test('5c. other path keys, array values and array-shaped arguments are checked too', async t => {
+  const dataHome = await home(t);
+  const isProtected = (p: string) => isSensitiveFile(p) || protectedPathMatcher('')(p);
+  const logger = begin(new TurnLog(dataHome, () => NOW), 'full', { isProtected });
+  const cases: unknown[] = [
+    { file_path: '.env', content: 'A=1' },
+    { filePath: 'cle.pem' },
+    { paths: ['src/a.ts', 'secrets.json'] },
+    { path: ['.env'] },
+    ['.env.local'],
+    [{ path: 'id_rsa' }],
+  ];
+  for (const args of cases) logger.write({ event: 'tool', tool: 'read_file', arguments: args, ok: true, result: 'CONTENU-SECRET' });
+  logger.write({ event: 'tool', tool: 'read_file', arguments: { paths: ['src/a.ts'] }, ok: true, result: 'ordinaire' });
+  await logger.flush();
+  const tools = await lines(dataHome);
+  for (const [i, args] of cases.entries()) assert.equal(tools[i].result, SENSITIVE_FILE_MASK, JSON.stringify(args));
+  assert.deepEqual(tools[0].arguments, { file_path: '.env' });
+  assert.deepEqual(tools[2].arguments, { paths: ['src/a.ts', 'secrets.json'] });
+  assert.deepEqual(tools[4].arguments, ['.env.local']);
+  assert.deepEqual(tools[5].arguments, [{ path: 'id_rsa' }]);
+  assert.ok(!(await readFile(turnLogFile(dataHome, NOW), 'utf8')).includes('CONTENU-SECRET'));
+  assert.equal(tools[6].result, 'ordinaire');
+});
+
+/** Runs `fn` with console.error captured; returns what it printed. */
+async function capturingErrors(fn: () => Promise<void>): Promise<string[]> {
+  const errors: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args.join(' ')); };
+  try { await fn(); } finally { console.error = original; }
+  return errors;
+}
+
+test('11. a day file planted as a hard link or a symbolic link is not followed: nothing written, one report', async t => {
+  const dataHome = await home(t);
+  const outside = await home(t);
+  const target = join(outside, 'cible.txt');
+  await writeFile(target, 'avant\n');
+  await mkdir(turnLogDir(dataHome), { recursive: true });
+  await link(target, turnLogFile(dataHome, NOW));
+  const errors = await capturingErrors(async () => {
+    const logger = begin(new TurnLog(dataHome, () => NOW), 'full');
+    logger.write({ event: 'turn-start', model: null, text: 'contenu du tour', attachments: 0 });
+    logger.write({ event: 'end', kind: 'done', timing });
+    await logger.flush();
+  });
+  assert.equal(await readFile(target, 'utf8'), 'avant\n', 'the hard link target is untouched');
+  assert.equal(errors.length, 1, JSON.stringify(errors));
+
+  const symHome = await home(t);
+  await mkdir(turnLogDir(symHome), { recursive: true });
+  try { await symlink(target, turnLogFile(symHome, NOW), 'file'); }
+  catch (error: any) { if (error?.code === 'EPERM') { t.diagnostic('file symlinks need a privilege here: symlink case skipped'); return; } throw error; }
+  const symErrors = await capturingErrors(async () => {
+    const logger = begin(new TurnLog(symHome, () => NOW), 'full');
+    logger.write({ event: 'turn-start', model: null, text: 'contenu du tour', attachments: 0 });
+    await logger.flush();
+  });
+  assert.equal(await readFile(target, 'utf8'), 'avant\n', 'the symlink target is untouched');
+  assert.equal(symErrors.length, 1, JSON.stringify(symErrors));
+});
+
+test('12. logs or logs/turns as a junction: the prune deletes nothing behind it and the writer writes nothing there', async t => {
+  for (const linked of ['logs', 'turns'] as const) {
+    const dataHome = await home(t);
+    const outside = await home(t);
+    // The junction's target holds an expired day file, a sentinel that must survive.
+    const targetTurns = linked === 'logs' ? join(outside, 'turns') : outside;
+    await mkdir(targetTurns, { recursive: true });
+    const sentinel = join(targetTurns, '2000-01-01.jsonl');
+    await writeFile(sentinel, 'sentinelle\n');
+    if (linked === 'logs') await symlink(outside, join(dataHome, 'logs'), 'junction');
+    else { await mkdir(join(dataHome, 'logs')); await symlink(outside, turnLogDir(dataHome), 'junction'); }
+    await assert.rejects(pruneTurnLogs(dataHome, NOW), /pas un vrai dossier/, linked);
+    assert.equal(await readFile(sentinel, 'utf8'), 'sentinelle\n', `${linked}: the sentinel survives`);
+    const errors = await capturingErrors(async () => {
+      const logger = begin(new TurnLog(dataHome, () => NOW), 'full');
+      logger.write({ event: 'turn-start', model: null, text: 'contenu du tour', attachments: 0 });
+      await logger.flush();
+    });
+    assert.deepEqual(await readdir(targetTurns), ['2000-01-01.jsonl'], `${linked}: nothing written behind the junction`);
+    assert.equal(errors.length, 1, JSON.stringify(errors));
   }
 });
 

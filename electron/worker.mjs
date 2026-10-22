@@ -685,7 +685,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     // The turn log masks hf_token and the secrets of the MCP servers this turn runs, and never logs a file tool's
     // arguments and result on a sensitive or protected path — tested as the file tools test it, relative to the project.
     const protectedRel = protectedPathMatcher(effective.ignored_patterns);
-    openLog(logLevel, [hfToken, ...mcpSecretValues(await mcpServersFor(folder, projectTrust))],
+    openLog(logLevel, [hfToken, hfToken.trim(), ...mcpSecretValues(await mcpServersFor(folder, projectTrust))],
       path => isSensitiveFile(path) || protectedRel(relative(folder, resolve(folder, path))));
     const toolCategory = new Map(tools.map(tool => [tool.name, tool.category]));
     const agentSettings = agentSettingsOf(effective);
@@ -771,9 +771,15 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     // run's messages: an older turn's dangling call is never sent again (H3), and closing it would insert a
     // message mid-list in the file but at the end on screen. Posted too: the screen must hold the same
     // messages as the file, at the same indices (edit/regenerate cut both at the same index).
-    // A turn that failed before registerTools returned still logs what it queued, masked with hf_token and the token
-    // patterns: the MCP secrets are not known then (ruling M5), and no file tool has run.
-    if (!logger) openLog(logLevel, [hfToken], path => isSensitiveFile(path) || protectedPathMatcher('')(path));
+    // A turn that failed before registerTools returned still logs what it queued, masked with hf_token, the global MCP
+    // servers' secrets (read on their own: a failure there masks nothing more, never the turn's end) and the token
+    // patterns (ruling M5). The project's servers are not read: whether it is trusted is not known. No file tool has run.
+    if (!logger) {
+      let globalMcpSecrets = [];
+      try { globalMcpSecrets = mcpSecretValues(await mcpConfig.list()); }
+      catch { /* an unreadable mcp.json: hf_token and the patterns only */ }
+      openLog(logLevel, [hfToken, hfToken.trim(), ...globalMcpSecrets], path => isSensitiveFile(path) || protectedPathMatcher('')(path));
+    }
     const { messages: produced, added } = closeDanglingCalls(accumulated, aborted ? "Interrompu par l'utilisateur" : `Interrompu : ${message}`);
     for (const closing of added) { post({ kind: 'message', message: closing }); logTool(closing, false); }
     // Text already streamed is kept whatever ended the turn — a Stop, a provider gone silent (idle

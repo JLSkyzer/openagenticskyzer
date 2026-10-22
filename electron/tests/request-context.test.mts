@@ -128,3 +128,21 @@ test('a tool result goes out as role, tool_call_id and content only: its saved n
   assert.equal(sent.some(message => 'category' in message || (message.role === 'tool' && 'name' in message)), false);
   assert.deepEqual(stored, before, 'the saved messages are untouched');
 });
+
+test('reasoning, reasoningMs and timing are never sent: not in the current turn, not in earlier turns', () => {
+  const stored: any[] = [
+    { role: 'user', content: 'q1' },
+    { role: 'assistant', content: 'a', reasoning: 'r', reasoningMs: 5, timing: { totalMs: 1 } },
+    { role: 'user', content: 'q2' },
+    { ...callMessage('c1', 'read_file', '{"path":"a"}', 'b'), reasoning: 'r2', reasoningMs: 9, timing: { totalMs: 2 } },
+    result('c1', 'lu'),
+  ];
+  const before = structuredClone(stored);
+  const sent = requestMessages(stored);
+  for (const message of sent) {
+    for (const key of ['reasoning', 'reasoningMs', 'timing']) assert.equal(key in message, false, `${key} in ${JSON.stringify(message)}`);
+  }
+  assert.deepEqual(sent.map(message => message.content), ['q1', 'a', 'q2', 'b', 'lu'], 'the contents are unchanged');
+  assert.deepEqual(sent[3].tool_calls, stored[3].tool_calls, 'the calls still go out');
+  assert.deepEqual(stored, before, 'the saved messages keep them');
+});

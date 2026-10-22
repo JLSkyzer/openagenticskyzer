@@ -47,12 +47,20 @@ function wireToolResult(message: ChatMessage): ChatMessage {
   return { role: 'tool', ...(message.tool_call_id === undefined ? {} : { tool_call_id: message.tool_call_id }), content: message.content };
 }
 
+/** An assistant message as the provider receives it: its reasoning, the reasoning's duration and the turn's figures,
+ * saved for the screen, never leave. */
+function wireAssistant(message: ChatMessage): ChatMessage {
+  if (!('reasoning' in message || 'reasoningMs' in message || 'timing' in message)) return message;
+  const { reasoning: _reasoning, reasoningMs: _reasoningMs, timing: _timing, ...sent } = message;
+  return sent;
+}
+
 /**
  * The messages to send (system message excluded). Earlier turns — before the last user message — keep only
  * the user messages and the TEXT of the assistant ones (tool calls, tool results and text-less assistant
  * messages are dropped, as Python sent them); the turn in progress is sent whole, its attachments expanded,
- * unreadable call arguments replaced by `{}` and its tool results reduced to the OpenAI fields (in the request
- * only: the saved transcript keeps everything).
+ * unreadable call arguments replaced by `{}`, its tool results reduced to the OpenAI fields and its assistant messages
+ * stripped of their reasoning and timing (in the request only: the saved transcript keeps everything).
  */
 export function requestMessages(messages: readonly ChatMessage[]): ChatMessage[] {
   const start = Math.max(0, currentTurnStart(messages));
@@ -61,7 +69,7 @@ export function requestMessages(messages: readonly ChatMessage[]): ChatMessage[]
     if (isUser(message)) earlier.push({ role: 'user', content: withPlaceholders(message) });
     else if (isAssistant(message) && textOf(message.content).trim()) earlier.push({ role: 'assistant', content: textOf(message.content) });
   }
-  const current = messages.slice(start).map(message => wireToolResult(withSendableArguments(toWireMessage(message as never) as unknown as ChatMessage)));
+  const current = messages.slice(start).map(message => wireAssistant(wireToolResult(withSendableArguments(toWireMessage(message as never) as unknown as ChatMessage))));
   return [...earlier, ...current];
 }
 

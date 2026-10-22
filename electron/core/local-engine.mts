@@ -8,15 +8,20 @@ import { stat } from 'node:fs/promises';
 import os from 'node:os';
 import { LlamaChat, InsufficientMemoryError, readGgufFileInfo, GgufInsights, GgmlType, type Llama, type LlamaModel, type LlamaContext } from 'node-llama-cpp';
 import { historyFromMessages, responseToMessage, toGgufFunctions } from './local-provider.mts';
-import type { ChatMessage, ModelProvider, ToolSchema } from './model-types.mts';
+import type { ChatMessage, ChatWrapperInfo, CompletionOptions, ModelProvider, ToolSchema, WindowOptions } from './model-types.mts';
 import { localContextSize, DEFAULT_LOCAL_CONTEXT, type LocalContextSetting } from './context-budget.mts';
 import { runtimeLlama, runtimeGeneration, backendOf } from './llama-runtime.mts';
 import { fitOf, type Placement } from './placement.mts';
+import { untilAborted } from './abortable.mts';
+import { ReplyAccumulator, type SplitPiece } from './reasoning-split.mts';
 
 /** What the engine context is sized from: the « Contexte des modèles locaux » setting. max_tokens takes no part
  * (ruling F6): it caps the request window only (context-budget.mts::effectiveWindow). */
 export interface ContextRequest { setting: LocalContextSetting }
 export const DEFAULT_CONTEXT_REQUEST: ContextRequest = { setting: DEFAULT_LOCAL_CONTEXT };
+
+/** A load's stop (`signal`) and follow-up (`onLoad`): model-types.mts::WindowOptions. */
+export interface EngineOptions extends WindowOptions {}
 
 export interface LocalCompletionOptions {
   modelPath: string;
@@ -24,6 +29,8 @@ export interface LocalCompletionOptions {
   tools?: readonly ToolSchema[];
   signal?: AbortSignal;
   onDelta?: (text: string) => void;
+  onReasoning?: CompletionOptions['onReasoning'];
+  onStats?: CompletionOptions['onStats'];
   maxTokens?: number;
   contextRequest?: ContextRequest;
 }
@@ -44,6 +51,8 @@ interface Loaded {
   model: LlamaModel;
   context: LlamaContext;
   chat: LlamaChat;
+  /** The chat wrapper node-llama-cpp chose for this model (logged at load: `[chat] wrapper …`). */
+  wrapper: ChatWrapperInfo;
 }
 let loaded: Loaded | null = null;
 
@@ -85,12 +94,16 @@ function placementOf({ llama, model, context }: Loaded): Placement {
 }
 
 // One load or dispose at a time: two folders sending at once must not interleave a dispose with the other's load,
-// which would leak a model or free a context the other just created.
+// which would leak a model or free a context the other just created. A stop releases its caller at once, even while
+// it waits for the lock (untilAborted); a queued run whose signal is already aborted never starts.
 let lock: Promise<unknown> = Promise.resolve();
-function serial<T>(run: () => Promise<T>): Promise<T> {
-  const result = lock.then(run);
+function serial<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const result = lock.then(() => {
+    signal?.throwIfAborted();
+    return run();
+  });
   lock = result.catch(() => undefined);
-  return result;
+  return untilAborted(result, signal);
 }
 
 // For tests: how many times node-llama-cpp's loadModel was called in this process, and how many of the models it
@@ -179,13 +192,30 @@ export async function cpuFallback(insights: GgufInsights, contextSize: number, u
  * it loads on the processor if the RAM holds it (cpuFallback). When the machine cannot hold it even with no layer on
  * the card, nothing stays loaded and the error is localModelTooBig(contextSize).
  */
-export async function loadLocalModel(modelPath: string, contextSize: number): Promise<Placement> {
+export async function loadLocalModel(modelPath: string, contextSize: number, options: EngineOptions = {}): Promise<Placement> {
   // The placement is read inside the lock: a load queued behind this one may dispose this context.
-  return serial(async () => placementOf(await loadLocked(modelPath, contextSize)));
+  return serial(async () => placementOf(await loadLocked(modelPath, contextSize, options)), options.signal);
 }
 
-async function loadLocked(modelPath: string, contextSize: number): Promise<Loaded> {
+/** `options.signal` stops the load (node-llama-cpp's loadSignal and createSignal, on the fallback too), and the
+ * rejection is then always the signal's own reason — a DOMException AbortError, whatever node-llama-cpp threw —
+ * which the worker tests by name. `options.onLoad` follows a real load only: start, progress, end. */
+async function loadLocked(modelPath: string, contextSize: number, options: EngineOptions = {}): Promise<Loaded> {
+  const { signal } = options;
+  signal?.throwIfAborted();
   if (loaded && loaded.path === modelPath && loaded.requested === contextSize && loaded.generation === runtimeGeneration()) return loaded;
+  try {
+    return await loadFresh(modelPath, contextSize, options);
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason;
+    throw error;
+  }
+}
+
+async function loadFresh(modelPath: string, contextSize: number, { signal, onLoad }: EngineOptions): Promise<Loaded> {
+  const startedAt = performance.now();
+  onLoad?.({ kind: 'start' });
+  const onLoadProgress = (progress: number) => onLoad?.({ kind: 'progress', progress });
   await disposeLocked();
   const llama = await runtimeLlama();
   const generation = runtimeGeneration();
@@ -194,11 +224,11 @@ async function loadLocked(modelPath: string, contextSize: number): Promise<Loade
   let model: LlamaModel | null = null;
   try {
     nativeLoads += 1;
-    model = await llama.loadModel({ modelPath, gpuLayers: { fitContext: { contextSize } } });
+    model = await llama.loadModel({ modelPath, gpuLayers: { fitContext: { contextSize } }, loadSignal: signal, onLoadProgress });
     liveModels += 1;
     // A fixed size: no silent shrink on failure (node-llama-cpp only retries an 'auto' size, said here anyway).
-    const context = await model.createContext({ contextSize, failedCreationRemedy: false });
-    return keep({ modelPath, contextSize, generation, llama, model, context, vramBefore, fallback: false });
+    const context = await model.createContext({ contextSize, failedCreationRemedy: false, createSignal: signal });
+    return keep({ modelPath, contextSize, generation, llama, model, context, vramBefore, fallback: false, startedAt, onLoad });
   } catch (error) {
     if (model) await disposeModel(model);
     if (!(error instanceof InsufficientMemoryError)) throw error;
@@ -209,26 +239,43 @@ async function loadLocked(modelPath: string, contextSize: number): Promise<Loade
   // skips its VRAM check at 0 layers, and its RAM check with it: cpuFallback is that RAM check.
   const useMmap = llama.supportsMmap;
   if (!(await cpuFallback(insights, contextSize, useMmap)).fits) throw new Error(localModelTooBig(contextSize));
+  signal?.throwIfAborted();
   nativeLoads += 1;
-  model = await llama.loadModel({ modelPath, gpuLayers: 0, useMmap, ignoreMemorySafetyChecks: true });
+  model = await llama.loadModel({ modelPath, gpuLayers: 0, useMmap, ignoreMemorySafetyChecks: true, loadSignal: signal, onLoadProgress });
   liveModels += 1;
   let context: LlamaContext;
   try {
-    context = await model.createContext({ contextSize, failedCreationRemedy: false, ignoreMemorySafetyChecks: true });
+    context = await model.createContext({ contextSize, failedCreationRemedy: false, ignoreMemorySafetyChecks: true, createSignal: signal });
   } catch (error) {
     // Even 0 layers keeps a compute buffer on the card: an allocation the full card refuses ends here.
     await disposeModel(model);
+    if (signal?.aborted) throw signal.reason;
     console.warn(`[placement] repli processeur : le contexte n'a pas pu être créé : ${(error as Error | undefined)?.message ?? error}`);
     throw new Error(localModelTooBig(contextSize));
   }
-  return keep({ modelPath, contextSize, generation, llama, model, context, vramBefore, fallback: true });
+  return keep({ modelPath, contextSize, generation, llama, model, context, vramBefore, fallback: true, startedAt, onLoad });
 }
 
-function keep(p: { modelPath: string; contextSize: number; generation: number; llama: Llama; model: LlamaModel; context: LlamaContext; vramBefore: { total: number; used: number; free: number } | null; fallback: boolean }): Loaded {
+function keep(p: { modelPath: string; contextSize: number; generation: number; llama: Llama; model: LlamaModel; context: LlamaContext; vramBefore: { total: number; used: number; free: number } | null; fallback: boolean; startedAt: number; onLoad?: EngineOptions['onLoad'] }): Loaded {
   const { llama, model, context } = p;
-  loaded = { path: p.modelPath, requested: p.contextSize, generation: p.generation, llama, model, context, chat: new LlamaChat({ contextSequence: context.getSequence() }) };
+  const chat = new LlamaChat({ contextSequence: context.getSequence() });
+  const wrapper: ChatWrapperInfo = { name: chat.chatWrapper.wrapperName, segments: chat.chatWrapper.settings.segments };
+  loaded = { path: p.modelPath, requested: p.contextSize, generation: p.generation, llama, model, context, chat, wrapper };
   console.info(placementLogLine({ backend: backendOf(llama), gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, useMmap: model.useMmap, vramBefore: p.vramBefore, padding: llama.vramPaddingSize, contextSize: context.contextSize, fallback: p.fallback }));
+  console.info(chatWrapperLogLine(wrapper));
+  p.onLoad?.({ kind: 'end', ms: Math.round(performance.now() - p.startedAt), wrapper });
   return loaded;
+}
+
+/** The one line a load logs about its chat template: the wrapper node-llama-cpp chose and its thought segments
+ * (null: the template declares none, and a reasoning model's tags are then caught by reasoning-split.mts only). */
+export function chatWrapperLogLine(info: ChatWrapperInfo): string {
+  return `[chat] wrapper ${info.name} · segments ${JSON.stringify(info.segments ?? null)}`;
+}
+
+/** The chat wrapper of the loaded `modelPath`, or null when it is not the model loaded now. Never loads anything. */
+export function loadedChatWrapper(modelPath: string): ChatWrapperInfo | null {
+  return loaded?.path === modelPath ? loaded.wrapper : null;
 }
 
 /** Where the loaded `modelPath` really sits (model.gpuLayers, never an estimate), or null when it is not the model
@@ -241,9 +288,9 @@ export function loadedPlacement(modelPath: string): Placement | null {
 // same context size stay selected — a fresh `LlamaChat` still gets the FULL history every call (it keeps no memory
 // of its own between generateResponse() calls), so re-using the same instance is purely a cost optimisation, not
 // a correctness requirement. A changed « Contexte des modèles locaux » reloads at the next message.
-async function engineFor(modelPath: string, request: ContextRequest): Promise<Loaded> {
+async function engineFor(modelPath: string, request: ContextRequest, options: EngineOptions = {}): Promise<Loaded> {
   const contextSize = await plannedContextSize(modelPath, request);
-  return serial(() => loadLocked(modelPath, contextSize));
+  return serial(() => loadLocked(modelPath, contextSize, options), options.signal);
 }
 
 /** Frees whatever local model is currently loaded (switching to another model or context size, or the app shutting
@@ -268,8 +315,8 @@ export function warmModelPath(): string | null {
 
 /** Loads `modelPath` if needed and returns the context size the engine really runs with: the window the
  * request budget is computed from. */
-export async function engineContextSize(modelPath: string, request: ContextRequest = DEFAULT_CONTEXT_REQUEST): Promise<number> {
-  return (await engineFor(modelPath, request)).context.contextSize;
+export async function engineContextSize(modelPath: string, request: ContextRequest = DEFAULT_CONTEXT_REQUEST, options: EngineOptions = {}): Promise<number> {
+  return (await engineFor(modelPath, request, options)).context.contextSize;
 }
 
 /** The context size `modelPath` runs with if it is the model loaded now, else null. Never loads anything: the
@@ -291,16 +338,52 @@ export function mintCallId(): string {
 // llama.cpp server); a reply that reaches it is flagged truncated, like finish_reason "length".
 export const LOCAL_OUTPUT_CAP = 8192;
 
-/** `ModelProvider.complete()` (model-types.mts) for the built-in engine. `messages` is the request agent.mts built (request-context.mts: attachments expanded, fitted to the budget). */
+/**
+ * `ModelProvider.complete()` (model-types.mts) for the built-in engine. `messages` is the request agent.mts built
+ * (request-context.mts: attachments expanded, fitted to the budget). The answer streams to `onDelta` and the reasoning
+ * apart to `onReasoning` (thought segments, or <think> tags: reasoning-split.mts); the content is the answer alone, and
+ * `reasoning`/`reasoningMs` are set only when there was some. `onStats` is called once per generation, a stopped one
+ * included; a stop during the load reports none, since no generation ran.
+ */
 export async function completeLocal(options: LocalCompletionOptions): Promise<ChatMessage & { content: string }> {
-  const { chat } = await engineFor(options.modelPath, options.contextRequest ?? DEFAULT_CONTEXT_REQUEST);
-  const response = await chat.generateResponse(historyFromMessages(options.messages), {
-    functions: toGgufFunctions(options.tools ?? []),
-    onTextChunk: options.onDelta,
-    signal: options.signal,
-    maxTokens: options.maxTokens ?? LOCAL_OUTPUT_CAP,
-  });
-  return responseToMessage(response, mintCallId);
+  const { chat } = await engineFor(options.modelPath, options.contextRequest ?? DEFAULT_CONTEXT_REQUEST, { signal: options.signal });
+  const reply = new ReplyAccumulator();
+  const deliver = (pieces: SplitPiece[]) => {
+    for (const piece of pieces) {
+      if (piece.kind === 'text') options.onDelta?.(piece.text);
+      else options.onReasoning?.(piece.kind === 'moved' ? { text: piece.text, moved: true } : { text: piece.text });
+    }
+  };
+  const meter = chat.sequence.tokenMeter;
+  const before = meter.getState();
+  let outputTokens = 0;
+  let firstChunkAt: number | undefined;
+  let response: Awaited<ReturnType<LlamaChat['generateResponse']>>;
+  try {
+    response = await chat.generateResponse(historyFromMessages(options.messages), {
+      functions: toGgufFunctions(options.tools ?? []),
+      onResponseChunk: chunk => {
+        firstChunkAt ??= performance.now();
+        outputTokens += chunk.tokens.length;
+        deliver(reply.chunk(chunk));
+      },
+      signal: options.signal,
+      maxTokens: options.maxTokens ?? LOCAL_OUTPUT_CAP,
+    });
+  } finally {
+    options.onStats?.({
+      inputTokens: meter.diff(before).usedInputTokens,
+      outputTokens,
+      generationMs: firstChunkAt === undefined ? 0 : Math.round(performance.now() - firstChunkAt),
+    });
+  }
+  deliver(reply.end());
+  const { reasoning } = reply;
+  return {
+    ...responseToMessage(response, mintCallId),
+    content: reply.text,
+    ...(reasoning ? { reasoning, reasoningMs: reply.reasoningMs ?? 0 } : {}),
+  };
 }
 
 /** The built-in engine as a ModelProvider (worker.mjs `turnProvider`): its window is the context size it really
@@ -309,10 +392,11 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
 export function localProvider(modelPath: string, request: ContextRequest = DEFAULT_CONTEXT_REQUEST): ModelProvider {
   return {
     complete: (options: Omit<LocalCompletionOptions, 'modelPath' | 'contextRequest'>) => completeLocal({
-      modelPath, messages: options.messages, tools: options.tools, signal: options.signal, onDelta: options.onDelta, maxTokens: options.maxTokens,
+      modelPath, messages: options.messages, tools: options.tools, signal: options.signal, onDelta: options.onDelta,
+      onReasoning: options.onReasoning, onStats: options.onStats, maxTokens: options.maxTokens,
       contextRequest: request,
     }),
-    contextWindow: () => engineContextSize(modelPath, request),
+    contextWindow: (options?: WindowOptions) => engineContextSize(modelPath, request, options),
     outputCap: (): number | undefined => LOCAL_OUTPUT_CAP,
   };
 }

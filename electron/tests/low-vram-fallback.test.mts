@@ -86,6 +86,7 @@ test('a full card (setVramCap(1)): stories260K at 16384 tokens loads on the proc
   assert.equal(placement.length, 1, stdout.slice(-2000));
   assert.match(placement[0], /couches 0\/\d+/);
   assert.match(placement[0], /repli processeur/);
+  assert.match(placement[0], /mmap oui/, 'the fallback keeps mmap: the weights are mapped, not copied into RAM');
 });
 
 test('cpuFallback: fits when the RAM holds 0 layers at that context, not when it does not', { timeout: 60000 }, async () => {

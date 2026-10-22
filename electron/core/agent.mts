@@ -101,6 +101,10 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
     const answer = await provider.complete({ messages: [messages[0], ...fitted], tools: schemas, signal,
       ...(maxTokens === undefined ? {} : { maxTokens }),
       onDelta: text => emit?.({ type: 'delta', text }),
+      // The reasoning apart from the answer (`moved`: what was streamed as the answer was reasoning), and the
+      // generation's figures. The reply keeps `reasoning`/`reasoningMs`, saved, never sent back (request-context.mts).
+      onReasoning: piece => emit?.({ type: 'thinking', ...piece }),
+      onStats: stats => emit?.({ type: 'stats', ...stats }),
     });
     signal.throwIfAborted();
     // The cut is the provider's report: the conversation keeps a visible notice, never the flag itself.

@@ -8,7 +8,8 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readGgufFileInfo, GgufInsights } from 'node-llama-cpp';
-import { completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount } from '../core/local-engine.mts';
+import { completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine } from '../core/local-engine.mts';
+import type { GenerationStats, LoadEvent } from '../core/model-types.mts';
 import { runtimeLlama, backendOf } from '../core/llama-runtime.mts';
 import { removeAtEnd } from './teardown.mts';
 import { withTrainContext } from './support/gguf-fixture.mts';
@@ -278,4 +279,89 @@ test('two concurrent loads with different requests end with exactly one warm mod
   assert.equal(liveModelCount(), 1, 'the first model was disposed, not overwritten');
   assert.equal(loadedContextSize(patched), 65536, 'the last request wins');
   assert.equal(warmContext()?.disposed, false);
+});
+
+// M1: the clauses below cannot tell loadSignal from createSignal (liveModelCount moves only after loadModel resolves);
+// what they prove is the AbortError, the progress reported, and nothing left loaded.
+test('a. an abort during the load rejects with AbortError, after progress was reported, and leaves nothing loaded', { timeout: 60000 }, async () => {
+  await disposeEngine();
+  const before = liveModelCount();
+  const c = new AbortController();
+  const seen: number[] = [];
+  await assert.rejects(loadLocalModel(modelPath, 16384, { signal: c.signal, onLoad: e => { if (e.kind === 'progress') { seen.push(e.progress); c.abort(); } } }), { name: 'AbortError' });
+  assert.ok(seen.length >= 1, 'onLoadProgress was passed to loadModel');
+  for (const value of seen) assert.ok(value > 0 && value <= 1, `a progress in (0, 1]: ${value}`);
+  assert.equal(warmModelPath(), null);
+  assert.equal(liveModelCount(), before);
+  await disposeEngine(); // waits for the aborted load to leave the lock
+  assert.equal(warmModelPath(), null, 'the aborted load kept nothing, even once finished');
+  assert.equal(liveModelCount(), before, 'and leaked no model');
+});
+
+test('b. a signal aborted while waiting for the load lock rejects at once; the queued load never runs', { timeout: 120000 }, async t => {
+  t.after(() => disposeEngine());
+  await disposeEngine();
+  const root = await mkdtemp(join(tmpdir(), 'openagent-local-engine-'));
+  removeAtEnd(t, root);
+  const patched = join(root, 'stories-131072.gguf');
+  await withTrainContext(modelPath, patched, 131072);
+  const loads = nativeLoadCount();
+  let firstDone = false;
+  const first = loadLocalModel(patched, 65536).finally(() => { firstDone = true; });
+  const c = new AbortController();
+  const second = loadLocalModel(modelPath, 16384, { signal: c.signal });
+  c.abort();
+  let firstDoneAtRejection: boolean | undefined;
+  await assert.rejects(second.catch(error => { firstDoneAtRejection = firstDone; throw error; }), { name: 'AbortError' });
+  assert.equal(firstDoneAtRejection, false, 'the stop did not wait for the load ahead of it (S6)');
+  await first;
+  assert.equal(nativeLoadCount(), loads + 1, 'the queued load never called loadModel');
+  assert.equal(warmModelPath(), patched);
+  await assert.rejects(loadLocalModel(patched, 65536, { signal: AbortSignal.abort() }), { name: 'AbortError' }, 'an aborted signal rejects on the warm path too');
+});
+
+test('c. a real load reports start, rising progress ending at 1, then end with its time and chat wrapper; a reused engine reports nothing', { timeout: 60000 }, async t => {
+  t.after(() => disposeEngine());
+  await disposeEngine();
+  const events: LoadEvent[] = [];
+  await localProvider(modelPath).contextWindow({ onLoad: e => events.push(e) });
+  assert.equal(events[0]?.kind, 'start', JSON.stringify(events));
+  const progress = events.flatMap(e => e.kind === 'progress' ? [e.progress] : []);
+  assert.ok(progress.length >= 1, JSON.stringify(events));
+  for (let i = 1; i < progress.length; i++) assert.ok(progress[i] >= progress[i - 1], `non-decreasing: ${progress.join(', ')}`);
+  assert.equal(progress.at(-1), 1, `ends at 1: ${progress.join(', ')}`);
+  const last = events.at(-1)!;
+  assert.equal(last.kind, 'end');
+  if (last.kind !== 'end') return;
+  assert.ok(last.ms >= 0);
+  assert.equal(typeof last.wrapper.name, 'string');
+  assert.ok(last.wrapper.name.length > 0);
+  assert.deepEqual(loadedChatWrapper(modelPath), last.wrapper);
+  assert.equal(loadedChatWrapper(`${modelPath}.other`), null);
+  assert.equal(chatWrapperLogLine({ name: 'Qwen', segments: { thought: { prefix: '<think>' } } }), '[chat] wrapper Qwen · segments {"thought":{"prefix":"<think>"}}');
+  const again: LoadEvent[] = [];
+  await localProvider(modelPath).contextWindow({ onLoad: e => again.push(e) });
+  assert.deepEqual(again, [], 'the warm engine was reused: no load, no event');
+});
+
+test('d. completeLocal reports its stats once, and a plain model gets no reasoning key', { timeout: 60000 }, async t => {
+  t.after(() => disposeEngine());
+  const stats: GenerationStats[] = [];
+  const message = await completeLocal({ modelPath, messages: [{ role: 'user', content: 'Once upon a time' }], maxTokens: 16, onStats: s => stats.push(s) });
+  assert.equal(stats.length, 1, JSON.stringify(stats));
+  assert.ok(stats[0].outputTokens >= 1 && stats[0].outputTokens <= 16, JSON.stringify(stats[0]));
+  assert.ok(stats[0].inputTokens > 0, JSON.stringify(stats[0]));
+  assert.ok(stats[0].generationMs >= 0);
+  assert.equal('reasoning' in message, false);
+  assert.equal('reasoningMs' in message, false);
+});
+
+test('e. a stopped generation still reports its stats', { timeout: 60000 }, async t => {
+  t.after(() => disposeEngine());
+  const stats: GenerationStats[] = [];
+  const c = new AbortController();
+  await assert.rejects(completeLocal({ modelPath, messages: [{ role: 'user', content: 'Once upon a time' }], maxTokens: 200, signal: c.signal,
+    onDelta: () => c.abort(), onStats: s => stats.push(s) }), { name: 'AbortError' });
+  assert.equal(stats.length, 1, JSON.stringify(stats));
+  assert.ok(stats[0].outputTokens >= 1, JSON.stringify(stats[0]));
 });

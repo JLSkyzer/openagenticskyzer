@@ -182,3 +182,26 @@ test('a tool result is saved with its tool name and category, and neither field 
   assert.equal(sent.length, 2);
   for (const message of sent) assert.deepEqual(Object.keys(message).sort(), ['content', 'role', 'tool_call_id']);
 });
+
+test('runAgent forwards the provider\'s reasoning and stats as thinking and stats events, and keeps reasoning on the reply', async () => {
+  const { runAgent } = await import('../core/agent.mts');
+  const events: Array<{ type: string; [key: string]: unknown }> = [];
+  const provider = {
+    complete: async (options: any) => {
+      options.onReasoning({ text: 'pensée' });
+      options.onReasoning({ text: 'avant', moved: true });
+      options.onDelta('réponse');
+      options.onStats({ inputTokens: 3, outputTokens: 2, generationMs: 5 });
+      return { role: 'assistant' as const, content: 'réponse', reasoning: 'avantpensée', reasoningMs: 7 };
+    },
+    contextWindow: async () => 16384,
+    outputCap: () => undefined,
+  };
+  const result = await runAgent({ provider, messages: [{ role: 'user', content: 'q' }], instructions: 'i', tools: [],
+    settings: { mode: 'auto', permission_mode: 'auto' }, confirm: async () => true, emit: event => events.push(event) });
+  assert.deepEqual(events.filter(e => e.type !== 'turn').map(e => e.type), ['thinking', 'thinking', 'delta', 'stats', 'message']);
+  assert.deepEqual(events.filter(e => e.type === 'thinking'), [{ type: 'thinking', text: 'pensée' }, { type: 'thinking', text: 'avant', moved: true }]);
+  assert.deepEqual(events.find(e => e.type === 'stats'), { type: 'stats', inputTokens: 3, outputTokens: 2, generationMs: 5 });
+  assert.equal(result[1].reasoning, 'avantpensée');
+  assert.equal(result[1].reasoningMs, 7);
+});

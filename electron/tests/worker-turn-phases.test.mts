@@ -116,7 +116,14 @@ test('3. a stop during the load abandons it: no reading, nothing loaded afterwar
   assert.equal(phases.includes('reading'), false, dump(events));
   assert.equal(Object.hasOwn(stopped.timing, 'readMs'), false, JSON.stringify(stopped.timing));
   assert.equal(Object.hasOwn(stopped.timing, 'loadMs'), false, JSON.stringify(stopped.timing));
-  assert.equal((await callWorker(worker, 'model-status')).loaded, false);
+  // The stop releases the turn at once (untilAborted), while the native load goes on behind it until it sees its
+  // signal: read right after `stopped`, model-status would say « not loaded » whether or not the engine honours the
+  // stop. So it is read over SETTLE_MS, about ten times this copy's cold load (≈1.1 s measured on 2026-10-22, send →
+  // reading with nothing stopped), long after any load the stop failed to cut would have ended and stayed warm.
+  const SETTLE_MS = 10_000;
+  for (const end = Date.now() + SETTLE_MS; Date.now() < end; await new Promise(resolve => setTimeout(resolve, 250))) {
+    assert.equal((await callWorker(worker, 'model-status')).loaded, false, 'a load the stop cut short never stays loaded');
+  }
   const saved = await callWorker(worker, 'messages', { folder, branchId: 'main' });
   assert.deepEqual(saved, [{ role: 'user', content: 'Once upon a time' }]);
 });

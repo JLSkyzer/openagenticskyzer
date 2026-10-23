@@ -27,8 +27,10 @@ export interface TurnTiming { loadMs?: number; readMs?: number; firstTextMs?: nu
 /** `opensThought`: the chat template opens <think> in the generation prompt (core/thought-prefill.mts). */
 export interface ChatWrapperInfo { name: string; segments: unknown; opensThought: boolean }
 /** A model load as it happens: started, progress in (0, 1], ended (its time and chat wrapper). Only a real load
- * reports: a reused warm engine reports nothing. */
-export type LoadEvent = { kind: 'start' } | { kind: 'progress'; progress: number } | { kind: 'end'; ms: number; wrapper: ChatWrapperInfo };
+ * reports: a reused warm engine reports nothing. `retry`: a second native load begins, its progress starting again
+ * from 0 — with fewer layers on the card (`fewer-layers`, the context did not fit) or on the processor (`cpu`). */
+export type LoadEvent = { kind: 'start' } | { kind: 'progress'; progress: number } | { kind: 'retry'; mode: LoadRetry } | { kind: 'end'; ms: number; wrapper: ChatWrapperInfo };
+export type LoadRetry = 'fewer-layers' | 'cpu';
 /** One generation's figures: tokens read (the prompt, as evaluated), tokens written, and the time from the first
  * chunk to the end. Reported once, a stopped generation included. */
 export interface GenerationStats { inputTokens: number; outputTokens: number; generationMs: number }

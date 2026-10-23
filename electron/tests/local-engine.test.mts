@@ -8,7 +8,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readGgufFileInfo, GgufInsights } from 'node-llama-cpp';
-import { completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine } from '../core/local-engine.mts';
+import { GenerationMeter, completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine } from '../core/local-engine.mts';
 import type { GenerationStats, LoadEvent } from '../core/model-types.mts';
 import { runtimeLlama, backendOf } from '../core/llama-runtime.mts';
 import { removeAtEnd } from './teardown.mts';
@@ -366,4 +366,24 @@ test('e. a stopped generation still reports its stats', { timeout: 60000 }, asyn
     onDelta: () => c.abort(), onStats: s => stats.push(s) }), { name: 'AbortError' });
   assert.equal(stats.length, 1, JSON.stringify(stats));
   assert.ok(stats[0].outputTokens >= 1, JSON.stringify(stats[0]));
+});
+
+// I1 (final review): on a model whose thought is a native segment (Qwen3), node-llama-cpp sends an EMPTY segment-start
+// chunk as soon as the prompt starts being read; the rate's clock started there, so it counted the prompt reading
+// as generation (part B: 0,4 tok/s shown, about 0,5 real). The clock starts at the first chunk that carries tokens.
+test('GenerationMeter: an empty segment-start chunk does not start the generation clock; the first token does', () => {
+  let now = 1000;
+  const meter = new GenerationMeter(() => now);
+  meter.chunk(0); // the segment start, sent before the prompt is read
+  now += 60000; // reading a 4000-token prompt
+  meter.chunk(3);
+  now += 1500;
+  meter.chunk(0);
+  meter.chunk(2);
+  now += 500;
+  assert.deepEqual(meter.stats(17), { inputTokens: 17, outputTokens: 5, generationMs: 2000 });
+  const idle = new GenerationMeter(() => now);
+  idle.chunk(0);
+  now += 5000;
+  assert.deepEqual(idle.stats(4), { inputTokens: 4, outputTokens: 0, generationMs: 0 }, 'no token written: no generation time');
 });

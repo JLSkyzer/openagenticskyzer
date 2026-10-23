@@ -8,7 +8,7 @@ import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
 import { FoldersService } from './core/folders.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
-import { localProvider, plannedContextSize, loadedChatWrapper } from './core/local-engine.mts';
+import { localProvider, plannedContextSize, loadedChatWrapper, loadedOutcome, outcomeNote } from './core/local-engine.mts';
 import { TurnLog, pruneTurnLogs, mcpSecretValues } from './core/turn-log.mts';
 import { isSensitiveFile, protectedPathMatcher } from './core/file-filter.mts';
 import { EstimateCache, estimateAndRemember, estimateKey, hardwareKey, ESTIMATE_BUSY } from './core/offload-estimate.mts';
@@ -225,21 +225,28 @@ function postModelStatus(model) {
 }
 
 /** The turn log's model-ready line, from the same sources as postModelStatus: where the loaded model really sits, the
- * context it runs with (the request window for a model that is not a loaded .gguf), its chat wrapper and the load
- * time (`loadMs`, none for a warm engine). Best-effort like postModelStatus. */
+ * context it runs with (the request window for a model that is not a loaded .gguf), its chat wrapper, the load
+ * time (`loadMs`, none for a warm engine) and how the load got its placement (`placement`: 'direct', 'step-down' or
+ * 'fallback', with `placementNote` saying why when it is not direct — the [placement] line's own words).
+ * Best-effort like postModelStatus. */
 function logModelReady(model, contextTokens, loadMs, log) {
   try {
     const status = turnModelStatus(model);
     const placement = status.placement;
     const wrapper = model ? loadedChatWrapper(model.path) : null;
+    const outcome = model ? loadedOutcome(model.path) : null;
     log({
       event: 'model-ready', backend: placement?.backend ?? null,
       ...(placement ? { gpuLayers: placement.gpuLayers, totalLayers: placement.totalLayers } : {}),
+      ...(outcome ? { placement: outcome.kind, ...(outcome.kind === 'direct' ? {} : { placementNote: outcomeNote(outcome), refusedLayers: outcome.refused }) } : {}),
       contextSize: placement?.contextSize ?? (status.loaded ? status.contextWindow : contextTokens),
       ...(wrapper ? { wrapper: wrapper.name, segments: wrapper.segments, opensThought: wrapper.opensThought } : {}),
       ...(loadMs === undefined ? {} : { loadMs }),
     });
-  } catch { /* a line missing never fails the turn */ }
+  } catch (error) {
+    // A line missing never fails the turn, but it is said (M-f).
+    console.warn(`[turn-log] ligne model-ready non écrite : ${error instanceof Error ? error.message : error}`);
+  }
 }
 
 /**

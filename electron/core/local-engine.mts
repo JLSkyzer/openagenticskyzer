@@ -8,7 +8,7 @@ import { stat } from 'node:fs/promises';
 import os from 'node:os';
 import { LlamaChat, JinjaTemplateChatWrapper, InsufficientMemoryError, readGgufFileInfo, GgufInsights, GgmlType, type Llama, type LlamaModel, type LlamaContext } from 'node-llama-cpp';
 import { historyFromMessages, responseToMessage, toGgufFunctions } from './local-provider.mts';
-import type { ChatMessage, ChatWrapperInfo, CompletionOptions, ModelProvider, ToolSchema, WindowOptions } from './model-types.mts';
+import type { ChatMessage, ChatWrapperInfo, CompletionOptions, GenerationStats, ModelProvider, ToolSchema, WindowOptions } from './model-types.mts';
 import { localContextSize, DEFAULT_LOCAL_CONTEXT, type LocalContextSetting } from './context-budget.mts';
 import { runtimeLlama, runtimeGeneration, backendOf } from './llama-runtime.mts';
 import { fitOf, type Placement } from './placement.mts';
@@ -54,7 +54,25 @@ interface Loaded {
   chat: LlamaChat;
   /** The chat wrapper node-llama-cpp chose for this model (logged at load: `[chat] wrapper …`). */
   wrapper: ChatWrapperInfo;
+  /** How the load got there (LoadOutcome), and the VRAM free just before it: what a re-placement compares with. */
+  outcome: LoadOutcome;
+  vramBefore: VramState | null;
 }
+type VramState = { total: number; used: number; free: number };
+
+/**
+ * How a load reached its placement:
+ * - `direct`: node-llama-cpp's fitContext placement, as it chose it;
+ * - `step-down`: createContext refused the context with `refused[i]` layers on the card (InsufficientMemoryError: the
+ *   context did not fit the VRAM those layers left), and the model was loaded again with fewer;
+ * - `fallback`: on the processor (0 layers) — because the card could not take even 0 layers with that context
+ *   (`cause` 'loadModel', node-llama-cpp's resolver refused), or because the context still did not fit after the
+ *   step-downs (`cause` 'createContext').
+ */
+export type LoadOutcome =
+  | { kind: 'direct' }
+  | { kind: 'step-down'; refused: number[] }
+  | { kind: 'fallback'; cause: 'loadModel' | 'createContext'; refused: number[] };
 let loaded: Loaded | null = null;
 
 // A file's train context, read once per version of the file (path, size, modification time).
@@ -156,13 +174,41 @@ export async function contextOverflow(llama: Llama, insights: GgufInsights, cont
 
 const mib = (bytes: number) => `${Math.round(bytes / 1024 ** 2)} Mio`;
 
-/** The one line a load logs (I-1): where its layers went, against which free VRAM and padding, and whether the card
- * was too full for even 0 layers by node-llama-cpp's rule (the processor fallback, cpuFallback). */
-export function placementLogLine(p: { backend: string; gpuLayers: number; totalLayers: number; useMmap: boolean; vramBefore: { total: number; used: number; free: number } | null; padding: number; contextSize: number; fallback?: boolean }): string {
-  const before = p.vramBefore ? `libre ${mib(p.vramBefore.free)} / total ${mib(p.vramBefore.total)} (utilisée ${mib(p.vramBefore.used)})` : 'illisible';
-  const fallback = p.fallback ? ' · repli processeur (carte pleine)' : '';
-  return `[placement] backend ${p.backend} · couches ${p.gpuLayers}/${p.totalLayers} sur la carte${fallback} · mmap ${p.useMmap ? 'oui' : 'non'} · VRAM avant chargement : ${before} · marge VRAM ${mib(p.padding)} · contexte ${p.contextSize}`;
+/** What a load outcome adds to the [placement] line, and to the turn log's model-ready (`placementNote`): nothing for
+ * a direct placement, else what happened and why. */
+export function outcomeNote(outcome: LoadOutcome | undefined): string {
+  if (!outcome || outcome.kind === 'direct') return '';
+  const tries = (refused: number[]) => refused.join(' puis ');
+  if (outcome.kind === 'step-down') return `moins de couches : le contexte ne tenait pas sur la carte avec ${tries(outcome.refused)} couches`;
+  if (outcome.cause === 'loadModel') {
+    const before = outcome.refused.length ? `le contexte ne tenait pas avec ${tries(outcome.refused)} couches, puis ` : '';
+    return `repli processeur : ${before}la carte ne prenait même pas 0 couche avec ce contexte (carte pleine)`;
+  }
+  return `repli processeur : le contexte ne tenait toujours pas sur la carte (essais à ${tries(outcome.refused)} couches)`;
 }
+
+/** The one line a load logs (I-1): where its layers went, against which free VRAM and padding, and how it got there
+ * when node-llama-cpp's placement was not kept as is (outcomeNote: fewer layers, or the processor fallback). */
+export function placementLogLine(p: { backend: string; gpuLayers: number; totalLayers: number; useMmap: boolean; vramBefore: VramState | null; padding: number; contextSize: number; outcome?: LoadOutcome }): string {
+  const before = p.vramBefore ? `libre ${mib(p.vramBefore.free)} / total ${mib(p.vramBefore.total)} (utilisée ${mib(p.vramBefore.used)})` : 'illisible';
+  const note = outcomeNote(p.outcome);
+  return `[placement] backend ${p.backend} · couches ${p.gpuLayers}/${p.totalLayers} sur la carte${note ? ` · ${note}` : ''} · mmap ${p.useMmap ? 'oui' : 'non'} · VRAM avant chargement : ${before} · marge VRAM ${mib(p.padding)} · contexte ${p.contextSize}`;
+}
+
+/** At most this many loads with fewer layers after createContext refused the context, before the processor. */
+export const MAX_STEP_DOWNS = 3;
+
+/** The most layers the next load may put on the card after createContext refused the context with `refused` layers:
+ * about 10 % fewer, at least one. The 27B of 2026-10-24 missed by tens to a few hundred MiB (CUDA's own allocations,
+ * not in the free VRAM read before the load); 10 % of its 25 layers is about 570 MiB, so one retry covers it while
+ * costing only 3 layers. null: nothing left to step down to. */
+export function stepDownMax(refused: number): number | null {
+  const next = refused - Math.max(1, Math.ceil(refused / 10));
+  return next > 0 ? next : null;
+}
+
+const memoryWarning = (stage: 'loadModel' | 'createContext', layers: string, error: Error) =>
+  console.warn(`[placement] InsufficientMemoryError (${stage}, ${layers} couches) : ${error.message}`);
 
 export interface CpuFallback { fits: boolean; ramBytes: number; vramBytes: number }
 
@@ -222,27 +268,56 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
   const generation = runtimeGeneration();
   const insights = await assertContextCanFit(llama, modelPath, contextSize);
   const vramBefore = await llama.getVramState().catch(() => null);
-  let model: LlamaModel | null = null;
-  try {
-    nativeLoads += 1;
-    model = await llama.loadModel({ modelPath, gpuLayers: { fitContext: { contextSize } }, loadSignal: signal, onLoadProgress });
-    liveModels += 1;
-    // A fixed size: no silent shrink on failure (node-llama-cpp only retries an 'auto' size, said here anyway).
-    const context = await model.createContext({ contextSize, failedCreationRemedy: false, createSignal: signal });
-    return keep({ modelPath, contextSize, generation, llama, model, context, vramBefore, fallback: false, startedAt, onLoad });
-  } catch (error) {
-    if (model) await disposeModel(model);
-    if (!(error instanceof InsufficientMemoryError)) throw error;
+  const kept = (model: LlamaModel, context: LlamaContext, outcome: LoadOutcome) =>
+    keep({ modelPath, contextSize, generation, llama, model, context, vramBefore, outcome, startedAt, onLoad });
+  // The layer counts createContext refused, in order, and the cap of the next fitContext load (none at first).
+  const refused: number[] = [];
+  let max: number | null = null;
+  let cause: 'loadModel' | 'createContext' = 'createContext';
+  for (;;) {
+    let model: LlamaModel;
+    try {
+      nativeLoads += 1;
+      // fitContext places as many layers as node-llama-cpp thinks fit with this context; after a refusal, at most `max`.
+      const gpuLayers = max === null ? { fitContext: { contextSize } } : { min: 0, max, fitContext: { contextSize } };
+      model = await llama.loadModel({ modelPath, gpuLayers, loadSignal: signal, onLoadProgress });
+      liveModels += 1;
+    } catch (error) {
+      if (!(error instanceof InsufficientMemoryError)) throw error;
+      // node-llama-cpp's resolver: the card cannot take even 0 layers with this context (a game holding the VRAM).
+      memoryWarning('loadModel', max === null ? 'fitContext' : `fitContext ≤ ${max}`, error);
+      cause = 'loadModel';
+      break;
+    }
+    try {
+      // A fixed size: no silent shrink on failure (node-llama-cpp only retries an 'auto' size, said here anyway).
+      const context = await model.createContext({ contextSize, failedCreationRemedy: false, createSignal: signal });
+      return kept(model, context, refused.length ? { kind: 'step-down', refused: [...refused] } : { kind: 'direct' });
+    } catch (error) {
+      const layers = model.gpuLayers;
+      await disposeModel(model);
+      if (!(error instanceof InsufficientMemoryError)) throw error;
+      // The layers loaded, then the context did not fit what they left (or the RAM): fewer layers, not the processor
+      // yet (the regression of 2026-10-24: 25/66 loaded, then 0/66).
+      memoryWarning('createContext', String(layers), error);
+      refused.push(layers);
+      const next = layers > 0 && refused.length <= MAX_STEP_DOWNS ? stepDownMax(layers) : null;
+      if (next === null) break;
+      max = next;
+      signal?.throwIfAborted();
+      onLoad?.({ kind: 'retry', mode: 'fewer-layers' });
+    }
   }
-  // The card cannot take even 0 layers by node-llama-cpp's rule (a game holding the VRAM): the processor, when the
-  // RAM holds it. useMmap is explicit: with ignoreMemorySafetyChecks, a numeric gpuLayers and useMmap 'auto',
-  // node-llama-cpp turns mmap OFF when nothing fits and copies the whole model into RAM. ignoreMemorySafetyChecks
-  // skips its VRAM check at 0 layers, and its RAM check with it: cpuFallback is that RAM check.
+  const outcome: LoadOutcome = { kind: 'fallback', cause, refused: [...refused] };
+  // The processor, when the RAM holds it. useMmap is explicit: with ignoreMemorySafetyChecks, a numeric gpuLayers and
+  // useMmap 'auto', node-llama-cpp turns mmap OFF when nothing fits and copies the whole model into RAM.
+  // ignoreMemorySafetyChecks skips its VRAM check at 0 layers, and its RAM check with it: cpuFallback is that RAM check.
   const useMmap = llama.supportsMmap;
   if (!(await cpuFallback(insights, contextSize, useMmap)).fits) throw new Error(localModelTooBig(contextSize));
   signal?.throwIfAborted();
+  onLoad?.({ kind: 'retry', mode: 'cpu' });
   nativeLoads += 1;
-  model = await llama.loadModel({ modelPath, gpuLayers: 0, useMmap, ignoreMemorySafetyChecks: true, loadSignal: signal, onLoadProgress });
+  const model = await llama.loadModel({ modelPath, gpuLayers: 0, useMmap, ignoreMemorySafetyChecks: true, loadSignal: signal, onLoadProgress });
   liveModels += 1;
   let context: LlamaContext;
   try {
@@ -254,10 +329,10 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
     console.warn(`[placement] repli processeur : le contexte n'a pas pu être créé : ${(error as Error | undefined)?.message ?? error}`);
     throw new Error(localModelTooBig(contextSize));
   }
-  return keep({ modelPath, contextSize, generation, llama, model, context, vramBefore, fallback: true, startedAt, onLoad });
+  return kept(model, context, outcome);
 }
 
-function keep(p: { modelPath: string; contextSize: number; generation: number; llama: Llama; model: LlamaModel; context: LlamaContext; vramBefore: { total: number; used: number; free: number } | null; fallback: boolean; startedAt: number; onLoad?: EngineOptions['onLoad'] }): Loaded {
+function keep(p: { modelPath: string; contextSize: number; generation: number; llama: Llama; model: LlamaModel; context: LlamaContext; vramBefore: VramState | null; outcome: LoadOutcome; startedAt: number; onLoad?: EngineOptions['onLoad'] }): Loaded {
   const { llama, model, context } = p;
   const chat = new LlamaChat({ contextSequence: context.getSequence() });
   // The segments as plain JSON, once (ruling T2-m2): the log line and the turn log's model-ready show the same value.
@@ -269,8 +344,8 @@ function keep(p: { modelPath: string; contextSize: number; generation: number; l
     thought: segments?.thought as ThoughtSegment | undefined,
   });
   const wrapper: ChatWrapperInfo = { name: chat.chatWrapper.wrapperName, segments: JSON.parse(JSON.stringify(segments ?? null)), opensThought: thinks };
-  loaded = { path: p.modelPath, requested: p.contextSize, generation: p.generation, llama, model, context, chat, wrapper };
-  console.info(placementLogLine({ backend: backendOf(llama), gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, useMmap: model.useMmap, vramBefore: p.vramBefore, padding: llama.vramPaddingSize, contextSize: context.contextSize, fallback: p.fallback }));
+  loaded = { path: p.modelPath, requested: p.contextSize, generation: p.generation, llama, model, context, chat, wrapper, outcome: p.outcome, vramBefore: p.vramBefore };
+  console.info(placementLogLine({ backend: backendOf(llama), gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, useMmap: model.useMmap, vramBefore: p.vramBefore, padding: llama.vramPaddingSize, contextSize: context.contextSize, outcome: p.outcome }));
   console.info(chatWrapperLogLine(wrapper));
   p.onLoad?.({ kind: 'end', ms: Math.round(performance.now() - p.startedAt), wrapper });
   return loaded;
@@ -286,6 +361,11 @@ export function chatWrapperLogLine(info: ChatWrapperInfo): string {
 /** The chat wrapper of the loaded `modelPath`, or null when it is not the model loaded now. Never loads anything. */
 export function loadedChatWrapper(modelPath: string): ChatWrapperInfo | null {
   return loaded?.path === modelPath ? loaded.wrapper : null;
+}
+
+/** How the loaded `modelPath` got its placement (LoadOutcome), or null when it is not the model loaded now. */
+export function loadedOutcome(modelPath: string): LoadOutcome | null {
+  return loaded?.path === modelPath ? loaded.outcome : null;
 }
 
 /** Where the loaded `modelPath` really sits (model.gpuLayers, never an estimate), or null when it is not the model
@@ -349,6 +429,30 @@ export function mintCallId(): string {
 export const LOCAL_OUTPUT_CAP = 8192;
 
 /**
+ * One generation's figures (`onStats`): tokens written, and the time from the first chunk that CARRIES tokens to the
+ * end. A chunk with no token — a native thought segment's start, which node-llama-cpp sends before the prompt is
+ * even read — starts nothing: counting from it put the prompt reading into the rate (I1). `now` is injected for tests.
+ */
+export class GenerationMeter {
+  readonly #now: () => number;
+  #first: number | undefined;
+  #tokens = 0;
+
+  constructor(now: () => number = () => performance.now()) {
+    this.#now = now;
+  }
+
+  chunk(tokens: number): void {
+    if (tokens > 0) this.#first ??= this.#now();
+    this.#tokens += tokens;
+  }
+
+  stats(inputTokens: number): GenerationStats {
+    return { inputTokens, outputTokens: this.#tokens, generationMs: this.#first === undefined ? 0 : Math.round(this.#now() - this.#first) };
+  }
+}
+
+/**
  * `ModelProvider.complete()` (model-types.mts) for the built-in engine. `messages` is the request agent.mts built
  * (request-context.mts: attachments expanded, fitted to the budget). The answer streams to `onDelta` and the reasoning
  * apart to `onReasoning` (thought segments, or <think> tags: reasoning-split.mts); the content is the answer alone, and
@@ -368,26 +472,20 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
   };
   const meter = chat.sequence.tokenMeter;
   const before = meter.getState();
-  let outputTokens = 0;
-  let firstChunkAt: number | undefined;
+  const generation = new GenerationMeter();
   let response: Awaited<ReturnType<LlamaChat['generateResponse']>>;
   try {
     response = await chat.generateResponse(historyFromMessages(options.messages), {
       functions: toGgufFunctions(options.tools ?? []),
       onResponseChunk: chunk => {
-        firstChunkAt ??= performance.now();
-        outputTokens += chunk.tokens.length;
+        generation.chunk(chunk.tokens.length);
         deliver(reply.chunk(chunk));
       },
       signal: options.signal,
       maxTokens: options.maxTokens ?? LOCAL_OUTPUT_CAP,
     });
   } finally {
-    options.onStats?.({
-      inputTokens: meter.diff(before).usedInputTokens,
-      outputTokens,
-      generationMs: firstChunkAt === undefined ? 0 : Math.round(performance.now() - firstChunkAt),
-    });
+    options.onStats?.(generation.stats(meter.diff(before).usedInputTokens));
   }
   deliver(reply.end());
   const { reasoning } = reply;

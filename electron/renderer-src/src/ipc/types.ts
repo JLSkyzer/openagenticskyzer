@@ -144,6 +144,8 @@ export interface ProjectSettings {
 
 // A turn's phase as the worker posts it (worker.mjs::runSend's phase()), mirroring core/model-types.mts.
 export type TurnPhaseName = 'preparing' | 'loading' | 'reading' | 'thinking' | 'writing' | 'tool' | 'stopping';
+// Mirrors core/model-types.mts::LoadRetry: a second load of the turn, with fewer layers or on the processor.
+export type LoadAttempt = 'fewer-layers' | 'cpu';
 // A turn's figures, joined to its done / stopped (mirrors core/model-types.mts::TurnTiming).
 export interface TurnTiming { loadMs?: number; readMs?: number; firstTextMs?: number; totalMs: number; outputTokens?: number; tokensPerSecond?: number }
 
@@ -181,7 +183,7 @@ export type AgentEvent =
       arguments: Record<string, unknown>;
     }
   // `loading` carries its progress in whole percents once the load reports one, `tool` the tool's name.
-  | { type: 'event'; event: 'agent'; runId: string; kind: 'phase'; phase: TurnPhaseName; progress?: number; tool?: string }
+  | { type: 'event'; event: 'agent'; runId: string; kind: 'phase'; phase: TurnPhaseName; progress?: number; tool?: string; attempt?: LoadAttempt }
   // `timing` is optional: older tests post them bare.
   | { type: 'event'; event: 'agent'; runId: string; kind: 'done'; timing?: TurnTiming }
   | { type: 'event'; event: 'agent'; runId: string; kind: 'stopped'; timing?: TurnTiming }

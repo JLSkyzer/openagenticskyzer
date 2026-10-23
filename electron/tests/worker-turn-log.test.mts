@@ -141,6 +141,12 @@ test('2. a stories260K turn stopped while writing logs model-ready, generation a
   assert.ok(ready.wrapper.length > 0, JSON.stringify(ready));
   assert.equal(ready.opensThought, false, 'stories260K has no think: no reply starts as reasoning (Task 5b)');
   assert.ok(ready.loadMs > 0, JSON.stringify(ready));
+  assert.equal(ready.placement, 'direct', 'placed as node-llama-cpp chose: no step-down, no fallback');
+  assert.equal(Object.hasOwn(ready, 'placementNote'), false);
+  // The load's progress is logged in steps of 10 % (the page still gets every percent): about 100 lines per load before.
+  const progress = lines.filter(line => line.event === 'phase' && line.phase === 'loading' && line.progress !== undefined);
+  assert.ok(progress.length <= 11, `${progress.length} progress lines: ${progress.map(line => line.progress)}`);
+  assert.ok(progress.every(line => line.progress % 10 === 0), progress.map(line => line.progress).join(','));
   const generation = lines.find(line => line.event === 'generation');
   assert.ok(generation, JSON.stringify(lines.map(line => line.event)));
   assert.ok(generation.inputTokens > 0 && generation.outputTokens > 0, JSON.stringify(generation));
@@ -200,4 +206,19 @@ test('4. after a data-folder migration, a turn writes nothing into the old home'
   assert.equal((await rec.until(runId, { timeoutMs: 50000 })).at(-1).kind, 'done');
   assert.deepEqual(await readdir(home), ['redirect.json']);
   assert.equal(existsSync(turnLogDir(newDir)), false, 'nor into the new one before the restart');
+});
+
+test('5. a migration to the data folder it already is moves nothing: the turn log goes on', { timeout: 60000 }, async t => {
+  const { home, project } = await dirs(t, 'openagent-turn-log-same-home-');
+  const testModel = await scripted(t, [textReply('toujours là')]);
+  const worker = new Worker(WORKER, testWorkerOptions(home));
+  terminateAtEnd(t, worker);
+  const result = await callWorker(worker, 'migrate-data-dir', { newDir: home });
+  assert.deepEqual(result, { moved: 0, errors: [] });
+  const rec = recordAgentEvents(worker);
+  t.after(() => rec.stop());
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'bonjour', testModel });
+  assert.equal((await rec.until(runId, { timeoutMs: 50000 })).at(-1).kind, 'done');
+  const lines = await logLines(home);
+  assert.ok(lines.some(line => line.runId === runId && line.event === 'end'), 'the turn was logged: nothing moved, so the log was not suspended (M-g)');
 });

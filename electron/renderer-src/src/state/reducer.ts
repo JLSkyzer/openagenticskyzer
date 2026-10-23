@@ -261,7 +261,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           return state;
         case 'phase':
           // After Stop, the line says « Arrêt en cours… » whatever the worker was still doing.
-          const phase = { phase: event.phase, ...(event.progress === undefined ? {} : { progress: event.progress }), ...(event.tool === undefined ? {} : { tool: event.tool }) };
+          const phase = { phase: event.phase, ...(event.progress === undefined ? {} : { progress: event.progress }), ...(event.tool === undefined ? {} : { tool: event.tool }), ...(event.attempt === undefined ? {} : { attempt: event.attempt }) };
           if (state.stopping) {
             if (event.phase !== 'stopping') return { ...state, phaseBeforeStop: phase };
             return state;

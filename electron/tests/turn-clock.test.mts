@@ -76,3 +76,29 @@ test('TurnClock: a movedBack piece (startInThought with no </think>) sets firstT
   t = 800; twoSteps.chunk('movedBack');
   assert.equal(twoSteps.timing().firstTextMs, 500, 'the first chunk of the step given back, not of the turn');
 });
+
+// M-b (final review): a reply stopped while (or after) the model reasoned kept its reasoning but lost its duration —
+// the engine's accumulator never returned. The clock measures it from the pieces the worker sees.
+test('TurnClock.reasoningMs: from the step\'s first thought to its first text; still open at a stop; a moved reasoning from the step\'s first chunk; none given back', () => {
+  let now = 0;
+  const clock = new TurnClock(0, () => now);
+  assert.equal(clock.reasoningMs(), undefined, 'no reasoning, no duration');
+  clock.readStart();
+  now = 100; clock.chunk('thought');
+  now = 400; clock.chunk('thought');
+  now = 900;
+  assert.equal(clock.reasoningMs(), 800, 'still reasoning at a stop: up to now');
+  clock.chunk('text');
+  now = 2000;
+  assert.equal(clock.reasoningMs(), 800, 'ended by the first text piece');
+  clock.readStart(); // a new step starts its own reasoning
+  assert.equal(clock.reasoningMs(), undefined);
+  now = 3000; clock.chunk('text');
+  now = 3500; clock.chunk('moved');
+  now = 3700;
+  assert.equal(clock.reasoningMs(), 500, 'a bare </think>: from the step’s first chunk to the </think>');
+  clock.readStart();
+  now = 4000; clock.chunk('thought');
+  now = 4200; clock.chunk('movedBack');
+  assert.equal(clock.reasoningMs(), undefined, 'given back: it was the answer');
+});

@@ -1,13 +1,17 @@
 // The status line of a running turn (components/TurnStatus.tsx): its French label and the durations it shows.
 // Pure, so the unit tests load it with Node itself.
-import type { ChatMessage, TurnPhaseName, TurnTiming } from '../ipc/bridge';
+import type { ChatMessage, LoadAttempt, TurnPhaseName, TurnTiming } from '../ipc/bridge';
 
-export interface TurnPhase { phase: TurnPhaseName; progress?: number; tool?: string }
+/** `attempt`: a second load of the same turn — fewer layers on the card, or the processor (core/model-types.mts::LoadRetry). */
+export interface TurnPhase { phase: TurnPhaseName; progress?: number; tool?: string; attempt?: LoadAttempt }
 
 export function phaseLabel(phase: TurnPhase): string {
   switch (phase.phase) {
     case 'preparing': return 'Préparation…';
-    case 'loading': return phase.progress === undefined ? 'Chargement du modèle…' : `Chargement du modèle… ${phase.progress} %`;
+    case 'loading': {
+      const what = phase.attempt === 'cpu' ? 'Chargement (processeur)…' : phase.attempt === 'fewer-layers' ? 'Chargement (nouvel essai)…' : 'Chargement du modèle…';
+      return phase.progress === undefined ? what : `${what} ${phase.progress} %`;
+    }
     case 'reading': return 'Lecture du message…';
     case 'thinking': return 'Réflexion…';
     case 'writing': return 'Écriture…';

@@ -217,3 +217,16 @@ test("reducer: the user's open/fold choice on the streamed « Réflexion » bloc
   assert.deepEqual(chatReducer(done, { type: 'send-started', runId: 'r2', text: 'x', keep: 1 }).reasoningChoices, {}, 'a regenerate cuts the view');
   assert.deepEqual(chatReducer(done, { type: 'send-started', runId: 'r2', text: 'x' }).reasoningChoices, { [index]: true }, 'a plain send keeps them');
 });
+
+// A second load (fewer layers on the card, or the processor) is labelled, so its progress never silently restarts at 0.
+test('phaseLabel: a retried load says which, its progress included; announced in steps of 10 %', () => {
+  assert.equal(phaseLabel({ phase: 'loading', attempt: 'fewer-layers', progress: 0 }), 'Chargement (nouvel essai)… 0 %');
+  assert.equal(phaseLabel({ phase: 'loading', attempt: 'cpu', progress: 37 }), 'Chargement (processeur)… 37 %');
+  assert.equal(phaseLabel({ phase: 'loading', attempt: 'cpu' }), 'Chargement (processeur)…');
+  assert.equal(announcedLabel({ phase: 'loading', attempt: 'cpu', progress: 37 }), 'Chargement (processeur)… 30 %');
+});
+
+test('the reducer keeps a load’s attempt in the phase it shows', () => {
+  const state = chatReducer(started(), agent('r1', 'phase', { phase: 'loading', progress: 5, attempt: 'cpu' }));
+  assert.deepEqual(state.phase, { phase: 'loading', progress: 5, attempt: 'cpu' });
+});

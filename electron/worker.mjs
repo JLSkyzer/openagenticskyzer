@@ -644,9 +644,12 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
   // The phase shown now and since when, for each phase line's `previous` and `previousMs`.
   let shownPhase = null;
   let shownSince = 0;
+  // The last load progress logged, as [attempt, tens of percent]: the page gets every percent, the turn log one line
+  // per 10 % (about 100 lines per load before).
+  let loggedProgress = null;
   const phase = (name, extra = {}) => {
     if (stopping) return;
-    const key = JSON.stringify([name, extra.progress ?? null, extra.tool ?? null]);
+    const key = JSON.stringify([name, extra.progress ?? null, extra.tool ?? null, extra.attempt ?? null]);
     if (key === lastPhase) return;
     lastPhase = key;
     if (name === 'stopping') stopping = true;
@@ -654,6 +657,12 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     // A new phase closes the one shown (previousMs, its duration); a progress or another tool in the same phase does not.
     const now = Date.now();
     const changed = name !== shownPhase;
+    if (name === 'loading' && extra.progress !== undefined) {
+      const step = JSON.stringify([extra.attempt ?? null, Math.floor(extra.progress / 10)]);
+      if (!changed && step === loggedProgress) return;
+      loggedProgress = step;
+      extra = { ...extra, progress: Math.floor(extra.progress / 10) * 10 };
+    }
     log({ event: 'phase', phase: name, previous: shownPhase, previousMs: changed && shownPhase !== null ? now - shownSince : null, ...extra });
     if (changed) { shownPhase = name; shownSince = now; }
   };
@@ -705,11 +714,12 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     // failure (tools, instructions, the model) saves history + this message, and the file stays aligned with the
     // screen — edit and regenerate cut both at the same index. Only an unreadable conversation file stops here,
     // with nothing to save.
-    const saved = await conversations.messages(folder, branchId);
+    const saved = await untilAborted(conversations.messages(folder, branchId), controller.signal);
     const history = servedMessages(keep === undefined ? saved : saved.slice(0, keep));
     // What was typed stays in `content`; the files ride beside it and are expanded only when the model is called.
     collected = [...history, { role: 'user', content: text, ...(attachments.length ? { attachments } : {}) }];
-    const { effective, tools, projectTrust } = await registerTools(folder);
+    // A stop during « preparing » is not held up by the tools or the instructions (M-c): each wait is cut short.
+    const { effective, tools, projectTrust } = await untilAborted(registerTools(folder), controller.signal);
     // The turn log masks hf_token and the secrets of the MCP servers this turn runs, and never logs a file tool's
     // arguments and result on a sensitive or protected path — tested as the file tools test it, relative to the project.
     const protectedRel = protectedPathMatcher(effective.ignored_patterns);
@@ -720,7 +730,8 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     // The prompt names exactly the tools offered this turn, adds the mode's instruction and, under
     // Windows, how run_command's shell behaves (core/system-prompt.mts).
     const offered = offeredTools(tools, agentSettings).map(tool => tool.name);
-    const { instructions } = await buildInstructions({ folder, home: dataHome, base: basePrompt({ tools: offered, mode: agentSettings.mode, platform: process.platform }) });
+    controller.signal.throwIfAborted();
+    const { instructions } = await untilAborted(buildInstructions({ folder, home: dataHome, base: basePrompt({ tools: offered, mode: agentSettings.mode, platform: process.platform }) }), controller.signal);
     const emit = event => {
       const { type: kind, ...rest } = event;
       // A generation's figures feed the clock only, and never end anything: pieces may still follow (ruling T2-m4).
@@ -779,10 +790,14 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     // A real load (none for a warm engine) shows « loading », its progress in whole percents. Once the run is
     // aborted, the load going on natively behind the stop reports nothing more; a load that fails or is stopped never
     // calls 'end', so the turn has no loadMs, and its terminal event closes the phase (ruling T2-m5).
+    // A second load of the same turn (fewer layers, or the processor: core/local-engine.mts) is labelled by its
+    // `attempt`, so its progress never silently restarts at 0.
+    let attempt;
     const onLoad = event => {
       if (controller.signal.aborted) return;
       if (event.kind === 'start') { clock.loadStart(); phase('loading'); }
-      if (event.kind === 'progress') phase('loading', { progress: Math.min(100, Math.max(0, Math.floor(event.progress * 100))) });
+      if (event.kind === 'retry') { attempt = event.mode; phase('loading', { attempt, progress: 0 }); }
+      if (event.kind === 'progress') phase('loading', { ...(attempt ? { attempt } : {}), progress: Math.min(100, Math.max(0, Math.floor(event.progress * 100))) });
       if (event.kind === 'end') clock.loadEnd();
     };
     const contextTokens = await windowFor(provider, effective.max_tokens, { signal: controller.signal, onLoad });
@@ -821,7 +836,9 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     // timeout), a cut stream — exactly like a completed message, so the screen and the saved
     // transcript agree.
     if (partialText.trim() || partialReasoning.trim()) {
-      const partial = { role: 'assistant', content: partialText, ...(partialReasoning.trim() ? { reasoning: partialReasoning } : {}) };
+      // A stopped reply keeps its reasoning's duration too (M-b), measured by the turn's clock.
+      const reasoningMs = partialReasoning.trim() ? clock.reasoningMs() : undefined;
+      const partial = { role: 'assistant', content: partialText, ...(partialReasoning.trim() ? { reasoning: partialReasoning, ...(reasoningMs === undefined ? {} : { reasoningMs }) } : {}) };
       produced.push(partial);
       post({ kind: 'message', message: partial });
       log({ event: 'reply', step, ...(partial.reasoning ? { reasoning: partial.reasoning } : {}), text: partialText, toolCalls: 0 });
@@ -1041,7 +1058,8 @@ async function handle(message) {
     if (op === 'migrate-data-dir') {
       result = await migrateDataDir(dataHome, defaultHome, payload.newDir);
       // The data home moved: a turn line now would recreate logs/turns in the old one. Nothing more until the restart.
-      turnLog.suspend();
+      // Pointed at the folder it already is, nothing moved, and the log goes on (M-g).
+      if (!samePath(String(payload.newDir), dataHome)) turnLog.suspend();
     }
     if (op === 'init-project') result = await initializeProject(payload.folder, Boolean(payload.overwrite));
     if (op === 'plugin-list') {

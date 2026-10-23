@@ -17,6 +17,9 @@ export class TurnClock {
   /** The current step's first piece (a step starts at readStart). */
   #stepFirstChunk: number | undefined;
   #firstText: number | undefined;
+  /** The current step's reasoning: its start, and its end (the first text piece after it), for reasoningMs. */
+  #reasoningStart: number | undefined;
+  #reasoningEnd: number | undefined;
   #stats = false;
   #outputTokens = 0;
   #generationMs = 0;
@@ -34,6 +37,8 @@ export class TurnClock {
   readStart(): void {
     this.#readStart ??= this.#now();
     this.#stepFirstChunk = undefined;
+    this.#reasoningStart = undefined;
+    this.#reasoningEnd = undefined;
   }
 
   /**
@@ -50,6 +55,20 @@ export class TurnClock {
     if (kind === 'text') this.#firstText ??= now;
     else if (kind === 'moved') this.#firstText = undefined;
     else if (kind === 'movedBack') this.#firstText ??= this.#stepFirstChunk;
+    // The step's reasoning, as the engine's ReplyAccumulator measures it, from the pieces alone (M-b: a stopped reply
+    // keeps its reasoning's duration): a thought starts it, the first text after it ends it, a bare </think> (moved)
+    // dates it from the step's first chunk to now, a reasoning given back (movedBack) was none.
+    if (kind === 'thought') this.#reasoningStart ??= now;
+    else if (kind === 'moved') { this.#reasoningStart = this.#stepFirstChunk; this.#reasoningEnd = now; }
+    else if (kind === 'movedBack') { this.#reasoningStart = undefined; this.#reasoningEnd = undefined; }
+    else if (this.#reasoningStart !== undefined) this.#reasoningEnd ??= now;
+  }
+
+  /** The current step's reasoning time: up to its end, or to now while it is still open (a stop); undefined when the
+   * step has none. */
+  reasoningMs(): number | undefined {
+    if (this.#reasoningStart === undefined) return undefined;
+    return Math.max(0, (this.#reasoningEnd ?? this.#now()) - this.#reasoningStart);
   }
 
   /** One generation's figures, summed over the turn's steps. Not the end of the stream: pieces may still follow. */

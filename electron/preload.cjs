@@ -36,6 +36,14 @@ contextBridge.exposeInMainWorld('openagent', {
     ipcRenderer.on('backend-message', listener);
     return () => ipcRenderer.removeListener('backend-message', listener);
   },
+  // The engine finished starting (worker.mjs::startEngine): a hardware-info answered `initializing` can be read again.
+  onEngineEvent: (callback) => {
+    const listener = (_event, message) => {
+      if (message?.type === 'event' && message.event === 'engine') callback(message);
+    };
+    ipcRenderer.on('backend-message', listener);
+    return () => ipcRenderer.removeListener('backend-message', listener);
+  },
   // A CUDA pack install's progress and end (worker.mjs, op cuda-pack-install).
   onCudaPackEvent: (callback) => {
     const listener = (_event, message) => {

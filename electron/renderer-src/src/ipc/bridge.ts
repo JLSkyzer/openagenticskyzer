@@ -8,7 +8,11 @@ import type {
   EstimateEvent,
   FolderListItem,
   GpuBackendChoice,
+  EngineEvent,
+  EngineState,
   HardwareInfo,
+  HardwareInitializing,
+  HardwareReading,
   IndexEvent,
   IndexState,
   ModelStatus,
@@ -312,9 +316,14 @@ export function onModelEvent(listener: (status: ModelStatus) => void): () => voi
   return window.openagent.onModelEvent(({ type: _type, event: _event, ...status }) => listener(status));
 }
 
-// What this machine offers a local model (core/hardware.mts); `refresh` re-reads it.
-export function getHardwareInfo(refresh = false): Promise<HardwareInfo> {
+// What this machine offers a local model (core/hardware.mts); `refresh` re-reads it. While the engine is still starting,
+// the answer is HardwareInitializing, and onEngineEvent says when to read again.
+export function getHardwareInfo(refresh = false): Promise<HardwareReading> {
   return request('hardware-info', { refresh });
+}
+
+export function onEngineEvent(listener: (event: EngineState) => void): () => void {
+  return window.openagent.onEngineEvent(({ type: _type, event: _event, ...rest }) => listener(rest as EngineState));
 }
 
 // Where a model's layers would go (the active one when no id): a cached estimate answers at once (estimateId null);
@@ -390,7 +399,11 @@ export type {
   EstimateEvent,
   FolderListItem,
   GpuBackendChoice,
+  EngineEvent,
+  EngineState,
   HardwareInfo,
+  HardwareInitializing,
+  HardwareReading,
   IndexEvent,
   IndexState,
   ModelStatus,

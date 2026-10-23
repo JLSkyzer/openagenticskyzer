@@ -14,7 +14,8 @@ import { isSensitiveFile, protectedPathMatcher } from './core/file-filter.mts';
 import { EstimateCache, estimateAndRemember, estimateKey, hardwareKey, ESTIMATE_BUSY } from './core/offload-estimate.mts';
 import { EstimateJobs } from './core/estimate-jobs.mts';
 import { readHardware } from './core/hardware.mts';
-import { disposeLlama, setCudaPackSource, setRuntimeStart, backendChoice, restartRequired, runtimeNotice, GPU_BACKEND_CHOICES } from './core/llama-runtime.mts';
+import { disposeLlama, setCudaPackSource, setRuntimeStart, setTestLlamaDelay, runtimeLlama, llamaCreated, backendChoice, restartRequired, runtimeNotice, GPU_BACKEND_CHOICES } from './core/llama-runtime.mts';
+import { untilAborted } from './core/abortable.mts';
 import { CudaPack, releaseBaseUrl, checkTestBaseUrl, CUDA_PACK_BUSY, CUDA_PACK_TURN_BUSY, CUDA_PACK_UNAVAILABLE } from './core/cuda-pack.mts';
 import { offeredTools, runAgent, TOOL_NAME_PATTERN } from './core/agent.mts';
 import { basePrompt } from './core/system-prompt.mts';
@@ -110,6 +111,8 @@ if (installedAtStart !== null && !packAgreed && (startChoice === 'auto' || start
   console.warn('[gpu-backend] pack CUDA installé mais absent du PATH de ce démarrage : non activé avant le prochain démarrage');
 }
 setRuntimeStart({ choice: startChoice, packDir: packAgreed ? installedAtStart : null });
+// TEST SEAM: a slow first engine start (tests/worker-engine-start.test.mts). main.cjs never passes it (tests/test-seam.test.mts).
+if (typeof workerData?.testLlamaDelayMs === 'number') setTestLlamaDelay(workerData.testLlamaDelayMs);
 const trust = new ProjectTrustService(dataHome, settings);
 const conversations = new Conversations();
 const folders = new FoldersService(dataHome);
@@ -582,16 +585,28 @@ async function estimateModel(payload) {
   if (active.size > 0) return estimateBusy();
   const contextSize = await plannedContextSize(model.path, await contextRequestOf(settings));
   const source = { kind: 'file', path: model.path };
+  const modelId = model.id;
+  const onEnd = outcome => {
+    const { id: estimateId, ...rest } = outcome;
+    parentPort.postMessage({ type: 'event', event: 'estimate', estimateId, modelId, ...rest });
+  };
+  if (!llamaCreated()) {
+    // The hardware part of the key needs the Llama, still starting (item 3): the job reads its key itself, so the op
+    // answers at once instead of waiting for the engine under main's 30 s IPC cap.
+    if (active.size > 0) return estimateBusy();
+    const { id } = estimateJobs.start(JSON.stringify(['engine-starting', source.path, contextSize]), async signal => {
+      const key = await estimateKey(source, contextSize, await untilAborted(hardwareKey(), signal));
+      const cached = await estimateCache.get(key);
+      return cached ?? estimateAndRemember(estimateCache, key, source, { contextSize, signal });
+    }, onEnd);
+    return { estimateId: id, estimate: null };
+  }
   const key = await estimateKey(source, contextSize, await hardwareKey());
   const cached = await estimateCache.get(key);
   if (cached) return { estimateId: null, estimate: cached };
   // Checked again after the awaits above: a turn that started meanwhile has already cancelled every job.
   if (active.size > 0) return estimateBusy();
-  const modelId = model.id;
-  const { id } = estimateJobs.start(key, signal => estimateAndRemember(estimateCache, key, source, { contextSize, signal }), outcome => {
-    const { id: estimateId, ...rest } = outcome;
-    parentPort.postMessage({ type: 'event', event: 'estimate', estimateId, modelId, ...rest });
-  });
+  const { id } = estimateJobs.start(key, signal => estimateAndRemember(estimateCache, key, source, { contextSize, signal }), onEnd);
   return { estimateId: id, estimate: null };
 }
 
@@ -835,6 +850,41 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
   }
 }
 
+// The engine's first start (final fix wave, item 3). Creating the Llama can take more than main's 30 s IPC cap on a
+// first start with the CUDA pack (node-llama-cpp's binary test in a child process, then the CUDA context). No op the
+// page calls at start waits for it beyond HARDWARE_WAIT_MS: hardware-info then answers { initializing: true } and the
+// worker posts one 'engine' event when the Llama is ready (or failed), which the Matériel tab reads again on.
+// Chosen over a longer cap for that op: a longer cap still leaves the tab blank for the whole start, and every other op
+// that needs the Llama (estimate-model's hardware key) would need its own cap too. The bounded wait keeps the common
+// case (a Llama ready in a second or two) a single answer, with no « initialisation » flash.
+const HARDWARE_WAIT_MS = 5000;
+let engineStart = null;
+function startEngine() {
+  if (!engineStart) {
+    const attempt = runtimeLlama();
+    engineStart = attempt;
+    attempt.then(
+      () => parentPort.postMessage({ type: 'event', event: 'engine', state: 'ready' }),
+      error => {
+        if (engineStart === attempt) engineStart = null;
+        parentPort.postMessage({ type: 'event', event: 'engine', state: 'error', message: error instanceof Error ? error.message : String(error) });
+      },
+    );
+  }
+  return engineStart;
+}
+/** True once the Llama exists, waiting for it at most `ms`; false while it is still being created. A creation that
+ * fails rejects with its error. */
+async function engineWithin(ms) {
+  if (llamaCreated()) return true;
+  let timer;
+  try {
+    return await Promise.race([startEngine().then(() => true), new Promise(resolve => { timer = setTimeout(() => resolve(false), ms); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Whether what is saved now (the pack, gpu_backend) would start another backend than this worker's (D-CUDA-4). */
 async function restartNeeded() {
   const [dir, saved] = await Promise.all([cudaPack.installedDir().catch(() => null), savedBackend()]);
@@ -897,8 +947,12 @@ async function handle(message) {
     if (op === 'gguf-add') result = await ggufLibrary.add(payload.path);
     if (op === 'gguf-remove') result = await ggufLibrary.remove(payload.id);
     if (op === 'model-status') result = await modelStatus(settings, ggufLibrary, estimateCache);
-    // payload.refresh is accepted and ignored for now: every call re-reads free memory.
-    if (op === 'hardware-info') result = { ...await readHardware(), backendChoice: backendChoice(), restartRequired: await restartNeeded() };
+    // payload.refresh is accepted and ignored for now: every call re-reads free memory. While the engine is still
+    // starting, what needs no Llama answers at once, flagged `initializing`, and an 'engine' event follows (item 3).
+    if (op === 'hardware-info') {
+      const extra = { backendChoice: backendChoice(), restartRequired: await restartNeeded() };
+      result = await engineWithin(HARDWARE_WAIT_MS) ? { ...await readHardware(), ...extra } : { initializing: true, ...extra };
+    }
     if (op === 'cuda-pack-status') result = await cudaPackView();
     if (op === 'cuda-pack-install') {
       const job = await reserveCudaPackInstall();

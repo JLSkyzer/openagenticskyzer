@@ -5,6 +5,7 @@ import {
   getHardwareInfo,
   installCudaPack,
   onCudaPackEvent,
+  onEngineEvent,
   restartApp,
   uninstallCudaPack,
   type CudaPackView,
@@ -25,6 +26,8 @@ const buttonClass = 'self-start rounded-lg border border-gray-700 bg-gray-900 px
 // and the optional CUDA pack (hardware and offload, Task 11), installed or removed at once, used after a restart.
 export function HardwareTab({ draft }: { draft: SettingsDraft }) {
   const [info, setInfo] = useState<HardwareInfo | null>(null);
+  // The engine is still starting (worker.mjs, HARDWARE_WAIT_MS): read again on its 'engine' event.
+  const [initializing, setInitializing] = useState(false);
   const [reads, setReads] = useState(0);
   const [reading, setReading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,6 +60,11 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
     void readPack();
     return getHardwareInfo(refresh)
       .then(value => {
+        if (value.initializing) {
+          setInitializing(true);
+          return;
+        }
+        setInitializing(false);
         setInfo(value);
         setReads(count => count + 1);
       })
@@ -64,6 +72,14 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
       .finally(() => setReading(false));
   }, [readPack]);
   useEffect(() => { void read(false); }, [read]);
+  useEffect(() => onEngineEvent(event => {
+    if (event.state === 'error') {
+      setInitializing(false);
+      setError(cleanIpcError(event.message));
+      return;
+    }
+    void read(false);
+  }), [read]);
 
   const finish = useCallback((message: string | null) => {
     installId.current = null;
@@ -152,7 +168,11 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
         <Section title="Matériel" badge="GLOBAL" />
         <Group>
           <div className="flex flex-col gap-1 px-4 py-3">
-            {info === null && !error && <span className="text-xs text-gray-600">Lecture du matériel…</span>}
+            {info === null && !error && (
+              <span data-testid={initializing ? 'oa-hardware-initializing' : undefined} className="text-xs text-gray-600">
+                {initializing ? 'Moteur en cours d’initialisation…' : 'Lecture du matériel…'}
+              </span>
+            )}
             {info !== null && hardwareLines(info).map(line => (
               <span
                 key={line.field}

@@ -56,6 +56,14 @@ export function setCudaPackSource(next: CudaPackSource | null): void {
   source = next;
 }
 
+// TEST SEAM: how long createLlama waits before creating the Llama, standing for a slow first start (the CUDA pack's
+// binary test and context creation took more than 30 s on the user's machine). Only a test sets it, through
+// workerData.testLlamaDelayMs, which main.cjs never passes (tests/test-seam.test.mts).
+let testDelayMs = 0;
+export function setTestLlamaDelay(ms: number): void {
+  testDelayMs = Number.isFinite(ms) && ms > 0 ? ms : 0;
+}
+
 /** Called once by the worker at start, before any Llama: the user's choice and the pack installed right now. */
 export function setRuntimeStart(next: { choice: GpuBackendChoice; packDir: string | null }): void {
   start = { ...next };
@@ -144,6 +152,7 @@ function warn(what: string, error: unknown): void {
 }
 
 async function createLlama(): Promise<{ llama: Llama; notice: string | null }> {
+  if (testDelayMs > 0) await new Promise(resolve => setTimeout(resolve, testDelayMs));
   const { choice } = start;
   if (choice === 'cpu') return { llama: await llamaWith({ gpu: false }, 'cpu'), notice: null };
   if (choice === 'vulkan') {

@@ -84,7 +84,14 @@ export interface HardwareInfo {
   backendChoice: GpuBackendChoice;
   /** What is saved now (pack, gpu_backend) needs an app restart to apply. */
   restartRequired: boolean;
+  initializing?: undefined;
 }
+/** hardware-info while the engine is still starting (worker.mjs, HARDWARE_WAIT_MS): only what needs no engine; an
+ * 'engine' event (EngineEvent) follows once it is ready. */
+export interface HardwareInitializing { initializing: true; backendChoice: GpuBackendChoice; restartRequired: boolean }
+export type HardwareReading = HardwareInfo | HardwareInitializing;
+export type EngineState = { state: 'ready' } | { state: 'error'; message: string };
+export type EngineEvent = { type: 'event'; event: 'engine' } & EngineState;
 
 // Mirrors core/cuda-pack.mts::CudaPackStatus, plus what worker.mjs adds (CudaPackView).
 export type CudaPackState = 'unavailable' | 'absent' | 'installing' | 'installed' | 'mismatch';
@@ -214,6 +221,7 @@ export interface OpenAgentBridge {
   onModelEvent(callback: (status: ModelStatus & { type: 'event'; event: 'model' }) => void): () => void;
   onEstimateEvent(callback: (event: EstimateEvent) => void): () => void;
   onCudaPackEvent(callback: (event: CudaPackEvent) => void): () => void;
+  onEngineEvent(callback: (event: EngineEvent) => void): () => void;
   onUpdateStatus(callback: (status: UpdateStatus) => void): () => void;
 }
 

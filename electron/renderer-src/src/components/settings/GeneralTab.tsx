@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { SettingsDraft } from './useSettingsDraft';
 import { Group, Row, Section, Toggle } from './parts';
 import { checkForUpdates, getUpdateStatus, migrateDataDir, onUpdateStatus, openTurnLogs, pickDataDir, restartApp, testHfToken, type UpdateStatus } from '../../ipc/bridge';
@@ -35,6 +35,10 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
   const [migrating, setMigrating] = useState(false);
   const [needsRestart, setNeedsRestart] = useState(restartPending);
   const [restarting, setRestarting] = useState(false);
+  // « Ouvrir le dossier des journaux » in flight: a double click opens the folder once. The ref blocks a second click
+  // before React has re-rendered the disabled button.
+  const [openingLogs, setOpeningLogs] = useState(false);
+  const openingLogsRef = useRef(false);
   const { notify } = useToast();
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [checking, setChecking] = useState(false);
@@ -89,8 +93,12 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
   };
 
   const openLogs = async () => {
+    if (openingLogsRef.current) return;
+    openingLogsRef.current = true;
+    setOpeningLogs(true);
     try { await openTurnLogs(); }
     catch (error) { notify(cleanIpcError(error), 'negative'); }
+    finally { openingLogsRef.current = false; setOpeningLogs(false); }
   };
 
   const handleTestToken = async () => {
@@ -225,7 +233,14 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
               </select>
             </Row>
             <div className="px-4 pb-3">
-              <button data-testid="oa-open-turn-logs" onClick={() => void openLogs()} className={button}>
+              {/* After a migration, the logs live in the new folder only once the app has restarted (main.cjs refuses too). */}
+              <button
+                data-testid="oa-open-turn-logs"
+                onClick={() => void openLogs()}
+                disabled={needsRestart || openingLogs}
+                title={needsRestart ? 'Redémarrez l’app pour ouvrir les journaux du nouveau dossier' : undefined}
+                className={button + ' disabled:cursor-not-allowed disabled:opacity-60'}
+              >
                 Ouvrir le dossier des journaux
               </button>
             </div>

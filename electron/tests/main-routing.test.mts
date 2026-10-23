@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -37,12 +37,12 @@ test('restart-app (« Redémarrer maintenant » after a data-folder migration) i
 test('open-turn-logs is answered by main: it creates logs/turns and opens exactly that folder', async t => {
   assert.equal(main.isBackendOp('open-turn-logs'), false, 'the worker never receives it');
   const mainSource = await readFile(fileURLToPath(new URL('../main.cjs', import.meta.url)), 'utf8');
-  assert.match(mainSource, /request\.op === 'open-turn-logs'\)/, 'main.cjs answers it before the allow-list');
+  assert.match(mainSource, /request\.op === 'open-turn-logs'\) return openTurnLogs\(startupDataHome, [^\n]*\(\) => resolveMainDataHome\(\)\)/, 'main.cjs answers it before the allow-list, checking the data home is still the one it started with');
   const home = await mkdtemp(join(tmpdir(), 'openagent-open-turn-logs-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   // Never the real shell.openPath: it would open Explorer on the machine running the tests.
   const opened: string[] = [];
-  const result = await main.openTurnLogs(home, async (target: string) => { opened.push(target); return ''; });
+  const result = await main.openTurnLogs(home, async (target: string) => { opened.push(target); return ''; }, async () => home);
   assert.deepEqual(opened, [join(home, 'logs', 'turns')]);
   assert.equal(opened[0], turnLogDir(home), 'the folder core/turn-log.mts writes into');
   assert.ok((await stat(opened[0])).isDirectory());
@@ -52,7 +52,7 @@ test('open-turn-logs is answered by main: it creates logs/turns and opens exactl
 test('open-turn-logs reports the opener\'s error', async t => {
   const home = await mkdtemp(join(tmpdir(), 'openagent-open-turn-logs-error-'));
   t.after(() => rm(home, { recursive: true, force: true }));
-  await assert.rejects(main.openTurnLogs(home, async () => 'Accès refusé'), { message: 'Accès refusé' });
+  await assert.rejects(main.openTurnLogs(home, async () => 'Accès refusé', async () => home), { message: 'Accès refusé' });
 });
 
 test('open-turn-logs never opens nor creates through a linked logs folder', async t => {
@@ -62,9 +62,28 @@ test('open-turn-logs never opens nor creates through a linked logs folder', asyn
   t.after(() => Promise.all([rm(home, { recursive: true, force: true }), rm(elsewhere, { recursive: true, force: true })]));
   await symlink(elsewhere, join(home, 'logs'), 'junction');
   const opened: string[] = [];
-  await assert.rejects(main.openTurnLogs(home, async (target: string) => { opened.push(target); return ''; }), /n'est pas un vrai dossier/);
+  await assert.rejects(main.openTurnLogs(home, async (target: string) => { opened.push(target); return ''; }, async () => home), /n'est pas un vrai dossier/);
   assert.deepEqual(opened, [], 'nothing is opened');
   assert.equal(existsSync(join(elsewhere, 'turns')), false, 'nothing is created behind the link');
+});
+
+test('open-turn-logs after a data-folder migration (redirect written after the start) refuses and creates nothing', async t => {
+  // The start-up home is the default one; a migration then leaves only redirect.json there until the restart
+  // (core/data-dir.mts). Recreating logs/turns in it would make a later migration back to it refuse (« contient déjà »).
+  const startupHome = await mkdtemp(join(tmpdir(), 'openagent-open-turn-logs-moved-'));
+  const movedTo = await mkdtemp(join(tmpdir(), 'openagent-open-turn-logs-new-home-'));
+  t.after(() => Promise.all([rm(startupHome, { recursive: true, force: true }), rm(movedTo, { recursive: true, force: true })]));
+  const env = { OPENAGENT_HOME: startupHome };
+  assert.equal(await main.resolveMainDataHome(env), startupHome, 'before the migration, the start-up home is the data home');
+  await writeFile(join(startupHome, 'redirect.json'), JSON.stringify({ data_dir: movedTo }));
+  const opened: string[] = [];
+  await assert.rejects(
+    main.openTurnLogs(startupHome, async (target: string) => { opened.push(target); return ''; }, () => main.resolveMainDataHome(env)),
+    { message: 'Le dossier de données a été déplacé : redémarrez l\'app pour ouvrir ses journaux.' },
+  );
+  assert.deepEqual(opened, [], 'nothing is opened');
+  assert.deepEqual(await readdir(startupHome), ['redirect.json'], 'the old home still holds only redirect.json');
+  assert.deepEqual(await readdir(movedTo), [], 'nothing is created in the new home before the restart');
 });
 
 test('main folds nothing into a payload: no connection resolution is left', () => {

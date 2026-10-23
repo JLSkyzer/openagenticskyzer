@@ -255,14 +255,18 @@ async function prepareDataHome({ env = process.env, userHome = homedir() } = {})
   // With a redirect, a vault can also be left in the default home (~/.openagent): written there before the main
   // process followed the redirect, or by a partly failed migration. Only the vault family goes; that folder's
   // config.json and redirect.json are not touched.
-  const same = (a, b) => process.platform === 'win32' ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase() : path.resolve(a) === path.resolve(b);
   let defaultHomeErasure = null;
-  if (!same(defaultHome, dataHome)) {
+  if (!sameDataHome(defaultHome, dataHome)) {
     try { defaultHomeErasure = await (await import('./core/online-secrets.mts')).eraseVaultFiles(defaultHome); }
     catch (error) { defaultHomeErasure = failed(error); }
     for (const line of defaultHomeErasure.errors) console.error(`[effacement] ${defaultHome} › ${line}`);
   }
   return { dataHome, erasure, defaultHomeErasure };
+}
+
+/** Two data-home paths name the same folder: resolved, and case-insensitively on Windows. */
+function sameDataHome(a, b) {
+  return process.platform === 'win32' ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase() : path.resolve(a) === path.resolve(b);
 }
 
 /** What the user is told when the startup fails before anything opened: the redirect file to fix when the data home
@@ -293,9 +297,12 @@ function restartApp() {
  * the opener (shell.openPath; a parameter for tests, which must never open Explorer). Like core/turn-log.mts, never
  * through a link: logs/ and logs/turns/ are made one level at a time and must be real folders, or nothing is opened.
  * The opener's error text (shell.openPath answers '' on success) is thrown as is.
+ * `currentHome` resolves the data home anew (resolveMainDataHome): after a migration not yet followed by a restart, it
+ * differs from the start-up one, whose folder must keep only redirect.json — so nothing is created, nothing opened.
  */
-async function openTurnLogs(dataHome, openPath) {
+async function openTurnLogs(dataHome, openPath, currentHome) {
   if (typeof dataHome !== 'string' || !dataHome) throw new Error('Dossier de données indisponible');
+  if (!sameDataHome(await currentHome(), dataHome)) throw new Error('Le dossier de données a été déplacé : redémarrez l\'app pour ouvrir ses journaux.');
   await mkdir(dataHome, { recursive: true });
   let dir = dataHome;
   for (const name of ['logs', 'turns']) {
@@ -350,7 +357,7 @@ async function handleBackendRequest(event, request) {
     return installUpdateNow();
   }
   if (request.op === 'restart-app') return restartApp();
-  if (request.op === 'open-turn-logs') return openTurnLogs(startupDataHome, target => shell.openPath(target));
+  if (request.op === 'open-turn-logs') return openTurnLogs(startupDataHome, target => shell.openPath(target), () => resolveMainDataHome());
   if (!allowed.has(request.op)) throw new Error('Opération IPC inconnue');
   if (!backend) throw new Error('Moteur Node indisponible');
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;

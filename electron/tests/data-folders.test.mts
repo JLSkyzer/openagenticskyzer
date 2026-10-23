@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -41,6 +41,28 @@ test('ensureDataFolders creates knowledge, tools and logs when missing, and touc
   assert.equal((await stat(join(home, 'knowledge', 'knowledge.json'))).mtimeMs, before.knowledge.mtimeMs);
   assert.equal((await stat(join(home, 'config.json'))).mtimeMs, before.config.mtimeMs);
   assert.deepEqual(await ensureDataFolders(home), [], 'a second call creates nothing');
+});
+
+test('ensureDataFolders leaves an entry of that name as it is: a file, a junction, a dangling junction', async t => {
+  const home = await tempHome(t, 'openagent-data-folders-planted-');
+  const target = await tempHome(t, 'openagent-data-folders-target-');
+  const gone = join(target, 'gone');
+  await mkdir(gone);
+  await writeFile(join(home, 'tools'), 'pas un dossier');
+  await symlink(target, join(home, 'logs'), 'junction');
+  await symlink(gone, join(home, 'knowledge'), 'junction');
+  await rm(gone, { recursive: true });
+  const toolsBefore = await stat(join(home, 'tools'));
+
+  assert.deepEqual(await ensureDataFolders(home), [], 'nothing is created');
+  assert.ok((await lstat(join(home, 'tools'))).isFile(), 'tools is still the file');
+  assert.equal(await readFile(join(home, 'tools'), 'utf8'), 'pas un dossier');
+  assert.equal((await stat(join(home, 'tools'))).mtimeMs, toolsBefore.mtimeMs);
+  assert.ok((await lstat(join(home, 'logs'))).isSymbolicLink(), 'logs is still the junction');
+  assert.deepEqual(await readdir(target), [], 'nothing is created behind the junction');
+  assert.ok((await lstat(join(home, 'knowledge'))).isSymbolicLink(), 'knowledge is still the dangling junction');
+  assert.equal(existsSync(gone), false, 'the dangling target is not recreated');
+  assert.deepEqual((await readdir(home)).sort(), ['knowledge', 'logs', 'tools']);
 });
 
 test('LISEZMOI.txt is rewritten at each call and names every entry of the data folder and of a project', async t => {

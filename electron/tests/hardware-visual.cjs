@@ -83,7 +83,7 @@ app.whenReady().then(async () => {
   let packServer;
   let restartRequests = 0;
   try {
-    const { hardwareLines } = await import(pathToFileURL(join(__dirname, '..', 'renderer-src', 'src', 'components', 'settings', 'hardware-view.ts')).href);
+    const { CUDA_ADVICE, hardwareLines } = await import(pathToFileURL(join(__dirname, '..', 'renderer-src', 'src', 'components', 'settings', 'hardware-view.ts')).href);
     const { formatBytes } = await import(pathToFileURL(join(__dirname, '..', 'core', 'units.mts')).href);
     const { writePack } = await import(pathToFileURL(join(__dirname, '..', 'core', 'cuda-pack-format.mts')).href);
     // A synthetic pack of this engine's version: random bytes (gzip cannot shrink them), so a throttled download
@@ -167,6 +167,15 @@ app.whenReady().then(async () => {
     } else {
       assert.equal(await lineText('vram'), null, 'no card in use: no VRAM line');
     }
+
+    // ── 3b. The CUDA advice (Task 8): shown exactly on Vulkan with an NVIDIA card ──────────
+    // The lines above are rendered from the same answer (one state update), so the advice is already decided here.
+    const info = await callWorker('hardware-info', { refresh: false });
+    const adviceExpected = info.backend === 'vulkan' && info.nvidia;
+    const adviceShown = await js(`document.querySelector('[data-testid="oa-cuda-advice"]')?.textContent ?? null`);
+    if (adviceExpected) assert.equal(adviceShown, CUDA_ADVICE, 'Vulkan on an NVIDIA card: the CUDA pack is recommended, word for word');
+    else assert.equal(adviceShown, null, `no CUDA advice on backend ${info.backend}, nvidia ${info.nvidia}`);
+    const adviceSummary = `CUDA advice ${adviceExpected ? 'shown' : 'absent'} (backend ${info.backend}, nvidia ${info.nvidia})`;
 
     // ── 4. « Relire » really reads again ────────────────────────────────────────────────
     await click('[data-testid="oa-hardware-refresh-btn"]');
@@ -283,7 +292,7 @@ app.whenReady().then(async () => {
     assert.equal(JSON.parse(await readFile(join(home, 'config.json'), 'utf8')).gpu_backend, 'auto');
     assert.equal(restartRequests, 1, 'restart-app sent once');
 
-    process.stdout.write(`PASS hardware tab: the worker's own machine lines, a real re-read, local_context saved; ${cudaSummary}; one engine restart offer (Electron ${process.versions.electron})\n`);
+    process.stdout.write(`PASS hardware tab: the worker's own machine lines, a real re-read, local_context saved; ${adviceSummary}; ${cudaSummary}; one engine restart offer (Electron ${process.versions.electron})\n`);
     process.stdout.write(`Screenshot: ${join(screenshotDir, 'settings-hardware.png')}\n`);
   } finally {
     win?.destroy();

@@ -44,6 +44,7 @@ export function UserBubble({ content, attachments, onFork, onEdit }: { content: 
       <div
         data-testid="oa-user-bubble"
         className="max-w-xl whitespace-pre-wrap rounded-lg bg-indigo-950 px-3 py-2 text-xs text-purple-200"
+        style={{ overflowWrap: 'anywhere' }}
       >
         {content}
       </div>

@@ -36,8 +36,35 @@ function shouldCheck(status) {
 }
 
 function errorMessage(error) {
-  const text = error instanceof Error ? error.message : String(error);
+  // electron-updater's HttpError is an Error, but anything carrying a string `message` is read the same way.
+  const text = typeof error?.message === 'string' ? error.message : String(error);
   return text.split('\n')[0].slice(0, 300);
+}
+
+const NO_RELEASE = 'Aucune version publiée pour l’instant';
+
+/**
+ * GitHub answers 404 or 406 on releases/latest while the repository has no published release yet
+ * (electron-updater's GitHubProvider wraps that in ERR_UPDATER_LATEST_VERSION_NOT_FOUND), and
+ * ERR_UPDATER_NO_PUBLISHED_VERSIONS when the releases list is empty. That is a state, not a failure.
+ * Any 404 counts: the only feed is the GitHub provider (a loopback test feed never answers 404).
+ */
+function isNoRelease(error) {
+  return error?.code === 'ERR_UPDATER_NO_PUBLISHED_VERSIONS'
+    || error?.statusCode === 404 || error?.statusCode === 406
+    || (error?.code === 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND' && /HttpError: 40[46]\b/.test(String(error.message)));
+}
+
+function statusForError(error) {
+  return isNoRelease(error) ? { status: 'no-release' } : { status: 'error', message: errorMessage(error) };
+}
+
+/** electron-updater logs the same missing release as an error with a stack: one plain line instead. */
+function logLine(level, message) {
+  const text = String(message);
+  const noRelease = /No published versions on GitHub/.test(text)
+    || (/Unable to find latest version on GitHub/.test(text) && /HttpError: 40[46]\b/.test(text));
+  return noRelease ? { level: 'info', text: NO_RELEASE } : { level, text: message };
 }
 
 const NOT_READY = 'Aucune mise à jour prête à installer';
@@ -91,12 +118,12 @@ function createUpdater({ app, send, env = process.env }) {
     autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.allowDowngrade = false;
     autoUpdater.allowPrerelease = false;
-    autoUpdater.logger = {
-      info: message => console.log('[updater]', message),
-      warn: message => console.warn('[updater]', message),
-      error: message => console.error('[updater]', message),
-      debug: () => {},
+    const write = { info: console.log, warn: console.warn, error: console.error };
+    const log = level => message => {
+      const line = logLine(level, message);
+      write[line.level]('[updater]', line.text);
     };
+    autoUpdater.logger = { info: log('info'), warn: log('warn'), error: log('error'), debug: () => {} };
     const feed = feedOverride(env.OPENAGENT_UPDATE_FEED);
     if (feed) autoUpdater.setFeedURL({ provider: 'generic', url: feed });
     autoUpdater.on('checking-for-update', () => publish({ status: 'checking' }));
@@ -104,7 +131,7 @@ function createUpdater({ app, send, env = process.env }) {
     autoUpdater.on('update-not-available', () => publish({ status: 'up-to-date' }));
     autoUpdater.on('download-progress', progress => publish({ status: 'downloading', percent: Math.round(progress.percent) }));
     autoUpdater.on('update-downloaded', info => publish({ status: 'ready', version: info.version }));
-    autoUpdater.on('error', error => publish({ status: 'error', message: errorMessage(error) }));
+    autoUpdater.on('error', error => publish(statusForError(error)));
     return autoUpdater;
   }
 
@@ -113,7 +140,7 @@ function createUpdater({ app, send, env = process.env }) {
     try {
       await load().checkForUpdates();
     } catch (error) {
-      publish({ status: 'error', message: errorMessage(error) });
+      publish(statusForError(error));
     }
     return status();
   }
@@ -138,4 +165,7 @@ function createUpdater({ app, send, env = process.env }) {
   return { start, check, installNow, status };
 }
 
-module.exports = { feedOverride, updatesEnabled, checkDelayMs, canInstallNow, shouldCheck, createInstallNow, createUpdater, NOT_READY };
+module.exports = {
+  feedOverride, updatesEnabled, checkDelayMs, canInstallNow, shouldCheck, createInstallNow, createUpdater, NOT_READY,
+  NO_RELEASE, isNoRelease, statusForError, logLine,
+};

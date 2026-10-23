@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  adoptInstall, backendChoiceView, CUDA_PACK_UNAVAILABLE_TEXT, cudaMismatchText, cudaPackView, GPU_BACKEND_OPTIONS, hardwareLines,
+  adoptInstall, backendChoiceView, CUDA_ADVICE, cudaAdvice, CUDA_PACK_UNAVAILABLE_TEXT, cudaMismatchText, cudaPackView, GPU_BACKEND_OPTIONS, hardwareLines,
   isPackFailureNotice, LOCAL_CONTEXT_OPTIONS, maxTokensSliderMax,
 } from '../renderer-src/src/components/settings/hardware-view.ts';
 // What op hardware-info answers: core/hardware.mts::HardwareInfo plus the worker's backendChoice and restartRequired.
@@ -150,4 +150,15 @@ test('adoptInstall: a view mounted mid-install takes over its id and progress; n
   assert.deepEqual(cudaPackView(running, card, adopted.progress), {
     state: 'installing', text: 'Téléchargement du pack CUDA… 25 %', button: { id: 'cancel', label: 'Annuler' },
   });
+});
+
+test('cudaAdvice: only Vulkan on an NVIDIA card', () => {
+  assert.equal(
+    CUDA_ADVICE,
+    'Sur les cartes NVIDIA, le pack CUDA est recommandé : avec Vulkan, une partie du modèle peut déborder en mémoire partagée et ralentir fortement les réponses.',
+  );
+  assert.equal(cudaAdvice(card), CUDA_ADVICE, 'vulkan + nvidia');
+  assert.equal(cudaAdvice({ ...card, backend: 'cuda' }), null, 'cuda + nvidia');
+  assert.equal(cudaAdvice({ ...card, gpuNames: ['AMD Radeon RX 7800 XT'], nvidia: false }), null, 'vulkan + AMD');
+  assert.equal(cudaAdvice({ ...card, backend: 'cpu', gpuNames: [], vram: null, nvidia: false }), null, 'cpu');
 });

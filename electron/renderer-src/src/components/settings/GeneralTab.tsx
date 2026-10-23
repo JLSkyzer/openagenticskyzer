@@ -22,6 +22,7 @@ function updateText(update: UpdateStatus): string {
     case 'downloading': return `Téléchargement : ${update.percent ?? 0} %`;
     case 'ready': return `Version ${update.version} prête — elle s’installera quand l’app quittera (« Quitter » dans l’icône de notification)`;
     case 'up-to-date': return 'À jour';
+    case 'no-release': return 'Aucune version publiée pour l’instant';
     case 'error': return `Échec : ${update.message ?? 'erreur inconnue'}`;
   }
 }

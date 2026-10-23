@@ -2,6 +2,7 @@
    background #1e1e2e, border #2a2a3a, JetBrains Mono/Fira Code 0.8rem. */
 .oa-markdown {
   font-size: 0.8125rem;
+  overflow-wrap: anywhere;
   line-height: 1.6;
 }
 .oa-markdown p {

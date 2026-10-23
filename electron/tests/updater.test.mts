@@ -54,7 +54,7 @@ test('the first-check delay is 10 s, and only a loopback feed may shorten it', (
 test('install-now is allowed only for a ready update', () => {
   const { canInstallNow } = require('../updater.cjs');
   assert.equal(canInstallNow({ status: 'ready', version: '1.0.0' }), true);
-  for (const status of ['idle', 'checking', 'available', 'downloading', 'up-to-date', 'error']) assert.equal(canInstallNow({ status }), false);
+  for (const status of ['idle', 'checking', 'available', 'downloading', 'up-to-date', 'no-release', 'error']) assert.equal(canInstallNow({ status }), false);
   assert.equal(canInstallNow(null), false);
 });
 
@@ -142,7 +142,35 @@ test('a second click while the worker is stopping does not start a second shutdo
 test('a downloaded update is never re-checked, so it stays installable', () => {
   const { shouldCheck, canInstallNow } = require('../updater.cjs');
   assert.equal(shouldCheck({ status: 'ready', version: '1.0.0' }), false);
-  for (const status of ['idle', 'checking', 'available', 'downloading', 'up-to-date', 'error']) assert.equal(shouldCheck({ status }), true, status);
+  for (const status of ['idle', 'checking', 'available', 'downloading', 'up-to-date', 'no-release', 'error']) assert.equal(shouldCheck({ status }), true, status);
   assert.equal(shouldCheck(null), true);
   assert.equal(canInstallNow({ status: 'ready' }), true);
+});
+
+test('no published release (404, 406, no versions) is « no-release », never an error; anything else stays an error', () => {
+  const { statusForError } = require('../updater.cjs');
+  const github406 = {
+    code: 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND',
+    message: 'Unable to find latest version on GitHub (https://github.com/o/r/releases/latest), please ensure a production release exists: HttpError: 406 \n"method: GET"\n    at x',
+  };
+  assert.deepEqual(statusForError(github406), { status: 'no-release' });
+  assert.deepEqual(statusForError({ ...github406, message: github406.message.replace('406', '404') }), { status: 'no-release' });
+  assert.deepEqual(statusForError({ statusCode: 404 }), { status: 'no-release' });
+  assert.deepEqual(statusForError({ statusCode: 406 }), { status: 'no-release' });
+  assert.deepEqual(statusForError({ code: 'ERR_UPDATER_NO_PUBLISHED_VERSIONS' }), { status: 'no-release' });
+
+  assert.deepEqual(statusForError({ statusCode: 500, message: 'HttpError: 500\nstack' }), { status: 'error', message: 'HttpError: 500' });
+  assert.deepEqual(statusForError(new Error('getaddrinfo ENOTFOUND github.com')), { status: 'error', message: 'getaddrinfo ENOTFOUND github.com' });
+  // Same code, another HTTP status: a server failure is not « no release ».
+  assert.deepEqual(statusForError({ ...github406, message: github406.message.replace('406', '503') }).status, 'error');
+});
+
+test('the updater log says « Aucune version publiée pour l’instant » in one line instead of a stack', () => {
+  const { logLine } = require('../updater.cjs');
+  const stack = 'Error: Error: Unable to find latest version on GitHub (https://github.com/o/r/releases/latest), please ensure a production release exists: HttpError: 406 \n    at GitHubProvider.getLatestVersion';
+  assert.deepEqual(logLine('error', stack), { level: 'info', text: 'Aucune version publiée pour l’instant' });
+  assert.deepEqual(logLine('error', 'Error: No published versions on GitHub'), { level: 'info', text: 'Aucune version publiée pour l’instant' });
+  assert.deepEqual(logLine('error', 'Error: boom'), { level: 'error', text: 'Error: boom' });
+  assert.deepEqual(logLine('error', stack.replace('406', '500')), { level: 'error', text: stack.replace('406', '500') });
+  assert.deepEqual(logLine('info', 'Checking for update'), { level: 'info', text: 'Checking for update' });
 });

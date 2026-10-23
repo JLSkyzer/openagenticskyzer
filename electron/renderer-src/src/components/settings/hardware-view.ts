@@ -7,6 +7,14 @@ export type HardwareField = 'backend' | 'gpu' | 'vram' | 'ram' | 'cpu' | 'notice
 
 const BACKEND_LABELS: Record<Backend, string> = { cuda: 'CUDA', vulkan: 'Vulkan', metal: 'Metal', cpu: 'processeur seul' };
 
+/** Shown above the CUDA pack block when an NVIDIA card runs on Vulkan (turn diagnostics, Task 8). */
+export const CUDA_ADVICE = 'Sur les cartes NVIDIA, le pack CUDA est recommandé : avec Vulkan, une partie du modèle peut déborder en mémoire partagée et ralentir fortement les réponses.';
+
+/** The CUDA pack advice, only for Vulkan on an NVIDIA card; null otherwise. */
+export function cudaAdvice(info: HardwareInfo): string | null {
+  return info.backend === 'vulkan' && info.nvidia ? CUDA_ADVICE : null;
+}
+
 /** What the machine offers, one line per field: no VRAM line without a card, the notice (if any) last. */
 export function hardwareLines(info: HardwareInfo): Array<{ field: HardwareField; text: string }> {
   const lines: Array<{ field: HardwareField; text: string }> = [

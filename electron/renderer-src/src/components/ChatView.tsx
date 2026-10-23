@@ -14,7 +14,7 @@ import { TurnStatus } from './TurnStatus';
 const NOTICE_MS = 3500;
 
 export function ChatView() {
-  const { state, forkFrom, editMessage, regenerate, dismissNotice, chooseReasoning } = useChat();
+  const { state, activeFolder, forkFrom, editMessage, regenerate, dismissNotice, chooseReasoning } = useChat();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -56,10 +56,10 @@ export function ChatView() {
       )}
       {!hasContent ? (
         <div style={{ flex: 1, minHeight: 0 }}>
-          <EmptyState />
+          <EmptyState activeFolder={activeFolder} />
         </div>
       ) : (
-        <div ref={scrollRef} className="flex-1 overflow-y-auto py-3" data-testid="oa-chat-scroll">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden py-3" data-testid="oa-chat-scroll">
           {state.messages.map((message, index) => {
             // The action row is absent (not greyed) while a run is in flight: forking then would cut
             // a transcript that is not saved yet.

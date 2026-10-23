@@ -13,7 +13,7 @@ import {
 } from '../../ipc/bridge';
 import { cleanIpcError } from '../../ipc/errors';
 import { DEFAULT_LOCAL_CONTEXT, type LocalContextSetting } from '../../../../core/context-budget.mts';
-import { adoptInstall, backendChoiceView, cudaPackView, GPU_BACKEND_OPTIONS, hardwareLines, LOCAL_CONTEXT_OPTIONS } from './hardware-view';
+import { adoptInstall, backendChoiceView, cudaAdvice, cudaPackView, GPU_BACKEND_OPTIONS, hardwareLines, LOCAL_CONTEXT_OPTIONS } from './hardware-view';
 import type { SettingsDraft } from './useSettingsDraft';
 import { Group, Row, Section } from './parts';
 
@@ -95,6 +95,7 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
   const gpuBackend = draft.get<GpuBackendChoice>('gpu_backend', 'auto');
   const cuda = info !== null && pack !== null ? cudaPackView(pack, info, progress) : null;
   const choice = info !== null ? backendChoiceView(info, gpuBackend, cuda?.state ?? 'hidden') : { restart: null };
+  const advice = info !== null ? cudaAdvice(info) : null;
 
   const download = async () => {
     setPackError(null);
@@ -198,6 +199,11 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
                 {choice.restart.button.label}
               </button>
               {shownRestartError && <span data-testid="oa-restart-error" className="text-xs text-red-400">{shownRestartError}</span>}
+            </div>
+          )}
+          {advice !== null && (
+            <div className="border-b border-gray-800 px-4 py-3">
+              <span data-testid="oa-cuda-advice" className="text-xs text-yellow-600">{advice}</span>
             </div>
           )}
           {cuda && (

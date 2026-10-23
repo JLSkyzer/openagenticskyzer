@@ -200,7 +200,7 @@ export interface UpdateStatus {
   /** False only in development: a packaged app can still have updates switched off (OPENAGENT_DISABLE_UPDATES=1). */
   packaged: boolean;
   currentVersion: string;
-  status: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'up-to-date' | 'error';
+  status: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'up-to-date' | 'no-release' | 'error';
   version?: string;
   percent?: number;
   message?: string;

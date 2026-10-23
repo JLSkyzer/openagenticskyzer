@@ -47,7 +47,10 @@ const toolCall = (id, name, args) => ({ id, type: 'function', function: { name, 
 const callsReply = (...calls) => ({ choices: [{ message: { content: '', tool_calls: calls }, finish_reason: 'tool_calls' }] });
 const textReply = content => ({ choices: [{ message: { content }, finish_reason: 'stop' }] });
 const LONG_REPLY = Array.from({ length: 60 }, (_, i) => `Paragraphe ${i + 1}.`).join('\n\n');
+// 400 characters with no space nor hyphen (step 10b): it must wrap, never scroll the chat sideways.
+const LONG_WORD = Array.from({ length: 40 }, (_, i) => `segment${String(i).padStart(3, '0')}`).join('');
 // One answer per request, in order. Request 8 (« tour long ») is held 1.5 s so a message can be typed during it.
+// Request 9 is the long word's turn: the reply repeats the word.
 const SCRIPT = [
   callsReply(toolCall('call-1', 'create_file', { path: 'notes.md', content: 'salut' })),
   textReply('Fichier **notes.md** créé.'),
@@ -57,6 +60,7 @@ const SCRIPT = [
   textReply('Fait :\n\n```python\nprint("ok")\n```\n'),
   textReply('Un seul envoi.'),
   textReply(LONG_REPLY),
+  textReply(LONG_WORD),
 ];
 const HELD_REQUEST = 8;
 
@@ -151,9 +155,13 @@ app.whenReady().then(async () => {
     const inputValue = () => js("document.getElementById('oa-input-ta').value");
 
     // ── 1. Open the project through the real Sidebar button/dialog flow ──────────
+    const emptyState = () => js("document.querySelector('[data-testid=\"oa-empty-state\"]')?.textContent ?? null");
+    assert.equal(await emptyState(), 'Ouvre un dossier pour commencer.', 'no folder yet: the empty chat asks for one');
     await js("document.getElementById('oa-open-folder-btn').click()");
     await waitFor(() => js("document.querySelector('[data-testid=\"oa-folder-entry\"]')?.textContent?.includes('project') || false"), { what: 'project opened' });
     assert.ok(await js("!!document.getElementById('oa-input-ta')"), 'the real InputBar is present once a folder is active');
+    // Not true on arrival: the initial state, with no folder, shows the old text (asserted above).
+    await waitFor(async () => (await emptyState()) === 'Écris un message pour commencer.', { what: 'the empty chat invites a first message once the folder is open' });
 
     // ── 2. create_file: badge, name, detail; markdown; the real file ──────────────
     await typeAndEnter('crée un fichier notes.md');
@@ -302,6 +310,28 @@ app.whenReady().then(async () => {
       return view.overflow && view.gap <= 2;
     }, { what: 'the view at the bottom of a long conversation' });
     await writeFile(join(screenshotDir, 'chat-7-long.png'), await capturePng(win));
+
+    // ── 10b. A 400-character word wraps: neither its bubble nor the chat scrolls sideways (Task 8) ──
+    // Both waits look for the word itself, which no earlier message holds, so neither is true on arrival.
+    await typeAndEnter(LONG_WORD);
+    await waitFor(() => js(`[...document.querySelectorAll('[data-testid="oa-user-bubble"]')].some(el => el.textContent === ${JSON.stringify(LONG_WORD)})`), { what: 'the long word in its user bubble' });
+    await waitFor(async () => (await lastBubble()).includes(LONG_WORD), { what: 'the reply repeating the long word' });
+    await idle();
+    assert.equal(bodies.length, HELD_REQUEST + 1, 'one request for the long word');
+    const widths = await js(`(() => {
+      const word = ${JSON.stringify(LONG_WORD)};
+      const size = el => el ? { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth } : null;
+      return {
+        scroll: size(document.querySelector('[data-testid="oa-chat-scroll"]')),
+        user: size([...document.querySelectorAll('[data-testid="oa-user-bubble"]')].find(el => el.textContent === word)),
+        reply: size([...document.querySelectorAll('[data-testid="oa-assistant-bubble"]')].findLast(el => el.textContent.includes(word))),
+      };
+    })()`);
+    for (const [name, size] of Object.entries(widths)) {
+      assert.ok(size, `${name}: found`);
+      assert.ok(size.scrollWidth <= size.clientWidth, `${name} does not scroll sideways: ${JSON.stringify(widths)}`);
+    }
+    await writeFile(join(screenshotDir, 'chat-7b-long-word.png'), await capturePng(win));
 
     // ── 11. A saved reply with its reasoning and its timing (Task 6) ─────────────
     // Modelled on step 6: a seeded conversation, reloaded through another folder. The live turns of steps 8 and 9 went

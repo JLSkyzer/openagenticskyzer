@@ -8,7 +8,7 @@ import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
 import { FoldersService } from './core/folders.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
-import { localProvider, plannedContextSize, loadedChatWrapper, loadedOutcome, outcomeNote } from './core/local-engine.mts';
+import { localProvider, plannedContextSize, loadedChatWrapper, loadedOutcome, outcomeNote, replacementCheck, replaceLoaded } from './core/local-engine.mts';
 import { TurnLog, pruneTurnLogs, mcpSecretValues } from './core/turn-log.mts';
 import { isSensitiveFile, protectedPathMatcher } from './core/file-filter.mts';
 import { EstimateCache, estimateAndRemember, estimateKey, hardwareKey, ESTIMATE_BUSY } from './core/offload-estimate.mts';
@@ -582,7 +582,7 @@ async function estimateModel(payload) {
     model = await activeModel(settings, ggufLibrary);
     if (!model) throw new Error(NO_LOCAL_MODEL);
   }
-  if (active.size > 0) return estimateBusy();
+  if (active.size > 0 || replacement) return estimateBusy();
   const contextSize = await plannedContextSize(model.path, await contextRequestOf(settings));
   const source = { kind: 'file', path: model.path };
   const modelId = model.id;
@@ -847,6 +847,8 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     else finish('error', { message });
   } finally {
     active.delete(runId);
+    // Between turns only, and never awaited by the turn: it is over for the page. The shutdown op waits for it.
+    betweenTurns = maybeReplace(model);
   }
 }
 
@@ -882,6 +884,66 @@ async function engineWithin(ms) {
     return await Promise.race([startEngine().then(() => true), new Promise(resolve => { timer = setTimeout(() => resolve(false), ms); })]);
   } finally {
     clearTimeout(timer);
+  }
+}
+
+// Re-placement between turns (item 4): after a turn, one cheap VRAM read decides (core/local-engine.mts::
+// replacementDecision) whether the model, loaded on the processor or with fewer layers, now has clearly more room on
+// the card; it is then reloaded in the background. Never during a turn or a compaction: a send or a compaction
+// cancels it (cancelReplacement) before anything else, and the turn then runs on the model still loaded — or, if the
+// native reload had already begun, loads it itself, placed for the VRAM free then. The page shows it through the
+// 'model' event and model-status (`replacing: true`), and the app log says why it started and how it ended.
+// TEST SEAM: workerData.testReplacement = { force, delayMs } (never passed by main.cjs): `force` takes the reload
+// whatever the decision says (the decision itself is tested pure, tests/replacement.test.mts), `delayMs` holds it
+// before the reload, standing for a long native load a send can land in.
+const testReplacement = workerData?.testReplacement && typeof workerData.testReplacement === 'object' ? workerData.testReplacement : null;
+let replacement = null;
+// Set by the shutdown op: no re-placement starts once the app is closing; it waits for `betweenTurns` (the last
+// maybeReplace, never rejecting) before freeing the engine, so no native call of it is left running under the dispose.
+let shuttingDown = false;
+let betweenTurns = Promise.resolve();
+function cancelReplacement() {
+  replacement?.controller.abort();
+}
+function postReplacing(model, replacing) {
+  try {
+    parentPort.postMessage({ type: 'event', event: 'model', ...turnModelStatus(model), ...(replacing ? { replacing: true } : {}) });
+  } catch { /* the page keeps its last status */ }
+}
+async function maybeReplace(model) {
+  if (!model || active.size > 0 || replacement || shuttingDown) return;
+  let decision;
+  try {
+    decision = await replacementCheck(model.path);
+  } catch (error) {
+    console.warn(`[placement] réallocation : VRAM illisible : ${error instanceof Error ? error.message : error}`);
+    return;
+  }
+  if (!decision) return;
+  if (testReplacement?.force) decision = { ...decision, replace: true, reason: `forcée par le test (${decision.reason})` };
+  if (!decision.replace || active.size > 0 || replacement || shuttingDown) return;
+  const controller = new AbortController();
+  const job = { controller };
+  replacement = job;
+  console.info(`[placement] réallocation sur la carte : ${decision.reason}`);
+  postReplacing(model, true);
+  try {
+    // The machine to itself, like a turn's load: a background estimate would compete for the same memory.
+    estimateJobs.cancelAll();
+    await untilAborted(estimateJobs.idle(), controller.signal);
+    const delay = Number(testReplacement?.delayMs) || 0;
+    if (delay > 0) await untilAborted(new Promise(resolve => setTimeout(resolve, delay)), controller.signal);
+    const placement = await replaceLoaded(model.path, { signal: controller.signal });
+    console.info(placement
+      ? `[placement] réallocation terminée : ${placement.gpuLayers}/${placement.totalLayers} couches sur la carte`
+      : '[placement] réallocation abandonnée : ce modèle n’est plus chargé');
+  } catch (error) {
+    console.info(controller.signal.aborted
+      ? '[placement] réallocation annulée : un message, une compaction ou la fermeture de l’app passe avant'
+      : `[placement] réallocation échouée : ${error instanceof Error ? error.message : error}`);
+  } finally {
+    if (replacement === job) replacement = null;
+    postReplacing(model, false);
   }
 }
 
@@ -946,7 +1008,7 @@ async function handle(message) {
     if (op === 'gguf-list') result = await ggufLibrary.list();
     if (op === 'gguf-add') result = await ggufLibrary.add(payload.path);
     if (op === 'gguf-remove') result = await ggufLibrary.remove(payload.id);
-    if (op === 'model-status') result = await modelStatus(settings, ggufLibrary, estimateCache);
+    if (op === 'model-status') result = { ...await modelStatus(settings, ggufLibrary, estimateCache), ...(replacement ? { replacing: true } : {}) };
     // payload.refresh is accepted and ignored for now: every call re-reads free memory. While the engine is still
     // starting, what needs no Llama answers at once, flagged `initializing`, and an 'engine' event follows (item 3).
     if (op === 'hardware-info') {
@@ -1051,6 +1113,7 @@ async function handle(message) {
       if (compactingIn(folder)) throw new Error('Une compaction est déjà en cours dans ce dossier.');
       if (runningIn(folder)) throw new Error('Un message est en cours dans ce dossier : attends la fin avant de compresser.');
       // Reserve the folder BEFORE the first await: two requests must not both pass the checks above.
+      cancelReplacement();
       const compactionId = randomUUID();
       active.set(compactionId, { controller: new AbortController(), folder, kind: 'compact' });
       let before;
@@ -1081,6 +1144,8 @@ async function handle(message) {
       // The files of the message (📎 / paste / drop), checked before anything starts like `keep` above: the page is
       // not trusted to send only what its own upload code produced.
       const attachments = validateAttachments(payload.attachments);
+      // A re-placement between turns gives way to the turn at once (item 4).
+      cancelReplacement();
       // Same principle for the model: none active, or one whose file is gone, is reported synchronously, not as
       // a run that starts and immediately errors.
       const turn = await turnProvider(payload);
@@ -1106,7 +1171,10 @@ async function handle(message) {
     if (op === 'shutdown') {
       // The app is closing: abort what is running and stop every dev server run_command started,
       // whole process trees included — terminating this thread would leave them running.
+      shuttingDown = true;
       for (const run of active.values()) run.controller.abort();
+      cancelReplacement();
+      await betweenTurns;
       estimateJobs.cancelAll();
       cudaInstall?.controller.abort();
       // MCP processes too: a discovery has no abort signal, and a call's session only closes once it unwinds.

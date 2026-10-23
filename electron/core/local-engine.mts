@@ -398,6 +398,87 @@ async function disposeLocked(): Promise<void> {
   await disposeModel(model);
 }
 
+/**
+ * Re-placement between turns (final fix wave, item 4): whether the loaded model should be reloaded, now that the card
+ * may have more room than its load saw (a game closed). Pure and cheap: no estimate, only the free VRAM now against
+ * the free VRAM before the load, counted in layers of this model.
+ * - Only a load that could not keep node-llama-cpp's placement (`fallback` or `step-down`): a `direct` one already got
+ *   what the resolver wanted for the VRAM it saw, and comparing again would only chase noise.
+ * - A reload frees the loaded model's own VRAM (`loadedVram`), so it would see `freeNow + loadedVram`; the gain is that
+ *   against `freeAtLoad`, in layers of `bytesPerLayer` (the weights over the layer count — the KV cache per layer is
+ *   left out, so the count is generous).
+ * - REPLACE_MIN_LAYERS layers at least: a reload of a big model costs as much as its first load (45 s for the 27B), and
+ *   a gain of 1 to 3 layers is within the margin that made the first load step down or fall back — it would most
+ *   likely end where it started. A reload that ends where it started does not repeat: its own load becomes the
+ *   reference.
+ */
+export const REPLACE_MIN_LAYERS = 4;
+export interface ReplacementInput {
+  outcome: LoadOutcome['kind'];
+  gpuLayers: number;
+  totalLayers: number;
+  freeAtLoad: number | null;
+  freeNow: number | null;
+  loadedVram: number;
+  bytesPerLayer: number;
+}
+export interface ReplacementDecision { replace: boolean; extraLayers: number; reason: string }
+
+export function replacementDecision(input: ReplacementInput): ReplacementDecision {
+  const no = (reason: string): ReplacementDecision => ({ replace: false, extraLayers: 0, reason });
+  if (input.outcome === 'direct') return no('placement direct');
+  if (input.gpuLayers >= input.totalLayers) return no('toutes les couches sont déjà sur la carte');
+  if (input.freeAtLoad === null || input.freeNow === null || !(input.bytesPerLayer > 0)) return no('VRAM illisible');
+  const gain = input.freeNow + input.loadedVram - input.freeAtLoad;
+  const extraLayers = Math.max(0, Math.min(input.totalLayers - input.gpuLayers, Math.floor(gain / input.bytesPerLayer)));
+  if (extraLayers < REPLACE_MIN_LAYERS) return { replace: false, extraLayers, reason: `pas assez de place en plus (${extraLayers} couches)` };
+  const from = input.outcome === 'fallback' ? 'repli processeur' : `${input.gpuLayers} couches`;
+  return { replace: true, extraLayers, reason: `${from}, environ ${extraLayers} couches de plus tiennent maintenant sur la carte (${mib(Math.max(0, gain))} libérés)` };
+}
+
+/** The re-placement decision for the loaded `modelPath`, from one cheap VRAM read (getVramState); null when it is not
+ * the model loaded now (or the Llama it was loaded on is gone). Never loads, never estimates. */
+export async function replacementCheck(modelPath: string): Promise<ReplacementDecision | null> {
+  const isCurrent = (current: Loaded | null): current is Loaded => current !== null && current.path === modelPath && current.generation === runtimeGeneration();
+  if (!isCurrent(loaded)) return null;
+  // A direct placement, or the processor backend, is decided without any native call: the common case after a turn
+  // touches nothing native at all.
+  if (loaded.outcome.kind === 'direct' || loaded.llama.gpu === false) {
+    const { model } = loaded;
+    return replacementDecision({ outcome: loaded.outcome.kind, gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, freeAtLoad: null, freeNow: null, loadedVram: 0, bytesPerLayer: 0 });
+  }
+  await generationsIdle();
+  const current = loaded;
+  if (!isCurrent(current)) return null;
+  const { llama, model, context, outcome, vramBefore } = current;
+  const now = await llama.getVramState().catch(() => null);
+  const { totalLayers } = model.fileInsights;
+  return replacementDecision({
+    outcome: outcome.kind, gpuLayers: model.gpuLayers, totalLayers,
+    freeAtLoad: vramBefore?.free ?? null, freeNow: now?.free ?? null,
+    loadedVram: model.memoryUsage.vram + context.memoryUsage.vram,
+    bytesPerLayer: totalLayers > 0 ? model.fileInsights.modelSize / totalLayers : 0,
+  });
+}
+
+/** Reloads the loaded `modelPath` with the same context size, placed again for the VRAM free now (the step-down and
+ * the processor fallback apply as on any load). Waits for the engine's lock like any load; `options.signal` (a send)
+ * cancels it: before it starts, the warm model stays as it is; during the native load, that load stops and the next
+ * turn loads the model itself. null when `modelPath` is no longer the model loaded. */
+export function replaceLoaded(modelPath: string, options: EngineOptions = {}): Promise<Placement | null> {
+  const { signal } = options;
+  return serial(async () => {
+    await untilAborted(generationsIdle(), signal);
+    if (!loaded || loaded.path !== modelPath || loaded.generation !== runtimeGeneration()) return null;
+    try {
+      return placementOf(await loadFresh(modelPath, loaded.requested, options));
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      throw error;
+    }
+  }, signal);
+}
+
 /** For tests: which path (if any) is currently kept warm, without touching it. */
 export function warmModelPath(): string | null {
   return loaded?.path ?? null;
@@ -427,6 +508,22 @@ export function mintCallId(): string {
 // hung turn. The cap is the one the Python app gave the local HTTP servers it supported (LM Studio, a
 // llama.cpp server); a reply that reaches it is flagged truncated, like finish_reason "length".
 export const LOCAL_OUTPUT_CAP = 8192;
+
+// The generations node-llama-cpp is still running. A stopped turn ends for the page at once (untilAborted upstream),
+// while its generation unwinds natively a little longer: nothing between turns (the re-placement's VRAM read and
+// reload) may touch the engine before it has. Reading the VRAM, or disposing the context, during that tail crashed the
+// process natively (0xC0000409, reproduced with stories260K: stop, then the re-placement at once).
+const generations = new Set<Promise<unknown>>();
+function tracked<T>(generation: Promise<T>): Promise<T> {
+  const settled = generation.then(() => undefined, () => undefined);
+  generations.add(settled);
+  void settled.then(() => generations.delete(settled));
+  return generation;
+}
+/** Resolves once every generation started so far has ended, a stopped one included. Never rejects. */
+export async function generationsIdle(): Promise<void> {
+  while (generations.size > 0) await Promise.all([...generations]);
+}
 
 /**
  * One generation's figures (`onStats`): tokens written, and the time from the first chunk that CARRIES tokens to the
@@ -475,7 +572,7 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
   const generation = new GenerationMeter();
   let response: Awaited<ReturnType<LlamaChat['generateResponse']>>;
   try {
-    response = await chat.generateResponse(historyFromMessages(options.messages), {
+    response = await tracked(chat.generateResponse(historyFromMessages(options.messages), {
       functions: toGgufFunctions(options.tools ?? []),
       onResponseChunk: chunk => {
         generation.chunk(chunk.tokens.length);
@@ -483,7 +580,7 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
       },
       signal: options.signal,
       maxTokens: options.maxTokens ?? LOCAL_OUTPUT_CAP,
-    });
+    }));
   } finally {
     options.onStats?.(generation.stats(meter.diff(before).usedInputTokens));
   }

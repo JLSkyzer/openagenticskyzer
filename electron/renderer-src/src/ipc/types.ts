@@ -49,6 +49,8 @@ export interface ModelStatus {
   loaded: boolean;
   /** Omitted when unknown: the loaded truth once the model is loaded, else the cached estimate, if any. */
   placement?: Placement;
+  /** The model is being reloaded between turns to put more layers on the card (worker.mjs::maybeReplace). */
+  replacing?: boolean;
 }
 
 // Mirrors core/placement.mts.

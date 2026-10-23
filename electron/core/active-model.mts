@@ -13,7 +13,8 @@ export const LOCAL_MODEL_MISSING = 'Modèle local introuvable : il a peut-être 
 
 export interface ActiveModel { id: string; name: string; path: string }
 /** `placement` is omitted when unknown: the loaded truth once that model is loaded, else the cached estimate. */
-export interface ModelStatus { id: string; name: string | null; missing: boolean; contextWindow: number; loaded: boolean; placement?: Placement }
+/** `replacing`: added by worker.mjs while the model is reloaded between turns to put more layers on the card. */
+export interface ModelStatus { id: string; name: string | null; missing: boolean; contextWindow: number; loaded: boolean; placement?: Placement; replacing?: boolean }
 
 /** The saved id ('' when none) and its library entry (null when the id is unknown or its file is gone). */
 async function lookup(settings: SettingsService, library: GgufLibrary): Promise<{ id: string; entry: GgufEntry | null }> {

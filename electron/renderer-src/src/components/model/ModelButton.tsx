@@ -47,9 +47,14 @@ export function ModelButton({ activeFolder }: { activeFolder: string | null }) {
       >
         {label}
       </button>
+      {/* Between turns, a model on the processor or with fewer layers is reloaded when the card has room again
+          (worker.mjs::maybeReplace): said here, in place of its placement, until it ends. */}
+      {status?.replacing && (
+        <span data-testid="oa-model-replacing" className="shrink-0 self-center text-xs text-gray-500">Réallocation sur la carte…</span>
+      )}
       {/* Beside the button, never inside it: its text is asserted exactly. Shown only when the status carries a
           placement — the loaded truth, or an estimate cached by an earlier opening of the dialog. */}
-      {status?.placement && (
+      {!status?.replacing && status?.placement && (
         <span
           data-testid="oa-model-placement"
           data-source={status.placement.source}

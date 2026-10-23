@@ -99,6 +99,8 @@ import './tool-cards.test.mts';
 import './test-seam.test.mts';
 import './worker-model.test.mts';
 import './worker-engine-start.test.mts';
+import './replacement.test.mts';
+import './worker-replacement.test.mts';
 import './local-only.test.mts';
 import './hardware.test.mts';
 import './offload-estimate.test.mts';

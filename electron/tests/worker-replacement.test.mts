@@ -15,7 +15,7 @@ import { callWorker, recordAgentEvents } from './support/worker-events.mts';
 const STORIES = fileURLToPath(new URL('./fixtures/stories260K.gguf', import.meta.url));
 const WORKER = fileURLToPath(new URL('../worker.mjs', import.meta.url));
 
-async function start(t: { after(fn: () => unknown): void }, testReplacement: { force: boolean; delayMs?: number }) {
+async function start(t: { after(fn: () => unknown): void }, testReplacement: { force: boolean; delayMs?: number; checkDelayMs?: number; sendDelayMs?: number }) {
   const root = await mkdtemp(join(tmpdir(), 'openagent-replacement-'));
   removeAtEnd(t, root);
   const home = join(root, 'home');
@@ -82,4 +82,20 @@ test('a send during a re-placement cancels it at once, and the turn runs on the 
   assert.doesNotMatch(log(), /réallocation terminée/);
   assert.equal(second.some(event => event.kind === 'phase' && event.phase === 'loading'), false,
     `no load: the warm model ran the turn (${second.filter(event => event.kind === 'phase').map(event => event.phase)})`);
+});
+
+test('a re-placement whose VRAM read ends while a send is between its checks and its run does not start', { timeout: 180000 }, async t => {
+  // The window, held: the check ends 1 s after the turn, the send sits 4 s between cancelReplacement and its run.
+  const { worker, project, rec, models, log } = await start(t, { force: true, delayMs: 60000, checkDelayMs: 1000, sendDelayMs: 4000 });
+  const first = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'Once upon a time' });
+  await rec.first(first.runId, event => event.kind === 'delta', 120000);
+  await callWorker(worker, 'stop', { runId: first.runId });
+  await rec.until(first.runId);
+  // Racing the held re-placement of the first turn: its check ends inside this send's window.
+  const sentAt = Date.now();
+  const second = await stoppedTurn(worker, rec, project);
+  assert.ok(Date.now() - sentAt < 50000, 'the turn did not queue behind a reload');
+  assert.doesNotMatch(log(), /réallocation sur la carte/, 'no re-placement started under the pending send');
+  assert.equal(models.some(event => event.replacing === true), false);
+  assert.equal(second.some(event => event.kind === 'phase' && event.phase === 'loading'), false);
 });

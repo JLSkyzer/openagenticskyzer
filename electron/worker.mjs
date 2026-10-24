@@ -934,6 +934,9 @@ async function engineWithin(ms) {
 // before the reload, standing for a long native load a send can land in.
 const testReplacement = workerData?.testReplacement && typeof workerData.testReplacement === 'object' ? workerData.testReplacement : null;
 let replacement = null;
+// Sends past their checks but not yet registered in `active` (the await on turnProvider): maybeReplace treats them like
+// a running turn, or a re-placement whose VRAM read ends in that window would start a reload nothing cancels.
+let pendingSends = 0;
 // Set by the shutdown op: no re-placement starts once the app is closing; it waits for the last maybeReplace (tracked
 // with the other work) before freeing the engine, so no native call of it is left running under the dispose.
 let shuttingDown = false;
@@ -946,7 +949,7 @@ function postReplacing(model, replacing) {
   } catch { /* the page keeps its last status */ }
 }
 async function maybeReplace(model) {
-  if (!model || active.size > 0 || replacement || shuttingDown) return;
+  if (!model || active.size > 0 || pendingSends > 0 || replacement || shuttingDown) return;
   let decision;
   try {
     decision = await replacementCheck(model.path);
@@ -956,7 +959,9 @@ async function maybeReplace(model) {
   }
   if (!decision) return;
   if (testReplacement?.force) decision = { ...decision, replace: true, reason: `forcée par le test (${decision.reason})` };
-  if (!decision.replace || active.size > 0 || replacement || shuttingDown) return;
+  // Test seam: holds the decision, standing for a VRAM read that ends while a send is between its checks and its run.
+  if (testReplacement?.checkDelayMs > 0) await new Promise(resolve => setTimeout(resolve, testReplacement.checkDelayMs));
+  if (!decision.replace || active.size > 0 || pendingSends > 0 || replacement || shuttingDown) return;
   const controller = new AbortController();
   const job = { controller };
   replacement = job;
@@ -1182,15 +1187,22 @@ async function handle(message) {
       const attachments = validateAttachments(payload.attachments);
       // A re-placement between turns gives way to the turn at once (item 4).
       cancelReplacement();
-      // Same principle for the model: none active, or one whose file is gone, is reported synchronously, not as
-      // a run that starts and immediately errors.
-      const turn = await turnProvider(payload);
-      const runId = randomUUID();
-      reply(id, true, { runId });
-      // Fire-and-forget: the turn's real result streams back as 'event' messages, not
-      // as this request's response (main.cjs's 30s IPC timeout could never cover a full
-      // multi-step agent run).
-      track(runSend(runId, payload.folder, payload.branchId || 'main', payload.text, keep, attachments, turn));
+      // The turn is reserved until runSend registers it in `active` (synchronously, its first statements): a
+      // re-placement that finishes its VRAM read meanwhile sees it (maybeReplace) instead of starting a reload.
+      pendingSends++;
+      try {
+        // Test seam: holds the send inside that window.
+        if (testReplacement?.sendDelayMs > 0) await new Promise(resolve => setTimeout(resolve, testReplacement.sendDelayMs));
+        // Same principle for the model: none active, or one whose file is gone, is reported synchronously, not as
+        // a run that starts and immediately errors.
+        const turn = await turnProvider(payload);
+        const runId = randomUUID();
+        reply(id, true, { runId });
+        // Fire-and-forget: the turn's real result streams back as 'event' messages, not
+        // as this request's response (main.cjs's 30s IPC timeout could never cover a full
+        // multi-step agent run).
+        track(runSend(runId, payload.folder, payload.branchId || 'main', payload.text, keep, attachments, turn));
+      } finally { pendingSends--; }
       return;
     }
     if (op === 'stop') {

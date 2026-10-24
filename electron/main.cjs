@@ -185,6 +185,7 @@ async function prepareGpuBackend(dataHome, env = process.env) {
 }
 
 function startBackend() {
+  noteWorkerStarted(); // a worker that is running again has no stuck predecessor: the next quit takes the normal path
   backend = new Worker(path.join(__dirname, 'worker.mjs'), workerOptions({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, appDir: __dirname, gpuBackend: gpuStart.gpuBackend, cudaRuntimeDir: gpuStart.runtimeDir }));
   backend.on('message', message => {
     const done = pending.get(message.id);
@@ -240,6 +241,14 @@ async function stopWorker(worker, capMs = QUIT_CAP_MS) {
 let stoppingBackend = null; // the shutdown in progress, so a quit during "Redémarrer maintenant" waits for it
 // Set when the worker did not end within QUIT_CAP_MS: the quit then ends the process itself (lastResortExit).
 let workerStuck = false;
+/** The workerStuck flag's whole life: set by a stop that timed out, cleared by the next start. */
+function noteWorkerStopped(outcome) { if (outcome === 'timeout') workerStuck = true; }
+function noteWorkerStarted() { workerStuck = false; }
+/** What a quit does with the worker in this state: 'normal' (quit goes on), 'wait' (stop it first) or 'last-resort'. */
+function quitPath({ hasWorker, stopping }, stuck = workerStuck) {
+  if (!hasWorker && !stopping) return stuck ? 'last-resort' : 'normal';
+  return 'wait';
+}
 async function stopBackend() {
   if (!backend && stoppingBackend) return stoppingBackend; // a second caller waits for the shutdown already running
   const worker = backend;
@@ -247,7 +256,7 @@ async function stopBackend() {
   stoppingBackend = stopWorker(worker);
   try {
     const outcome = await stoppingBackend;
-    if (outcome === 'timeout') workerStuck = true;
+    noteWorkerStopped(outcome);
     return outcome;
   } finally { stoppingBackend = null; }
 }
@@ -451,9 +460,12 @@ if (require.main === module) {
       updater.start();
       installUpdateNow = createInstallNow({
         canInstall: () => canInstallNow(updater.status()),
-        stop: stopBackend,
+        // The window goes at once, like a quit: the worker may take up to QUIT_CAP_MS to end, and a visible, frozen
+        // window for that long looks like a hang.
+        stop: () => { hideForQuit(); return stopBackend(); },
         install: () => updater.installNow(),
-        restart: startBackend,
+        // The installer did not start: the app goes on, so the window and the tray icon come back with the worker.
+        restart: () => { startBackend(); createTray(); showMainWindow(); },
       });
       startBackend();
       createTray();
@@ -468,8 +480,10 @@ if (require.main === module) {
     app.on('before-quit', event => {
       appQuitting = true;
       hideForQuit();
-      if (quitting || (!backend && !stoppingBackend)) {
-        if (workerStuck) { event.preventDefault(); lastResortExit(); }
+      if (quitting) return;
+      const path = quitPath({ hasWorker: Boolean(backend), stopping: Boolean(stoppingBackend) });
+      if (path !== 'wait') {
+        if (path === 'last-resort') { event.preventDefault(); lastResortExit(); }
         return;
       }
       event.preventDefault();
@@ -484,4 +498,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { restartApp, openTurnLogs, workerOptions, prepareGpuBackend, resolveMainDataHome, prepareDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, hideForQuit, QUIT_CAP_MS, isBackendOp, isExportFilename, notificationBodyFor };
+module.exports = { restartApp, openTurnLogs, workerOptions, prepareGpuBackend, resolveMainDataHome, prepareDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, hideForQuit, noteWorkerStopped, noteWorkerStarted, quitPath, QUIT_CAP_MS, isBackendOp, isExportFilename, notificationBodyFor };

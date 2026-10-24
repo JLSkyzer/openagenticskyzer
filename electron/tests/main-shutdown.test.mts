@@ -4,6 +4,7 @@ import { Worker } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -12,7 +13,7 @@ import { callWorker } from './support/worker-events.mts';
 
 // main.cjs only registers IPC and the app lifecycle when it is the Electron entry point, so it
 // can be required as a library (its exported helpers are what is tested here).
-const { stopWorker, hideForQuit } = createRequire(import.meta.url)('../main.cjs');
+const { stopWorker, hideForQuit, noteWorkerStopped, noteWorkerStarted, quitPath } = createRequire(import.meta.url)('../main.cjs');
 
 // A worker that answers 'shutdown' and then ends its own thread, as worker.mjs does — or never does (a native call that
 // would not return).
@@ -78,4 +79,21 @@ test('hideForQuit hides the window and removes the tray icon at once; a missing 
   hideForQuit({ isDestroyed: () => true, hide: () => calls.push('hide again') }, undefined);
   hideForQuit(undefined, { isDestroyed: () => true, destroy: () => calls.push('destroy again') });
   assert.deepEqual(calls, ['hide', 'destroy']);
+});
+
+test('after a stuck stop followed by a new start, a quit takes the normal path (not the last resort)', async () => {
+  const idle = { hasWorker: false, stopping: false };
+  noteWorkerStarted();
+  assert.equal(quitPath(idle), 'normal');
+  noteWorkerStopped('timeout');
+  assert.equal(quitPath(idle), 'last-resort', 'a stuck worker still ends the process by the system');
+  assert.equal(quitPath({ hasWorker: true, stopping: false }), 'wait', 'a worker running is stopped first');
+  noteWorkerStarted(); // what startBackend does after a failed installer
+  assert.equal(quitPath(idle), 'normal');
+  noteWorkerStopped('exited');
+  assert.equal(quitPath(idle), 'normal');
+  // startBackend and the install path are wired as the tests above assume (main.cjs cannot run here).
+  const source = readFileSync(fileURLToPath(new URL('../main.cjs', import.meta.url)), 'utf8');
+  assert.ok(/function startBackend\(\) \{\s*noteWorkerStarted\(\);/.test(source), 'startBackend clears the stuck flag');
+  assert.ok(source.includes('stop: () => { hideForQuit(); return stopBackend(); }'), 'the install path hides the window before stopping');
 });

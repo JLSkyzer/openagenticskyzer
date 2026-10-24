@@ -3559,6 +3559,100 @@ App empaquetée, dossier de données isolé, contexte 32k, carte RTX 4060 (8188 
 
 **Mineurs différés (registre)** : T2 `formatBytes` aux bords 1024 Mio et NaN ; T3 assistant GGUF qui ne corrige que `context_length` en uint32 ; T4 aucun test ne fige la correspondance `InsufficientMemoryError` → `localModelTooBig`, `completeLocal` utilise le chat hors verrou ; T5 `ESTIMATE_BUSY` pour la compaction non testé ; T6 course envoi pendant estimation fermée par raisonnement et test unitaire, pas par un test du worker ; T7 message d'`settings-tabs-visual.cjs:99` devenu trompeur, curseur « max » plafonné à 131 072 ; T8 code mort ligne 290 ; T9 reconstruction du pack pour la même version du moteur non proposée comme mise à jour ; T10 l'avis de repli dit toujours Vulkan même sur le processeur ; T11 0 % affiché jusqu'à la première progression après remontage, `HardwareTab` d'environ 230 lignes ; T12 saut de ligne littéral dans le gabarit du dry-run.
 
+## Bilan du lot — diagnostic des tours (2026-10-21 → 2026-10-24)
+
+Spec `docs/superpowers/specs/2026-10-21-turn-diagnostics-design.md` (conception décidée par l'agent pendant l'absence de l'utilisateur, « fait d'une traite sans te stoper »). Plan `docs/superpowers/plans/2026-10-21-turn-diagnostics.md`, tâches 1 à 9 plus 1b et 5b en sous-agents, base abd292b, dernier commit de code f6c1ee0. Registre : `.superpowers/sdd/2026-10-21-turn-diagnostics/progress.md`.
+
+**État : LIVRÉ** (2026-10-24). Suite complète : 948 au départ, 1079/1079 à la fin (passage unique, après la mémorisation du pas de descente) ; `tsc` cœur : les 5 erreurs préexistantes ; `tsc` renderer : 0 ; `npm run renderer:build` : exit 0.
+
+**Vérifications de clôture** :
+- statiques : `settings.mts` ajoute `turn_log` et ne retire aucune clé ; `git diff --stat` sur `web-tools.mts`, `search-tools.mts`, `workspace.mts` : rien (aucun outil retiré) ; `git grep onTextChunk -- electron/core` : rien (la génération lit `onResponseChunk` seul) ; `oa-typing-dots` reste rendu une fois, dans `TurnStatus.tsx` : c'est la conception de la tâche 5 (les points font partie de la ligne de statut), la vérification statique du plan est périmée sur ce point ;
+- tests à fenêtre de la tâche 9A (HEAD 4888376), chacun lancé UNE fois : `test:stop`, `test:localmodel`, `test:chat`, `test:settings-tabs`, `test:hardware`, `test:restorefolder` PASS ; 27 captures relues ;
+- après la vague finale, une fois chacun : `test:preload`, `test:restart`, `test:datadir`, `test:final-e2e-tray` PASS. `test:settings-tabs` et `test:localmodel` ont échoué (bugs de test : pause fixe avant la requête de réglage ; vérification de « Aucun modèle importé » pendant que le bloc affichait encore « Chargement… »), `test:hardware` a été tué à 240 s sur une attente de page non bornée (double `requestAnimationFrame`). Tests corrigés (2d8037d), puis relancés une fois chacun avec l'accord de l'utilisateur : PASS ;
+- empaqueté, une fois puis une fois après la vague finale : `package:win` exit 0 (`app.asar` contient `core/turn-log.mts`, `core/reasoning-split.mts`, `core/turn-clock.mts`, `core/abortable.mts`, `core/data-folders.mts`, `core/log-dir.cjs`, aucun `tests/`) ; `test:package` PASS (`LISEZMOI.txt`, `knowledge/`, `tools/`, `logs/` présents au démarrage, onglet Matériel affiché). `test:install` NON lancé ;
+- bruit connu dans ces journaux : « Opération IPC inconnue » (faux IPC des tests).
+
+**Objectifs de la spec → preuves** :
+1. Phases en direct : `worker-turn-phases.test.mts` 1 à 5 (préparation → chargement → lecture → écriture, outil nommé, arrêt pendant la préparation), `turn-status.test.mts` (sept libellés exacts, réducteur, région vive sur la phase seule, annonce du chargement par 10 %), `stop-visual.cjs` (minuteur qui tourne, « Arrêt en cours… » lu par un observateur DOM) ; `local-model-visual.cjs` : Préparation → Chargement 1 … 100 % → Lecture → Écriture lus sur le vrai moteur ; commits 9901515 (+920e8fb), b3c683e (+5e46953), f7f3a2a et 9213cfa (libellés de nouvel essai).
+2. Chronomètre par réponse : `turn-clock.test.mts` (chargement, lecture, première réflexion puis premier texte, arrêt pendant le chargement, pièce déplacée), `turn-status.test.mts` (`timingLine` : exemple de la spec, tour chaud, sans jetons, débit arrondi à 0 omis), `worker-turn-phases` 1 et 2 (timing joint à `done` et `stopped` et enregistré sur la réponse) ; `chat-visual.cjs` : « 1ᵉʳ mot 4,2 s · total 12,8 s · 8,3 tok/s · chargement 35 s » ; `local-model-visual.cjs` : « 1ᵉʳ mot 0,4 s · total 15 s · 561,2 tok/s · chargement 0,2 s » ; commits 7198413, 9901515, cda1903, b6e762f, 71b7add, f7f3a2a (tok/s sans la lecture du prompt).
+3. Réflexion séparée : `reasoning-split.test.mts` (avec et sans balise ouvrante, balises à cheval sur les morceaux à toute position, segments, `</think>` nu, `startInThought`, durée de la réflexion), `thought-prefill.test.mts` (détection du gabarit qui ouvre `<think>` lui-même, sur un vrai gabarit rendu par node-llama-cpp), `local-engine.test.mts` d ; `chat-visual.cjs` étape 11 (« ▸ Réflexion · 3,4 s » repliée, ouverte par un vrai clic) ; **vérification manuelle sur le Qwen3.8-27B** : le raisonnement (anglais) est séparé de la réponse (français) dans les deux passes, via les segments natifs `thought` du gabarit ; commits 7198413, edbdbb1, 56b8827, cda1903, 71b7add.
+4. Un stop qui coupe vraiment : `local-engine.test.mts` a (arrêt pendant le chargement, rien de chargé après) et b (arrêt pendant l'attente du verrou : rend la main aussitôt), `turn-window.test.mts` (arrêt pendant l'attente d'une estimation annulée), `worker-turn-phases` 2, 3 (rien chargé 10 s après `stopped`, test rouge quand le moteur ignore le signal, vérifié par mutation) et 4 ; `stop-visual.cjs` ; latence mesurée : 10 à 13 ms pendant l'écriture (stories260K), **111 ms** puis **673 ms** sur le 27B (journal des tours, voir le tableau). Limite connue ci-dessous : pas d'interruption du prefill ; commits 7198413, 9901515, 920e8fb, b3c683e.
+5. Journal complet : `turn-log.test.mts` 1 à 13 (une ligne JSON par événement, `metadata`, `off`, troncature à 20 000 caractères, aucun jeton injecté ne survit, fichiers sensibles, rétention 14 jours, écriture qui ne lève jamais, clés d'objet masquées, jamais de lien suivi), `worker-turn-log.test.mts` 1 à 6 (jetons tapés, répondus, en arguments, en configuration MCP, dans un fichier sensible ; `${VAR}` d'un `.mcp.json` de confiance ; migration), `settings-tabs-visual.cjs` (select « Journal des tours », bouton « Ouvrir le dossier des journaux ») ; deux journaux de tours réels lus (tableau) ; commits fc40212, ff5bb9c, 5649285, b920e51, 9213cfa, 6232def.
+6. Dossiers de données visibles : `data-folders.test.mts` (création de `knowledge/`, `tools/`, `logs/`, entrée existante laissée telle quelle, `LISEZMOI.txt` régénéré, sans chemin personnel, créé par le worker dans le dossier redirigé), `worker-data-dir.test.mts`, `test:package` (dans l'app empaquetée) ; commits 6f81e3f, 9728e1e.
+7. Corrections d'interface : `ui-fixes.test.mts` (texte du chat vide avec et sans dossier, CSS `overflow-wrap`), `chat-visual.cjs` (mot de 400 caractères sans défilement latéral, dans les deux bulles), `restore-folder-visual.cjs` (texte sans dossier conservé), capture « Écris un message pour commencer. » de `local-model-visual.cjs` ; commit 4888376.
+8. Updater sans release : `updater.test.mts` (404, 406 et absence de version donnent `no-release`, jamais une erreur ; une ligne de journal « Aucune version publiée pour l’instant » au lieu d'une pile) ; commit 4888376. Pas de preuve à fenêtre du texte (test pur seulement).
+9. Conseil CUDA sur NVIDIA : `hardware-view.test.mts` (`cudaAdvice` : Vulkan sur une carte NVIDIA seulement), `hardware-visual.cjs` PASS sur cette machine (branche exercée : Vulkan + NVIDIA, conseil affiché mot pour mot sous « Moteur ») ; commit 4888376.
+
+**Tâches et correctifs ajoutés en cours de lot, avec leur raison** :
+- **Tâche 1b (cbe74b1)** : une carte presque pleine (jeu en cours) faisait REFUSER même stories260K (20 échecs de la suite, `InsufficientMemoryError`) au lieu de retomber sur le processeur. Un `cpuFallback` commun au chargement et à l'estimation, et la marge Vulkan appliquée seulement quand le moteur est réellement Vulkan.
+- **Tâche 5b (edbdbb1)** : avec un gabarit de conversation qui pré-remplit `<think>` (cas du Qwen3 de l'utilisateur), le raisonnement arrivait comme du texte (« Écriture… » pendant toute la réflexion) et laissait un `</think>` nu. Le gabarit GGUF est rendu avec `add_generation_prompt` ; s'il ouvre `<think>`, le séparateur démarre en mode réflexion ; sans `</think>`, tout est rendu comme réponse. Espaces seuls réglés ensuite (56b8827).
+- **Vague finale** (revue finale de la branche, puis mesure réelle du 27B) :
+  - **Régression de placement (f7f3a2a)** : le 27B passait de 25/66 à 0/66 sur CUDA. Le `try` unique de la tâche 1b envoyait aussi le refus de `createContext` (contexte qui ne tient pas dans la VRAM restante) vers le repli processeur. Désormais : refus de `createContext` → rechargement avec environ 10 % de couches en moins, 3 essais, puis processeur ; chaque erreur est journalisée avec son étape ; `[placement]` et `model-ready` disent descente ou repli et pourquoi ;
+  - tok/s sans la lecture du prompt (un segment vide de début de réflexion démarrait l'horloge) ;
+  - première lecture du matériel (79d2004) : `hardware-info` attend au plus 5 s le moteur puis répond « initialisation » avec un évènement `engine` (le plafond IPC de 30 s était dépassé au premier démarrage avec le pack CUDA : « Délai IPC dépassé ») ;
+  - réallocation entre deux tours (1cd64de, demande de l'utilisateur) : un modèle laissé sur le processeur ou avec moins de couches est rechargé en arrière-plan quand la carte a nettement plus de place (au moins 4 couches de ce modèle), annulée par un envoi, une compaction ou la fermeture ;
+  - journal (9213cfa) : une ligne de chargement par 10 %, durée de réflexion d'une réponse arrêtée, arrêt pendant « Préparation » non retenu par les outils, migration vers le dossier déjà utilisé sans suspension du journal ;
+  - masquage des `${VAR}` d'un `.mcp.json` de projet de confiance, lu tel qu'écrit (b920e51) ;
+  - fermeture par l'icône de la zone de notification (c8187d7) : fenêtre et icône disparaissent aussitôt, le worker arrête tout, attend les appels natifs en cours (au plus 60 s), libère le modèle et termine son propre fil ; main ne fait plus `Worker.terminate()`, qui plantait pendant un appel natif (0xC0000409) ; mesure avec stories260K : crash 3 fois sur 3 avec l'ancien code, sortie 0 avec le nouveau, 19 à 25 ms à chaud, 0,7 à 0,9 s pendant un chargement ;
+  - documentation et mineurs (6232def) : limites du journal, `LISEZMOI.txt` (chemins avec le nom d'utilisateur), `realLogDir` partagé dans `core/log-dir.cjs`.
+- **Course envoi / réallocation et drapeau de worker (2d31179)** : un envoi réserve son tour avant la recherche du modèle ; `workerStuck` remis à zéro ; le chemin de mise à jour masque la fenêtre avant d'arrêter le worker.
+- **Fermeture sur appel natif bloqué (da5d446)** : le worker nomme et date chaque travail suivi et rapporte toutes les 2 s ce qu'il attend à l'arrêt ; la ligne `[quit]` de main cite le dernier rapport.
+- **Tests de fenêtre bornés (6a6dad3, 2d8037d)** : chaque script de page borné, attente de l'état chargé, fin de test par l'op `shutdown`, `hardwareInfo()` qui attend la fin de `{ initializing }`.
+- **Mémorisation du pas de descente (f6c1ee0)** : le 27B affichait 25 couches estimées puis chargeait 3 fois (25, 22, 19). Le pas est mémorisé par fichier de modèle, taille de contexte et matériel (`layer-limits.v1.json` à côté du cache d'estimation) ; le chargement à froid suivant démarre au nombre connu, en un seul chargement ; ignoré si la VRAM libre a augmenté d'au moins max(4 couches, 512 Mio) ; la réallocation n'est jamais plafonnée par lui.
+
+**Décisions** :
+- `readMs` est optionnel ; les phases viennent des évènements de l'agent ; la lecture démarre à l'évènement `turn` de l'agent, avant la construction de la requête (écart accepté, M16) ;
+- règles du séparateur : une fois une première balise vue, les balises suivantes sont du texte littéral ; un segment `comment` compte comme réflexion ; un `</think>` nu déplace ce qui précède en réflexion ; un segment de réflexion du gabarit coupe le repli applicatif ;
+- rétention du journal par suppression des fichiers de plus de 14 jours ; le journal est suspendu après une migration du dossier de données (sauf vers le dossier déjà utilisé) ;
+- « Aucune version publiée pour l’instant » avec une apostrophe typographique ; tout 404/406 de GitHub vaut « aucune version » (M13) ;
+- le journal retire d'abord les contenus (`metadata`), puis masque les jetons connus, les secrets MCP (valeurs brutes, développées et suivant un schéma d'autorisation), `hf_token` et les fichiers sensibles ; les clés d'objet sont masquées aussi ; un fichier du jour qui est un lien, ou `logs/` en jonction, n'est jamais suivi ;
+- tests worker du tour avec le fournisseur scripté (il faut scripter les arguments d'outils) en plus de stories260K, au lieu des seuls tests stories260K de la spec (M8) ; évènements de phase arrivés avant `send-started` abandonnés (M9) ;
+- le journal des tours est un outil de diagnostic, pas une sauvegarde ;
+- fermeture : jamais de `Worker.terminate()` ni de `process.exit` de l'extérieur pendant un travail natif ; dernier recours à 60 s par arrêt du processus par le système.
+
+**Mesure réelle — Qwen3.8-27B, CUDA, contexte 32 k (2026-10-24)**
+
+App empaquetée, pack CUDA installé, dossier de données isolé, carte RTX 4060 (8188 Mio). « mesuré » : lu dans le journal des tours (`.superpowers/runs/partB-turnlog/` et `partB2-turnlog/`), dans les lignes `[placement]` / `[quit]` ou à l'écran ; les durées de l'ordre de la minute ont été observées par l'utilisateur.
+
+| | Partie B : repli processeur (avant correction) | Partie B refaite : descente de couches (après correction) |
+|---|---|---|
+| Couches sur la carte | 0/66, repli processeur (mesuré) | 25 → 22 → 19, chargé à 19/66 (mesuré) |
+| Débit | 0,4 tok/s, 76 jetons (mesuré) | 1 tok/s, 110 jetons (mesuré) |
+| Lecture du prompt (4074 jetons) | 62 s (mesuré) | 29 s (mesuré) |
+| Chargement | 44,5 s, deux chargements (mesuré) | 33,3 s, trois chargements (mesuré) |
+| Latence du stop | 111 ms (mesuré) | 673 ms (mesuré) |
+| Fermeture par l'icône | non relevée | modèle libéré en 2008 ms, fil du worker terminé à 2030 ms (mesuré, ligne `[quit]`) |
+| Réflexion séparée de la réponse | oui (mesuré) | oui (mesuré) |
+
+Écarts :
+- partie B : la ligne `[placement]` disait 0/66 « repli processeur (carte pleine) » avec 7106 Mio libres ; le journal de llama.cpp montre 4724 Mio déjà chargés sur la carte AVANT le rechargement sur le processeur : la régression venait de `createContext`, pas de la mémoire ;
+- partie B refaite : l'estimation affichait « 25/66 (estimé) » alors que 19 couches ont été chargées ; la mémorisation du pas (f6c1ee0) le corrige pour les chargements suivants, sans que cela ait pu être vérifié sur le 27B (voir « Non prouvé ») ;
+- le débit de 1 tok/s reste très bas : voir le lot de performance au backlog.
+
+**Limites connues** :
+- **le prefill ne peut pas être interrompu** : node-llama-cpp 3.21.1 évalue le prompt sans signal ; un stop pendant « Lecture » prend effet à la fin de la lecture (29 à 62 s sur le 27B). « Arrêt en cours… » s'affiche aussitôt et la latence est journalisée ;
+- le journal des tours ne masque que les jetons de forme connue et les secrets connus ; la sortie de `run_command` est journalisée en `full`, telle quelle ; les noms de fichiers 8.3 ne sont pas reconnus dans le chemin tapé ; un secret échappé ou partiel n'est pas masqué ;
+- l'estimation affiche la limite mémorisée sans vérifier la croissance de la VRAM libre et sans étiquette « mémorisé » (elle dit toujours « estimé ») ;
+- `AbortError` intermittent au niveau d'un fichier de la suite complète (« A resource generated asynchronous activity after the test ended »), vu une fois sur trois passages complets, non reproduit en 5 relances isolées de `cuda-pack-install` ni dans le passage de la tâche 9A ; source inconnue ;
+- la cause du débordement de Vulkan sur NVIDIA reste inconnue (le conseil CUDA recommande, il ne corrige pas) ;
+- fermeture : si le worker ne termine pas en 60 s, le processus est terminé par le système (dernier recours, sans purge du stockage du renderer) ; l'attente est invisible pour l'utilisateur ;
+- une capture de fenêtre prise sous forte charge montre parfois une image périmée (`capturePage` renvoie la dernière image peinte) : la preuve de « Arrêt en cours… » repose sur l'observateur DOM, non sur `stop-1b-stopping.png` ;
+- un modèle qui finit toujours sur le processeur répète ses essais à chaque chargement à froid (aucune limite n'est mémorisée pour 0 couche).
+
+**Non prouvé** :
+- la limite mémorisée sur le vrai 27B : il faut deux chargements à froid (le second devrait être un seul chargement à 19 couches, avec « limite mémorisée : 19 couches ») ; seuls les tests de couture sur stories260K/Vulkan l'ont exercée ;
+- une machine sans NVIDIA (et sans Vulkan) ; la branche CUDA de la résolution `auto` n'a pas été exercée par un test sur cette machine ;
+- la branche native de la vérification de réallocation (`replacementCheck`) et le dernier recours de fermeture (`lastResortExit`) : pas de test ;
+- les durées de fermeture d'un modèle de 12 Go avec l'ancien code (estimées, non mesurées) ;
+- le texte « Aucune version publiée » à l'écran (test pur seulement).
+
+**Nouveau backlog** :
+- **Un lot de performance du LLM dédié, mesures d'abord** (demandé par l'utilisateur : réponse, exécution, chargement ; recherche préalable sur les endroits où optimiser). Pistes, non vérifiées : réutiliser le cache KV du prompt système d'environ 4 000 jetons d'un tour à l'autre (29 s de relecture à chaque tour sur le 27B) ; les tenseurs nextn/MTP du Qwen3.8, présents mais inutilisés (décodage spéculatif) ; quantification du cache KV ; Flash Attention sur CUDA ; taille du contexte ; lots et fils de calcul.
+- Fuite de nettoyage des tests : environ 685 dossiers `openagent-*` dans `%TEMP%`.
+- `package-smoke.cjs` laisse son dossier `userData` derrière lui quand la suppression échoue.
+- Vérification de la légende « Contexte » de `settings-tabs-visual.cjs`.
+- Mineurs différés par tâche : voir le registre `progress.md`.
+
 ## À faire — lots suivants (demandes de l'utilisateur, 2026-10-17)
 
 1. **Modèles 100 % locaux** — LIVRÉ (2026-10-18, voir « Bilan du lot — modèles 100 % locaux ») : `test:model` PASS à sa relance ; `test:gitstatus` PASS à son troisième et dernier lancement, après la relecture du témoin git quand l'index est prêt (97783e4). (conception `docs/superpowers/specs/2026-10-17-local-only-models-design.md`) : la sélection du modèle ne propose plus que les fichiers `.gguf` locaux ; clés des fournisseurs en ligne effacées ; modèle d'embeddings livré dans l'app. **Aucun outil ni réglage retiré** (outils web, jeton Hugging Face, images… restent).
@@ -3566,3 +3660,5 @@ App empaquetée, dossier de données isolé, contexte 32k, carte RTX 4060 (8188 
    - vision : les modèles `.gguf` de vision (modèle + projecteur `mmproj`) décrivent les captures envoyées, via `llama-mtmd-cli` de llama.cpp livré dans l'app (node-llama-cpp 3.x n'accepte pas d'image ; la v4, qui l'apportera, n'est pas publiée au 2026-10-17 — issue withcatai/node-llama-cpp#88) ; le modèle de discussion est déchargé pendant l'appel pour ne pas doubler la mémoire ;
    - débordement : **LIVRÉ le 2026-10-21, voir « Bilan du lot — matériel et débordement »** ; demandé depuis longtemps par l'utilisateur et **jamais porté** depuis Python (`estimate_gpu_layers` dans `utils/utils.py`, étiquette `python-final`, servait à LM Studio / llama.cpp serveur) ; le moteur `.gguf` actuel s'en remet au réglage par défaut de node-llama-cpp, **non vérifié** : mesurer un modèle plus gros que la VRAM, reprendre une répartition explicite si nécessaire, afficher couches GPU / CPU.
 3. **Audit des outils** (demandé le 2026-10-17, après le lot 1) : « tout doit être conservé, voire ajouté s'il en manque » — comparer les outils de l'agent à ceux de l'ancienne app Python (`python-final`) et à ce qu'on attend d'un agent de code, proposer ceux qui manquent.
+4. **Diagnostic des tours** — LIVRÉ (2026-10-24, voir « Bilan du lot — diagnostic des tours »). Statut et chronomètre en direct, réflexion séparée, stop qui coupe, journal des tours, dossiers de données visibles.
+5. **Suite** : le lot de performance du LLM (mesures d'abord, voir le backlog du bilan) ou le projet 2 (le catalogue) ; l'utilisateur décide de l'ordre.

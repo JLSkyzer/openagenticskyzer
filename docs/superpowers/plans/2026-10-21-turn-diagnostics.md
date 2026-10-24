@@ -1018,3 +1018,25 @@ There is also a race. Those tests register their listener after `await callWorke
 5. → T4: turn-log 7, worker-turn-log 4; T7: data-folders 4.
 
 **Proportion:** the plan holds signatures, pinned values, test names and assertions. The bodies left out are the ones the signatures and tests determine.
+
+---
+
+## Bilan (closure, 2026-10-24)
+
+Delivered; the full bilan (per-objective proofs, decisions, measurements, limits) is in `tasks/todo.md`, « Bilan du lot — diagnostic des tours ». Base abd292b, last code commit f6c1ee0. Suite 948 → 1079/1079; core `tsc` 5 (baseline), renderer 0; renderer build ok.
+
+**What the plan did not foresee, added during the lot:**
+- Task 1b (cbe74b1): a nearly full card made even stories260K refuse to load; load and estimate now share a `cpuFallback`.
+- Task 5b (edbdbb1): a chat template that pre-fills `<think>` left the reasoning in the text; the splitter now starts in thought mode when the template opens it.
+- Final fix wave: the real 27B went 25/66 → 0/66 because Task 1b's single `try` also caught the `createContext` refusal (now a layer step-down, then CPU); tok/s excludes prompt reading; the first hardware read answers « initializing » plus an `engine` event instead of hitting the IPC cap; re-placement between turns; MCP `${VAR}` masking from the project's entries as written; quit never terminates the worker during a native call (0xC0000409), the worker ends itself within 60 s; a send reserves its turn before the model lookup.
+- Closing fixes: bounded window-test page scripts and loaded-state waits (da5d446, 2d8037d), and a step-down remembered per model file, context size and hardware (f6c1ee0).
+
+**Window and packaged proofs:** every window test and `package:win` + `test:package` ran once after the lot and again after the fix wave; three failed once for test bugs (settings-tabs, localmodel, an unbounded hardware page script) and passed once each after the fix. `test:install` was not run.
+
+**Real 27B (Qwen3.8-27B, CUDA, context 32k):** part B 0/66, 0.4 tok/s, reading 62 s, stop 111 ms; redo 25→22→19, 19/66, 1 tok/s, reading 29 s, loading 33.3 s, stop 673 ms, quit with the model freed in 2008 ms. Reasoning separated from the reply in both runs.
+
+**Known limits:** prefill cannot be interrupted (stop takes effect when the reading ends); the turn log masks only known tokens and secrets and logs `run_command` output at `full`; the estimate shows the remembered limit unlabelled; an intermittent file-level `AbortError` (once in three full runs, source unknown); the Vulkan spill on NVIDIA has no known cause; the 60 s last-resort quit; window captures under heavy load can show stale frames.
+
+**Not proven:** the remembered limit on the real 27B (needs two cold loads); a machine without NVIDIA; the native branch of the replacement check and `lastResortExit`.
+
+**Backlog:** a dedicated LLM performance lot, measurements first (leads, unverified: KV reuse of the ~4 000-token system prompt, the unused nextn/MTP tensors, KV quantisation, flash attention on CUDA, context size, batch and threads); the ~685 leftover `openagent-*` folders in `%TEMP%`; `package-smoke` leaving its userData folder; the settings-tabs Contexte caption check.

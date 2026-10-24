@@ -18,6 +18,7 @@ Les mises à jour se téléchargent en arrière-plan ; un bandeau « Version X p
 - **Outils** : fichiers, recherche dans le code, git, commandes shell, web, mémoire de projet, initialisation de projet (`OPENAGENT.md`), serveurs MCP (stdio et distants), plugins Node.
 - **Conversation** : branches, édition et régénération, pièces jointes (texte, code, CSV, PDF, images), artifacts (HTML, SVG, Mermaid, Markdown), jauge de contexte et compaction, export Markdown / HTML / JSON.
 - **Interface** : palette de commandes (Ctrl+K), bibliothèque de prompts, thème clair / sombre, icône dans la zone de notification.
+- **Diagnostic des tours** : phases et statut en direct dans le chat (préparation, chargement, lecture, réflexion, écriture, outil, arrêt), temps sous chaque réponse, « Réflexion » séparée et repliable, un stop qui coupe vraiment (hors lecture du prompt), journal des tours (Réglages › Général) et dossiers de données créés au démarrage avec un `LISEZMOI.txt` qui les décrit.
 - **Matériel** : moteur, carte, VRAM, RAM et processeur affichés ; répartition carte / processeur de chaque modèle, estimée puis réelle ; pack CUDA optionnel pour les cartes NVIDIA.
 - **Projets** : historique des dossiers, confiance par projet avant d'exécuter les plugins ou serveurs MCP qu'un dépôt fournit, index sémantique du code et base de connaissances.
 

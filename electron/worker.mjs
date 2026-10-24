@@ -10,6 +10,7 @@ import { FoldersService } from './core/folders.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
 import { localProvider, plannedContextSize, loadedChatWrapper, loadedOutcome, outcomeNote, replacementCheck, replaceLoaded, generationsIdle, setLayerLimits } from './core/local-engine.mts';
 import { TurnLog, pruneTurnLogs, mcpSecretValues } from './core/turn-log.mts';
+import { perfLevers, SHIPPED_LEVERS } from './core/perf-levers.mts';
 import { isSensitiveFile, protectedPathMatcher } from './core/file-filter.mts';
 import { EstimateCache, estimateAndRemember, estimateKey, hardwareKey, ESTIMATE_BUSY } from './core/offload-estimate.mts';
 import { EstimateJobs } from './core/estimate-jobs.mts';
@@ -238,6 +239,9 @@ function postModelStatus(model) {
   } catch { /* the page keeps its last status; the turn goes on */ }
 }
 
+// Whether a bench lever is away from its shipped value in this worker (core/perf-levers.mts).
+const leversChanged = () => Object.keys(SHIPPED_LEVERS).some(key => perfLevers()[key] !== SHIPPED_LEVERS[key]);
+
 /** The turn log's model-ready line, from the same sources as postModelStatus: where the loaded model really sits, the
  * context it runs with (the request window for a model that is not a loaded .gguf), its chat wrapper, the load
  * time (`loadMs`, none for a warm engine) and how the load got its placement (`placement`: 'direct', 'step-down' or
@@ -265,6 +269,8 @@ function logModelReady(model, contextTokens, loadMs, log, load = null) {
       ...(loadMs === undefined ? {} : { loadMs }),
       ...(load?.stages ? { loadStages: load.stages } : {}),
       ...(load?.architecture ? { architecture: load.architecture } : {}),
+      // The bench's levers as this worker applies them, only when one is away from its shipped value (M8).
+      ...(leversChanged() ? { levers: perfLevers() } : {}),
     });
   } catch (error) {
     // A line missing never fails the turn, but it is said (M-f).
@@ -755,6 +761,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
         log({
           event: 'generation', step, inputTokens: rest.inputTokens, outputTokens: rest.outputTokens, generationMs: rest.generationMs,
           ...(rest.promptMs === undefined ? {} : { promptMs: rest.promptMs }), ...(rest.reuse ? { reuse: rest.reuse } : {}),
+          ...(rest.generationId ? { generationId: rest.generationId } : {}),
         });
         return;
       }

@@ -4,12 +4,12 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { MemorySample } from './metrics.mts';
 
-const quoted = (row: string): string[] => [...row.matchAll(/"((?:[^"]|"")*)"/g)].map(match => match[1].replace(/""/g, '"'));
+import { csvFields } from './csv.mts';
 
 /** The dedicated and shared GPU bytes in `typeperf` CSV output: each counter column summed over its instances
  * (one per adapter), from the last sample row; null for a kind no column reports. */
 export function parseGpuCounters(typeperfCsv: string): { dedicated: number | null; shared: number | null } {
-  const rows = typeperfCsv.split(/\r?\n/).filter(row => row.startsWith('"')).map(quoted);
+  const rows = typeperfCsv.split(/\r?\n/).filter(row => row.startsWith('"')).map(csvFields);
   if (rows.length < 2) return { dedicated: null, shared: null };
   const [header, last] = [rows[0], rows.at(-1)!];
   let dedicated: number | null = null;

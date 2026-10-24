@@ -26,6 +26,7 @@ import { realLogDir } from './log-dir.cjs';
 import { join } from 'node:path';
 import type { LoadStage, ModelArchitecture, TurnTiming } from './model-types.mts';
 import type { ReuseFigures } from './reuse.mts';
+import type { PerfLevers } from './perf-levers.mts';
 import { expandServerPlaceholders, type McpServerConfig } from './mcp-config.mts';
 
 export const TURN_LOG_LEVELS = ['full', 'metadata', 'off'] as const;
@@ -142,10 +143,11 @@ export function mcpSecretValues(servers: readonly McpServerConfig[], env: NodeJS
 
 export type TurnLogEvent =
   | { event: 'turn-start'; model: string | null; text: string; attachments: number; keep?: number }
-  // loadStages, architecture, promptMs and reuse are figures (no content): kept at the `metadata` level too.
-  | { event: 'model-ready'; backend: string | null; gpuLayers?: number; totalLayers?: number; contextSize: number; wrapper?: string; segments?: unknown; loadMs?: number; loadStages?: LoadStage[]; architecture?: ModelArchitecture }
+  // loadStages, architecture, levers (only when the bench set one away from its shipped value), promptMs, reuse and
+  // generationId are figures (no content): kept at the `metadata` level too.
+  | { event: 'model-ready'; backend: string | null; gpuLayers?: number; totalLayers?: number; contextSize: number; wrapper?: string; segments?: unknown; loadMs?: number; loadStages?: LoadStage[]; architecture?: ModelArchitecture; levers?: Readonly<PerfLevers> }
   | { event: 'phase'; phase: string; previous: string | null; previousMs: number | null; progress?: number; tool?: string }
-  | { event: 'generation'; step: number; inputTokens: number; outputTokens: number; generationMs: number; promptMs?: number | null; reuse?: ReuseFigures }
+  | { event: 'generation'; step: number; inputTokens: number; outputTokens: number; generationMs: number; promptMs?: number | null; reuse?: ReuseFigures; generationId?: string }
   | { event: 'tool'; tool: string; category?: string; arguments: unknown; durationMs?: number; ok: boolean; result: string }
   | { event: 'reply'; step: number; reasoning?: string; text: string; toolCalls: number }
   | { event: 'end'; kind: 'done' | 'stopped' | 'error'; timing: TurnTiming; stopLatencyMs?: number; message?: string };

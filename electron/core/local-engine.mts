@@ -15,7 +15,7 @@ import { fitOf, type Placement } from './placement.mts';
 import { untilAborted } from './abortable.mts';
 import { ReplyAccumulator, type SplitPiece } from './reasoning-split.mts';
 import { opensThought, type ThoughtSegment } from './thought-prefill.mts';
-import { perfLevers } from './perf-levers.mts';
+import { perfLevers, type PerfLevers } from './perf-levers.mts';
 import { reuseOf } from './reuse.mts';
 
 /** What the engine context is sized from: the « Contexte des modèles locaux » setting. max_tokens takes no part
@@ -631,6 +631,16 @@ function tracked<T>(generation: Promise<T>): Promise<T> {
   void settled.then(() => generations.delete(settled));
   return generation;
 }
+/** The limits one generation runs under: the outputCap lever (shipped LOCAL_OUTPUT_CAP) bounds whatever the caller
+ * asked (ruling F1); `budgets` only when a thought cap applies — without one, LlamaChat limits no segment, as today
+ * (ruling F5). */
+export function generationLimits(levers: Readonly<PerfLevers>, maxTokens: number | undefined): { maxTokens: number; budgets?: { thoughtTokens: number } } {
+  return {
+    maxTokens: Math.min(maxTokens ?? levers.outputCap, levers.outputCap),
+    ...(levers.thoughtTokens === null ? {} : { budgets: { thoughtTokens: levers.thoughtTokens } }),
+  };
+}
+
 /** Resolves once every generation started so far has ended, a stopped one included. Never rejects. */
 export async function generationsIdle(): Promise<void> {
   while (generations.size > 0) await Promise.all([...generations]);
@@ -701,21 +711,22 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
         deliver(reply.chunk(chunk));
       },
       signal: options.signal,
-      // The outputCap lever (shipped LOCAL_OUTPUT_CAP) bounds every call, whatever the caller asked (ruling F1).
-      maxTokens: Math.min(options.maxTokens ?? levers.outputCap, levers.outputCap),
-      // No `budgets` unless a thought cap applies: without one, LlamaChat limits no segment, as today (ruling F5).
-      ...(levers.thoughtTokens === null ? {} : { budgets: { thoughtTokens: levers.thoughtTokens } }),
+      ...generationLimits(levers, options.maxTokens),
     }));
   } finally {
-    const stats = generation.stats(meter.diff(before).usedInputTokens);
+    const used = meter.diff(before);
+    const stats = generation.stats(used.usedInputTokens);
     const checkpoints = sequence.needsCheckpoints
       ? { needed: true, memoryBytes: sequence.checkpointsMemoryUsage, lastIndex: sequence.lastCheckpointIndex }
       : null;
-    const reuse = reuseOf({ heldTokens, afterTokens: sequence.contextTokens, evaluated: stats.inputTokens, outputTokens: stats.outputTokens, checkpoints });
-    options.onStats?.({ ...stats, promptMs: generation.promptMs(startedAt), reuse });
+    // The meter's own output count (M1): a tool call's tokens are not all in the streamed chunks.
+    const reuse = reuseOf({ heldTokens, afterTokens: sequence.contextTokens, evaluated: used.usedInputTokens, outputTokens: used.usedOutputTokens, checkpoints });
+    // The id ties this generation's turn-log line to its `[perf]` timings in the log (the bench, M5).
+    const generationId = randomUUID();
+    options.onStats?.({ ...stats, promptMs: generation.promptMs(startedAt), reuse, generationId });
     if (levers.performanceTracking) {
       await context.printTimings().catch((error: unknown) => console.warn(`[perf] mesures illisibles : ${(error as Error | undefined)?.message ?? error}`));
-      console.info('[perf] génération terminée');
+      console.info(`[perf] génération terminée ${generationId}`);
     }
   }
   deliver(reply.end());

@@ -1,54 +1,68 @@
-// One bench session, in its own process (bench/run.mts spawns it): the real worker (worker.mjs) on a temp data home,
-// driven exactly as the app drives it — the model added to the library and made active, each folder activated, one
-// `send` per message — then each turn's figures read back from that turn's own turn log lines.
+// One bench step, in its own process (bench/run.mts spawns it), on a temp data home:
+// - `install`: the local CUDA pack (build/cuda-pack) installed into that home through the real installer, served on
+//   127.0.0.1 only (as tests/cuda-real.cjs --install): nothing is downloaded;
+// - `session`: the real worker (worker.mjs) started as main.cjs starts it — the installed pack's cuda-runtime/ first
+//   on PATH BEFORE any Llama exists in this process, `gpuBackend` and `cudaRuntimeDir` in workerData — then driven as
+//   the app drives it: the model added to the library and made active, each folder activated, one `send` per message.
+//   Each turn's figures are read back from that turn's own turn log lines, and the results file is rewritten after
+//   every turn (a cut session keeps what it measured).
 // Usage (internal): node --experimental-strip-types bench/child.mts <config.json>
 // The worker always ends with the `shutdown` op, never `terminate()` (lesson 2026-10-24: terminating a thread inside
 // native code crashes the process).
 import { Worker } from 'node:worker_threads';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { createServer } from 'node:http';
+import { createReadStream, existsSync } from 'node:fs';
+import { lstat, readFile, readdir, writeFile } from 'node:fs/promises';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { turnLogDir } from '../core/turn-log.mts';
-import { PERF_LEVERS_ENV } from '../core/perf-levers.mts';
+import { PERF_LEVERS_ENV, SHIPPED_LEVERS, type PerfLevers } from '../core/perf-levers.mts';
+import { installedPackDir } from '../core/cuda-pack.mts';
+import { callWorker, hardwareInfo } from '../tests/support/worker-events.mts';
 import { turnFigures, type TurnFigures } from './metrics.mts';
 import { sampleMemory } from './memory.mts';
 
+export type Backend = 'auto' | 'cuda' | 'vulkan' | 'cpu';
 export interface ChildGroup { scenario: TurnFigures['scenario']; folder: string; messages: readonly string[] }
-export interface ChildConfig {
-  home: string;
+interface Common { home: string; resultPath: string }
+export interface InstallConfig extends Common { kind: 'install'; packDir: string }
+export interface SessionConfig extends Common {
+  kind: 'session';
   model: string;
   context: number | 'max';
   /** The levers, as OPENAGENT_PERF_LEVERS (JSON). */
   levers: string;
+  /** The worker's gpu_backend choice, as main.cjs passes it. */
+  backend: Backend;
+  /** The backend the engine must have started on, else no message is sent (a heavy run off CUDA). null: any. */
+  requireBackend: Exclude<Backend, 'auto'> | null;
+  /** A B reply without the read_file call or without the sentinel is a failure (a real model). */
+  qualityGate: boolean;
+  turnTimeoutMs: number;
   groups: ChildGroup[];
   /** Folders whose indexing (started by the worker itself: restore_last_folder) must settle before the first send. */
   settle: string[];
-  resultPath: string;
 }
-export interface ChildResult { turns: TurnFigures[]; failures: string[]; folders: string[] }
+export type ChildConfig = InstallConfig | SessionConfig;
+export interface ChildResult {
+  turns: TurnFigures[]; failures: string[]; folders: string[];
+  /** The engine's backend (hardware-info), the levers the worker applied (its model-ready line). */
+  backend: string | null; levers: Readonly<PerfLevers> | null;
+}
 
-const WORKER = fileURLToPath(new URL('../worker.mjs', import.meta.url));
+const ELECTRON = fileURLToPath(new URL('..', import.meta.url));
+const WORKER = join(ELECTRON, 'worker.mjs');
+const MANIFEST = join(ELECTRON, 'resources', 'cuda-pack', 'manifest.json');
 const INDEX_WAIT_MS = 300000;
+const STOP_WAIT_MS = 120000;
 
-function call(worker: Worker, op: string, payload?: unknown): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const id = `bench-${Math.random()}`;
-    const listener = (message: any) => {
-      if (message?.id !== id) return;
-      worker.off('message', listener);
-      if (message.ok) resolve(message.result); else reject(new Error(message.error));
-    };
-    worker.on('message', listener);
-    worker.postMessage({ id, op, payload });
-  });
-}
+const engineVersion = async () => JSON.parse(await readFile(join(ELECTRON, 'node_modules', 'node-llama-cpp', 'package.json'), 'utf8')).version as string;
 
 /** Waits until `folder` is not being indexed (F29: the activation's indexing would add noise to the turn). */
 async function indexSettled(worker: Worker, folder: string): Promise<void> {
   const until = Date.now() + INDEX_WAIT_MS;
   for (;;) {
-    const status = await call(worker, 'index-status', { folder });
+    const status = await callWorker(worker, 'index-status', { folder });
     if (status?.state !== 'indexing') return;
     if (Date.now() > until) {
       console.warn('[bench] indexation toujours en cours après 300 s : le tour part quand même');
@@ -66,66 +80,161 @@ async function turnLines(home: string, runId: string): Promise<Record<string, un
   return text.split('\n').filter(Boolean).map(line => JSON.parse(line)).filter(line => line.runId === runId);
 }
 
-/** Sends `text` and resolves with the run's terminal event; a permission request is refused (nothing waits for a
- * person here). */
-function sendAndWait(worker: Worker, folder: string, text: string): Promise<{ runId: string; end: any }> {
+/** The run in progress, for a timeout or a Ctrl+C: its id once known, and how to stop it. */
+let current: { runId: string | null; stop: () => void } | null = null;
+let interrupted = false;
+
+/** Sends `text` and resolves with the run's terminal event. A permission request is refused (nothing waits for a person
+ * here). Past `timeoutMs` — or on Ctrl+C — the run is stopped through the worker's own `stop` op, and its terminal
+ * event (« stopped ») ends it as for a user's stop; `timedOut` says so. */
+function sendAndWait(worker: Worker, folder: string, text: string, timeoutMs: number): Promise<{ runId: string; end: any; timedOut: boolean }> {
   return new Promise((resolve, reject) => {
     let runId: string | null = null;
+    let timedOut = false;
+    let stopAsked = false;
     const early: any[] = [];
-    const onEvent = (message: any) => {
-      if (message?.type !== 'event' || message.event !== 'agent') return;
-      if (runId === null) { early.push(message); return; }
-      handle(message);
+    const stop = () => {
+      if (stopAsked || runId === null) return;
+      stopAsked = true;
+      void callWorker(worker, 'stop', { runId }).catch(() => {});
+      // A worker that never ends the run after the stop: give up on it, the session ends.
+      setTimeout(() => finish({ kind: 'stopped', message: "le tour n'a pas pris fin après l'arrêt" }), STOP_WAIT_MS).unref();
+    };
+    const timer = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
+    let ended = false;
+    const finish = (end: any) => {
+      if (ended) return;
+      ended = true;
+      clearTimeout(timer);
+      worker.off('message', onEvent);
+      current = null;
+      resolve({ runId: runId!, end, timedOut });
     };
     const handle = (message: any) => {
       if (message.runId !== runId) return;
-      if (message.kind === 'permission-request') void call(worker, 'permission-decision', { requestId: message.requestId, allow: false }).catch(() => {});
-      if (['done', 'error', 'stopped'].includes(message.kind)) {
-        worker.off('message', onEvent);
-        resolve({ runId: runId!, end: message });
-      }
+      if (message.kind === 'permission-request') void callWorker(worker, 'permission-decision', { requestId: message.requestId, allow: false }).catch(() => {});
+      if (['done', 'error', 'stopped'].includes(message.kind)) finish(message);
+    };
+    const onEvent = (message: any) => {
+      if (message?.type !== 'event' || message.event !== 'agent') return;
+      if (runId === null) early.push(message); else handle(message);
     };
     worker.on('message', onEvent);
-    call(worker, 'send', { folder, branchId: 'main', text }).then(result => {
+    current = { runId: null, stop };
+    callWorker(worker, 'send', { folder, branchId: 'main', text }).then(result => {
       runId = String(result.runId);
+      if (current) current.runId = runId;
       for (const message of early.splice(0)) handle(message);
-    }, error => { worker.off('message', onEvent); reject(error); });
+      if (interrupted || timedOut) stop();
+    }, error => { clearTimeout(timer); worker.off('message', onEvent); current = null; reject(error); });
   });
 }
 
 async function shutdown(worker: Worker): Promise<void> {
   const exited = new Promise<void>(resolve => worker.once('exit', () => resolve()));
-  await call(worker, 'shutdown').catch(() => undefined);
+  await callWorker(worker, 'shutdown').catch(() => undefined);
   await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 120000))]);
 }
 
-export async function runSession(config: ChildConfig): Promise<ChildResult> {
-  const result: ChildResult = { turns: [], failures: [], folders: [] };
+/** build/cuda-pack on 127.0.0.1: plain file names of that folder only, streamed (as tests/cuda-real.cjs). */
+async function servePack(packDir: string): Promise<{ url: string; close(): void }> {
+  const server = createServer(async (req, res) => {
+    const name = decodeURIComponent((req.url ?? '/').replace(/^\//, ''));
+    if (!/^[A-Za-z0-9._+-]+$/.test(name) || name.startsWith('.')) { res.writeHead(404); res.end(); return; }
+    const file = join(packDir, name);
+    const info = await lstat(file).catch(() => null);
+    if (!info?.isFile()) { res.writeHead(404); res.end(); return; }
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': info.size });
+    createReadStream(file).pipe(res);
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  return { url: `http://127.0.0.1:${(server.address() as { port: number }).port}/`, close: () => { server.closeAllConnections(); server.close(); } };
+}
+
+export async function installPack(config: InstallConfig): Promise<ChildResult> {
+  const result: ChildResult = { turns: [], failures: [], folders: [], backend: null, levers: null };
+  const server = await servePack(config.packDir);
+  const worker = new Worker(WORKER, { env: { ...process.env, OPENAGENT_HOME: config.home }, workerData: { cudaPackManifest: MANIFEST, cudaPackBaseUrl: server.url } });
+  try {
+    const ended = new Promise<any>(resolve => {
+      const listener = (message: any) => {
+        if (message?.type !== 'event' || message.event !== 'cuda-pack' || message.state === 'progress') return;
+        worker.off('message', listener);
+        resolve(message);
+      };
+      worker.on('message', listener);
+    });
+    await callWorker(worker, 'cuda-pack-install');
+    const end = await ended;
+    const after = await callWorker(worker, 'cuda-pack-status');
+    if (end.state !== 'done' || after?.state !== 'installed') result.failures.push(`pack CUDA non installé : ${end.state}${end.message ? ` — ${end.message}` : ''}`);
+  } catch (error) {
+    result.failures.push(`pack CUDA non installé : ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    await shutdown(worker);
+    server.close();
+  }
+  return result;
+}
+
+export async function runSession(config: SessionConfig, save: (result: ChildResult) => Promise<void>): Promise<ChildResult> {
+  const result: ChildResult = { turns: [], failures: [], folders: [], backend: null, levers: null };
+  // As main.cjs::prepareGpuBackend: the pack's runtime first on PATH, before any Llama exists in this process.
+  let cudaRuntimeDir: string | null = null;
+  if (config.backend === 'auto' || config.backend === 'cuda') {
+    const packDir = await installedPackDir(config.home, await engineVersion());
+    if (packDir) {
+      cudaRuntimeDir = join(packDir, 'cuda-runtime');
+      process.env.PATH = process.env.PATH ? `${cudaRuntimeDir}${delimiter}${process.env.PATH}` : cudaRuntimeDir;
+    }
+  }
   const worker = new Worker(WORKER, {
     env: { ...process.env, OPENAGENT_HOME: config.home, [PERF_LEVERS_ENV]: config.levers },
-    workerData: { perfLeversAllowed: true },
+    workerData: { perfLeversAllowed: true, cudaPackManifest: MANIFEST, gpuBackend: config.backend, cudaRuntimeDir },
   });
   let crashed: Error | null = null;
-  worker.on('error', error => { crashed = error; console.error(`[bench] le worker s'est arrêté : ${error.message}`); });
+  worker.on('error', (error: Error) => { crashed = error; console.error(`[bench] le worker s'est arrêté : ${error.message}`); });
   try {
-    const entry = await call(worker, 'gguf-add', { path: config.model });
-    await call(worker, 'save-global-settings', { patch: { active_local_model: entry.id, local_context: config.context } });
+    const hardware = await hardwareInfo(worker);
+    result.backend = typeof hardware?.backend === 'string' ? hardware.backend : null;
+    console.info(`[bench] moteur ${result.backend ?? 'inconnu'} (choix ${config.backend}, pack CUDA ${cudaRuntimeDir ? 'activé' : 'absent'})`);
+    if (config.requireBackend && result.backend !== config.requireBackend) {
+      result.failures.push(`moteur ${result.backend ?? 'inconnu'} au lieu de ${config.requireBackend} : aucun message envoyé`);
+      return result;
+    }
+    const entry = await callWorker(worker, 'gguf-add', { path: config.model });
+    await callWorker(worker, 'save-global-settings', { patch: { active_local_model: entry.id, local_context: config.context } });
     for (const folder of config.settle) await indexSettled(worker, folder);
     for (const group of config.groups) {
-      const { folder } = await call(worker, 'activate_folder', { folder: group.folder });
+      if (interrupted) break;
+      const { folder } = await callWorker(worker, 'activate_folder', { folder: group.folder });
       result.folders.push(folder);
       await indexSettled(worker, folder);
       for (const [index, text] of group.messages.entries()) {
+        if (interrupted) break;
         const message = index + 1;
-        console.info(`[bench] ${group.scenario}·${message}`);
-        const { runId, end } = await sendAndWait(worker, folder, text);
-        if (end.kind !== 'done') result.failures.push(`${group.scenario}·${message} : ${end.kind}${end.message ? ` — ${end.message}` : ''}`);
-        const status = await call(worker, 'model-status').catch(() => null);
+        const name = `${group.scenario}·${message}`;
+        console.info(`[bench] ${name}`);
+        const { runId, end, timedOut } = await sendAndWait(worker, folder, text, config.turnTimeoutMs);
+        if (timedOut) result.failures.push(`${name} : délai dépassé (${Math.round(config.turnTimeoutMs / 1000)} s), arrêté`);
+        else if (end.kind !== 'done') result.failures.push(`${name} : ${end.kind}${end.message ? ` — ${end.message}` : ''}`);
+        const status = await callWorker(worker, 'model-status').catch(() => null);
         const p = status?.loaded ? status.placement : null;
         const placement = p ? { backend: p.backend, gpuLayers: p.gpuLayers, totalLayers: p.totalLayers, contextSize: p.contextSize, vramBytes: p.vramBytes, ramBytes: p.ramBytes } : null;
-        result.turns.push(turnFigures(await turnLines(config.home, runId), { scenario: group.scenario, message, memory: await sampleMemory(), placement, perfLines: [] }));
+        const lines = await turnLines(config.home, runId);
+        // The levers this worker applied (M8): on its model-ready line, only when one is away from its shipped value.
+        const ready = lines.find(line => line.event === 'model-ready');
+        if (ready && result.levers === null) result.levers = (ready.levers as PerfLevers | undefined) ?? SHIPPED_LEVERS;
+        const figures = turnFigures(lines, { scenario: group.scenario, message, memory: await sampleMemory(), placement, perfLines: [] });
+        if (figures.status === null && end.kind) figures.status = end.kind;
+        if (config.qualityGate && group.scenario === 'B' && !(figures.quality.toolCalled && figures.quality.sentinel)) {
+          result.failures.push(`${name} : qualité manquée (read_file ${figures.quality.toolCalled ? 'appelé' : 'non appelé'}, code ${figures.quality.sentinel ? 'cité' : 'non cité'})`);
+        }
+        result.turns.push(figures);
+        await save(result);
       }
     }
+    if (interrupted) result.failures.push('interrompu (Ctrl+C)');
   } catch (error) {
     result.failures.push(`session interrompue : ${error instanceof Error ? error.message : String(error)}`);
   } finally {
@@ -137,8 +246,12 @@ export async function runSession(config: ChildConfig): Promise<ChildResult> {
 const configPath = process.argv[2];
 if (configPath && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const config: ChildConfig = JSON.parse(await readFile(configPath, 'utf8'));
-  const result = await runSession(config);
+  const save = (result: ChildResult) => writeFile(config.resultPath, JSON.stringify(result));
+  // Ctrl+C reaches every process of the console: the turn in progress is stopped through the worker, nothing more is
+  // sent, the worker shuts down normally and what was measured is written.
+  process.on('SIGINT', () => { interrupted = true; current?.stop(); });
+  const result = config.kind === 'install' ? await installPack(config) : await runSession(config, save);
   for (const failure of result.failures) console.error(`[bench] échec : ${failure}`);
-  await writeFile(config.resultPath, JSON.stringify(result));
+  await save(result);
   process.exit(result.failures.length ? 4 : 0);
 }

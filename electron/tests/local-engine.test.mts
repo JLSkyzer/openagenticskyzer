@@ -8,7 +8,8 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readGgufFileInfo, GgufInsights } from 'node-llama-cpp';
-import { GenerationMeter, completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine } from '../core/local-engine.mts';
+import { SHIPPED_LEVERS } from '../core/perf-levers.mts';
+import { GenerationMeter, generationLimits, completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine } from '../core/local-engine.mts';
 import type { GenerationStats, LoadEvent } from '../core/model-types.mts';
 import { runtimeLlama, backendOf } from '../core/llama-runtime.mts';
 import { removeAtEnd } from './teardown.mts';
@@ -405,4 +406,13 @@ test('f. a real load reports its stages and the model architecture; a generation
   assert.ok(stats[0].promptMs != null && stats[0].promptMs >= 0);
   assert.equal(stats[0].reuse?.held, 0);
   assert.ok((stats[1].reuse?.reused ?? 0) > 0, 'the second prompt starts like the first: an attention model reuses it');
+});
+
+// Ruling F5: no `budgets` unless a thought cap applies — without one, LlamaChat limits no segment, as today.
+test('generationLimits: the shipped levers send no budgets and the cap; a thought cap sends budgets; the lever bounds any maxTokens', () => {
+  assert.deepEqual(generationLimits(SHIPPED_LEVERS, undefined), { maxTokens: LOCAL_OUTPUT_CAP });
+  assert.equal('budgets' in generationLimits(SHIPPED_LEVERS, 100), false);
+  assert.deepEqual(generationLimits(SHIPPED_LEVERS, 100), { maxTokens: 100 });
+  assert.deepEqual(generationLimits({ ...SHIPPED_LEVERS, outputCap: 32, thoughtTokens: 512 }, 1000), { maxTokens: 32, budgets: { thoughtTokens: 512 } });
+  assert.deepEqual(generationLimits({ ...SHIPPED_LEVERS, thoughtTokens: 0 }, undefined), { maxTokens: LOCAL_OUTPUT_CAP, budgets: { thoughtTokens: 0 } });
 });

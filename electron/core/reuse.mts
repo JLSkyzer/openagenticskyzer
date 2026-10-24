@@ -17,7 +17,8 @@ export interface ReuseFigures {
   prompt: number;
   /** Input tokens actually evaluated (tokenMeter diff). */
   evaluated: number;
-  /** max(0, prompt − evaluated). */
+  /** What the sequence holds after the call that it did not evaluate nor generate in it: after.length − (Δinput +
+   * Δoutput), both from the tokenMeter (M1: a tool call's tokens are not all in the streamed chunks), at least 0. */
   reused: number;
   checkpoints: CheckpointFigures | null;
 }
@@ -29,6 +30,7 @@ export function commonPrefixLength(a: readonly number[], b: readonly number[]): 
   return i;
 }
 
+/** `evaluated` and `outputTokens`: the call's tokenMeter deltas (usedInputTokens, usedOutputTokens). */
 export function reuseOf(p: { heldTokens: readonly number[]; afterTokens: readonly number[]; evaluated: number; outputTokens: number; checkpoints: CheckpointFigures | null }): ReuseFigures {
   const prompt = Math.max(p.evaluated, p.afterTokens.length - p.outputTokens);
   return {
@@ -36,7 +38,7 @@ export function reuseOf(p: { heldTokens: readonly number[]; afterTokens: readonl
     common: commonPrefixLength(p.heldTokens, p.afterTokens),
     prompt,
     evaluated: p.evaluated,
-    reused: Math.max(0, prompt - p.evaluated),
+    reused: Math.max(0, p.afterTokens.length - p.evaluated - p.outputTokens),
     checkpoints: p.checkpoints,
   };
 }

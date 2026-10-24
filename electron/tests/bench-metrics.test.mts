@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { turnFigures, compareRuns, formatComparison, resultFileName, type BenchRun } from '../bench/metrics.mts';
+import { turnFigures, compareRuns, comparability, formatComparison, resultFileName, type BenchRun } from '../bench/metrics.mts';
 import { gamesIn } from '../bench/guard.mts';
 
 const at = (ms: number) => new Date(Date.UTC(2026, 9, 25, 10, 0, 0, ms)).toISOString();
@@ -44,4 +44,30 @@ test('gamesIn: a Minecraft client counts; Unity batch and AxionEngine processes 
   ].join('\r\n');
   assert.deepEqual(gamesIn(csv), ['javaw.exe']);
   assert.deepEqual(gamesIn(csv.split('\r\n').filter(l => !l.includes('javaw')).join('\r\n')), []);
+  // The guard's own PowerShell rows: name, pid, window title.
+  assert.deepEqual(gamesIn('"java.exe","7","Minecraft* 1.21"\n"Unity.exe","8","Minecraft batch"\n"explorer.exe","9",""'), ['java.exe']);
+});
+
+test('compareRuns: a turn missing on one side, an incomplete old file, status, quality and truncation rows, and what makes two runs not comparable', () => {
+  const turn = (message: number, extra: Record<string, unknown> = {}) => ({ scenario: 'B', message, phasesMs: {}, totalMs: 1, loadMs: null, loadStages: null, architecture: null, toolCalls: [],
+    reply: { chars: 1, truncated: false }, quality: { toolCalled: true, sentinel: false }, memory, placement: null, perfLines: [], status: 'done',
+    generations: [{ step: 0, inputTokens: 10, outputTokens: 10, generationMs: 1000, promptMs: 5, tokensPerSecond: 10, reuse: null }], ...extra }) as BenchRun['turns'][number];
+  const base: BenchRun = { schema: 1, label: 'x', startedAt: '', gitHead: '', model: { file: 'm.gguf', bytes: 1 }, machine: { cpu: 'c', logicalCores: 1, ramBytes: 1 },
+    settings: { local_context: 32768 }, levers: { outputCap: 1024, thoughtTokens: 512 }, toolDefinitions: { chars: 1, tokens: null }, backend: 'cuda', turns: [turn(1), turn(2)] };
+  // An older or partial file: no memory, no generations, no status.
+  const after: BenchRun = { ...base, turns: [turn(1, { reply: { chars: 1, truncated: true }, memory: undefined, generations: undefined, status: 'stopped' })] };
+  const rows = compareRuns(base, after);
+  assert.deepEqual(rows.find(r => r.key === 'B·2' && r.metric === 'jetons évalués'), { key: 'B·2', metric: 'jetons évalués', before: 10, after: null, changePercent: null });
+  assert.deepEqual(rows.find(r => r.key === 'B·1' && r.metric === 'statut'), { key: 'B·1', metric: 'statut', before: 'done', after: 'stopped', changePercent: null });
+  assert.deepEqual(rows.find(r => r.key === 'B·1' && r.metric === 'tronquée'), { key: 'B·1', metric: 'tronquée', before: 'non', after: 'oui', changePercent: null });
+  assert.equal(rows.find(r => r.key === 'B·1' && r.metric === 'qualité')?.before, 'outil oui · code non');
+  assert.equal(rows.find(r => r.key === 'B·1' && r.metric === 'RSS (Mio)')?.after, null);
+  assert.match(formatComparison(rows), /\| B·2 \| jetons évalués \| 10 \| — \| — \|/);
+  assert.deepEqual(comparability(base, { ...base, levers: { ...base.levers, keepThought: true } as never }), []);
+  assert.deepEqual(comparability(base, { ...base, model: { file: 'n.gguf', bytes: 1 }, settings: { local_context: 16384 }, backend: 'vulkan', levers: { outputCap: 64, thoughtTokens: 512 } }), [
+    'modèle différent : m.gguf (1 octets) → n.gguf (1 octets)',
+    'contexte différent : 32768 → 16384',
+    'moteur différent : cuda → vulkan',
+    'plafond différent : outputCap 1024 → 64',
+  ]);
 });

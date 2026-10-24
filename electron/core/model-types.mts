@@ -41,8 +41,9 @@ export interface ModelArchitecture { hybrid: boolean; recurrent: boolean; swaSiz
 export type LoadRetry = 'fewer-layers' | 'cpu';
 /** One generation's figures: tokens read (the prompt, as evaluated), tokens written, and the time from the first
  * chunk to the end. Reported once, a stopped generation included. `promptMs`: from the call's start to the first chunk
- * carrying tokens (null when none came); `reuse`: what the engine did not read again (core/reuse.mts). */
-export interface GenerationStats { inputTokens: number; outputTokens: number; generationMs: number; promptMs?: number | null; reuse?: ReuseFigures }
+ * carrying tokens (null when none came); `reuse`: what the engine did not read again (core/reuse.mts);
+ * `generationId`: this generation's id, on its `[perf]` marker too (the bench aligns timings by it). */
+export interface GenerationStats { inputTokens: number; outputTokens: number; generationMs: number; promptMs?: number | null; reuse?: ReuseFigures; generationId?: string }
 /** What getting the window may involve: a load, which `signal` stops and `onLoad` follows. */
 export interface WindowOptions { signal?: AbortSignal; onLoad?: (event: LoadEvent) => void }
 export interface ToolSchema { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }

@@ -10,7 +10,7 @@ import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 import { createRequire } from 'node:module';
 import { testWorkerOptions } from './support/test-model-provider.mts';
 
-// main.cjs as a library: the very function the app runs on quit (worker 'shutdown', then terminate).
+// main.cjs as a library: the very function the app runs on quit (worker 'shutdown', then the thread ends by itself).
 const { stopWorker } = createRequire(import.meta.url)('../main.cjs');
 
 const FAKE_MCP_SERVER = fileURLToPath(new URL('./fixtures/fake-mcp-server.cjs', import.meta.url));

@@ -21,6 +21,7 @@ import './shell-tool.test.mts';
 import './web-tools.test.mts';
 import './worker-tools.test.mts';
 import './main-shutdown.test.mts';
+import './quit.test.mts';
 import './worker-branches.test.mts';
 import './chat-branches.test.mts';
 import './context-usage.test.mts';

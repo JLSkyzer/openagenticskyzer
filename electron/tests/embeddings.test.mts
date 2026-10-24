@@ -83,3 +83,32 @@ test('embed() runs fixed slices of EMBED_BATCH texts and returns every vector in
     }
   }
 });
+
+// The app closing (final fix wave, item 7): once stopped, embed() starts no ONNX run, and embeddingsIdle() resolves
+// when the run in flight has ended — the worker's shutdown waits for it before the thread ends (ending it during a
+// native run crashes the process). In a worker of its own: the stop is for the whole module, for good.
+test('stopEmbeddings: the run in flight ends, embeddingsIdle() then resolves, and no new run starts', { timeout: 120000 }, async () => {
+  const { Worker } = await import('node:worker_threads');
+  const url = new URL('../core/embeddings.mts', import.meta.url).href;
+  const worker = new Worker(`
+    const { parentPort } = require('node:worker_threads');
+    import(${JSON.stringify(url)}).then(async m => {
+      const inFlight = m.embed(['un texte', 'un autre texte']);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      m.stopEmbeddings();
+      await m.embeddingsIdle();
+      const first = await inFlight.then(vectors => 'vectors ' + vectors.length, error => 'error ' + error.message);
+      const second = await m.embed(['encore']).then(() => 'vectors', error => error.message);
+      parentPort.postMessage({ first, second, stopped: m.EMBEDDINGS_STOPPED });
+    }, error => parentPort.postMessage({ error: String(error) }));
+  `, { eval: true });
+  try {
+    const result: any = await new Promise((resolve, reject) => { worker.once('message', resolve); worker.once('error', reject); });
+    assert.equal(result.error, undefined, result.error);
+    // The load in flight ends (one batch here); it is the NEXT batch or call that is refused.
+    assert.match(result.first, /^(vectors 2|error L’app se ferme)/);
+    assert.equal(result.second, result.stopped);
+  } finally {
+    await worker.terminate();
+  }
+});

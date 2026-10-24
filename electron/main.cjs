@@ -104,7 +104,8 @@ function createWindow() {
 }
 
 function showMainWindow() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+  // Quitting: the window is hidden for good, even while the worker finishes (a relaunch lands here).
+  if (appQuitting || !mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
@@ -194,36 +195,76 @@ function startBackend() {
   backend.on('error', error => { for (const item of pending.values()) item.reject(error); pending.clear(); });
 }
 
+// The longest main waits for the worker to end on quit. The worker never ends while a native call runs (that crashed
+// the process, 0xC0000409), and every native call it waits for ends on its own: a decode batch (seconds), a load being
+// cancelled, the Llama's creation on a first CUDA start (30 s and more). The cap is only for a native call that would
+// never return; the window and the tray icon are gone long before (hideForQuit).
+const QUIT_CAP_MS = 60_000;
+
 /**
- * Asks the worker to shut down (it aborts running work and stops the dev servers that
- * run_command started, whole process trees included), waits for its answer for a short grace
- * period, then terminates the thread. Terminating alone would leave those servers running.
+ * Asks the worker to shut down and waits for its thread to END ITSELF (worker.mjs::shutdownWorker): it stops every
+ * turn (each saves its conversation and closes its turn log), the dev servers and MCP processes that run_command and
+ * the turns started, whole process trees included, waits for the native calls in flight, frees the model, answers
+ * with each step's duration, then exits. Resolves 'exited', or 'timeout' after `capMs` — the thread is then LEFT
+ * running, never terminated: Worker.terminate() (or a process exit that ends the thread) during a native call of
+ * node-llama-cpp or onnxruntime crashes the whole process (0xC0000409, reproduced 5 in 5 with stories260K).
  */
-async function stopWorker(worker, timeoutMs = 3000) {
-  if (!worker) return;
+async function stopWorker(worker, capMs = QUIT_CAP_MS) {
+  if (!worker || worker.threadId === -1) return 'exited';
   const id = `shutdown-${Date.now()}`;
-  let listener;
-  const answered = new Promise(resolve => {
-    listener = message => { if (message && message.id === id) resolve(); };
-    worker.on('message', listener);
-  });
+  const started = Date.now();
+  let onExit;
+  let onMessage;
+  let timer;
+  const exited = new Promise(resolve => { onExit = () => resolve('exited'); worker.once('exit', onExit); });
+  onMessage = message => {
+    if (message?.id !== id) return;
+    const steps = message.ok ? message.result?.steps : null;
+    if (steps) console.info(`[quit] moteur arrêté en ${steps.total} ms (serveurs ${steps.servers} ms, travail en cours ${steps.work} ms, modèle libéré ${steps.dispose} ms)`);
+  };
+  worker.on('message', onMessage);
   try {
     worker.postMessage({ op: 'shutdown', id });
-    let timer;
-    await Promise.race([answered, new Promise(resolve => { timer = setTimeout(resolve, timeoutMs); })]);
-    clearTimeout(timer);
+    const outcome = await Promise.race([exited, new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), capMs); })]);
+    console.info(outcome === 'exited'
+      ? `[quit] fil du moteur terminé en ${Date.now() - started} ms`
+      : `[quit] le moteur n'a pas fini en ${capMs} ms : il est laissé tel quel (jamais arrêté pendant un appel natif)`);
+    return outcome;
   } finally {
-    worker.off?.('message', listener);
-    await worker.terminate();
+    clearTimeout(timer);
+    worker.off?.('exit', onExit);
+    worker.off?.('message', onMessage);
   }
 }
 let stoppingBackend = null; // the shutdown in progress, so a quit during "Redémarrer maintenant" waits for it
+// Set when the worker did not end within QUIT_CAP_MS: the quit then ends the process itself (lastResortExit).
+let workerStuck = false;
 async function stopBackend() {
   if (!backend && stoppingBackend) return stoppingBackend; // a second caller waits for the shutdown already running
   const worker = backend;
   backend = undefined;
   stoppingBackend = stopWorker(worker);
-  try { await stoppingBackend; } finally { stoppingBackend = null; }
+  try {
+    const outcome = await stoppingBackend;
+    if (outcome === 'timeout') workerStuck = true;
+    return outcome;
+  } finally { stoppingBackend = null; }
+}
+
+/** The quit is instant for the user: the window and the tray icon go at once, while the worker ends behind. */
+function hideForQuit(window = mainWindow, icon = tray) {
+  if (window && !window.isDestroyed()) window.hide();
+  if (icon && !icon.isDestroyed()) icon.destroy();
+}
+
+/**
+ * Only after QUIT_CAP_MS with the worker still inside a native call: ending the process the normal way would end that
+ * thread mid-call and crash (0xC0000409), so the process is ended at once by the system (TerminateProcess on Windows),
+ * which runs no more code in any thread. The conversations and turn logs were saved before (the worker's first step).
+ */
+function lastResortExit() {
+  console.error(`[quit] fin forcée du processus : le moteur était encore dans un appel natif après ${QUIT_CAP_MS} ms`);
+  process.kill(process.pid, 'SIGKILL');
 }
 
 /**
@@ -427,16 +468,24 @@ if (require.main === module) {
     // A Windows session end does not come through here: Electron 44 emits 'session-end' on the window, then ends the
     // process itself (native_window_views_win.cc, WM_ENDSESSION) — no 'close' event, so the hide never holds it back.
     let quitting = false;
+    // The window and the tray icon go at once (hideForQuit): the user sees the quit as done while the worker ends.
     app.on('before-quit', event => {
       appQuitting = true;
-      if (quitting || (!backend && !stoppingBackend)) return;
+      hideForQuit();
+      if (quitting || (!backend && !stoppingBackend)) {
+        if (workerStuck) { event.preventDefault(); lastResortExit(); }
+        return;
+      }
       event.preventDefault();
       quitting = true;
-      (backend ? stopBackend() : stoppingBackend).finally(() => app.quit());
+      (backend ? stopBackend() : stoppingBackend).then(
+        outcome => (outcome === 'timeout' ? lastResortExit() : app.quit()),
+        () => app.quit(),
+      );
     });
     // Only reached once a real quit closed the window: the cross alone never closes it any more.
     app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
   }
 }
 
-module.exports = { restartApp, openTurnLogs, workerOptions, prepareGpuBackend, resolveMainDataHome, prepareDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, isBackendOp, isExportFilename, notificationBodyFor };
+module.exports = { restartApp, openTurnLogs, workerOptions, prepareGpuBackend, resolveMainDataHome, prepareDataHome, startupFailure, buildCsp, chooseLoadTarget, handleBackendRequest, stopWorker, hideForQuit, QUIT_CAP_MS, isBackendOp, isExportFilename, notificationBodyFor };

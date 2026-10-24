@@ -8,7 +8,7 @@ import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
 import { FoldersService } from './core/folders.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
-import { localProvider, plannedContextSize, loadedChatWrapper, loadedOutcome, outcomeNote, replacementCheck, replaceLoaded } from './core/local-engine.mts';
+import { localProvider, plannedContextSize, loadedChatWrapper, loadedOutcome, outcomeNote, replacementCheck, replaceLoaded, generationsIdle } from './core/local-engine.mts';
 import { TurnLog, pruneTurnLogs, mcpSecretValues } from './core/turn-log.mts';
 import { isSensitiveFile, protectedPathMatcher } from './core/file-filter.mts';
 import { EstimateCache, estimateAndRemember, estimateKey, hardwareKey, ESTIMATE_BUSY } from './core/offload-estimate.mts';
@@ -45,7 +45,7 @@ import { McpConfigStore, readProjectMcpConfig, mergeServerConfigs, redactSecrets
 import { mcpTools, stopAllMcpServers } from './core/mcp-client.mts';
 import { searchTools } from './core/search-tools.mts';
 import { indexFolder } from './core/semantic-index.mts';
-import { setModelsDir, DEFAULT_MODELS_DIR } from './core/embeddings.mts';
+import { setModelsDir, DEFAULT_MODELS_DIR, stopEmbeddings, embeddingsIdle } from './core/embeddings.mts';
 import { loadPlugins, projectPythonPluginFiles } from './core/plugin-loader.mts';
 import { ProjectTrustService } from './core/project-trust.mts';
 import { addFileToKnowledge, listSources as listKnowledgeSources, removeSource as removeKnowledgeSource } from './core/knowledge-base.mts';
@@ -122,6 +122,17 @@ const mcpConfig = new McpConfigStore(dataHome);
 // The worker's one estimate cache and job queue (hardware and offload): handed explicitly to whatever reads them.
 const estimateCache = new EstimateCache(dataHome);
 const estimateJobs = new EstimateJobs();
+// Everything this worker is doing in the background or for an op: turns, compactions, indexing, the CUDA pack
+// install, the re-placement between turns, every op being answered. The shutdown op waits for all of it (see
+// shutdownWorker): a turn's stop still saves the conversation and closes the turn log, and the thread never ends
+// while one of them is inside a native call.
+const work = new Set();
+function track(promise) {
+  const settled = promise.then(() => undefined, () => undefined);
+  work.add(settled);
+  void settled.then(() => work.delete(settled));
+  return promise;
+}
 // index_status (semantic search): folder (resolved absolute path) -> {state, current?, total?, message?}.
 // state.index_status in the previous NiceGUI app was a single free-form string a background thread
 // updated in place; here it is a real small state machine ('idle'|'indexing'|'ready'|'error') per
@@ -171,7 +182,7 @@ await pruneTurnLogs(dataHome, new Date()).catch(error => console.error(`[turn-lo
 // never call activate_folder on mount either way, so this is not a regression introduced here).
 if ((await settings.global().catch(() => ({ restore_last_folder: true }))).restore_last_folder) {
   const [mostRecent] = await folders.list().catch(() => []);
-  if (mostRecent?.path) void triggerIndexing(mostRecent.path);
+  if (mostRecent?.path) track(triggerIndexing(mostRecent.path));
 }
 const active = new Map();
 // requestId -> { resolve(allow), folder, tool } — filled by the confirm() callback passed to
@@ -873,7 +884,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
   } finally {
     active.delete(runId);
     // Between turns only, and never awaited by the turn: it is over for the page. The shutdown op waits for it.
-    betweenTurns = maybeReplace(model);
+    track(maybeReplace(model));
   }
 }
 
@@ -923,10 +934,9 @@ async function engineWithin(ms) {
 // before the reload, standing for a long native load a send can land in.
 const testReplacement = workerData?.testReplacement && typeof workerData.testReplacement === 'object' ? workerData.testReplacement : null;
 let replacement = null;
-// Set by the shutdown op: no re-placement starts once the app is closing; it waits for `betweenTurns` (the last
-// maybeReplace, never rejecting) before freeing the engine, so no native call of it is left running under the dispose.
+// Set by the shutdown op: no re-placement starts once the app is closing; it waits for the last maybeReplace (tracked
+// with the other work) before freeing the engine, so no native call of it is left running under the dispose.
 let shuttingDown = false;
-let betweenTurns = Promise.resolve();
 function cancelReplacement() {
   replacement?.controller.abort();
 }
@@ -1044,7 +1054,7 @@ async function handle(message) {
     if (op === 'cuda-pack-install') {
       const job = await reserveCudaPackInstall();
       reply(id, true, { installId: job.id });
-      void runCudaPackInstall(job);
+      track(runCudaPackInstall(job));
       return;
     }
     if (op === 'cuda-pack-cancel') {
@@ -1122,7 +1132,7 @@ async function handle(message) {
       const { folder: canonical, folders: list } = await folders.open(payload.folder);
       const history = await conversations.messages(payload.folder, 'main').catch(() => []);
       result = { history: servedMessages(history), folders: list, folder: canonical };
-      void triggerIndexing(canonical);
+      track(triggerIndexing(canonical));
     }
     if (op === 'settings') result = payload.folder ? await settings.project(payload.folder) : await settings.publicGlobal();
     if (op === 'save_settings') {
@@ -1153,7 +1163,7 @@ async function handle(message) {
         throw error;
       }
       reply(id, true, { compactionId });
-      void runCompaction(compactionId, folder, branchId, before, turn);
+      track(runCompaction(compactionId, folder, branchId, before, turn));
       return;
     }
     if (op === 'send') {
@@ -1180,7 +1190,7 @@ async function handle(message) {
       // Fire-and-forget: the turn's real result streams back as 'event' messages, not
       // as this request's response (main.cjs's 30s IPC timeout could never cover a full
       // multi-step agent run).
-      void runSend(runId, payload.folder, payload.branchId || 'main', payload.text, keep, attachments, turn);
+      track(runSend(runId, payload.folder, payload.branchId || 'main', payload.text, keep, attachments, turn));
       return;
     }
     if (op === 'stop') {
@@ -1192,21 +1202,6 @@ async function handle(message) {
         run.phase('stopping');
       }
       run?.controller.abort();
-      result = { stopped: true };
-    }
-    if (op === 'shutdown') {
-      // The app is closing: abort what is running and stop every dev server run_command started,
-      // whole process trees included — terminating this thread would leave them running.
-      shuttingDown = true;
-      for (const run of active.values()) run.controller.abort();
-      cancelReplacement();
-      await betweenTurns;
-      estimateJobs.cancelAll();
-      cudaInstall?.controller.abort();
-      // MCP processes too: a discovery has no abort signal, and a call's session only closes once it unwinds.
-      await Promise.all([stopAllServers(), stopAllMcpServers()]);
-      // Then the local model and the Llama: several gigabytes of RAM/VRAM, freed rather than left to the exit.
-      await disposeLlama();
       result = { stopped: true };
     }
     if (op === 'permission-decision') {
@@ -1251,4 +1246,66 @@ async function handle(message) {
     reply(id, true, result);
   } catch (error) { reply(id, false, null, error instanceof Error ? error.message : 'Erreur interne'); }
 }
-parentPort?.on('message', handle);
+// The app closing (main.cjs::stopWorker, final fix wave item 7). Measured with stories260K, each step takes
+// milliseconds; what can take long is native work in flight: a decode batch node-llama-cpp finishes before
+// context.dispose() returns (about 8 s of prompt reading for a 27B on the processor), a load holding the engine's lock,
+// the Llama's creation on a first CUDA start (30 s and more), an ONNX run of the indexing. Ending the thread during any
+// of them crashes the whole process (0xC0000409, reproduced 5 in 5 with stories260K: Worker.terminate() or
+// process.exit() while a generation runs). So nothing here is cut by a timeout:
+// 1. no new work is accepted, and everything running is told to stop (turns, compactions, re-placement, estimates,
+//    CUDA pack install, indexing);
+// 2. at the same time, the dev servers and MCP processes are killed (whole trees), and every tracked job is waited for:
+//    a stopped turn saves its conversation and closes its turn log, and the native calls end (generations, estimates,
+//    ONNX runs) — repeated until nothing is left, since a job's end may start another;
+// 3. the model and the Llama are freed (several gigabytes of RAM/VRAM, and nothing else is native any more);
+// 4. the answer carries each step's duration, then the thread ends ITSELF (process.exit), once nothing native runs.
+// main.cjs hides the window and the tray icon at once and waits for this thread's exit, bounded only for a native call
+// that would never return (see main.cjs::QUIT_CAP_MS).
+const APP_CLOSING = 'L’app se ferme.';
+const QUIET_NOTICE_MS = 2000;
+let shutdownRun = null;
+async function quiet() {
+  for (;;) {
+    await Promise.all([...work, estimateJobs.idle(), generationsIdle(), embeddingsIdle()]);
+    if (work.size === 0) return;
+  }
+}
+async function shutdownSteps() {
+  const started = Date.now();
+  const steps = {};
+  const timed = (name, promise) => promise.then(() => { steps[name] = Date.now() - started; });
+  shuttingDown = true;
+  for (const run of active.values()) run.controller.abort();
+  cancelReplacement();
+  estimateJobs.cancelAll();
+  cudaInstall?.controller.abort();
+  stopEmbeddings();
+  const settled = quiet();
+  const notice = setTimeout(() => console.info('[quit] fermeture : attente de la fin du travail en cours (appel natif, sauvegarde)…'), QUIET_NOTICE_MS);
+  try {
+    await Promise.all([
+      // A discovery has no abort signal, and a call's MCP session only closes once it unwinds: killed here.
+      timed('servers', Promise.all([stopAllServers(), stopAllMcpServers()])),
+      timed('work', settled),
+    ]);
+  } finally {
+    clearTimeout(notice);
+  }
+  // Then the local model and the Llama: nothing else touches them any more.
+  await timed('dispose', disposeLlama());
+  steps.total = Date.now() - started;
+  return { stopped: true, steps };
+}
+function shutdownWorker(id) {
+  shutdownRun ??= shutdownSteps().catch(error => ({ stopped: true, error: error instanceof Error ? error.message : String(error) }));
+  void shutdownRun.then(result => {
+    reply(id, true, result);
+    // The answer is on its way; nothing native is running: the thread can end. setImmediate lets the port send it.
+    setImmediate(() => process.exit(0));
+  });
+}
+parentPort?.on('message', message => {
+  if (message?.op === 'shutdown' && message.id) { shutdownWorker(message.id); return; }
+  if (shuttingDown) { if (message?.id) reply(message.id, false, null, APP_CLOSING); return; }
+  track(handle(message));
+});

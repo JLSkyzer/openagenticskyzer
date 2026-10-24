@@ -74,13 +74,36 @@ export function embeddingBatches<T>(items: readonly T[], size = EMBED_BATCH): T[
   return batches;
 }
 
+// The app closing (worker.mjs's shutdown): onnxruntime-node is a native addon, and a worker thread ended while one of
+// its runs is in flight crashes the process (0xC0000409, the same as node-llama-cpp's). Once stopped, embed() starts
+// no new run, and the shutdown waits for embeddingsIdle() before the thread ends.
+export const EMBEDDINGS_STOPPED = 'L’app se ferme : recherche sémantique arrêtée.';
+let stopped = false;
+const nativeRuns = new Set<Promise<unknown>>();
+function trackedRun<T>(run: Promise<T>): Promise<T> {
+  const settled = run.then(() => undefined, () => undefined);
+  nativeRuns.add(settled);
+  void settled.then(() => nativeRuns.delete(settled));
+  return run;
+}
+/** No new model load nor ONNX run from now on: embed() rejects with EMBEDDINGS_STOPPED before its next batch. */
+export function stopEmbeddings(): void {
+  stopped = true;
+}
+/** Resolves once the model load and the ONNX runs in flight have ended. Never rejects. */
+export async function embeddingsIdle(): Promise<void> {
+  while (nativeRuns.size > 0) await Promise.all([...nativeRuns]);
+}
+
 /** Embeds texts as normalized 384-dim vectors (mean-pooled), in the same order given, EMBED_BATCH texts per run. */
 export async function embed(texts: string[]): Promise<number[][]> {
   if (!texts.length) return [];
-  const extractor = await getExtractor();
+  if (stopped) throw new Error(EMBEDDINGS_STOPPED);
+  const extractor = await trackedRun(getExtractor());
   const vectors: number[][] = [];
   for (const batch of embeddingBatches(texts)) {
-    const output = await extractor(batch, { pooling: 'mean', normalize: true });
+    if (stopped) throw new Error(EMBEDDINGS_STOPPED);
+    const output = await trackedRun<any>(extractor(batch, { pooling: 'mean', normalize: true }));
     const [count, dim] = output.dims;
     for (let i = 0; i < count; i++) vectors.push(Array.from(output.data.slice(i * dim, (i + 1) * dim)) as number[]);
   }

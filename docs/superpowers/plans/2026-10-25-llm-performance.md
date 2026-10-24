@@ -1360,7 +1360,7 @@ This is a user decision (spec, 2026-10-25), not a measured lever. The setting st
   - `tests/tool-contracts.test.mts` passes: no tool removed, no contract weakened.
   - `git diff --stat 87eaa75..HEAD -- electron/package.json` touches only `scripts`.
   - `git grep -n "bench/" -- electron/package.json` shows scripts only, not `build.files`.
-  - `git grep -nI -e "Users\\\\" -e "/Users/" -- electron/bench docs/superpowers/plans/2026-10-25-llm-performance.md` prints nothing: no personal path.
+  - `git grep -nI -e "Users\\\\" -e "/Users/" -- electron/bench electron/tests/fixtures/tool-contracts.v1.json` prints nothing: no personal path. The plan is left out because it holds this pattern itself.
 - [ ] **Bilan in `tasks/todo.md`**, « Bilan du lot — vitesse du LLM local (2026-10-25) »:
   - per spec objective 1–6: the levers, their hypothesis, the figures before and after (« mesuré », with the file names), the decision (gardé / retiré, with the reason) and the commit;
   - the decisions taken on the spec's ambiguities (this plan's Self-Review);

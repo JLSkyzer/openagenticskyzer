@@ -8,13 +8,15 @@ import { stat } from 'node:fs/promises';
 import os from 'node:os';
 import { LlamaChat, JinjaTemplateChatWrapper, InsufficientMemoryError, readGgufFileInfo, GgufInsights, GgmlType, type Llama, type LlamaModel, type LlamaContext } from 'node-llama-cpp';
 import { historyFromMessages, responseToMessage, toGgufFunctions } from './local-provider.mts';
-import type { ChatMessage, ChatWrapperInfo, CompletionOptions, GenerationStats, ModelProvider, ToolSchema, WindowOptions } from './model-types.mts';
+import type { ChatMessage, ChatWrapperInfo, CompletionOptions, GenerationStats, LoadStage, ModelArchitecture, ModelProvider, ToolSchema, WindowOptions } from './model-types.mts';
 import { localContextSize, DEFAULT_LOCAL_CONTEXT, type LocalContextSetting } from './context-budget.mts';
 import { runtimeLlama, runtimeGeneration, backendOf } from './llama-runtime.mts';
 import { fitOf, type Placement } from './placement.mts';
 import { untilAborted } from './abortable.mts';
 import { ReplyAccumulator, type SplitPiece } from './reasoning-split.mts';
 import { opensThought, type ThoughtSegment } from './thought-prefill.mts';
+import { perfLevers } from './perf-levers.mts';
+import { reuseOf } from './reuse.mts';
 
 /** What the engine context is sized from: the « Contexte des modèles locaux » setting. max_tokens takes no part
  * (ruling F6): it caps the request window only (context-budget.mts::effectiveWindow). */
@@ -34,6 +36,8 @@ export interface LocalCompletionOptions {
   onStats?: CompletionOptions['onStats'];
   maxTokens?: number;
   contextRequest?: ContextRequest;
+  /** Follows the load this call may cause (model-types.mts::WindowOptions). */
+  onLoad?: WindowOptions['onLoad'];
 }
 
 /** The one error shown when the model does not fit even with no layer on the card. */
@@ -336,16 +340,30 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
   onLoad?.({ kind: 'start' });
   const onLoadProgress = (progress: number) => onLoad?.({ kind: 'progress', progress });
   await disposeLocked();
+  // Each stage of the load, timed (the bench's load figures): the runtime, the pre-checks, one loadModel and one
+  // createContext per attempt, then the chat (keep).
+  const stages: LoadStage[] = [];
+  let stageStart = performance.now();
+  const stage = (name: LoadStage['stage'], ok: boolean, extra: { gpuLayers?: number } = {}) => {
+    const now = performance.now();
+    stages.push({ stage: name, ms: Math.round((now - stageStart) * 10) / 10, ok, ...extra });
+    stageStart = now;
+  };
   const llama = await runtimeLlama();
   const generation = runtimeGeneration();
+  stage('engine', true);
   const insights = await assertContextCanFit(llama, modelPath, contextSize);
   const vramBefore = await llama.getVramState().catch(() => null);
   const remembered = await recallLimit({ modelPath, contextSize, llama, insights, vramBefore, apply: applyLimit });
   const limit = remembered?.applies ? remembered.record.gpuLayers : null;
+  stage('precheck', true);
+  const architecture: ModelArchitecture = { hybrid: insights.isHybrid, recurrent: insights.isRecurrent, swaSize: insights.swaSize ?? null, mtpWeights: insights.hasMtpWeights };
+  // llama.cpp's own timings, printed after each generation (completeLocal), when the bench asks for them.
+  const tracking = perfLevers().performanceTracking ? { performanceTracking: true } : {};
   // The layer counts createContext refused, in order (read by `kept` once the loop ends).
   const refused: number[] = [];
   const kept = async (model: LlamaModel, context: LlamaContext, outcome: LoadOutcome) => {
-    const result = keep({ modelPath, contextSize, generation, llama, model, context, vramBefore, outcome: limit === null ? outcome : { ...outcome, limit }, startedAt, onLoad });
+    const result = keep({ modelPath, contextSize, generation, llama, model, context, vramBefore, outcome: limit === null ? outcome : { ...outcome, limit }, startedAt, onLoad, stages, architecture });
     await rememberLimit({ modelPath, contextSize, loaded: result, refused, record: remembered?.record ?? null });
     return result;
   };
@@ -360,8 +378,10 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
       const gpuLayers = max === null ? { fitContext: { contextSize } } : { min: 0, max, fitContext: { contextSize } };
       model = await llama.loadModel({ modelPath, gpuLayers, loadSignal: signal, onLoadProgress });
       liveModels += 1;
+      stage('loadModel', true, { gpuLayers: model.gpuLayers });
     } catch (error) {
       if (!(error instanceof InsufficientMemoryError)) throw error;
+      stage('loadModel', false);
       // node-llama-cpp's resolver: the card cannot take even 0 layers with this context (a game holding the VRAM).
       memoryWarning('loadModel', max === null ? 'fitContext' : `fitContext ≤ ${max}`, error);
       cause = 'loadModel';
@@ -369,12 +389,14 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
     }
     try {
       // A fixed size: no silent shrink on failure (node-llama-cpp only retries an 'auto' size, said here anyway).
-      const context = await model.createContext({ contextSize, failedCreationRemedy: false, createSignal: signal });
+      const context = await model.createContext({ contextSize, failedCreationRemedy: false, createSignal: signal, ...tracking });
+      stage('createContext', true);
       return await kept(model, context, refused.length ? { kind: 'step-down', refused: [...refused] } : { kind: 'direct' });
     } catch (error) {
       const layers = model.gpuLayers;
       await disposeModel(model);
       if (!(error instanceof InsufficientMemoryError)) throw error;
+      stage('createContext', false);
       // The layers loaded, then the context did not fit what they left (or the RAM): fewer layers, not the processor
       // yet (the regression of 2026-10-24: 25/66 loaded, then 0/66).
       memoryWarning('createContext', String(layers), error);
@@ -395,11 +417,15 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
   signal?.throwIfAborted();
   onLoad?.({ kind: 'retry', mode: 'cpu' });
   nativeLoads += 1;
+  // The fallback's own load: its time starts here, not at the refusal before it.
+  stageStart = performance.now();
   const model = await llama.loadModel({ modelPath, gpuLayers: 0, useMmap, ignoreMemorySafetyChecks: true, loadSignal: signal, onLoadProgress });
   liveModels += 1;
+  stage('loadModel', true, { gpuLayers: model.gpuLayers });
   let context: LlamaContext;
   try {
-    context = await model.createContext({ contextSize, failedCreationRemedy: false, ignoreMemorySafetyChecks: true, createSignal: signal });
+    context = await model.createContext({ contextSize, failedCreationRemedy: false, ignoreMemorySafetyChecks: true, createSignal: signal, ...tracking });
+    stage('createContext', true);
   } catch (error) {
     // Even 0 layers keeps a compute buffer on the card: an allocation the full card refuses ends here.
     await disposeModel(model);
@@ -410,9 +436,11 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
   return await kept(model, context, outcome);
 }
 
-function keep(p: { modelPath: string; contextSize: number; generation: number; llama: Llama; model: LlamaModel; context: LlamaContext; vramBefore: VramState | null; outcome: LoadOutcome; startedAt: number; onLoad?: EngineOptions['onLoad'] }): Loaded {
+function keep(p: { modelPath: string; contextSize: number; generation: number; llama: Llama; model: LlamaModel; context: LlamaContext; vramBefore: VramState | null; outcome: LoadOutcome; startedAt: number; onLoad?: EngineOptions['onLoad']; stages: readonly LoadStage[]; architecture: ModelArchitecture }): Loaded {
   const { llama, model, context } = p;
+  const chatStart = performance.now();
   const chat = new LlamaChat({ contextSequence: context.getSequence() });
+  const chatMs = performance.now() - chatStart;
   // The segments as plain JSON, once (ruling T2-m2): the log line and the turn log's model-ready show the same value.
   const segments = chat.chatWrapper.settings.segments;
   // Does the template open <think> itself? Then every reply starts as reasoning (core/thought-prefill.mts).
@@ -425,7 +453,8 @@ function keep(p: { modelPath: string; contextSize: number; generation: number; l
   loaded = { path: p.modelPath, requested: p.contextSize, generation: p.generation, llama, model, context, chat, wrapper, outcome: p.outcome, vramBefore: p.vramBefore };
   console.info(placementLogLine({ backend: backendOf(llama), gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, useMmap: model.useMmap, vramBefore: p.vramBefore, padding: llama.vramPaddingSize, contextSize: context.contextSize, outcome: p.outcome }));
   console.info(chatWrapperLogLine(wrapper));
-  p.onLoad?.({ kind: 'end', ms: Math.round(performance.now() - p.startedAt), wrapper });
+  const stages: LoadStage[] = [...p.stages, { stage: 'chat', ms: Math.round(chatMs * 10) / 10, ok: true }];
+  p.onLoad?.({ kind: 'end', ms: Math.round(performance.now() - p.startedAt), wrapper, stages, architecture: p.architecture });
   return loaded;
 }
 
@@ -629,6 +658,12 @@ export class GenerationMeter {
   stats(inputTokens: number): GenerationStats {
     return { inputTokens, outputTokens: this.#tokens, generationMs: this.#first === undefined ? 0 : Math.round(this.#now() - this.#first) };
   }
+
+  /** From `startedAt` (the call's start, on the same clock) to the first chunk carrying tokens: the prompt's reading,
+   * a checkpoint restore included. null when no token came. */
+  promptMs(startedAt: number): number | null {
+    return this.#first === undefined ? null : Math.max(0, Math.round(this.#first - startedAt));
+  }
 }
 
 /**
@@ -639,7 +674,8 @@ export class GenerationMeter {
  * included; a stop during the load reports none, since no generation ran.
  */
 export async function completeLocal(options: LocalCompletionOptions): Promise<ChatMessage & { content: string }> {
-  const { chat, wrapper } = await engineFor(options.modelPath, options.contextRequest ?? DEFAULT_CONTEXT_REQUEST, { signal: options.signal });
+  const { chat, context, wrapper } = await engineFor(options.modelPath, options.contextRequest ?? DEFAULT_CONTEXT_REQUEST, { signal: options.signal, onLoad: options.onLoad });
+  const levers = perfLevers();
   const reply = new ReplyAccumulator(undefined, { startInThought: wrapper.opensThought });
   const deliver = (pieces: SplitPiece[]) => {
     for (const piece of pieces) {
@@ -649,9 +685,13 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
       else options.onReasoning?.({ text: piece.text });
     }
   };
-  const meter = chat.sequence.tokenMeter;
+  const { sequence } = chat;
+  const meter = sequence.tokenMeter;
   const before = meter.getState();
+  // What the sequence held before the call: what the new prompt may reuse (core/reuse.mts).
+  const heldTokens = sequence.contextTokens;
   const generation = new GenerationMeter();
+  const startedAt = performance.now();
   let response: Awaited<ReturnType<LlamaChat['generateResponse']>>;
   try {
     response = await tracked(chat.generateResponse(historyFromMessages(options.messages), {
@@ -661,10 +701,22 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
         deliver(reply.chunk(chunk));
       },
       signal: options.signal,
-      maxTokens: options.maxTokens ?? LOCAL_OUTPUT_CAP,
+      // The outputCap lever (shipped LOCAL_OUTPUT_CAP) bounds every call, whatever the caller asked (ruling F1).
+      maxTokens: Math.min(options.maxTokens ?? levers.outputCap, levers.outputCap),
+      // No `budgets` unless a thought cap applies: without one, LlamaChat limits no segment, as today (ruling F5).
+      ...(levers.thoughtTokens === null ? {} : { budgets: { thoughtTokens: levers.thoughtTokens } }),
     }));
   } finally {
-    options.onStats?.(generation.stats(meter.diff(before).usedInputTokens));
+    const stats = generation.stats(meter.diff(before).usedInputTokens);
+    const checkpoints = sequence.needsCheckpoints
+      ? { needed: true, memoryBytes: sequence.checkpointsMemoryUsage, lastIndex: sequence.lastCheckpointIndex }
+      : null;
+    const reuse = reuseOf({ heldTokens, afterTokens: sequence.contextTokens, evaluated: stats.inputTokens, outputTokens: stats.outputTokens, checkpoints });
+    options.onStats?.({ ...stats, promptMs: generation.promptMs(startedAt), reuse });
+    if (levers.performanceTracking) {
+      await context.printTimings().catch((error: unknown) => console.warn(`[perf] mesures illisibles : ${(error as Error | undefined)?.message ?? error}`));
+      console.info('[perf] génération terminée');
+    }
   }
   deliver(reply.end());
   const { reasoning } = reply;
@@ -676,8 +728,9 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
 }
 
 /** The built-in engine as a ModelProvider (worker.mjs `turnProvider`): its window is the context size it really
- * runs with (H3), sized from `request`; its output cap LOCAL_OUTPUT_CAP; the agent lowers the cap to what the
- * window leaves after the request (M3) and passes it as `maxTokens`. */
+ * runs with (H3), sized from `request`; its output cap the outputCap lever (shipped LOCAL_OUTPUT_CAP, which the bench
+ * may lower: ruling F1); the agent lowers the cap to what the window leaves after the request (M3) and passes it as
+ * `maxTokens`. */
 export function localProvider(modelPath: string, request: ContextRequest = DEFAULT_CONTEXT_REQUEST): ModelProvider {
   return {
     complete: (options: Omit<LocalCompletionOptions, 'modelPath' | 'contextRequest'>) => completeLocal({
@@ -686,6 +739,6 @@ export function localProvider(modelPath: string, request: ContextRequest = DEFAU
       contextRequest: request,
     }),
     contextWindow: (options?: WindowOptions) => engineContextSize(modelPath, request, options),
-    outputCap: (): number | undefined => LOCAL_OUTPUT_CAP,
+    outputCap: (): number | undefined => perfLevers().outputCap,
   };
 }

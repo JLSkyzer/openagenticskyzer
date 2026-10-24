@@ -1,4 +1,4 @@
-import type { ChatMessage, ModelProvider } from './model-types.mts';
+import type { ChatMessage, ModelProvider, ToolSchema } from './model-types.mts';
 import { object } from './json-store.mts';
 import { estimateRequestTokens, fitToBudget, requestMessages } from './request-context.mts';
 import { contextBudget } from './context-budget.mts';
@@ -60,6 +60,13 @@ export function offeredTools(tools: readonly AgentTool[], settings: AgentSetting
   return tools.filter(tool => policy(tool, settings) !== 'deny');
 }
 
+/** The tool definitions the model is sent under these settings: the offered tools (offeredTools) as schemas. */
+export function toolSchemas(tools: readonly AgentTool[], settings: AgentSettings): ToolSchema[] {
+  return offeredTools(tools, settings).map(tool => ({
+    type: 'function' as const, function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+  }));
+}
+
 export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
   const { provider, instructions, tools, confirm, emit } = options;
   const settings = structuredClone(options.settings);
@@ -75,9 +82,7 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
     if (!TOOL_NAME_PATTERN.test(tool.name) || registry.has(tool.name)) throw new Error('Nom outil invalide ou dupliqué');
     registry.set(tool.name, tool);
   }
-  const schemas = offeredTools(tools, settings).map(tool => ({
-    type: 'function' as const, function: { name: tool.name, description: tool.description, parameters: tool.parameters },
-  }));
+  const schemas = toolSchemas(tools, settings);
   const executed = new Set<string>();
   // A loop is the SAME call repeated back to back. Counting identical calls over the whole run
   // (as before) refused a legitimate git_status before and after every edit; alternating

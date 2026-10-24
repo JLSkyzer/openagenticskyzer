@@ -121,3 +121,7 @@ import './worker-turn-log.test.mts';
 import './turn-status.test.mts';
 import './data-folders.test.mts';
 import './ui-fixes.test.mts';
+import './reuse.test.mts';
+import './perf-levers.test.mts';
+import './bench-metrics.test.mts';
+import './bench.test.mts';

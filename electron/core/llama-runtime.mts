@@ -15,6 +15,7 @@ import { getLlama, getLlamaGpuTypes, Llama, LlamaLogLevel, LlamaLogLevelGreaterT
 import type { Backend } from './placement.mts';
 import type { CudaPackStatus } from './cuda-pack.mts';
 import { disposeEngine } from './local-engine.mts';
+import { perfLevers } from './perf-levers.mts';
 
 export type GpuBackendChoice = 'auto' | 'cuda' | 'vulkan' | 'cpu';
 export const GPU_BACKEND_CHOICES: readonly GpuBackendChoice[] = ['auto', 'cuda', 'vulkan', 'cpu'];
@@ -126,15 +127,17 @@ export function vramPaddingFor(backend: Backend, platform: NodeJS.Platform = pro
 /**
  * llama.cpp's log, received at « info »: warnings and errors go to node-llama-cpp's own console logger as before;
  * of the info lines, only the buffer sizes (« Vulkan0 / Vulkan_Host / CPU_Mapped model buffer size », KV and compute
- * buffers) reach the app log, prefixed [llama.cpp] — they say where a load really put its bytes. The rest of the
- * info (metadata dumps, one line per tensor) is dropped.
+ * buffers) reach the app log, prefixed [llama.cpp] — they say where a load really put its bytes. With the bench's
+ * performanceTracking lever (core/perf-levers.mts), llama.cpp's timings (`llama_perf_…`, printTimings) reach it too.
+ * The rest of the info (metadata dumps, one line per tensor) is dropped.
  */
 export function llamaLogger(level: LlamaLogLevel, message: string): void {
   if (LlamaLogLevelGreaterThanOrEqual(level, LlamaLogLevel.warn)) {
     Llama.defaultConsoleLogger(level, message);
     return;
   }
-  if (/buffer size/.test(message)) console.info(`[llama.cpp] ${message.trim()}`);
+  const line = message.trim();
+  if (/buffer size/.test(message) || (/^llama_perf_/.test(line) && perfLevers().performanceTracking)) console.info(`[llama.cpp] ${line}`);
 }
 
 // Every getLlama passes build: 'never': a missing or broken prebuilt binary never starts a download or a compilation.

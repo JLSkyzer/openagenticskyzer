@@ -143,11 +143,12 @@ function notifyLongRun(message) {
  * model and the CUDA pack's shipped manifest live (build.extraResources puts them under <resources>, real files outside
  * app.asar; unpackaged, the repository's own resources/), and what prepareGpuBackend decided before the worker
  * starts: the gpu_backend choice, and the pack runtime folder it put on PATH (null if none), so that the worker
- * activates the pack only when it is that same one.
+ * activates the pack only when it is that same one. `perfLeversAllowed`: the bench's lever switchboard
+ * (OPENAGENT_PERF_LEVERS, core/perf-levers.mts) is honoured only outside the packaged app (ruling F6).
  */
 function workerOptions({ isPackaged, resourcesPath, appDir, gpuBackend = 'auto', cudaRuntimeDir = null }) {
   const resources = isPackaged ? resourcesPath : path.join(appDir, 'resources');
-  return { type: 'module', workerData: { modelsDir: path.join(resources, 'models'), cudaPackManifest: path.join(resources, 'cuda-pack', 'manifest.json'), gpuBackend, cudaRuntimeDir } };
+  return { type: 'module', workerData: { modelsDir: path.join(resources, 'models'), cudaPackManifest: path.join(resources, 'cuda-pack', 'manifest.json'), gpuBackend, cudaRuntimeDir, perfLeversAllowed: !isPackaged } };
 }
 
 // What prepareGpuBackend decided at app start, for every worker this process starts.

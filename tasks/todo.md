@@ -3653,6 +3653,12 @@ App empaquetée, pack CUDA installé, dossier de données isolé, carte RTX 4060
 - Vérification de la légende « Contexte » de `settings-tabs-visual.cjs`.
 - Mineurs différés par tâche : voir le registre `progress.md`.
 
+## Mesures — vitesse du LLM local (2026-10-25)
+
+Banc d'essai : `electron/bench/` (`npm run bench`, `bench:compare`, `bench:tools`, `bench:guard`) ; résultats dans `.superpowers/bench/` (ignoré par git).
+
+- **Référence stories260K** (tâche 1, à 1fabb6b, `--lever outputCap=64`) : `20261025-011307-stories-reference.json`. Mécanique seulement (modèle jouet) : A·1 évalue 7 021 jetons, A·2 à A·4 en réutilisent 7 023 à 7 350 et n'en évaluent que 100 à 140 (modèle à attention) ; définitions d'outils : 12 394 caractères, 6 144 jetons stories260K. Aucun chiffre 27B ici : le 27B se mesure en S1, avec l'utilisateur.
+
 ## À faire — lots suivants (demandes de l'utilisateur, 2026-10-17)
 
 1. **Modèles 100 % locaux** — LIVRÉ (2026-10-18, voir « Bilan du lot — modèles 100 % locaux ») : `test:model` PASS à sa relance ; `test:gitstatus` PASS à son troisième et dernier lancement, après la relecture du témoin git quand l'index est prêt (97783e4). (conception `docs/superpowers/specs/2026-10-17-local-only-models-design.md`) : la sélection du modèle ne propose plus que les fichiers `.gguf` locaux ; clés des fournisseurs en ligne effacées ; modèle d'embeddings livré dans l'app. **Aucun outil ni réglage retiré** (outils web, jeton Hugging Face, images… restent).

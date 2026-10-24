@@ -1,5 +1,6 @@
 // The message and tool shapes every model engine speaks (the agent loop, compaction, the local engine). Types only:
 // no model client lives here.
+import type { ReuseFigures } from './reuse.mts';
 
 export interface ToolCall {
   id: string; type: 'function'; function: { name: string; arguments: string };
@@ -29,11 +30,19 @@ export interface ChatWrapperInfo { name: string; segments: unknown; opensThought
 /** A model load as it happens: started, progress in (0, 1], ended (its time and chat wrapper). Only a real load
  * reports: a reused warm engine reports nothing. `retry`: a second native load begins, its progress starting again
  * from 0 — with fewer layers on the card (`fewer-layers`, the context did not fit) or on the processor (`cpu`). */
-export type LoadEvent = { kind: 'start' } | { kind: 'progress'; progress: number } | { kind: 'retry'; mode: LoadRetry } | { kind: 'end'; ms: number; wrapper: ChatWrapperInfo };
+export type LoadEvent = { kind: 'start' } | { kind: 'progress'; progress: number } | { kind: 'retry'; mode: LoadRetry }
+  | { kind: 'end'; ms: number; wrapper: ChatWrapperInfo; stages: LoadStage[]; architecture: ModelArchitecture };
+/** One timed stage of a real load, in order: the runtime (`engine`), the pre-checks, one `loadModel` and one
+ * `createContext` per attempt (`ok: false`: refused for memory; `gpuLayers`: what a loaded model put on the card),
+ * the chat. */
+export interface LoadStage { stage: 'engine' | 'precheck' | 'loadModel' | 'createContext' | 'chat'; ms: number; ok: boolean; gpuLayers?: number }
+/** What the model file says of its architecture (GgufInsights): hybrid or recurrent layers, a sliding window, MTP. */
+export interface ModelArchitecture { hybrid: boolean; recurrent: boolean; swaSize: number | null; mtpWeights: boolean }
 export type LoadRetry = 'fewer-layers' | 'cpu';
 /** One generation's figures: tokens read (the prompt, as evaluated), tokens written, and the time from the first
- * chunk to the end. Reported once, a stopped generation included. */
-export interface GenerationStats { inputTokens: number; outputTokens: number; generationMs: number }
+ * chunk to the end. Reported once, a stopped generation included. `promptMs`: from the call's start to the first chunk
+ * carrying tokens (null when none came); `reuse`: what the engine did not read again (core/reuse.mts). */
+export interface GenerationStats { inputTokens: number; outputTokens: number; generationMs: number; promptMs?: number | null; reuse?: ReuseFigures }
 /** What getting the window may involve: a load, which `signal` stops and `onLoad` follows. */
 export interface WindowOptions { signal?: AbortSignal; onLoad?: (event: LoadEvent) => void }
 export interface ToolSchema { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }

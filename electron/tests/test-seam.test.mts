@@ -103,7 +103,9 @@ test('main never passes the test seam to the worker, packaged or not, whatever t
       assert.equal('testProviderModule' in workerOptions({ isPackaged, resourcesPath: 'C:\\r', appDir: 'C:\\a' }).workerData, false);
     for (const isPackaged of [true, false]) {
       const { workerData } = workerOptions({ isPackaged, resourcesPath: 'C:\\r', appDir: 'C:\\a' });
-      assert.deepEqual(Object.keys(workerData), ['modelsDir', 'cudaPackManifest', 'gpuBackend', 'cudaRuntimeDir']);
+      assert.deepEqual(Object.keys(workerData), ['modelsDir', 'cudaPackManifest', 'gpuBackend', 'cudaRuntimeDir', 'perfLeversAllowed']);
+      // The bench's lever switchboard is never honoured by the packaged app (ruling F6).
+      assert.equal(workerData.perfLeversAllowed, !isPackaged);
       // Test-only: a download source other than the app's own GitHub release is never passed by main.
       assert.equal('cudaPackBaseUrl' in workerData, false);
       assert.equal(workerData.gpuBackend, 'auto', 'no choice read: auto');

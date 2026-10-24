@@ -387,3 +387,22 @@ test('GenerationMeter: an empty segment-start chunk does not start the generatio
   now += 5000;
   assert.deepEqual(idle.stats(4), { inputTokens: 4, outputTokens: 0, generationMs: 0 }, 'no token written: no generation time');
 });
+
+test('f. a real load reports its stages and the model architecture; a generation reports promptMs and its reuse', { timeout: 60000 }, async t => {
+  const ends: LoadEvent[] = [];
+  t.after(() => disposeEngine());
+  await disposeEngine();
+  const stats: GenerationStats[] = [];
+  for (const text of ['Once upon a time', 'Once upon a time there']) {
+    await completeLocal({ modelPath, messages: [{ role: 'user', content: text }], maxTokens: 8, onStats: s => stats.push(s),
+      onLoad: (e: LoadEvent) => { if (e.kind === 'end') ends.push(e); } });
+  }
+  assert.equal(ends.length, 1, 'one real load, the second call reuses the warm engine');
+  const end = ends[0] as Extract<LoadEvent, { kind: 'end' }>;
+  assert.deepEqual(end.stages.map(s => s.stage), ['engine', 'precheck', 'loadModel', 'createContext', 'chat']);
+  assert.ok(end.stages.every(s => s.ok && s.ms >= 0));
+  assert.deepEqual(end.architecture, { hybrid: false, recurrent: false, swaSize: null, mtpWeights: false });
+  assert.ok(stats[0].promptMs != null && stats[0].promptMs >= 0);
+  assert.equal(stats[0].reuse?.held, 0);
+  assert.ok((stats[1].reuse?.reused ?? 0) > 0, 'the second prompt starts like the first: an attention model reuses it');
+});

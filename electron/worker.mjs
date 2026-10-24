@@ -19,11 +19,9 @@ import { untilAborted } from './core/abortable.mts';
 import { CudaPack, releaseBaseUrl, checkTestBaseUrl, CUDA_PACK_BUSY, CUDA_PACK_TURN_BUSY, CUDA_PACK_UNAVAILABLE } from './core/cuda-pack.mts';
 import { offeredTools, runAgent, TOOL_NAME_PATTERN } from './core/agent.mts';
 import { basePrompt } from './core/system-prompt.mts';
-import { workspaceTools } from './core/workspace.mts';
-import { memoryTools, appendCompactionSummary } from './core/memory-tools.mts';
-import { gitTools } from './core/git-tools.mts';
-import { shellTools, stopAllServers } from './core/shell-tool.mts';
-import { webTools } from './core/web-tools.mts';
+import { appendCompactionSummary } from './core/memory-tools.mts';
+import { builtInTools } from './core/builtin-tools.mts';
+import { stopAllServers } from './core/shell-tool.mts';
 import { buildInstructions } from './core/context.mts';
 import { compactMessages, planCompaction, SUMMARY_PREFIX } from './core/compact.mts';
 import { PromptLibrary } from './core/prompts.mts';
@@ -40,10 +38,9 @@ import { gitStatus } from './core/git-status.mts';
 import { testHfToken } from './core/hf-token.mts';
 import { migrateDataDir } from './core/data-dir.mts';
 import { resolveHomes } from './core/data-home.cjs';
-import { initializeProject, projectTools } from './core/project-analyzer.mts';
+import { initializeProject } from './core/project-analyzer.mts';
 import { McpConfigStore, readProjectMcpConfig, mergeServerConfigs, redactSecrets, expandServerPlaceholders, serverIdentity } from './core/mcp-config.mts';
 import { mcpTools, stopAllMcpServers } from './core/mcp-client.mts';
-import { searchTools } from './core/search-tools.mts';
 import { indexFolder } from './core/semantic-index.mts';
 import { setModelsDir, DEFAULT_MODELS_DIR, stopEmbeddings, embeddingsIdle } from './core/embeddings.mts';
 import { loadPlugins, projectPythonPluginFiles } from './core/plugin-loader.mts';
@@ -245,9 +242,10 @@ function postModelStatus(model) {
  * context it runs with (the request window for a model that is not a loaded .gguf), its chat wrapper, the load
  * time (`loadMs`, none for a warm engine) and how the load got its placement (`placement`: 'direct', 'step-down' or
  * 'fallback', with `placementNote` saying why when it is not direct — the [placement] line's own words — and
- * `layerLimit` when it started at a remembered limit, « limite mémorisée : 19 couches » in the note).
+ * `layerLimit` when it started at a remembered limit, « limite mémorisée : 19 couches » in the note), and for a real
+ * load its timed stages (`loadStages`) and the model's architecture (`load`: the load event's own figures).
  * Best-effort like postModelStatus. */
-function logModelReady(model, contextTokens, loadMs, log) {
+function logModelReady(model, contextTokens, loadMs, log, load = null) {
   try {
     const status = turnModelStatus(model);
     const placement = status.placement;
@@ -265,6 +263,8 @@ function logModelReady(model, contextTokens, loadMs, log) {
       contextSize: placement?.contextSize ?? (status.loaded ? status.contextWindow : contextTokens),
       ...(wrapper ? { wrapper: wrapper.name, segments: wrapper.segments, opensThought: wrapper.opensThought } : {}),
       ...(loadMs === undefined ? {} : { loadMs }),
+      ...(load?.stages ? { loadStages: load.stages } : {}),
+      ...(load?.architecture ? { architecture: load.architecture } : {}),
     });
   } catch (error) {
     // A line missing never fails the turn, but it is said (M-f).
@@ -332,19 +332,6 @@ async function mcpSecretsFor(folder, projectTrust) {
   return mcpSecretValues([...await mcpServersFor(folder, projectTrust), ...asWritten]);
 }
 
-/** The built-in tools for a real project folder — building them starts no process. */
-async function builtInTools(folder, effective) {
-  return [
-    ...await workspaceTools(folder, effective.ignored_patterns),
-    ...await memoryTools(folder, dataHome),
-    ...await gitTools(folder, effective.ignored_patterns),
-    ...projectTools(folder),
-    ...await shellTools(folder),
-    ...await webTools(),
-    ...await searchTools(folder, dataHome, effective.ignored_patterns),
-  ];
-}
-
 /** Built-in + MCP tools for a turn: the MCP servers are started here, and only here, to discover their tools. */
 async function nonPluginTools(folder, effective, projectTrust) {
   const { tools: mcpDiscovered, errors: mcpErrors, servers } = await mcpTools(await mcpServersFor(folder, projectTrust));
@@ -354,7 +341,7 @@ async function nonPluginTools(folder, effective, projectTrust) {
   // A broken/unreachable MCP server never blocks the turn or surfaces to the chat — same
   // server-log-only isolation agent.py's own logging.getLogger("openagentic.mcp").warning had.
   for (const error of mcpErrors) console.error(`[mcp] ${error}`);
-  const builtIn = await builtInTools(folder, effective);
+  const builtIn = await builtInTools(folder, dataHome, effective.ignored_patterns);
   return [...builtIn, ...mcpToolsBeside(mcpDiscovered, builtIn)];
 }
 
@@ -436,7 +423,7 @@ async function mcpServersForDisplay(folder) {
     try {
       const effective = await settings.effective(folder, { approvedRelaxations: projectTrust.approvedRelaxations });
       agentSettings = agentSettingsOf(effective);
-      builtIn = await builtInTools(folder, effective);
+      builtIn = await builtInTools(folder, dataHome, effective.ignored_patterns);
     } catch { /* unreadable settings or path: the global mode, no built-in names */ }
   }
   const asWritten = await readProjectMcpConfig(folder, { expandEnv: false }).catch(() => []);
@@ -765,7 +752,10 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
       // A generation's figures feed the clock only, and never end anything: pieces may still follow (ruling T2-m4).
       if (kind === 'stats') {
         clock.stats(rest);
-        log({ event: 'generation', step, inputTokens: rest.inputTokens, outputTokens: rest.outputTokens, generationMs: rest.generationMs });
+        log({
+          event: 'generation', step, inputTokens: rest.inputTokens, outputTokens: rest.outputTokens, generationMs: rest.generationMs,
+          ...(rest.promptMs === undefined ? {} : { promptMs: rest.promptMs }), ...(rest.reuse ? { reuse: rest.reuse } : {}),
+        });
         return;
       }
       if (kind === 'turn') { step = rest.step; phase('reading'); clock.readStart(); }
@@ -821,16 +811,18 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     // A second load of the same turn (fewer layers, or the processor: core/local-engine.mts) is labelled by its
     // `attempt`, so its progress never silently restarts at 0.
     let attempt;
+    // The load's stages and the model's architecture, from its `end` (none for a warm engine): logged on model-ready.
+    let loadFigures = null;
     const onLoad = event => {
       if (controller.signal.aborted) return;
       if (event.kind === 'start') { clock.loadStart(); phase('loading'); }
       if (event.kind === 'retry') { attempt = event.mode; phase('loading', { attempt, progress: 0 }); }
       if (event.kind === 'progress') phase('loading', { ...(attempt ? { attempt } : {}), progress: Math.min(100, Math.max(0, Math.floor(event.progress * 100))) });
-      if (event.kind === 'end') clock.loadEnd();
+      if (event.kind === 'end') { clock.loadEnd(); loadFigures = { stages: event.stages, architecture: event.architecture }; }
     };
     const contextTokens = await windowFor(provider, effective.max_tokens, { signal: controller.signal, onLoad });
     postModelStatus(model);
-    logModelReady(model, contextTokens, clock.timing().loadMs, log);
+    logModelReady(model, contextTokens, clock.timing().loadMs, log, loadFigures);
     const result = await runAgent({
       provider, messages: collected, instructions, tools, contextWindow: contextTokens,
       settings: agentSettings,
@@ -1105,7 +1097,7 @@ async function handle(message) {
         const effective = await settings.effective(folder, { approvedRelaxations: projectTrust.approvedRelaxations });
         // Parity row 33: the Outils tab never starts an MCP server. Plugin names are checked against the built-in tools
         // and the MCP names a turn would offer from what it last discovered — a server not started has none yet.
-        const builtIn = await builtInTools(folder, effective);
+        const builtIn = await builtInTools(folder, dataHome, effective.ignored_patterns);
         const remembered = rememberedMcpStatus(folder, await mcpServersFor(folder, projectTrust), builtIn).flatMap(status => status.tools ?? []);
         const { tools, errors } = await pluginToolsBeside(folder, [...builtIn, ...remembered.map(name => ({ name }))], projectTrust);
         // Parity row 32: a project awaiting a decision has its .py listed like its .mjs (not loaded, not reported); one with

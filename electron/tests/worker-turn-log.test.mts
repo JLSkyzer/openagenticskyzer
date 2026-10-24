@@ -14,6 +14,7 @@ import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 import { testWorkerOptions } from './support/test-model-provider.mts';
 import { callWorker, recordAgentEvents } from './support/worker-events.mts';
 import { turnLogDir, SENSITIVE_FILE_MASK } from '../core/turn-log.mts';
+import { PERF_LEVERS_ENV } from '../core/perf-levers.mts';
 
 const STORIES = fileURLToPath(new URL('./fixtures/stories260K.gguf', import.meta.url));
 const WORKER = fileURLToPath(new URL('../worker.mjs', import.meta.url));
@@ -243,4 +244,35 @@ test('6. a trusted project .mcp.json `${VAR}` in its arguments: the expanded val
   const raw = await logText(home);
   assert.match(raw, /"event":"turn-start"/, 'the turn is logged');
   assert.ok(!raw.includes(secret), `${secret} reached the turn log`);
+});
+
+test('7. two stories260K turns: each generation line carries promptMs and reuse, and the second reuses the first prompt', { timeout: 180000 }, async t => {
+  const { root, home, project } = await dirs(t, 'openagent-turn-log-reuse-');
+  const model = join(root, 'stories260K.gguf');
+  await copyFile(STORIES, model);
+  // The lever switchboard is honoured in a worker only when its creator allows it (ruling F6): the bench does, as here.
+  const worker = new Worker(WORKER, { env: { ...process.env, OPENAGENT_HOME: home, [PERF_LEVERS_ENV]: JSON.stringify({ outputCap: 16 }) }, workerData: { perfLeversAllowed: true } });
+  terminateAtEnd(t, worker);
+  const entry = await callWorker(worker, 'gguf-add', { path: model });
+  await callWorker(worker, 'save-global-settings', { patch: { active_local_model: entry.id } });
+  const rec = recordAgentEvents(worker);
+  t.after(() => rec.stop());
+  for (const text of ['Once upon a time', 'Once upon a time again']) {
+    const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text });
+    const ended = (await rec.until(runId, { timeoutMs: 170000 })).at(-1);
+    assert.equal(ended.kind, 'done', JSON.stringify(ended));
+  }
+  const lines = await logLines(home);
+  const generations = lines.filter(line => line.event === 'generation');
+  assert.equal(generations.length, 2);
+  for (const g of generations) {
+    assert.deepEqual(Object.keys(g.reuse).sort(), ['checkpoints', 'common', 'evaluated', 'held', 'prompt', 'reused']);
+    // Ruling F1: the bench's output cap reaches the agent's maxTokens on the worker path.
+    assert.ok(g.outputTokens <= 16, JSON.stringify(g));
+  }
+  assert.ok(generations[1].reuse.reused > 0, JSON.stringify(generations[1]));
+  assert.equal(typeof generations[0].promptMs, 'number');
+  const ready = lines.find(line => line.event === 'model-ready');
+  assert.equal(ready.architecture.hybrid, false);
+  assert.ok(ready.loadStages.length >= 4);
 });

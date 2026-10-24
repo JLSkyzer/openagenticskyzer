@@ -56,7 +56,7 @@ clair mort), jamais branché à une vraie conversation (`worker.mjs::send` renvo
 texte statique). Décision validée (utilisateur) : réécriture complète du renderer en
 TypeScript + React (conforme à `docs/superpowers/specs/2026-09-14-electron-autonomous-design.md`,
 seule spec faisant autorité), le vanilla JS de Codex est jeté. Plan détaillé :
-`C:\Users\killi\.claude\plans\vivid-snacking-snail.md`.
+un plan local de session Claude (`vivid-snacking-snail.md`, hors dépôt).
 
 Hors scope de ce lot : branches, artifacts, palette de commandes, bibliothèque de
 prompts, sélecteur de modèle complet, réglages 7 onglets, téléchargements, onboarding,

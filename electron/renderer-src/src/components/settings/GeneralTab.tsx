@@ -220,7 +220,7 @@ export function GeneralTab({ draft }: { draft: SettingsDraft }) {
             )}
           </div>
           <div className="border-t border-gray-900">
-            <Row label="Journal des tours" hint="Complet : tout le tour, textes compris, secrets masqués. Sans contenu : événements et durées seulement. Conservé 14 jours." last>
+            <Row label="Journal des tours" hint="Complet : tout le tour, textes compris, jetons et secrets connus masqués. Sans contenu : événements et durées seulement. Conservé 14 jours." last>
               <select
                 data-setting="turn_log"
                 value={draft.get<string>('turn_log', 'full')}

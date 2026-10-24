@@ -2,12 +2,13 @@ const { app, BrowserWindow, ipcMain, shell, dialog, session, protocol, Notificat
 const path = require('node:path');
 const { homedir } = require('node:os');
 const { writeFileSync, readFileSync } = require('node:fs');
-const { mkdir, lstat } = require('node:fs/promises');
+const { mkdir } = require('node:fs/promises');
 const { Worker } = require('node:worker_threads');
 const artifactProtocol = require('./artifact-protocol.cjs');
 const { buildDiamondIconPng, trayMenuTemplate } = require('./tray-icon.cjs');
 const { createUpdater, createInstallNow, canInstallNow, NOT_READY } = require('./updater.cjs');
 const { resolveHomes } = require('./core/data-home.cjs');
+const { realLogDir } = require('./core/log-dir.cjs');
 
 // What "artifact-put" (below) fills and the oa-artifact: protocol serves — see artifact-protocol.cjs.
 const artifacts = artifactProtocol.createArtifactStore();
@@ -345,13 +346,8 @@ async function openTurnLogs(dataHome, openPath, currentHome) {
   if (typeof dataHome !== 'string' || !dataHome) throw new Error('Dossier de données indisponible');
   if (!sameDataHome(await currentHome(), dataHome)) throw new Error('Le dossier de données a été déplacé : redémarrez l\'app pour ouvrir ses journaux.');
   await mkdir(dataHome, { recursive: true });
-  let dir = dataHome;
-  for (const name of ['logs', 'turns']) {
-    dir = path.join(dir, name);
-    try { await mkdir(dir); } catch (error) { if (error?.code !== 'EEXIST') throw error; }
-    const info = await lstat(dir);
-    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`${dir} n'est pas un vrai dossier : il n'est pas ouvert`);
-  }
+  // The worker's own check (core/log-dir.cjs): `logs` and `logs/turns` real folders, never a link opened elsewhere.
+  const dir = await realLogDir(dataHome, { create: true });
   const error = await openPath(dir);
   if (error) throw new Error(error);
   return { opened: true, dir };

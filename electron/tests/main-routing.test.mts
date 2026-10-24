@@ -67,6 +67,15 @@ test('open-turn-logs never opens nor creates through a linked logs folder', asyn
   assert.equal(existsSync(join(elsewhere, 'turns')), false, 'nothing is created behind the link');
 });
 
+test('open-turn-logs checks the folder with the turn log writer’s own function, defined once (M-e)', async () => {
+  const mainSource = await readFile(fileURLToPath(new URL('../main.cjs', import.meta.url)), 'utf8');
+  const turnLogSource = await readFile(new URL('../core/turn-log.mts', import.meta.url), 'utf8');
+  assert.match(mainSource, /require\('\.\/core\/log-dir\.cjs'\)/);
+  assert.match(mainSource, /realLogDir\(dataHome, \{ create: true \}\)/);
+  assert.match(turnLogSource, /import \{ realLogDir \} from '\.\/log-dir\.cjs';/);
+  assert.doesNotMatch(turnLogSource, /function realLogDir/, 'not duplicated');
+});
+
 test('open-turn-logs after a data-folder migration (redirect written after the start) refuses and creates nothing', async t => {
   // The start-up home is the default one; a migration then leaves only redirect.json there until the restart
   // (core/data-dir.mts). Recreating logs/turns in it would make a later migration back to it refuse (« contient déjà »).

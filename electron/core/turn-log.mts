@@ -16,8 +16,13 @@
 //   here (the file tools refuse those on disk, so their result is an error);
 // - tool arguments that are not JSON are logged as written, with only the secrets and patterns masked;
 // - two keys masked to the same text keep the last one's value;
-// - a link planted between the checks and the write (a race with another local program) is not excluded.
-import { lstat, mkdir, open, readdir, unlink } from 'node:fs/promises';
+// - a link planted between the checks and the write (a race with another local program) is not excluded;
+// - run_command's output is logged at `full` like any tool result: only the exact secrets known here and the token
+//   patterns are masked in it, so a secret a command prints (an env dump, a config file it cats) that matches neither
+//   is logged as printed (M-a; the « Journal des tours » hint says « jetons et secrets connus masqués »);
+// - the folder paths are logged as they are, the user name in them included (LISEZMOI.txt says so).
+import { lstat, open, readdir, unlink } from 'node:fs/promises';
+import { realLogDir } from './log-dir.cjs';
 import { join } from 'node:path';
 import type { TurnTiming } from './model-types.mts';
 import { expandServerPlaceholders, type McpServerConfig } from './mcp-config.mts';
@@ -286,28 +291,6 @@ export async function pruneTurnLogs(dataHome: string, now: Date, days: number = 
     removed.push(entry.name);
   }
   return removed.sort();
-}
-
-/**
- * `<dataHome>/logs/turns`, once `logs` and `logs/turns` are checked to be real folders — never a link or a junction,
- * whose target could be outside the data home (the prune would delete there, the writer write there). `create` makes
- * what is missing, one level at a time; without it, a missing folder gives null. Throws for anything else.
- */
-async function realLogDir(dataHome: string, { create }: { create: boolean }): Promise<string | null> {
-  let dir = dataHome;
-  for (const name of ['logs', 'turns']) {
-    dir = join(dir, name);
-    let stats;
-    try { stats = await lstat(dir); }
-    catch (error: any) {
-      if (error?.code !== 'ENOENT') throw error;
-      if (!create) return null;
-      await mkdir(dir).catch((made: any) => { if (made?.code !== 'EEXIST') throw made; });
-      stats = await lstat(dir);
-    }
-    if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error(`${dir} n'est pas un vrai dossier : rien n'y est écrit ni supprimé`);
-  }
-  return dir;
 }
 
 /**

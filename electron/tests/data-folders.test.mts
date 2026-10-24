@@ -80,6 +80,8 @@ test('LISEZMOI.txt is rewritten at each call and names every entry of the data f
     assert.ok(role.trim().length > 0, `${name} has a role`);
   }
   assert.ok(README_TEXT.includes('régénéré à chaque démarrage'));
+  // M-i: the turn log holds the folder paths, user name included — worth a read before it is shared.
+  assert.ok(README_TEXT.includes('nom d’utilisateur compris') && README_TEXT.includes('relisez-le avant de le partager'));
   assert.ok(README_TEXT.includes('.mjs'));
 });
 

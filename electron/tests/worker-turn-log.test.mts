@@ -222,3 +222,25 @@ test('5. a migration to the data folder it already is moves nothing: the turn lo
   const lines = await logLines(home);
   assert.ok(lines.some(line => line.runId === runId && line.event === 'end'), 'the turn was logged: nothing moved, so the log was not suspended (M-g)');
 });
+
+test('6. a trusted project .mcp.json `${VAR}` in its arguments: the expanded value never reaches the turn log (I3)', { timeout: 60000 }, async t => {
+  const { home, project } = await dirs(t, 'openagent-turn-log-mcp-var-');
+  const secret = 'expanded-mcp-secret-4242';
+  // A server that exits at once: its discovery fails, the turn goes on with the scripted model.
+  await writeFile(join(project, '.mcp.json'), JSON.stringify({
+    mcpServers: { projet: { command: process.execPath, args: ['-e', '', '--token=${OA_TURN_LOG_MCP_SECRET}'] } },
+  }));
+  const testModel = await scripted(t, [textReply(`la réponse répète ${secret}`)]);
+  const worker = new Worker(WORKER, testWorkerOptions(home, { OA_TURN_LOG_MCP_SECRET: secret }));
+  terminateAtEnd(t, worker);
+  const { token } = await callWorker(worker, 'project-trust', { folder: project });
+  await callWorker(worker, 'trust-project', { folder: project, decision: 'trusted', token });
+  const rec = recordAgentEvents(worker);
+  t.after(() => rec.stop());
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: `le jeton est ${secret}`, testModel });
+  const events = await rec.until(runId, { timeoutMs: 50000 });
+  assert.equal(events.at(-1).kind, 'done', JSON.stringify(events.map(e => e.kind)));
+  const raw = await logText(home);
+  assert.match(raw, /"event":"turn-start"/, 'the turn is logged');
+  assert.ok(!raw.includes(secret), `${secret} reached the turn log`);
+});

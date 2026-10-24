@@ -304,6 +304,14 @@ async function mcpServersFor(folder, projectTrust) {
   return mergeServerConfigs(await mcpConfig.list(), projectServers);
 }
 
+/** The values the turn log masks for the MCP servers a turn in `folder` runs (I3). mcpServersFor expands the project's
+ * `${VAR}` placeholders, after which mcpSecretValues can no longer tell a `${VAR}` in an argument or a url: the project
+ * entries as written (expandEnv: false) are added, and their placeholders are expanded there, from this env. */
+async function mcpSecretsFor(folder, projectTrust) {
+  const asWritten = projectTrust.contentTrusted ? await readProjectMcpConfig(folder, { expandEnv: false }) : [];
+  return mcpSecretValues([...await mcpServersFor(folder, projectTrust), ...asWritten]);
+}
+
 /** The built-in tools for a real project folder — building them starts no process. */
 async function builtInTools(folder, effective) {
   return [
@@ -723,7 +731,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     // The turn log masks hf_token and the secrets of the MCP servers this turn runs, and never logs a file tool's
     // arguments and result on a sensitive or protected path — tested as the file tools test it, relative to the project.
     const protectedRel = protectedPathMatcher(effective.ignored_patterns);
-    openLog(logLevel, [hfToken, hfToken.trim(), ...mcpSecretValues(await mcpServersFor(folder, projectTrust))],
+    openLog(logLevel, [hfToken, hfToken.trim(), ...await mcpSecretsFor(folder, projectTrust)],
       path => isSensitiveFile(path) || protectedRel(relative(folder, resolve(folder, path))));
     const toolCategory = new Map(tools.map(tool => [tool.name, tool.category]));
     const agentSettings = agentSettingsOf(effective);

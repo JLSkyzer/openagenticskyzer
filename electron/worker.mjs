@@ -125,11 +125,12 @@ const estimateJobs = new EstimateJobs();
 // Everything this worker is doing in the background or for an op: turns, compactions, indexing, the CUDA pack
 // install, the re-placement between turns, every op being answered. The shutdown op waits for all of it (see
 // shutdownWorker): a turn's stop still saves the conversation and closes the turn log, and the thread never ends
-// while one of them is inside a native call.
-const work = new Set();
-function track(promise) {
+// while one of them is inside a native call. Each is named (`label`) and dated: what the shutdown still waits for is
+// reported by name (see shutdownSteps), so a quit that never ends says on what.
+const work = new Map();
+function track(promise, label) {
   const settled = promise.then(() => undefined, () => undefined);
-  work.add(settled);
+  work.set(settled, { label, since: Date.now() });
   void settled.then(() => work.delete(settled));
   return promise;
 }
@@ -182,7 +183,7 @@ await pruneTurnLogs(dataHome, new Date()).catch(error => console.error(`[turn-lo
 // never call activate_folder on mount either way, so this is not a regression introduced here).
 if ((await settings.global().catch(() => ({ restore_last_folder: true }))).restore_last_folder) {
   const [mostRecent] = await folders.list().catch(() => []);
-  if (mostRecent?.path) track(triggerIndexing(mostRecent.path));
+  if (mostRecent?.path) track(triggerIndexing(mostRecent.path), 'indexation');
 }
 const active = new Map();
 // requestId -> { resolve(allow), folder, tool } — filled by the confirm() callback passed to
@@ -884,7 +885,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
   } finally {
     active.delete(runId);
     // Between turns only, and never awaited by the turn: it is over for the page. The shutdown op waits for it.
-    track(maybeReplace(model));
+    track(maybeReplace(model), 'réallocation entre deux tours');
   }
 }
 
@@ -1059,7 +1060,7 @@ async function handle(message) {
     if (op === 'cuda-pack-install') {
       const job = await reserveCudaPackInstall();
       reply(id, true, { installId: job.id });
-      track(runCudaPackInstall(job));
+      track(runCudaPackInstall(job), 'installation du pack CUDA');
       return;
     }
     if (op === 'cuda-pack-cancel') {
@@ -1137,7 +1138,7 @@ async function handle(message) {
       const { folder: canonical, folders: list } = await folders.open(payload.folder);
       const history = await conversations.messages(payload.folder, 'main').catch(() => []);
       result = { history: servedMessages(history), folders: list, folder: canonical };
-      track(triggerIndexing(canonical));
+      track(triggerIndexing(canonical), 'indexation');
     }
     if (op === 'settings') result = payload.folder ? await settings.project(payload.folder) : await settings.publicGlobal();
     if (op === 'save_settings') {
@@ -1168,7 +1169,7 @@ async function handle(message) {
         throw error;
       }
       reply(id, true, { compactionId });
-      track(runCompaction(compactionId, folder, branchId, before, turn));
+      track(runCompaction(compactionId, folder, branchId, before, turn), 'compaction');
       return;
     }
     if (op === 'send') {
@@ -1201,7 +1202,7 @@ async function handle(message) {
         // Fire-and-forget: the turn's real result streams back as 'event' messages, not
         // as this request's response (main.cjs's 30s IPC timeout could never cover a full
         // multi-step agent run).
-        track(runSend(runId, payload.folder, payload.branchId || 'main', payload.text, keep, attachments, turn));
+        track(runSend(runId, payload.folder, payload.branchId || 'main', payload.text, keep, attachments, turn), 'tour');
       } finally { pendingSends--; }
       return;
     }
@@ -1272,20 +1273,48 @@ async function handle(message) {
 // 3. the model and the Llama are freed (several gigabytes of RAM/VRAM, and nothing else is native any more);
 // 4. the answer carries each step's duration, then the thread ends ITSELF (process.exit), once nothing native runs.
 // main.cjs hides the window and the tray icon at once and waits for this thread's exit, bounded only for a native call
-// that would never return (see main.cjs::QUIT_CAP_MS).
+// that would never return (see main.cjs::QUIT_CAP_MS). So that such a quit says on what it hangs, every QUIT_REPORT_MS
+// the worker posts what it still waits for ({ type: 'quit-wait', phase, waiting }: each tracked job by name and age,
+// the idle waits, the servers, the engine's release), and the [quit] line main writes at its cap quotes the last one —
+// or says the thread went silent: blocked in a synchronous native call, no JavaScript of it runs any more.
 const APP_CLOSING = 'L’app se ferme.';
 const QUIET_NOTICE_MS = 2000;
+const QUIT_REPORT_MS = 2000;
 let shutdownRun = null;
+// The idle waits of quiet() still pending: label -> since.
+const idleWaits = new Map();
+function idleWait(label, promise) {
+  if (!idleWaits.has(label)) idleWaits.set(label, Date.now());
+  const done = () => { idleWaits.delete(label); };
+  return promise.then(done, done);
+}
 async function quiet() {
   for (;;) {
-    await Promise.all([...work, estimateJobs.idle(), generationsIdle(), embeddingsIdle()]);
+    await Promise.all([...work.keys(), idleWait('estimations', estimateJobs.idle()), idleWait('générations', generationsIdle()), idleWait('calculs ONNX', embeddingsIdle())]);
     if (work.size === 0) return;
   }
 }
+const age = (since, now) => `depuis ${Math.round((now - since) / 1000)} s`;
 async function shutdownSteps() {
   const started = Date.now();
   const steps = {};
   const timed = (name, promise) => promise.then(() => { steps[name] = Date.now() - started; });
+  let phase = 'travail en cours';
+  let disposeSince = 0;
+  const waitingNow = () => {
+    const now = Date.now();
+    if (phase === 'libération du moteur') return [`libération du modèle et du moteur ${age(disposeSince, now)}`];
+    return [
+      ...[...work.values()].map(job => `${job.label} ${age(job.since, now)}`),
+      ...[...idleWaits].map(([label, since]) => `${label} ${age(since, now)}`),
+      ...(steps.servers === undefined ? [`arrêt des serveurs ${age(started, now)}`] : []),
+    ];
+  };
+  const report = () => {
+    const waiting = waitingNow();
+    try { parentPort.postMessage({ type: 'quit-wait', phase, waiting }); } catch { /* main has gone: nothing to tell */ }
+    return waiting;
+  };
   shuttingDown = true;
   for (const run of active.values()) run.controller.abort();
   cancelReplacement();
@@ -1293,18 +1322,23 @@ async function shutdownSteps() {
   cudaInstall?.controller.abort();
   stopEmbeddings();
   const settled = quiet();
-  const notice = setTimeout(() => console.info('[quit] fermeture : attente de la fin du travail en cours (appel natif, sauvegarde)…'), QUIET_NOTICE_MS);
+  const notice = setTimeout(() => console.info(`[quit] fermeture : attente de la fin du travail en cours (appel natif, sauvegarde) : ${report().join(', ') || '…'}`), QUIET_NOTICE_MS);
+  const reports = setInterval(report, QUIT_REPORT_MS);
   try {
     await Promise.all([
       // A discovery has no abort signal, and a call's MCP session only closes once it unwinds: killed here.
       timed('servers', Promise.all([stopAllServers(), stopAllMcpServers()])),
       timed('work', settled),
     ]);
+    // Then the local model and the Llama: nothing else touches them any more. Its own creation, if still running (a
+    // first CUDA start), is waited for first.
+    phase = 'libération du moteur';
+    disposeSince = Date.now();
+    await timed('dispose', disposeLlama());
   } finally {
     clearTimeout(notice);
+    clearInterval(reports);
   }
-  // Then the local model and the Llama: nothing else touches them any more.
-  await timed('dispose', disposeLlama());
   steps.total = Date.now() - started;
   return { stopped: true, steps };
 }
@@ -1319,5 +1353,5 @@ function shutdownWorker(id) {
 parentPort?.on('message', message => {
   if (message?.op === 'shutdown' && message.id) { shutdownWorker(message.id); return; }
   if (shuttingDown) { if (message?.id) reply(message.id, false, null, APP_CLOSING); return; }
-  track(handle(message));
+  track(handle(message), `op ${typeof message?.op === 'string' ? message.op : '?'}`);
 });

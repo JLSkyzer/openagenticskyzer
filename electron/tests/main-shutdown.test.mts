@@ -43,6 +43,90 @@ test('a worker that does not end within the cap is left running, never terminate
   assert.equal(worker.listenerCount('exit') + worker.listenerCount('message'), 0, 'its listeners are removed');
 });
 
+/** The [quit] lines main writes while `run` runs (console.info), the rest of the console untouched. */
+async function quitLines<T>(run: () => Promise<T>): Promise<{ result: T; lines: string[] }> {
+  const lines: string[] = [];
+  const original = console.info;
+  console.info = (...args: unknown[]) => { const line = args.map(String).join(' '); if (line.startsWith('[quit]')) lines.push(line); else original(...args); };
+  try {
+    return { result: await run(), lines };
+  } finally {
+    console.info = original;
+  }
+}
+
+// A worker still busy at the cap: it reports what it waits for (type 'quit-wait', every QUIT_REPORT_MS in worker.mjs),
+// or — its thread blocked in a synchronous native call — reports nothing at all.
+class ReportingWorker extends FakeWorker {
+  timers: NodeJS.Timeout[] = [];
+  waiting: string[] | null;
+  everyMs: number;
+  single: boolean;
+  constructor(waiting: string[] | null, everyMs: number, single = false) {
+    super(false);
+    this.waiting = waiting;
+    this.everyMs = everyMs;
+    this.single = single;
+  }
+  postMessage(message: any) {
+    super.postMessage(message);
+    if (this.waiting === null) return;
+    const report = () => this.emit('message', { type: 'quit-wait', phase: 'travail en cours', waiting: this.waiting });
+    this.timers.push(this.single ? setTimeout(report, this.everyMs) : setInterval(report, this.everyMs));
+  }
+  stop() { for (const timer of this.timers) clearInterval(timer); }
+}
+
+test('a worker still busy at the cap: the [quit] line names what it still waits for, from its last report', async () => {
+  const worker = new ReportingWorker(['op hardware-info depuis 12 s', 'générations depuis 3 s'], 30);
+  try {
+    const { result, lines } = await quitLines(() => stopWorker(worker as any, 300));
+    assert.equal(result, 'timeout');
+    assert.equal(lines.length, 1, lines.join('\n'));
+    assert.match(lines[0], /n'a pas fini en 300 ms/);
+    assert.match(lines[0], /attend encore : op hardware-info depuis 12 s, générations depuis 3 s/);
+    assert.deepEqual(worker.calls, ['post:shutdown'], 'still never terminated');
+  } finally { worker.stop(); }
+});
+
+test('a worker that reports nothing at all before the cap: the [quit] line says its thread is blocked in a native call', async () => {
+  const worker = new ReportingWorker(null, 0);
+  const { result, lines } = await quitLines(() => stopWorker(worker as any, 200));
+  assert.equal(result, 'timeout');
+  assert.match(lines[0], /aucune nouvelle du moteur depuis la demande d’arrêt/);
+  assert.match(lines[0], /appel natif synchrone/);
+});
+
+test('a worker whose reports stopped long before the cap: the [quit] line says so, with its last report', async () => {
+  const worker = new ReportingWorker(['op hardware-info depuis 1 s'], 10, true);
+  try {
+    const { result, lines } = await quitLines(() => stopWorker(worker as any, 400, 100));
+    assert.equal(result, 'timeout');
+    assert.match(lines[0], /aucune nouvelle du moteur depuis 0,\d s/);
+    assert.match(lines[0], /appel natif synchrone/);
+    assert.match(lines[0], /dernier état : op hardware-info depuis 1 s/);
+  } finally { worker.stop(); }
+});
+
+test('a real worker quit while hardware-info waits for a slow engine start: it reports that op, the [quit] line names it, and the thread still ends by itself', { timeout: 120000 }, async t => {
+  const home = await mkdtemp(join(tmpdir(), 'openagent-main-shutdown-'));
+  removeAtEnd(t, home);
+  // The engine's creation held 8 s (test seam), longer than hardware-info's bounded wait (5 s) and than this cap.
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), { env: { ...process.env, OPENAGENT_HOME: home }, workerData: { testLlamaDelayMs: 8000 } }));
+  const exited = new Promise<number>(resolve => worker.once('exit', resolve));
+  const reports: any[] = [];
+  worker.on('message', message => { if (message?.type === 'quit-wait') reports.push(message); });
+  await callWorker(worker, 'global-settings');
+  const info = callWorker(worker, 'hardware-info', { refresh: false });
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const { result, lines } = await quitLines(() => stopWorker(worker, 3500));
+  assert.equal(result, 'timeout', 'still waiting at 3.5 s: hardware-info waits up to 5 s for the engine');
+  assert.match(lines[0], /attend encore : .*op hardware-info depuis \d+ s/, lines.join('\n'));
+  assert.equal((await info).initializing, true, 'the op itself still answers');
+  assert.equal(await exited, 0, 'the thread ended by itself once the engine was created and freed');
+  assert.ok(reports.some(report => report.phase === 'libération du moteur'), `the dispose phase was reported too: ${JSON.stringify(reports.map(report => report.phase))}`);
+});
+
 test('stopWorker on a real worker: it answers, then its thread ends by itself; ops sent after the shutdown are refused', async t => {
   const home = await mkdtemp(join(tmpdir(), 'openagent-main-shutdown-'));
   removeAtEnd(t, home);

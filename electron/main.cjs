@@ -202,6 +202,21 @@ function startBackend() {
 // cancelled, the Llama's creation on a first CUDA start (30 s and more). The cap is only for a native call that would
 // never return; the window and the tray icon are gone long before (hideForQuit).
 const QUIT_CAP_MS = 60_000;
+// While it shuts down, the worker reports what it still waits for every 2 s (worker.mjs::QUIT_REPORT_MS, message
+// type 'quit-wait'). Silent longer than this, its thread is taken as blocked in a synchronous native call (a driver
+// call, say): no JavaScript of it runs any more, so it can neither report nor end.
+const QUIT_SILENT_MS = 6_000;
+
+/** Why the worker has not ended at the cap, for the [quit] line: its last report, or the silence of its thread. */
+function quitWaitDetail(last, now, silentMs) {
+  if (!last) return 'aucune nouvelle du moteur depuis la demande d’arrêt : son fil est probablement bloqué dans un appel natif synchrone';
+  const waiting = last.waiting.length ? last.waiting.join(', ') : 'rien de suivi';
+  if (now - last.at > silentMs) {
+    const seconds = ((now - last.at) / 1000).toFixed(1).replace('.', ',');
+    return `aucune nouvelle du moteur depuis ${seconds} s : son fil est probablement bloqué dans un appel natif synchrone (dernier état : ${waiting})`;
+  }
+  return `étape « ${last.phase} », il attend encore : ${waiting}`;
+}
 
 /**
  * Asks the worker to shut down and waits for its thread to END ITSELF (worker.mjs::shutdownWorker): it stops every
@@ -209,17 +224,24 @@ const QUIT_CAP_MS = 60_000;
  * the turns started, whole process trees included, waits for the native calls in flight, frees the model, answers
  * with each step's duration, then exits. Resolves 'exited', or 'timeout' after `capMs` — the thread is then LEFT
  * running, never terminated: Worker.terminate() (or a process exit that ends the thread) during a native call of
- * node-llama-cpp or onnxruntime crashes the whole process (0xC0000409, reproduced 5 in 5 with stories260K).
+ * node-llama-cpp or onnxruntime crashes the whole process (0xC0000409, reproduced 5 in 5 with stories260K). The
+ * [quit] line written at the cap says on what it hangs (quitWaitDetail): the worker's last 'quit-wait' report, or that
+ * its thread has been silent for more than `silentMs` (a synchronous native call).
  */
-async function stopWorker(worker, capMs = QUIT_CAP_MS) {
+async function stopWorker(worker, capMs = QUIT_CAP_MS, silentMs = QUIT_SILENT_MS) {
   if (!worker || worker.threadId === -1) return 'exited';
   const id = `shutdown-${Date.now()}`;
   const started = Date.now();
   let onExit;
   let onMessage;
   let timer;
+  let lastReport = null;
   const exited = new Promise(resolve => { onExit = () => resolve('exited'); worker.once('exit', onExit); });
   onMessage = message => {
+    if (message?.type === 'quit-wait') {
+      lastReport = { at: Date.now(), phase: String(message.phase ?? ''), waiting: Array.isArray(message.waiting) ? message.waiting.map(String) : [] };
+      return;
+    }
     if (message?.id !== id) return;
     const steps = message.ok ? message.result?.steps : null;
     if (steps) console.info(`[quit] moteur arrêté en ${steps.total} ms (serveurs ${steps.servers} ms, travail en cours ${steps.work} ms, modèle libéré ${steps.dispose} ms)`);
@@ -230,7 +252,7 @@ async function stopWorker(worker, capMs = QUIT_CAP_MS) {
     const outcome = await Promise.race([exited, new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), capMs); })]);
     console.info(outcome === 'exited'
       ? `[quit] fil du moteur terminé en ${Date.now() - started} ms`
-      : `[quit] le moteur n'a pas fini en ${capMs} ms : il est laissé tel quel (jamais arrêté pendant un appel natif)`);
+      : `[quit] le moteur n'a pas fini en ${capMs} ms : il est laissé tel quel (jamais arrêté pendant un appel natif) — ${quitWaitDetail(lastReport, Date.now(), silentMs)}`);
     return outcome;
   } finally {
     clearTimeout(timer);

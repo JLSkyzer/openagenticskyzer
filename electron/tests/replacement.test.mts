@@ -22,6 +22,14 @@ test('a direct placement is never reloaded, even with the card emptied', () => {
   assert.equal(replacementDecision({ ...base, outcome: 'direct', gpuLayers: 25, freeNow: 8000 * MIB }).replace, false);
 });
 
+test('a direct load under a remembered layer limit (limited) can still be raised by the re-placement', () => {
+  const at = (extra: number) => base.freeAtLoad - base.loadedVram + extra * base.bytesPerLayer;
+  const yes = replacementDecision({ ...base, outcome: 'direct', limited: true, gpuLayers: 19, freeNow: at(4) });
+  assert.equal(yes.replace, true);
+  assert.match(yes.reason, /^19 couches, environ 4 couches de plus/);
+  assert.equal(replacementDecision({ ...base, outcome: 'direct', limited: true, gpuLayers: 19, freeNow: at(3) }).replace, false);
+});
+
 test(`clearly more room (≥ ${REPLACE_MIN_LAYERS} layers of this model) reloads a fallback or a step-down; less does not`, () => {
   assert.equal(REPLACE_MIN_LAYERS, 4);
   const at = (extra: number) => base.freeAtLoad - base.loadedVram + extra * base.bytesPerLayer;

@@ -8,11 +8,11 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readGgufFileInfo, GgufInsights } from 'node-llama-cpp';
-import { cpuFallback, placementLogLine, outcomeNote, stepDownMax, MAX_STEP_DOWNS } from '../core/local-engine.mts';
+import { cpuFallback, placementLogLine, outcomeNote, stepDownMax, MAX_STEP_DOWNS, limitStillHolds, LIMIT_RETRY_MIN_BYTES } from '../core/local-engine.mts';
 import { runtimeLlama, envGpuChoice, vramPaddingFor } from '../core/llama-runtime.mts';
 import { removeAtEnd } from './teardown.mts';
 
@@ -179,7 +179,140 @@ test('a context refused at every step-down ends on the processor after MAX_STEP_
   assert.equal(stderr.split('\n').filter(line => line.includes('[placement] InsufficientMemoryError (createContext,')).length, 4, stderr.slice(-2000));
 });
 
-test('B: a plain Error from createContext comes out unchanged, with no retry and no fallback', { timeout: 200000 }, async t => {
+// Part B of 2026-10-24: the 27B stepped down 25 → 22 → 19 on EVERY cold load (3 loads, 33 s), and the estimate kept
+// showing 25. A step-down's outcome is remembered per file, context size and hardware (layer-limits.v1.json beside the
+// estimate cache): the next load starts at it, the estimate shows it.
+/** In the child: the engine remembers its limits in `home` (as worker.mjs does with its EstimateCache), and `key(path,
+ * size)` is that cache's key. */
+const rememberIn = (home: string) => `
+    const cache = new e.EstimateCache(${JSON.stringify(home)});
+    m.setLayerLimits(cache.layerLimits());
+    const key = async (p, size) => e.estimateKey({ kind: 'file', path: p }, size, await e.hardwareKey());`;
+
+test('a remembered step-down: the second cold load makes exactly 1 attempt, at the remembered count, said in [placement], and the estimate shows it', { timeout: 200000 }, async t => {
+  const home = await mkdtemp(join(tmpdir(), 'openagent-layer-limit-'));
+  removeAtEnd(t, home);
+  const { out, stdout } = await inChild(t, `
+    const path = ${JSON.stringify(modelPath)};
+    const llama = await r.runtimeLlama();
+    out.gpu = llama.gpu;
+    if (llama.gpu !== false) {
+      ${rememberIn(home)}
+      ${failFirstContext(`new n.InsufficientMemoryError('A context size of 16384 is too large for the available VRAM')`)}
+      out.first = await m.loadLocalModel(path, 16384);
+      out.firstOutcome = m.loadedOutcome(path);
+      await m.disposeEngine();
+      out.loads1 = m.nativeLoadCount();
+      // The estimate of that key: node-llama-cpp's resolver would say refusedAt layers again; the known-good count wins.
+      out.estimate = await e.estimateAndRemember(cache, await key(path, 16384), { kind: 'file', path }, { contextSize: 16384 });
+      out.cached = await cache.get(await key(path, 16384));
+      console.log('--- second load');
+      const events = [];
+      out.second = await m.loadLocalModel(path, 16384, { onLoad: event => events.push(event.kind === 'retry' ? 'retry:' + event.mode : event.kind) });
+      out.events = events.filter(kind => kind !== 'progress');
+      out.loads2 = m.nativeLoadCount();
+      out.secondOutcome = m.loadedOutcome(path);
+      out.decision = await m.replacementCheck(path);
+      await m.disposeEngine();
+      out.live = m.liveModelCount();
+    }`);
+  if (out.gpu === false) {
+    t.skip('no GPU backend here: a processor Llama has no layer to step down');
+    return;
+  }
+  const known = out.first.gpuLayers;
+  assert.equal(out.refusals, 1, 'only the first load was refused');
+  assert.ok(known > 0 && known < out.refusedAt, `the first load stepped down: ${out.refusedAt} → ${known}`);
+  assert.deepEqual(out.firstOutcome, { kind: 'step-down', refused: [out.refusedAt] }, 'no limit known yet on the first load');
+  assert.equal(out.loads2 - out.loads1, 1, 'the second cold load is a single load');
+  assert.deepEqual(out.events, ['start', 'end'], 'no retry announced');
+  assert.equal(out.second.gpuLayers, known, 'at the remembered count');
+  assert.deepEqual(out.secondOutcome, { kind: 'direct', limit: known });
+  assert.equal(out.estimate.gpuLayers, known, `the estimate shows the known-good count, not ${out.refusedAt}`);
+  assert.equal(out.estimate.source, 'estimate');
+  assert.equal(out.cached.gpuLayers, known, 'the cached estimate too');
+  assert.equal(out.decision.replace, false, 'nothing changed: no re-placement');
+  assert.doesNotMatch(out.decision.reason, /placement direct/, 'a limited load stays open to the re-placement');
+  assert.equal(out.live, 0);
+  const second = stdout.split('--- second load')[1].split('\n').filter(line => line.startsWith('[placement] backend'));
+  assert.equal(second.length, 1, stdout.slice(-2000));
+  assert.match(second[0], new RegExp(`couches ${known}/\\d+ sur la carte · limite mémorisée : ${known} couches ·`));
+});
+
+test('a remembered limit is ignored when the free VRAM grew past the threshold: the full fitContext runs again, and its higher success becomes the record', { timeout: 200000 }, async t => {
+  const home = await mkdtemp(join(tmpdir(), 'openagent-layer-limit-'));
+  removeAtEnd(t, home);
+  const { out, stdout } = await inChild(t, `
+    const path = ${JSON.stringify(modelPath)};
+    const llama = await r.runtimeLlama();
+    out.gpu = llama.gpu;
+    if (llama.gpu !== false) {
+      ${rememberIn(home)}
+      ${failFirstContext(`new n.InsufficientMemoryError('too large for the available VRAM')`)}
+      out.first = await m.loadLocalModel(path, 16384);
+      await m.disposeEngine();
+      out.loads1 = m.nativeLoadCount();
+      // A game closed: 2 GiB more free than when the limit was noted (the threshold is max(4 layers, 512 MiB)).
+      const read = llama.getVramState.bind(llama);
+      llama.getVramState = async () => { const state = await read(); return { ...state, free: state.free + 2 * 1024 ** 3 }; };
+      console.log('--- second load');
+      out.second = await m.loadLocalModel(path, 16384);
+      out.loads2 = m.nativeLoadCount();
+      out.secondOutcome = m.loadedOutcome(path);
+      await m.disposeEngine();
+      out.limit = await cache.limit(await key(path, 16384));
+    }`);
+  if (out.gpu === false) {
+    t.skip('no GPU backend here');
+    return;
+  }
+  assert.ok(out.first.gpuLayers < out.refusedAt, 'the first load stepped down');
+  assert.equal(out.loads2 - out.loads1, 1, 'one load');
+  assert.equal(out.second.gpuLayers, out.refusedAt, 'the full fitContext placement, above the record');
+  assert.deepEqual(out.secondOutcome, { kind: 'direct' }, 'no limit applied');
+  assert.match(stdout.split('--- second load')[1], new RegExp(`\\[placement\\] limite mémorisée de ${out.first.gpuLayers} couches ignorée : \\d+ Mio de VRAM libres en plus`));
+  assert.equal(out.limit.gpuLayers, out.refusedAt, 'the higher success updated the record');
+});
+
+test('a remembered limit is used only for its own key: another context size or another file mtime loads with the full fitContext', { timeout: 200000 }, async t => {
+  const home = await mkdtemp(join(tmpdir(), 'openagent-layer-limit-'));
+  removeAtEnd(t, home);
+  const copy = join(home, 'copy.gguf');
+  await copyFile(modelPath, copy);
+  const { out } = await inChild(t, `
+    const path = ${JSON.stringify(copy)};
+    const llama = await r.runtimeLlama();
+    out.gpu = llama.gpu;
+    if (llama.gpu !== false) {
+      ${rememberIn(home)}
+      ${failFirstContext(`new n.InsufficientMemoryError('too large for the available VRAM')`)}
+      out.first = await m.loadLocalModel(path, 16384);
+      await m.disposeEngine();
+      out.loads1 = m.nativeLoadCount();
+      out.otherSize = await m.loadLocalModel(path, 8192);
+      out.otherSizeOutcome = m.loadedOutcome(path);
+      await m.disposeEngine();
+      const { utimes, stat } = await import('node:fs/promises');
+      const { mtime } = await stat(path);
+      await utimes(path, mtime, new Date(mtime.getTime() + 10000));
+      out.otherMtime = await m.loadLocalModel(path, 16384);
+      out.otherMtimeOutcome = m.loadedOutcome(path);
+      await m.disposeEngine();
+      out.loads2 = m.nativeLoadCount();
+    }`);
+  if (out.gpu === false) {
+    t.skip('no GPU backend here');
+    return;
+  }
+  assert.ok(out.first.gpuLayers < out.refusedAt, 'the first load stepped down');
+  assert.equal(out.loads2 - out.loads1, 2, 'one load each');
+  assert.equal(out.otherSize.gpuLayers, out.refusedAt, 'another context size: full fitContext');
+  assert.deepEqual(out.otherSizeOutcome, { kind: 'direct' });
+  assert.equal(out.otherMtime.gpuLayers, out.refusedAt, 'the file changed: full fitContext');
+  assert.deepEqual(out.otherMtimeOutcome, { kind: 'direct' });
+});
+
+test('B: a plain Error from createContext comes out unchanged, with no retry and no fallback',{ timeout: 200000 }, async t => {
   const { out, stdout } = await inChild(t, `
     const path = ${JSON.stringify(modelPath)};
     const llama = await r.runtimeLlama();
@@ -257,6 +390,26 @@ test('the [placement] line says how the load got there: as placed, fewer layers,
   assert.match(context, /repli processeur : le contexte ne tenait toujours pas sur la carte \(essais à 25 puis 22 puis 19 puis 17 couches\)/);
   assert.doesNotMatch(context, /carte pleine/, 'the card was not full: the context did not fit');
   assert.equal(outcomeNote(undefined), '');
+  // A remembered limit (layer-limits.v1.json) is said first, alone or before what happened under it.
+  assert.match(placementLogLine({ ...base, gpuLayers: 19, totalLayers: 66, outcome: { kind: 'direct', limit: 19 } }), /couches 19\/66 sur la carte · limite mémorisée : 19 couches · mmap/);
+  assert.equal(outcomeNote({ kind: 'step-down', refused: [19], limit: 19 }), 'limite mémorisée : 19 couches · moins de couches : le contexte ne tenait pas sur la carte avec 19 couches');
+});
+
+test('limitStillHolds: a remembered limit applies unless the free VRAM grew by max(REPLACE_MIN_LAYERS layers, 512 MiB) since it was noted', () => {
+  const MIB = 1024 ** 2;
+  // The 27B: about 189 MiB a layer, so 4 layers (756 MiB) is the threshold.
+  const big = { freeAtRecord: 7000 * MIB, bytesPerLayer: 189 * MIB };
+  assert.equal(limitStillHolds({ ...big, freeNow: 7000 * MIB }), true, 'same VRAM');
+  assert.equal(limitStillHolds({ ...big, freeNow: 7000 * MIB + 755 * MIB }), true, 'less than 4 layers more');
+  assert.equal(limitStillHolds({ ...big, freeNow: 7000 * MIB + 756 * MIB }), false, '4 layers more: try the full fitContext');
+  assert.equal(limitStillHolds({ ...big, freeNow: 6000 * MIB }), true, 'less VRAM');
+  // A tiny model: the 512 MiB floor, above the free-VRAM noise (CUDA's own allocations: tens to a few hundred MiB).
+  const tiny = { freeAtRecord: 7000 * MIB, bytesPerLayer: 0.2 * MIB };
+  assert.equal(limitStillHolds({ ...tiny, freeNow: 7000 * MIB + 511 * MIB }), true);
+  assert.equal(limitStillHolds({ ...tiny, freeNow: 7000 * MIB + 512 * MIB }), false);
+  assert.equal(LIMIT_RETRY_MIN_BYTES, 512 * MIB);
+  assert.equal(limitStillHolds({ ...big, freeAtRecord: null, freeNow: 9000 * MIB }), true, 'unreadable VRAM: the record holds');
+  assert.equal(limitStillHolds({ ...big, freeNow: null }), true);
 });
 
 test('stepDownMax: about 10 % fewer layers, at least one, none below 1', () => {

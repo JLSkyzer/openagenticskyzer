@@ -8,7 +8,7 @@ import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
 import { FoldersService } from './core/folders.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
-import { localProvider, plannedContextSize, loadedChatWrapper, loadedOutcome, outcomeNote, replacementCheck, replaceLoaded, generationsIdle } from './core/local-engine.mts';
+import { localProvider, plannedContextSize, loadedChatWrapper, loadedOutcome, outcomeNote, replacementCheck, replaceLoaded, generationsIdle, setLayerLimits } from './core/local-engine.mts';
 import { TurnLog, pruneTurnLogs, mcpSecretValues } from './core/turn-log.mts';
 import { isSensitiveFile, protectedPathMatcher } from './core/file-filter.mts';
 import { EstimateCache, estimateAndRemember, estimateKey, hardwareKey, ESTIMATE_BUSY } from './core/offload-estimate.mts';
@@ -121,6 +121,8 @@ const promptLibrary = new PromptLibrary(dataHome);
 const mcpConfig = new McpConfigStore(dataHome);
 // The worker's one estimate cache and job queue (hardware and offload): handed explicitly to whatever reads them.
 const estimateCache = new EstimateCache(dataHome);
+// The layer limits real loads proved (a step-down remembered: the next load of that key starts there) live beside it.
+setLayerLimits(estimateCache.layerLimits());
 const estimateJobs = new EstimateJobs();
 // Everything this worker is doing in the background or for an op: turns, compactions, indexing, the CUDA pack
 // install, the re-placement between turns, every op being answered. The shutdown op waits for all of it (see
@@ -242,7 +244,8 @@ function postModelStatus(model) {
 /** The turn log's model-ready line, from the same sources as postModelStatus: where the loaded model really sits, the
  * context it runs with (the request window for a model that is not a loaded .gguf), its chat wrapper, the load
  * time (`loadMs`, none for a warm engine) and how the load got its placement (`placement`: 'direct', 'step-down' or
- * 'fallback', with `placementNote` saying why when it is not direct — the [placement] line's own words).
+ * 'fallback', with `placementNote` saying why when it is not direct — the [placement] line's own words — and
+ * `layerLimit` when it started at a remembered limit, « limite mémorisée : 19 couches » in the note).
  * Best-effort like postModelStatus. */
 function logModelReady(model, contextTokens, loadMs, log) {
   try {
@@ -253,7 +256,12 @@ function logModelReady(model, contextTokens, loadMs, log) {
     log({
       event: 'model-ready', backend: placement?.backend ?? null,
       ...(placement ? { gpuLayers: placement.gpuLayers, totalLayers: placement.totalLayers } : {}),
-      ...(outcome ? { placement: outcome.kind, ...(outcome.kind === 'direct' ? {} : { placementNote: outcomeNote(outcome), refusedLayers: outcome.refused }) } : {}),
+      ...(outcome ? {
+        placement: outcome.kind,
+        ...(outcomeNote(outcome) ? { placementNote: outcomeNote(outcome) } : {}),
+        ...(outcome.kind === 'direct' ? {} : { refusedLayers: outcome.refused }),
+        ...(outcome.limit === undefined ? {} : { layerLimit: outcome.limit }),
+      } : {}),
       contextSize: placement?.contextSize ?? (status.loaded ? status.contextWindow : contextTokens),
       ...(wrapper ? { wrapper: wrapper.name, segments: wrapper.segments, opensThought: wrapper.opensThought } : {}),
       ...(loadMs === undefined ? {} : { loadMs }),

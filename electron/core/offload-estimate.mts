@@ -9,7 +9,7 @@ import { readGgufFileInfo, GgufInsights, InsufficientMemoryError, GgmlType } fro
 import { JsonStore } from './json-store.mts';
 import { runtimeLlama, backendOf } from './llama-runtime.mts';
 import { readHardware } from './hardware.mts';
-import { contextOverflow, cpuFallback } from './local-engine.mts';
+import { contextOverflow, cpuFallback, type LayerLimit, type LayerLimitStore } from './local-engine.mts';
 import { fitOf, type Backend, type Placement } from './placement.mts';
 
 /** Where the model file is. 'remote' is prepared for reading a model's header over the network (project 2): the
@@ -45,6 +45,17 @@ export async function estimateKey(source: ModelSource, contextSize: number, hard
 
 interface CacheFile { entries: { key: string; placement: Placement }[] }
 const EMPTY: CacheFile = { entries: [] };
+interface LimitFile { entries: { key: string; limit: LayerLimit }[] }
+const NO_LIMITS: LimitFile = { entries: [] };
+
+/** What the estimate shows once a load proved fewer layers fit (local-engine.mts::LayerLimit): the placement that load
+ * really got, labelled an estimate, when it has fewer layers than `estimate` (or there is no estimate yet). An
+ * estimate with fewer layers still wins: the load is capped by the limit AND placed by fitContext. */
+export function withLayerLimit(estimate: Placement | null, limit: LayerLimit | null): Placement | null {
+  if (!limit) return estimate;
+  if (estimate && estimate.gpuLayers <= limit.gpuLayers) return estimate;
+  return { ...limit.placement, source: 'estimate' };
+}
 
 /** A disposable cache's store: a regular file that cannot be read or parsed reads as the fallback, so the next write
  * replaces it with a fresh file instead of failing on it forever. Anything else (a link, a folder) still throws. */
@@ -63,20 +74,53 @@ class DisposableStore extends JsonStore {
 /** The estimates already computed, in <dataHome>/estimates.v3.json: the last ESTIMATE_CACHE_LIMIT set, oldest first.
  * v2 came with the Vulkan/Windows VRAM padding (llama-runtime.mts::vramPaddingFor); v3 with the processor fallback
  * (local-engine.mts::cpuFallback) and « auto » resolved to CUDA keeping CUDA's padding. Older files are never read:
- * their « ne tient pas » for a full card is no longer what the load does. */
+ * their « ne tient pas » for a full card is no longer what the load does.
+ *
+ * Beside it, under the same key, the layer limits real loads proved (local-engine.mts::LayerLimit), in
+ * <dataHome>/layer-limits.v1.json, the last ESTIMATE_CACHE_LIMIT. A file of their own rather than a field of the
+ * estimate entries: an estimate is a computation, rewritten by every estimate job and dropped with the cache version,
+ * while a limit is what a load observed (a createContext refusal no estimate foresees) and must outlive both; and the
+ * estimate entries keep their shape, so estimates.v3.json needs no new version. */
 export class EstimateCache {
   private readonly file: string;
+  private readonly limitsFile: string;
   private readonly store = new DisposableStore();
   constructor(dataHome: string) {
     this.file = join(dataHome, 'estimates.v3.json');
+    this.limitsFile = join(dataHome, 'layer-limits.v1.json');
   }
 
-  /** The cached estimate, or null. An unreadable cache file reads as empty: it only costs a new estimate, and the
-   * next set replaces it. */
+  /** The cached estimate, with the remembered layer limit applied (withLayerLimit), or null. An unreadable cache file
+   * reads as empty: it only costs a new estimate, and the next set replaces it. */
   async get(key: string): Promise<Placement | null> {
     const saved = await this.store.read<CacheFile>(this.file, EMPTY).catch(() => EMPTY);
     const entries = Array.isArray(saved?.entries) ? saved.entries : [];
-    return entries.find(entry => entry?.key === key)?.placement ?? null;
+    return withLayerLimit(entries.find(entry => entry?.key === key)?.placement ?? null, await this.limit(key));
+  }
+
+  /** The layer limit a load proved for `key`, or null (none, or an unreadable file). */
+  async limit(key: string): Promise<LayerLimit | null> {
+    const saved = await this.store.read<LimitFile>(this.limitsFile, NO_LIMITS).catch(() => NO_LIMITS);
+    const entries = Array.isArray(saved?.entries) ? saved.entries : [];
+    const limit = entries.find(entry => entry?.key === key)?.limit;
+    return limit && typeof limit.gpuLayers === 'number' && limit.gpuLayers > 0 && typeof limit.placement === 'object' && limit.placement ? limit : null;
+  }
+
+  async setLimit(key: string, limit: LayerLimit): Promise<void> {
+    await this.store.update<LimitFile>(this.limitsFile, NO_LIMITS, saved => {
+      const kept = (Array.isArray(saved?.entries) ? saved.entries : []).filter(entry => entry?.key !== key);
+      return { entries: [...kept, { key, limit }].slice(-ESTIMATE_CACHE_LIMIT) };
+    }, { backup: false });
+  }
+
+  /** The engine's side of the limits (local-engine.mts::setLayerLimits), keyed as the estimates: the file (resolved
+   * path, size, mtime), the context size and the hardware (backend included). */
+  layerLimits(): LayerLimitStore {
+    const keyOf = async (modelPath: string, contextSize: number) => estimateKey({ kind: 'file', path: modelPath }, contextSize, await hardwareKey());
+    return {
+      recall: async (modelPath, contextSize) => this.limit(await keyOf(modelPath, contextSize)),
+      remember: async (modelPath, contextSize, limit) => this.setLimit(await keyOf(modelPath, contextSize), limit),
+    };
   }
 
   async set(key: string, placement: Placement): Promise<void> {
@@ -183,9 +227,10 @@ export async function estimatePlacement(source: ModelSource, options: { contextS
 }
 
 /** estimatePlacement, then the result cached under `key`. Nothing is cached when it fails or is aborted. A failed cache
- * write still answers the estimate: it only costs recomputing it next time. */
+ * write still answers the estimate: it only costs recomputing it next time. The answer has the remembered layer limit
+ * applied (withLayerLimit), as EstimateCache.get has; the cache keeps the estimate itself. */
 export async function estimateAndRemember(cache: EstimateCache, key: string, source: ModelSource, options: Parameters<typeof estimatePlacement>[1]): Promise<Placement> {
   const placement = await estimatePlacement(source, options);
   await cache.set(key, placement).catch(() => {});
-  return placement;
+  return withLayerLimit(placement, await cache.limit(key).catch(() => null)) ?? placement;
 }

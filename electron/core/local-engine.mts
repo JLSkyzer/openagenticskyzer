@@ -69,10 +69,14 @@ type VramState = { total: number; used: number; free: number };
  *   (`cause` 'loadModel', node-llama-cpp's resolver refused), or because the context still did not fit after the
  *   step-downs (`cause` 'createContext').
  */
-export type LoadOutcome =
+export type LoadOutcome = (
   | { kind: 'direct' }
   | { kind: 'step-down'; refused: number[] }
-  | { kind: 'fallback'; cause: 'loadModel' | 'createContext'; refused: number[] };
+  | { kind: 'fallback'; cause: 'loadModel' | 'createContext'; refused: number[] }
+) & {
+  /** Set when the load started at a remembered layer limit (LayerLimit) instead of node-llama-cpp's full fitContext. */
+  limit?: number;
+};
 let loaded: Loaded | null = null;
 
 // A file's train context, read once per version of the file (path, size, modification time).
@@ -177,7 +181,13 @@ const mib = (bytes: number) => `${Math.round(bytes / 1024 ** 2)} Mio`;
 /** What a load outcome adds to the [placement] line, and to the turn log's model-ready (`placementNote`): nothing for
  * a direct placement, else what happened and why. */
 export function outcomeNote(outcome: LoadOutcome | undefined): string {
-  if (!outcome || outcome.kind === 'direct') return '';
+  if (!outcome) return '';
+  const limit = outcome.limit === undefined ? '' : `limite mémorisée : ${outcome.limit} couches`;
+  return [limit, howNote(outcome)].filter(Boolean).join(' · ');
+}
+
+function howNote(outcome: LoadOutcome): string {
+  if (outcome.kind === 'direct') return '';
   const tries = (refused: number[]) => refused.join(' puis ');
   if (outcome.kind === 'step-down') return `moins de couches : le contexte ne tenait pas sur la carte avec ${tries(outcome.refused)} couches`;
   if (outcome.cause === 'loadModel') {
@@ -205,6 +215,67 @@ export const MAX_STEP_DOWNS = 3;
 export function stepDownMax(refused: number): number | null {
   const next = refused - Math.max(1, Math.ceil(refused / 10));
   return next > 0 ? next : null;
+}
+
+/**
+ * A step-down remembered (part B of 2026-10-24: the 27B stepped down 25 → 22 → 19 on every cold load, 3 loads and
+ * 33 s, because nothing foresees createContext's refusal). Kept per model file (path, size, mtime), context size and
+ * hardware (backend, cards, total VRAM): offload-estimate.mts::EstimateCache, in layer-limits.v1.json. The next load
+ * of that key starts at `gpuLayers` (`{ min: 0, max: gpuLayers, fitContext }`), and the estimate shows `placement`.
+ * `freeVram`: the free VRAM read before the load that set it (null: unreadable).
+ */
+export interface LayerLimit { gpuLayers: number; freeVram: number | null; placement: Placement }
+export interface LayerLimitStore {
+  recall(modelPath: string, contextSize: number): Promise<LayerLimit | null>;
+  remember(modelPath: string, contextSize: number, limit: LayerLimit): Promise<void>;
+}
+let layerLimits: LayerLimitStore | null = null;
+/** Where the engine remembers its limits (worker.mjs: its EstimateCache). None: every load starts at fitContext. */
+export function setLayerLimits(store: LayerLimitStore | null): void {
+  layerLimits = store;
+}
+
+/** The free-VRAM noise floor: the 27B's refusals missed by tens to a few hundred MiB (CUDA's own allocations, not in
+ * the free VRAM read before the load), so a gain below 512 MiB says nothing on a small model. */
+export const LIMIT_RETRY_MIN_BYTES = 512 * 1024 ** 2;
+
+/**
+ * Whether a remembered limit still applies: yes, unless the free VRAM grew since it was noted by what the re-placement
+ * calls clearly more room (REPLACE_MIN_LAYERS layers of this model) and by at least LIMIT_RETRY_MIN_BYTES. Then the
+ * full fitContext runs again (a game closed). An unreadable figure keeps the limit: at worst a few layers too few,
+ * which the re-placement between turns can still raise.
+ */
+export function limitStillHolds(p: { freeAtRecord: number | null; freeNow: number | null; bytesPerLayer: number }): boolean {
+  if (p.freeAtRecord === null || p.freeNow === null) return true;
+  return p.freeNow - p.freeAtRecord < Math.max(REPLACE_MIN_LAYERS * p.bytesPerLayer, LIMIT_RETRY_MIN_BYTES);
+}
+
+/** The limit remembered for this load, and whether it applies (`apply`: false for a re-placement, which must be free
+ * to go higher). Never fails a load: an unreadable store reads as no limit. */
+async function recallLimit(p: { modelPath: string; contextSize: number; llama: Llama; insights: GgufInsights; vramBefore: VramState | null; apply: boolean }): Promise<{ record: LayerLimit; applies: boolean } | null> {
+  if (!layerLimits || p.llama.gpu === false) return null;
+  const record = await layerLimits.recall(p.modelPath, p.contextSize).catch((error: unknown) => {
+    console.warn(`[placement] limite mémorisée illisible : ${(error as Error | undefined)?.message ?? error}`);
+    return null;
+  });
+  if (!record || !(record.gpuLayers > 0)) return null;
+  if (!p.apply) return { record, applies: false };
+  const freeNow = p.vramBefore?.free ?? null;
+  const bytesPerLayer = p.insights.totalLayers > 0 ? p.insights.modelSize / p.insights.totalLayers : 0;
+  if (limitStillHolds({ freeAtRecord: record.freeVram, freeNow, bytesPerLayer })) return { record, applies: true };
+  console.info(`[placement] limite mémorisée de ${record.gpuLayers} couches ignorée : ${mib((freeNow ?? 0) - (record.freeVram ?? 0))} de VRAM libres en plus depuis qu'elle a été notée`);
+  return { record, applies: false };
+}
+
+/** Notes what this load proved: the count a step-down reached, or a success above the record (more room since).
+ * Nothing for the processor (0 layers), nor for a load that only stayed under its limit. Never fails a load. */
+async function rememberLimit(p: { modelPath: string; contextSize: number; loaded: Loaded; refused: readonly number[]; record: LayerLimit | null }): Promise<void> {
+  const { gpuLayers } = p.loaded.model;
+  if (!layerLimits || p.loaded.llama.gpu === false || gpuLayers <= 0) return;
+  if (p.refused.length === 0 && !(p.record && gpuLayers > p.record.gpuLayers)) return;
+  await layerLimits.remember(p.modelPath, p.contextSize, { gpuLayers, freeVram: p.loaded.vramBefore?.free ?? null, placement: placementOf(p.loaded) }).catch((error: unknown) => {
+    console.warn(`[placement] limite de couches non mémorisée : ${(error as Error | undefined)?.message ?? error}`);
+  });
 }
 
 const memoryWarning = (stage: 'loadModel' | 'createContext', layers: string, error: Error) =>
@@ -259,7 +330,8 @@ async function loadLocked(modelPath: string, contextSize: number, options: Engin
   }
 }
 
-async function loadFresh(modelPath: string, contextSize: number, { signal, onLoad }: EngineOptions): Promise<Loaded> {
+/** `applyLimit`: false for the re-placement, which reloads to go higher than the load before it. */
+async function loadFresh(modelPath: string, contextSize: number, { signal, onLoad }: EngineOptions, applyLimit = true): Promise<Loaded> {
   const startedAt = performance.now();
   onLoad?.({ kind: 'start' });
   const onLoadProgress = (progress: number) => onLoad?.({ kind: 'progress', progress });
@@ -268,11 +340,17 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
   const generation = runtimeGeneration();
   const insights = await assertContextCanFit(llama, modelPath, contextSize);
   const vramBefore = await llama.getVramState().catch(() => null);
-  const kept = (model: LlamaModel, context: LlamaContext, outcome: LoadOutcome) =>
-    keep({ modelPath, contextSize, generation, llama, model, context, vramBefore, outcome, startedAt, onLoad });
-  // The layer counts createContext refused, in order, and the cap of the next fitContext load (none at first).
+  const remembered = await recallLimit({ modelPath, contextSize, llama, insights, vramBefore, apply: applyLimit });
+  const limit = remembered?.applies ? remembered.record.gpuLayers : null;
+  // The layer counts createContext refused, in order (read by `kept` once the loop ends).
   const refused: number[] = [];
-  let max: number | null = null;
+  const kept = async (model: LlamaModel, context: LlamaContext, outcome: LoadOutcome) => {
+    const result = keep({ modelPath, contextSize, generation, llama, model, context, vramBefore, outcome: limit === null ? outcome : { ...outcome, limit }, startedAt, onLoad });
+    await rememberLimit({ modelPath, contextSize, loaded: result, refused, record: remembered?.record ?? null });
+    return result;
+  };
+  // The cap of the next fitContext load: the remembered limit, else none at first.
+  let max: number | null = limit;
   let cause: 'loadModel' | 'createContext' = 'createContext';
   for (;;) {
     let model: LlamaModel;
@@ -292,7 +370,7 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
     try {
       // A fixed size: no silent shrink on failure (node-llama-cpp only retries an 'auto' size, said here anyway).
       const context = await model.createContext({ contextSize, failedCreationRemedy: false, createSignal: signal });
-      return kept(model, context, refused.length ? { kind: 'step-down', refused: [...refused] } : { kind: 'direct' });
+      return await kept(model, context, refused.length ? { kind: 'step-down', refused: [...refused] } : { kind: 'direct' });
     } catch (error) {
       const layers = model.gpuLayers;
       await disposeModel(model);
@@ -329,7 +407,7 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
     console.warn(`[placement] repli processeur : le contexte n'a pas pu être créé : ${(error as Error | undefined)?.message ?? error}`);
     throw new Error(localModelTooBig(contextSize));
   }
-  return kept(model, context, outcome);
+  return await kept(model, context, outcome);
 }
 
 function keep(p: { modelPath: string; contextSize: number; generation: number; llama: Llama; model: LlamaModel; context: LlamaContext; vramBefore: VramState | null; outcome: LoadOutcome; startedAt: number; onLoad?: EngineOptions['onLoad'] }): Loaded {
@@ -415,6 +493,8 @@ async function disposeLocked(): Promise<void> {
 export const REPLACE_MIN_LAYERS = 4;
 export interface ReplacementInput {
   outcome: LoadOutcome['kind'];
+  /** The load started at a remembered layer limit: a `direct` one is then open to the re-placement too. */
+  limited?: boolean;
   gpuLayers: number;
   totalLayers: number;
   freeAtLoad: number | null;
@@ -426,7 +506,7 @@ export interface ReplacementDecision { replace: boolean; extraLayers: number; re
 
 export function replacementDecision(input: ReplacementInput): ReplacementDecision {
   const no = (reason: string): ReplacementDecision => ({ replace: false, extraLayers: 0, reason });
-  if (input.outcome === 'direct') return no('placement direct');
+  if (input.outcome === 'direct' && !input.limited) return no('placement direct');
   if (input.gpuLayers >= input.totalLayers) return no('toutes les couches sont déjà sur la carte');
   if (input.freeAtLoad === null || input.freeNow === null || !(input.bytesPerLayer > 0)) return no('VRAM illisible');
   const gain = input.freeNow + input.loadedVram - input.freeAtLoad;
@@ -443,9 +523,10 @@ export async function replacementCheck(modelPath: string): Promise<ReplacementDe
   if (!isCurrent(loaded)) return null;
   // A direct placement, or the processor backend, is decided without any native call: the common case after a turn
   // touches nothing native at all.
-  if (loaded.outcome.kind === 'direct' || loaded.llama.gpu === false) {
+  const limited = loaded.outcome.limit !== undefined;
+  if ((loaded.outcome.kind === 'direct' && !limited) || loaded.llama.gpu === false) {
     const { model } = loaded;
-    return replacementDecision({ outcome: loaded.outcome.kind, gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, freeAtLoad: null, freeNow: null, loadedVram: 0, bytesPerLayer: 0 });
+    return replacementDecision({ outcome: loaded.outcome.kind, limited, gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, freeAtLoad: null, freeNow: null, loadedVram: 0, bytesPerLayer: 0 });
   }
   await generationsIdle();
   const current = loaded;
@@ -454,7 +535,7 @@ export async function replacementCheck(modelPath: string): Promise<ReplacementDe
   const now = await llama.getVramState().catch(() => null);
   const { totalLayers } = model.fileInsights;
   return replacementDecision({
-    outcome: outcome.kind, gpuLayers: model.gpuLayers, totalLayers,
+    outcome: outcome.kind, limited: outcome.limit !== undefined, gpuLayers: model.gpuLayers, totalLayers,
     freeAtLoad: vramBefore?.free ?? null, freeNow: now?.free ?? null,
     loadedVram: model.memoryUsage.vram + context.memoryUsage.vram,
     bytesPerLayer: totalLayers > 0 ? model.fileInsights.modelSize / totalLayers : 0,
@@ -471,7 +552,8 @@ export function replaceLoaded(modelPath: string, options: EngineOptions = {}): P
     await untilAborted(generationsIdle(), signal);
     if (!loaded || loaded.path !== modelPath || loaded.generation !== runtimeGeneration()) return null;
     try {
-      return placementOf(await loadFresh(modelPath, loaded.requested, options));
+      // Not capped by the remembered limit: a re-placement is there to go higher (and a success above it raises it).
+      return placementOf(await loadFresh(modelPath, loaded.requested, options, false));
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
       throw error;

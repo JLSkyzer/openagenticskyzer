@@ -31,6 +31,18 @@ function flush() {
   ]);
 }
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+/** Ends the worker the way main.cjs quits (op shutdown: it waits for its native calls, frees the model, then exits
+ * itself). After a reply the worker reads the VRAM in the background (re-placement check), and Worker.terminate()
+ * during a native call crashes the whole process (0xC0000409). terminate() only if it has not ended within 60 s. */
+async function endWorker(worker) {
+  if (worker.threadId === -1) return;
+  let timer;
+  const exited = new Promise(resolve => worker.once('exit', () => resolve('exited')));
+  worker.postMessage({ op: 'shutdown', id: 'test-shutdown' });
+  const outcome = await Promise.race([exited, new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), 60000); })]);
+  clearTimeout(timer);
+  if (outcome === 'timeout') { process.stderr.write('note: the worker did not end within 60 s of shutdown: terminated\n'); await worker.terminate(); }
+}
 
 app.whenReady().then(async () => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-localmodel-'));
@@ -189,8 +201,9 @@ app.whenReady().then(async () => {
     }
     throw error;
   } finally {
+    // Before the window goes: the worker's last messages are still relayed to a live page.
+    if (worker) await endWorker(worker);
     win?.destroy();
-    worker?.terminate();
     if (!process.env.OPENAGENT_LOCALMODEL_SCREENSHOT_DIR) await rm(root, { recursive: true, force: true });
   }
 }).then(() => flush()).then(() => app.exit(0)).catch(async error => {

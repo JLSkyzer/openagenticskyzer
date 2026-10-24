@@ -37,6 +37,18 @@ function flush() {
   ]);
 }
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+/** Ends the worker the way main.cjs quits (op shutdown: it waits for its native calls, frees the Llama, then exits
+ * itself). This test creates the engine's Llama and reads the VRAM natively, and Worker.terminate() during a native
+ * call crashes the whole process (0xC0000409). terminate() only if it has not ended within 60 s. */
+async function endWorker(worker) {
+  if (worker.threadId === -1) return;
+  let timer;
+  const exited = new Promise(resolve => worker.once('exit', () => resolve('exited')));
+  worker.postMessage({ op: 'shutdown', id: 'test-shutdown' });
+  const outcome = await Promise.race([exited, new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), 60000); })]);
+  clearTimeout(timer);
+  if (outcome === 'timeout') { process.stderr.write('note: the worker did not end within 60 s of shutdown: terminated\n'); await worker.terminate(); }
+}
 
 /** Serves the pack's parts from `dir` on 127.0.0.1; `server.bytesPerTick` (512, or 0 for no throttle) can change
  * between two downloads: the worker's download source is fixed at its start. */
@@ -296,7 +308,7 @@ app.whenReady().then(async () => {
     process.stdout.write(`Screenshot: ${join(screenshotDir, 'settings-hardware.png')}\n`);
   } finally {
     win?.destroy();
-    await worker?.terminate();
+    if (worker) await endWorker(worker);
     await packServer?.stop();
     if (!process.env.OPENAGENT_SETTINGS_SCREENSHOT_DIR) await rm(root, { recursive: true, force: true });
   }

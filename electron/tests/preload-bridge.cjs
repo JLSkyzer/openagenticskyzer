@@ -93,7 +93,27 @@ app.whenReady().then(async () => {
     packEvents = await win.webContents.executeJavaScript('window.__cudaPack');
     assert.equal(packEvents.length, 1, 'unsubscribe stops further cuda-pack delivery');
 
-    process.stdout.write(`PASS preload onAgentEvent, onEstimateEvent and onCudaPackEvent filter and unsubscribe (Electron ${process.versions.electron})\n`);
+    // onEngineEvent (final fix wave: hardware-info may answer { initializing }, then the worker posts one 'engine'
+    // event): only the 'engine' event reaches it, and unsubscribing stops delivery.
+    await win.webContents.executeJavaScript(`
+      window.__engine = [];
+      window.__unsubscribeEngine = window.openagent.onEngineEvent(event => window.__engine.push(event));
+      true;
+    `);
+    send({ type: 'event', event: 'engine', state: 'ready' });
+    send({ type: 'event', event: 'cuda-pack', installId: 'i2', state: 'done' }); // filtered out
+    send({ type: 'response', id: 'w', ok: true, result: { initializing: true } }); // filtered out
+    await new Promise(resolve => setTimeout(resolve, 100));
+    let engineEvents = await win.webContents.executeJavaScript('window.__engine');
+    assert.equal(engineEvents.length, 1, 'only the engine event reaches onEngineEvent');
+    assert.equal(engineEvents[0].state, 'ready');
+    await win.webContents.executeJavaScript('window.__unsubscribeEngine()');
+    send({ type: 'event', event: 'engine', state: 'error', message: 'x' });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    engineEvents = await win.webContents.executeJavaScript('window.__engine');
+    assert.equal(engineEvents.length, 1, 'unsubscribe stops further engine delivery');
+
+    process.stdout.write(`PASS preload onAgentEvent, onEstimateEvent, onCudaPackEvent and onEngineEvent filter and unsubscribe (Electron ${process.versions.electron})\n`);
   } finally {
     win.destroy();
   }

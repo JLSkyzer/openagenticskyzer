@@ -14,7 +14,20 @@ const { mkdtemp, rm, mkdir, writeFile, readFile, realpath } = require('node:fs/p
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
-const { capturePng } = require('./capture-helper.cjs');
+const { capturePng, withTimeout } = require('./capture-helper.cjs');
+
+/** Polls `fn` until it returns a truthy value; fails naming `what` after `timeout` ms. Every wait on the page goes
+ * through it: the panels render only once the worker has sent the settings, and a fixed pause before a query fails
+ * whenever the worker is slower than the pause (the 2026-10-24 closure run, under load). */
+async function waitFor(fn, { timeout = 15000, interval = 100, what = 'condition' } = {}) {
+  const start = Date.now();
+  for (;;) {
+    const value = await fn();
+    if (value) return value;
+    if (Date.now() - start > timeout) throw new Error(`waitFor timed out after ${timeout} ms: ${what}`);
+    await new Promise(resolve => setTimeout(resolve, interval));
+  }
+}
 
 function flush() {
   return Promise.all([
@@ -58,9 +71,9 @@ app.whenReady().then(async () => {
       webPreferences: { preload: path.join(__dirname, '..', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
     await win.loadFile(path.join(__dirname, '..', 'renderer-dist', 'index.html'));
-    await pause(400);
-    const js = async code => {
-      try { return await win.webContents.executeJavaScript(code); }
+    // Bounded: a renderer that never answers fails the run naming the script, instead of hanging until the runner's kill.
+    const js = async (code, ms = 15000) => {
+      try { return await withTimeout(win.webContents.executeJavaScript(code), ms, 'executeJavaScript'); }
       catch (error) { throw new Error(`page script failed: ${code.replace(/\s+/g, ' ').slice(0, 160)} — ${error.message.split('\n')[0]}`); }
     };
     const q = key => `[data-setting="${key}"]`;
@@ -73,11 +86,20 @@ app.whenReady().then(async () => {
     const click = selector => js(`document.querySelector(${JSON.stringify(selector)}).click()`);
     const checked = key => js(`document.querySelector(${JSON.stringify(q(key))}).checked`);
     const value = key => js(`document.querySelector(${JSON.stringify(q(key))}).value`);
-    const openTab = async id => { await click(`[data-testid="oa-settings-tab"][data-tab="${id}"]`); await pause(150); };
+    const exists = selector => js(`!!document.querySelector(${JSON.stringify(selector)})`);
+    const openTab = async id => {
+      await click(`[data-testid="oa-settings-tab"][data-tab="${id}"]`);
+      await waitFor(async () => (await js(`document.querySelector('[data-testid="oa-settings-panel"]')?.dataset.tab ?? null`)) === id && await exists('[data-setting]'), { what: `the ${id} panel is shown` });
+    };
+    // The dialog renders its panels only once the worker has answered the settings (SettingsDialog: draft.loaded):
+    // before that, no [data-setting] exists at all — the loading state can never pass for the loaded one.
+    const settingsLoaded = () => waitFor(() => exists(`${q('agent_mode')}:checked`), { what: 'the settings loaded from the worker (agent_mode checked)' });
+    const statusText = () => js(`document.querySelector('[data-testid="oa-settings-status"]')?.textContent || ''`);
     const config = async () => JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
 
+    await waitFor(() => exists('#oa-settings-btn'), { what: 'the app rendered its settings button' });
     await click('#oa-settings-btn');
-    await pause(300);
+    await settingsLoaded();
 
     // ── Général: defaults come from the real config, then real edits ──────────────
     assert.equal(await js(`document.querySelector('[data-setting="agent_mode"]:checked').value`), 'auto', 'agent mode defaults to auto');
@@ -150,8 +172,8 @@ app.whenReady().then(async () => {
 
     // ── Enregistrer writes exactly the changed keys ───────────────────────────────
     await click('#oa-settings-save-btn');
-    await pause(400);
-    assert.match(await js(`document.querySelector('[data-testid="oa-settings-status"]')?.textContent || ''`), /Paramètres sauvegardés/);
+    // Empty before this first save: only the worker's answer to it writes « Paramètres sauvegardés ».
+    await waitFor(async () => /Paramètres sauvegardés/.test(await statusText()), { what: 'the save is confirmed' });
     const saved = await config();
     assert.deepEqual(
       { agent_mode: saved.agent_mode, animations: saved.animations, hf_token: saved.hf_token, max_tokens: saved.max_tokens, reserved_tokens: saved.reserved_tokens, auto_compact: saved.auto_compact, compact_threshold: saved.compact_threshold, show_context_bar: saved.show_context_bar, session_retention_days: saved.session_retention_days, permission_mode: saved.permission_mode, files_ask: saved.files_ask, turn_log: saved.turn_log },
@@ -164,9 +186,10 @@ app.whenReady().then(async () => {
 
     // ── Re-open: the saved values come back from the real backend ─────────────────
     await click('#oa-settings-close-btn');
-    await pause(100);
+    await waitFor(async () => !(await exists('[data-testid="oa-settings-dialog"]')), { what: 'the dialog closed' });
     await click('#oa-settings-btn');
-    await pause(300);
+    // A new dialog, a new draft: its panels come back only with the worker's answer.
+    await settingsLoaded();
     assert.equal(await js(`document.querySelector('[data-setting="agent_mode"]:checked').value`), 'plan');
     assert.equal(await checked('animations'), false);
     assert.match(await js(`document.querySelector('${q('hf_token')}').placeholder`), /configuré/i, 'a stored token is shown as configured, never as its value');
@@ -185,8 +208,8 @@ app.whenReady().then(async () => {
     await setValue(q('max_tokens'), 3000);
     await setValue(q('reserved_tokens'), 4096);
     await click('#oa-settings-save-btn');
-    await pause(400);
-    assert.match(await js(`document.querySelector('[data-testid="oa-settings-error"]')?.textContent || ''`), /tokens réservés/, 'the backend message is shown to the user');
+    // No error in this reopened dialog before this save: only the worker's refusal shows one.
+    await waitFor(async () => /tokens réservés/.test(await js(`document.querySelector('[data-testid="oa-settings-error"]')?.textContent || ''`)), { what: 'the backend message is shown to the user' });
     assert.equal((await config()).max_tokens, 12000, 'the rejected save changed nothing on disk');
 
     // Real paint check, then keep the screenshot for a human look.

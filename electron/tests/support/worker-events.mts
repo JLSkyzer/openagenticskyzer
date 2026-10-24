@@ -15,6 +15,41 @@ export function callWorker(worker: Worker, op: string, payload?: unknown): Promi
   });
 }
 
+/** What hardwareInfo needs of a worker: a Worker, or a test's relay to a worker in another process. */
+export interface MessagePortLike {
+  on(event: 'message', listener: (message: any) => void): unknown;
+  off(event: 'message', listener: (message: any) => void): unknown;
+  postMessage(message: unknown): void;
+}
+
+/**
+ * hardware-info as the Matériel tab reads it. While the engine is still starting — longer than the worker's bounded
+ * wait (HARDWARE_WAIT_MS, 5 s), which a machine under load reaches — the first answer is { initializing: true }; the
+ * worker then posts one 'engine' event, after which it is read again. A test that asserts the backend on the first
+ * answer fails on that loading state (seen 2026-10-24 when several test files ran at once). The 'engine' listener is
+ * registered before the request: the event may arrive before the first answer.
+ */
+export async function hardwareInfo(worker: MessagePortLike, payload: unknown = {}, timeoutMs = 120000): Promise<any> {
+  let listener: ((message: any) => void) | undefined;
+  let timer: NodeJS.Timeout | undefined;
+  const engine = new Promise<any>((resolve, reject) => {
+    listener = message => { if (message?.type === 'event' && message.event === 'engine') resolve(message); };
+    worker.on('message', listener);
+    timer = setTimeout(() => reject(new Error(`no 'engine' event within ${timeoutMs} ms after an { initializing } hardware-info`)), timeoutMs);
+  });
+  engine.catch(() => {}); // awaited only after an { initializing } answer
+  try {
+    const first = await callWorker(worker as Worker, 'hardware-info', payload);
+    if (!first?.initializing) return first;
+    const event = await engine;
+    if (event.state === 'error') throw new Error(`the engine failed to start: ${event.message}`);
+    return await callWorker(worker as Worker, 'hardware-info', payload);
+  } finally {
+    clearTimeout(timer);
+    if (listener) worker.off('message', listener);
+  }
+}
+
 const END_KINDS: readonly string[] = ['done', 'error', 'stopped'];
 
 export interface AgentRecorder {

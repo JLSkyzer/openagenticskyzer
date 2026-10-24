@@ -19,7 +19,7 @@ const { randomBytes } = require('node:crypto');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
-const { capturePng } = require('./capture-helper.cjs');
+const { capturePng, withTimeout } = require('./capture-helper.cjs');
 
 async function waitFor(fn, { timeout = 15000, interval = 100, what = 'condition' } = {}) {
   const start = Date.now();
@@ -39,15 +39,27 @@ function flush() {
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 /** Ends the worker the way main.cjs quits (op shutdown: it waits for its native calls, frees the Llama, then exits
  * itself). This test creates the engine's Llama and reads the VRAM natively, and Worker.terminate() during a native
- * call crashes the whole process (0xC0000409). terminate() only if it has not ended within 60 s. */
+ * call crashes the whole process (0xC0000409). Every wait here is bounded: 60 s for the worker to end by itself, then
+ * terminate() for at most 5 s (it cannot interrupt a thread blocked in a native call either). Resolves null once the
+ * thread is gone, or what it was still waiting for (its last 'quit-wait' report, as main.cjs's [quit] line says it). */
 async function endWorker(worker) {
-  if (worker.threadId === -1) return;
+  if (worker.threadId === -1) return null;
   let timer;
+  let last = null;
+  const onReport = message => { if (message?.type === 'quit-wait') last = { at: Date.now(), ...message }; };
+  worker.on('message', onReport);
   const exited = new Promise(resolve => worker.once('exit', () => resolve('exited')));
   worker.postMessage({ op: 'shutdown', id: 'test-shutdown' });
   const outcome = await Promise.race([exited, new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), 60000); })]);
   clearTimeout(timer);
-  if (outcome === 'timeout') { process.stderr.write('note: the worker did not end within 60 s of shutdown: terminated\n'); await worker.terminate(); }
+  worker.off('message', onReport);
+  if (outcome === 'exited') return null;
+  const detail = last
+    ? `last report ${Math.round((Date.now() - last.at) / 1000)} s ago, phase « ${last.phase} », waiting for: ${last.waiting.join(', ') || 'nothing tracked'}`
+    : 'no report at all since the shutdown op: its thread is blocked in a synchronous native call';
+  process.stderr.write(`note: the worker did not end within 60 s of shutdown (${detail}): terminate() for at most 5 s\n`);
+  await withTimeout(worker.terminate(), 5000, 'Worker.terminate()').catch(error => process.stderr.write(`note: ${error.message}\n`));
+  return detail;
 }
 
 /** Serves the pack's parts from `dir` on 127.0.0.1; `server.bytesPerTick` (512, or 0 for no throttle) can change
@@ -94,6 +106,7 @@ app.whenReady().then(async () => {
   let worker;
   let packServer;
   let restartRequests = 0;
+  let workerStuck = null;
   try {
     const { CUDA_ADVICE, hardwareLines } = await import(pathToFileURL(join(__dirname, '..', 'renderer-src', 'src', 'components', 'settings', 'hardware-view.ts')).href);
     const { formatBytes } = await import(pathToFileURL(join(__dirname, '..', 'core', 'units.mts')).href);
@@ -148,9 +161,10 @@ app.whenReady().then(async () => {
       webPreferences: { preload: path.join(__dirname, '..', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
     await win.loadFile(path.join(__dirname, '..', 'renderer-dist', 'index.html'));
-    await pause(400);
-    const js = async code => {
-      try { return await win.webContents.executeJavaScript(code); }
+    // Bounded: a renderer that never answers (or a frame that never comes) fails the run naming the script it ran,
+    // instead of hanging until the runner's 240 s kill with nothing said (test:hardware, 2026-10-24 closure run).
+    const js = async (code, ms = 15000) => {
+      try { return await withTimeout(win.webContents.executeJavaScript(code), ms, 'executeJavaScript'); }
       catch (error) { throw new Error(`page script failed: ${code.replace(/\s+/g, ' ').slice(0, 160)} — ${error.message.split('\n')[0]}`); }
     };
     const click = selector => js(`document.querySelector(${JSON.stringify(selector)}).click()`);
@@ -159,6 +173,7 @@ app.whenReady().then(async () => {
     const reads = () => js(`document.querySelector('[data-testid="oa-hardware"]')?.dataset.reads ?? null`);
 
     // ── 1. Settings → Matériel ──────────────────────────────────────────────────────
+    await waitFor(() => exists('#oa-settings-btn'), { what: 'the app rendered its settings button' });
     await click('#oa-settings-btn');
     await waitFor(() => exists('[data-testid="oa-settings-tab"][data-tab="hardware"]'), { what: 'the Matériel tab exists' });
     await click('[data-testid="oa-settings-tab"][data-tab="hardware"]');
@@ -166,7 +181,21 @@ app.whenReady().then(async () => {
 
     // ── 2. The lines appear once the worker has answered (none before: the tab renders no line until then) ─
     await waitFor(() => exists('[data-testid="oa-hardware-line"][data-field="backend"]'), { timeout: 120000, what: 'the first hardware-info answer' });
-    assert.equal(await reads(), '1', 'one read on opening the tab');
+    // The engine's 'engine' event makes the tab read once more (HardwareTab): when the engine is ready within
+    // HARDWARE_WAIT_MS, the event comes before the first answer, so a second read follows the first one at once; when
+    // it is not, the first answer is { initializing } (not counted) and the event's read is the counted one. Settled
+    // means: « Relire » enabled (no read in flight) and the count unchanged over 600 ms. One or two reads, never more.
+    const settledReads = async what => {
+      let previous = null;
+      return waitFor(async () => {
+        const now = await js(`(() => { const b = document.querySelector('[data-testid="oa-hardware-refresh-btn"]'); return b && !b.disabled ? document.querySelector('[data-testid="oa-hardware"]')?.dataset.reads ?? null : null; })()`);
+        const stable = now !== null && now === previous;
+        previous = now;
+        return stable ? now : null;
+      }, { timeout: 30000, interval: 600, what });
+    };
+    const openingReads = Number(await settledReads('the reads of the opening settled'));
+    assert.ok(openingReads === 1 || openingReads === 2, `one read on opening the tab, plus at most the engine event's: ${openingReads}`);
 
     // ── 3. Each line is the worker's own hardware-info in French ───────────────────────
     const expected = hardwareLines(await callWorker('hardware-info', { refresh: false }));
@@ -190,8 +219,9 @@ app.whenReady().then(async () => {
     const adviceSummary = `CUDA advice ${adviceExpected ? 'shown' : 'absent'} (backend ${info.backend}, nvidia ${info.nvidia})`;
 
     // ── 4. « Relire » really reads again ────────────────────────────────────────────────
+    // Counted from the settled opening reads: only the click can add one.
     await click('[data-testid="oa-hardware-refresh-btn"]');
-    await waitFor(async () => (await reads()) === '2', { timeout: 60000, what: 'the second read (data-reads="2")' });
+    await waitFor(async () => Number(await reads()) === openingReads + 1, { timeout: 60000, what: `the read of « Relire » (data-reads="${openingReads + 1}")` });
 
     // ── 5. « Contexte des modèles locaux »: 64k, saved by Enregistrer like every tab ──────
     assert.equal(await js(`document.querySelector('[data-setting="local_context"]').value`), '32768', 'the default is 32k');
@@ -250,7 +280,12 @@ app.whenReady().then(async () => {
       await waitFor(async () => (await cudaState()) === 'restart', { timeout: 60000, what: 'data-state="restart" after the install' });
       assert.equal(await text('[data-testid="oa-cuda-restart-btn"]'), 'Redémarrer maintenant');
       assert.equal(await exists('[data-testid="oa-restart-btn"]'), false, "one restart button in the tab: the CUDA block's");
-      await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      // Bounded on its own: a page that produces no frame (hidden, occluded, compositor stalled under load) never runs
+      // requestAnimationFrame — the likely hang of the 2026-10-24 closure run, whose captures were all stale frames.
+      await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))', 5000).catch(async error => {
+        const visibility = await js('document.visibilityState', 2000).catch(() => '?');
+        throw new Error(`settings-hardware-cuda.png: two animation frames never came (visibility=${visibility}) — ${error.message}`);
+      });
       await capturePng(win);
       await writeFile(join(screenshotDir, 'settings-hardware-cuda.png'), await capturePng(win));
 
@@ -308,10 +343,12 @@ app.whenReady().then(async () => {
     process.stdout.write(`Screenshot: ${join(screenshotDir, 'settings-hardware.png')}\n`);
   } finally {
     win?.destroy();
-    if (worker) await endWorker(worker);
+    if (worker) workerStuck = await endWorker(worker);
     await packServer?.stop();
     if (!process.env.OPENAGENT_SETTINGS_SCREENSHOT_DIR) await rm(root, { recursive: true, force: true });
   }
+  // A worker that does not end is a failure even when every assertion passed (the PASS line is then not enough).
+  if (workerStuck) throw new Error(`the worker did not end within 60 s of the shutdown op (${workerStuck})`);
 }).then(() => flush()).then(() => app.exit(0)).catch(async error => {
   process.stderr.write(`FAIL hardware tab visual: ${error.stack || error}\n`);
   await flush();

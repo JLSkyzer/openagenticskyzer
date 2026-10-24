@@ -13,7 +13,7 @@ const { mkdtemp, rm, mkdir, writeFile, copyFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const assert = require('node:assert/strict');
-const { capturePng } = require('./capture-helper.cjs');
+const { capturePng, withTimeout } = require('./capture-helper.cjs');
 
 async function waitFor(fn, { timeout = 60000, interval = 100, what = 'condition' } = {}) {
   const start = Date.now();
@@ -33,15 +33,27 @@ function flush() {
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 /** Ends the worker the way main.cjs quits (op shutdown: it waits for its native calls, frees the model, then exits
  * itself). After a reply the worker reads the VRAM in the background (re-placement check), and Worker.terminate()
- * during a native call crashes the whole process (0xC0000409). terminate() only if it has not ended within 60 s. */
+ * during a native call crashes the whole process (0xC0000409). Every wait here is bounded: 60 s for the worker to end
+ * by itself, then terminate() for at most 5 s (it cannot interrupt a thread blocked in a native call either). Resolves
+ * null once the thread is gone, or what it was still waiting for (its last 'quit-wait' report). */
 async function endWorker(worker) {
-  if (worker.threadId === -1) return;
+  if (worker.threadId === -1) return null;
   let timer;
+  let last = null;
+  const onReport = message => { if (message?.type === 'quit-wait') last = { at: Date.now(), ...message }; };
+  worker.on('message', onReport);
   const exited = new Promise(resolve => worker.once('exit', () => resolve('exited')));
   worker.postMessage({ op: 'shutdown', id: 'test-shutdown' });
   const outcome = await Promise.race([exited, new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), 60000); })]);
   clearTimeout(timer);
-  if (outcome === 'timeout') { process.stderr.write('note: the worker did not end within 60 s of shutdown: terminated\n'); await worker.terminate(); }
+  worker.off('message', onReport);
+  if (outcome === 'exited') return null;
+  const detail = last
+    ? `last report ${Math.round((Date.now() - last.at) / 1000)} s ago, phase « ${last.phase} », waiting for: ${last.waiting.join(', ') || 'nothing tracked'}`
+    : 'no report at all since the shutdown op: its thread is blocked in a synchronous native call';
+  process.stderr.write(`note: the worker did not end within 60 s of shutdown (${detail}): terminate() for at most 5 s\n`);
+  await withTimeout(worker.terminate(), 5000, 'Worker.terminate()').catch(error => process.stderr.write(`note: ${error.message}\n`));
+  return detail;
 }
 
 app.whenReady().then(async () => {
@@ -56,6 +68,7 @@ app.whenReady().then(async () => {
   const pageMessages = [];
   let win;
   let worker;
+  let workerStuck = null;
   try {
     worker = new Worker(path.join(__dirname, '..', 'worker.mjs'), { env: { ...process.env, OPENAGENT_HOME: home } });
     const pending = new Map();
@@ -83,8 +96,9 @@ app.whenReady().then(async () => {
     await win.loadFile(path.join(__dirname, '..', 'renderer-dist', 'index.html'));
     await pause(500);
 
-    const js = async code => {
-      try { return await win.webContents.executeJavaScript(code); }
+    // Bounded: a renderer that never answers fails the run naming the script, instead of hanging until the runner's kill.
+    const js = async (code, ms = 15000) => {
+      try { return await withTimeout(win.webContents.executeJavaScript(code), ms, 'executeJavaScript'); }
       catch (error) { throw new Error(`page script failed: ${code.replace(/\s+/g, ' ').slice(0, 160)} — ${error.message.split('\n')[0]}`); }
     };
     const q = selector => JSON.stringify(selector);
@@ -109,8 +123,9 @@ app.whenReady().then(async () => {
 
     // ── 1. Open the selector, import a real .gguf through the (stubbed native) picker ─────────────────
     await click('#oa-model-btn');
-    await waitFor(() => exists('[data-testid="oa-local-models"]'), { timeout: 10000 });
-    assert.match(await text('[data-testid="oa-local-models"]'), /Aucun modèle importé/);
+    // The list block first says « Chargement… » while gguf-list is in flight: wait for the empty library's own text,
+    // never for the block (it exists in the loading state too — the 2026-10-24 closure run failed on exactly that).
+    await waitFor(async () => /Aucun modèle importé/.test(await text('[data-testid="oa-local-models"]')), { timeout: 15000, what: 'the empty library « Aucun modèle importé »' });
     ggufDialogPath = modelPath;
     await click('#oa-local-model-import-btn');
     await waitFor(async () => (await countOf('[data-testid="oa-local-model-entry"]')) === 1, { what: 'imported entry appears' });
@@ -194,7 +209,7 @@ app.whenReady().then(async () => {
   } catch (error) {
     try {
       await writeFile(join(screenshotDir, 'localmodel-failure.png'), await capturePng(win));
-      process.stderr.write(`Page text at failure: ${JSON.stringify((await win.webContents.executeJavaScript('document.body.textContent')).slice(0, 700))}\n`);
+      process.stderr.write(`Page text at failure: ${JSON.stringify((await withTimeout(win.webContents.executeJavaScript('document.body.textContent'), 5000, 'executeJavaScript')).slice(0, 700))}\n`);
       process.stderr.write(`Console messages: ${JSON.stringify(pageMessages.slice(-10))}\n`);
     } catch (diagnosticError) {
       process.stderr.write(`(diagnostics failed: ${diagnosticError.message})\n`);
@@ -202,10 +217,12 @@ app.whenReady().then(async () => {
     throw error;
   } finally {
     // Before the window goes: the worker's last messages are still relayed to a live page.
-    if (worker) await endWorker(worker);
+    if (worker) workerStuck = await endWorker(worker);
     win?.destroy();
     if (!process.env.OPENAGENT_LOCALMODEL_SCREENSHOT_DIR) await rm(root, { recursive: true, force: true });
   }
+  // A worker that does not end is a failure even when every assertion passed.
+  if (workerStuck) throw new Error(`the worker did not end within 60 s of the shutdown op (${workerStuck})`);
 }).then(() => flush()).then(() => app.exit(0)).catch(async error => {
   process.stderr.write(`FAIL local-model visual: ${error.stack || error}\n`);
   await flush();

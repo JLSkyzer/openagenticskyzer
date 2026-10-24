@@ -8,6 +8,7 @@ import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
+import { hardwareInfo } from './support/worker-events.mts';
 import { readHardware } from '../core/hardware.mts';
 import { runtimeLlama, llamaCreated, disposeLlama, runtimeGeneration } from '../core/llama-runtime.mts';
 import { engineContextSize, warmModelPath, disposeEngine } from '../core/local-engine.mts';
@@ -76,7 +77,7 @@ test('worker hardware-info: with NODE_LLAMA_CPP_GPU=false the backend is cpu, wi
     env: { ...process.env, OPENAGENT_HOME: home, NODE_LLAMA_CPP_GPU: 'false' },
   });
   terminateAtEnd(t, worker);
-  const info = await callWorker(worker, 'hardware-info', {});
+  const info = await hardwareInfo(worker);
   assert.equal(info.backend, 'cpu');
   assert.equal(info.vram, null);
   assert.deepEqual(info.gpuNames, []);

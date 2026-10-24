@@ -22,6 +22,7 @@ import { cudaFallbackNotice, cudaMismatchNotice, cudaMissingNotice } from '../co
 import { SettingsService } from '../core/settings.mts';
 import { writeInstalledPack } from './support/fake-cuda-pack.mts';
 import { startFakePackServer } from './support/fake-pack-server.mts';
+import { hardwareInfo } from './support/worker-events.mts';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 
 const ENGINE = await getModuleVersion();
@@ -132,7 +133,7 @@ test('1. a corrupt installed pack: the engine falls back with the exact notice, 
   const worker = start(t, f.home, { cudaPackManifest: f.manifestPath, cudaRuntimeDir: join(f.home, 'cuda-pack', 'current', 'cuda-runtime') });
   const status = await callWorker(worker, 'cuda-pack-status');
   assert.equal(status.state, 'installed', 'the corrupt pack looks installed: only loading it can tell');
-  const info = await callWorker(worker, 'hardware-info', {});
+  const info = await hardwareInfo(worker);
   assert.notEqual(info.backend, 'cuda');
   assert.equal(info.notice, cudaFallbackNotice(info.backend));
   assert.equal(info.backendChoice, 'auto');
@@ -155,7 +156,7 @@ test('2. a pack of another engine version is never loaded: mismatch, Vulkan noti
   const status = await callWorker(worker, 'cuda-pack-status');
   assert.equal(status.state, 'mismatch');
   assert.equal(status.installedVersion, '3.0.0');
-  const info = await callWorker(worker, 'hardware-info', {});
+  const info = await hardwareInfo(worker);
   assert.notEqual(info.backend, 'cuda');
   assert.equal(info.notice, cudaMismatchNotice('3.0.0', ENGINE));
 });
@@ -250,13 +251,13 @@ test('4. installing or uninstalling during a turn is refused with CUDA_PACK_TURN
 test('5. gpu_backend « cpu » in the settings: the worker runs on the processor; a new choice asks for a restart', { timeout: 120000 }, async t => {
   const f = await fixture(t, { gpu_backend: 'cpu' });
   const worker = start(t, f.home, { cudaPackManifest: f.manifestPath });
-  const info = await callWorker(worker, 'hardware-info', {});
+  const info = await hardwareInfo(worker);
   assert.equal(info.backend, 'cpu');
   assert.equal(info.backendChoice, 'cpu');
   assert.equal(info.notice, null);
   assert.equal(info.restartRequired, false);
   await callWorker(worker, 'save-global-settings', { patch: { gpu_backend: 'vulkan' } });
-  const after = await callWorker(worker, 'hardware-info', {});
+  const after = await hardwareInfo(worker);
   assert.equal(after.backend, 'cpu', 'the backend is decided once per worker');
   assert.equal(after.backendChoice, 'cpu', 'the choice this worker started with');
   assert.equal(after.restartRequired, true);
@@ -269,7 +270,7 @@ test("5b. main and the worker must agree on the pack: without main's runtime fol
   await writeInstalledPack(f.home, { engineVersion: ENGINE, corrupt: false });
   const worker = start(t, f.home, { cudaPackManifest: f.manifestPath, cudaRuntimeDir: null });
   assert.equal((await callWorker(worker, 'cuda-pack-status')).state, 'installed');
-  const info = await callWorker(worker, 'hardware-info', {});
+  const info = await hardwareInfo(worker);
   assert.notEqual(info.backend, 'cuda');
   assert.equal(info.notice, cudaMissingNotice(info.backend), 'not activated: the plain fallback, not a failed load');
   assert.equal(info.restartRequired, true, 'the pack is used once main puts it on PATH, at the next start');
@@ -278,7 +279,7 @@ test("5b. main and the worker must agree on the pack: without main's runtime fol
   const g = await fixture(t);
   await writeInstalledPack(g.home, { engineVersion: ENGINE, corrupt: false });
   const other = start(t, g.home, { cudaPackManifest: g.manifestPath, cudaRuntimeDir: join(g.root, 'ailleurs', 'cuda-runtime') });
-  const auto = await callWorker(other, 'hardware-info', {});
+  const auto = await hardwareInfo(other);
   assert.notEqual(auto.backend, 'cuda');
   assert.equal(auto.notice, null, 'auto without an activated pack: the default engine, no notice');
   assert.equal(auto.restartRequired, true);

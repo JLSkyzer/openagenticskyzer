@@ -2,6 +2,7 @@
 // compaction when no .gguf is active, and reports the engine's window through model-status and the 'model' event.
 // Every worker here is built WITHOUT the test seam: only the real local engine can answer.
 import { test } from 'node:test';
+import { hardwareInfo } from './support/worker-events.mts';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { spawn } from 'node:child_process';
@@ -283,7 +284,7 @@ test('j. max_tokens leaves the engine context alone: local_context 65536 with ma
 // (measured 2026-10-18 in the agent shell: first token after 10 s, then about 17 tokens per second).
 test('k. with NODE_LLAMA_CPP_GPU=false the model loads on the processor and answers', { timeout: 180000 }, async t => {
   const { worker, folder, model, agentEvents } = await setup(t, undefined, { NODE_LLAMA_CPP_GPU: 'false' });
-  assert.equal((await callWorker(worker, 'hardware-info')).backend, 'cpu');
+  assert.equal((await hardwareInfo(worker)).backend, 'cpu');
   const entry = await callWorker(worker, 'gguf-add', { path: model });
   await callWorker(worker, 'save-global-settings', { patch: { active_local_model: entry.id } });
   const answered = new Promise<any>(resolve => {
@@ -339,7 +340,7 @@ test('n. before a load, model-status carries the cached estimate, marked estimat
   const entry = await callWorker(worker, 'gguf-add', { path: model });
   await callWorker(worker, 'save-global-settings', { patch: { active_local_model: entry.id } });
   assert.equal((await callWorker(worker, 'model-status', {})).placement, undefined, 'no estimate yet: omitted');
-  await callWorker(worker, 'hardware-info', { refresh: false }); // creates the Llama
+  await hardwareInfo(worker, { refresh: false }); // creates the Llama (waits for it under load)
   const done = new Promise<any>(resolve => {
     const listener = (message: any) => {
       if (message?.type === 'event' && message.event === 'estimate') { worker.off('message', listener); resolve(message); }

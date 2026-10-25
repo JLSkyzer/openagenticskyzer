@@ -1,6 +1,6 @@
 // Compares two bench results files: `node --experimental-strip-types bench/compare.mts <avant.json> <après.json>`
 // prints the Markdown table (bench/metrics.mts::formatComparison), preceded by what makes the two runs not comparable
-// (another model, context, backend or cap) and by each run's failures. Exit 1 when they are not comparable.
+// (another model, context, backend, node-llama-cpp version or cap) and by each run's failures. Exit 1 when they are not comparable.
 import { readFile } from 'node:fs/promises';
 import { comparability, compareRuns, formatComparison, type BenchRun } from './metrics.mts';
 

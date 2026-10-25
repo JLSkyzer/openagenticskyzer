@@ -6,7 +6,10 @@
 //   the app drives it: the model added to the library and made active, each folder activated, one `send` per message.
 //   Each turn's figures are read back from that turn's own turn log lines, and the results file is rewritten after
 //   every turn (a cut session keeps what it measured).
-// Usage (internal): node --experimental-strip-types bench/child.mts <config.json>
+// Usage (internal): node --experimental-strip-types bench/child.mts <config.json>, spawned with an IPC channel.
+// Stopping is the parent's: its `{ type: 'stop' }` message (sent on Ctrl+C) stops the turn in progress — or cancels
+// the pack install — sends nothing more, shuts the worker down and writes what was measured. A parent that goes away
+// (the channel disconnects) stops the child the same way, so no model stays loaded behind a dead bench.
 // The worker always ends with the `shutdown` op, never `terminate()` (lesson 2026-10-24: terminating a thread inside
 // native code crashes the process).
 import { Worker } from 'node:worker_threads';
@@ -25,7 +28,11 @@ import { sampleMemory } from './memory.mts';
 export type Backend = 'auto' | 'cuda' | 'vulkan' | 'cpu';
 export interface ChildGroup { scenario: TurnFigures['scenario']; folder: string; messages: readonly string[] }
 interface Common { home: string; resultPath: string }
-export interface InstallConfig extends Common { kind: 'install'; packDir: string }
+export interface InstallConfig extends Common {
+  kind: 'install'; packDir: string;
+  /** Past it, the install is cancelled through the worker and recorded as failed. */
+  timeoutMs: number;
+}
 export interface SessionConfig extends Common {
   kind: 'session';
   model: string;
@@ -80,9 +87,14 @@ async function turnLines(home: string, runId: string): Promise<Record<string, un
   return text.split('\n').filter(Boolean).map(line => JSON.parse(line)).filter(line => line.runId === runId);
 }
 
-/** The run in progress, for a timeout or a Ctrl+C: its id once known, and how to stop it. */
+/** The run (or pack install) in progress, for a timeout or a stop: its run id once known, and how to stop it. */
 let current: { runId: string | null; stop: () => void } | null = null;
 let interrupted = false;
+/** The parent's stop (or its going away): nothing more is sent, the step in progress ends. Idempotent. */
+function interrupt(): void {
+  interrupted = true;
+  current?.stop();
+}
 
 /** Sends `text` and resolves with the run's terminal event. A permission request is refused (nothing waits for a person
  * here). Past `timeoutMs` — or on Ctrl+C — the run is stopped through the worker's own `stop` op, and its terminal
@@ -164,13 +176,35 @@ export async function installPack(config: InstallConfig): Promise<ChildResult> {
       };
       worker.on('message', listener);
     });
-    await callWorker(worker, 'cuda-pack-install');
-    const end = await ended;
+    const { installId } = await callWorker(worker, 'cuda-pack-install');
+    // Bounded (a stalled copy must not hold the session): past timeoutMs, or on a stop, the worker cancels the install
+    // and its terminal event (« cancelled ») follows; a worker that sends none within STOP_WAIT_MS is given up on.
+    let why: string | null = null;
+    let cancelled!: () => void;
+    const cancelAsked = new Promise<void>(resolve => { cancelled = resolve; });
+    const cancel = (reason: string) => {
+      if (why) return;
+      why = reason;
+      void callWorker(worker, 'cuda-pack-cancel', { installId }).catch(() => {});
+      cancelled();
+    };
+    const timer = setTimeout(() => cancel(`délai dépassé (${Math.round(config.timeoutMs / 1000)} s)`), config.timeoutMs);
+    current = { runId: null, stop: () => cancel('interrompu') };
+    if (interrupted) cancel('interrompu');
+    let giveUp: NodeJS.Timeout | undefined;
+    const end = await Promise.race([ended, cancelAsked.then(() => new Promise<any>(resolve => {
+      giveUp = setTimeout(() => resolve({ state: 'cancelled', message: "pas de fin après l'annulation" }), STOP_WAIT_MS);
+    }))]);
+    clearTimeout(timer);
+    clearTimeout(giveUp);
+    current = null;
     const after = await callWorker(worker, 'cuda-pack-status');
-    if (end.state !== 'done' || after?.state !== 'installed') result.failures.push(`pack CUDA non installé : ${end.state}${end.message ? ` — ${end.message}` : ''}`);
+    if (why) result.failures.push(`pack CUDA non installé : ${why}, installation annulée (${end.state})`);
+    else if (end.state !== 'done' || after?.state !== 'installed') result.failures.push(`pack CUDA non installé : ${end.state}${end.message ? ` — ${end.message}` : ''}`);
   } catch (error) {
     result.failures.push(`pack CUDA non installé : ${error instanceof Error ? error.message : String(error)}`);
   } finally {
+    current = null;
     await shutdown(worker);
     server.close();
   }
@@ -234,7 +268,7 @@ export async function runSession(config: SessionConfig, save: (result: ChildResu
         await save(result);
       }
     }
-    if (interrupted) result.failures.push('interrompu (Ctrl+C)');
+    if (interrupted) result.failures.push('interrompu (arrêt demandé par le banc)');
   } catch (error) {
     result.failures.push(`session interrompue : ${error instanceof Error ? error.message : String(error)}`);
   } finally {
@@ -247,9 +281,12 @@ const configPath = process.argv[2];
 if (configPath && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const config: ChildConfig = JSON.parse(await readFile(configPath, 'utf8'));
   const save = (result: ChildResult) => writeFile(config.resultPath, JSON.stringify(result));
-  // Ctrl+C reaches every process of the console: the turn in progress is stopped through the worker, nothing more is
-  // sent, the worker shuts down normally and what was measured is written.
-  process.on('SIGINT', () => { interrupted = true; current?.stop(); });
+  // The parent's stop message, or the parent gone (its channel closed): the turn in progress is stopped through the
+  // worker, nothing more is sent, the worker shuts down normally and what was measured is written. A Ctrl+C that
+  // reaches this process directly (same console) does the same; the parent kills it on a second Ctrl+C.
+  process.on('message', (message: any) => { if (message?.type === 'stop') interrupt(); });
+  process.on('disconnect', interrupt);
+  process.on('SIGINT', interrupt);
   const result = config.kind === 'install' ? await installPack(config) : await runSession(config, save);
   for (const failure of result.failures) console.error(`[bench] échec : ${failure}`);
   await save(result);

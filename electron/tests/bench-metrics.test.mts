@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { turnFigures, compareRuns, comparability, formatComparison, resultFileName, type BenchRun } from '../bench/metrics.mts';
 import { gamesIn } from '../bench/guard.mts';
+import { classifyReuse, divergenceAt, formatReuseReport } from '../bench/reuse-report.mts';
 
 const at = (ms: number) => new Date(Date.UTC(2026, 9, 25, 10, 0, 0, ms)).toISOString();
 const memory = { rssBytes: 1, gpuDedicatedBytes: null, gpuSharedBytes: null };
@@ -53,7 +54,7 @@ test('compareRuns: a turn missing on one side, an incomplete old file, status, q
     reply: { chars: 1, truncated: false }, quality: { toolCalled: true, sentinel: false }, memory, placement: null, perfLines: [], status: 'done',
     generations: [{ step: 0, inputTokens: 10, outputTokens: 10, generationMs: 1000, promptMs: 5, tokensPerSecond: 10, reuse: null }], ...extra }) as BenchRun['turns'][number];
   const base: BenchRun = { schema: 1, label: 'x', startedAt: '', gitHead: '', model: { file: 'm.gguf', bytes: 1 }, machine: { cpu: 'c', logicalCores: 1, ramBytes: 1 },
-    settings: { local_context: 32768 }, levers: { outputCap: 1024, thoughtTokens: 512 }, toolDefinitions: { chars: 1, tokens: null }, backend: 'cuda', turns: [turn(1), turn(2)] };
+    settings: { local_context: 32768 }, levers: { outputCap: 1024, thoughtTokens: 512 }, toolDefinitions: { chars: 1, tokens: null }, backend: 'cuda', nodeLlamaCpp: '3.21.1', turns: [turn(1), turn(2)] };
   // An older or partial file: no memory, no generations, no status.
   const after: BenchRun = { ...base, turns: [turn(1, { reply: { chars: 1, truncated: true }, memory: undefined, generations: undefined, status: 'stopped' })] };
   const rows = compareRuns(base, after);
@@ -64,10 +65,32 @@ test('compareRuns: a turn missing on one side, an incomplete old file, status, q
   assert.equal(rows.find(r => r.key === 'B·1' && r.metric === 'RSS (Mio)')?.after, null);
   assert.match(formatComparison(rows), /\| B·2 \| jetons évalués \| 10 \| — \| — \|/);
   assert.deepEqual(comparability(base, { ...base, levers: { ...base.levers, keepThought: true } as never }), []);
-  assert.deepEqual(comparability(base, { ...base, model: { file: 'n.gguf', bytes: 1 }, settings: { local_context: 16384 }, backend: 'vulkan', levers: { outputCap: 64, thoughtTokens: 512 } }), [
+  assert.deepEqual(comparability(base, { ...base, model: { file: 'n.gguf', bytes: 1 }, settings: { local_context: 16384 }, backend: 'vulkan', nodeLlamaCpp: '3.22.0', levers: { outputCap: 64, thoughtTokens: 512 } }), [
     'modèle différent : m.gguf (1 octets) → n.gguf (1 octets)',
     'contexte différent : 32768 → 16384',
     'moteur différent : cuda → vulkan',
+    'node-llama-cpp différent : 3.21.1 → 3.22.0',
     'plafond différent : outputCap 1024 → 64',
   ]);
+});
+
+const fig = (held: number, common: number, prompt: number, evaluated: number) => ({ held, common, prompt, evaluated, reused: Math.max(0, prompt - evaluated), checkpoints: null });
+/** A BenchRun with one A turn per figure: message i + 1, one generation at step 0. */
+const runOf = (figs: ReturnType<typeof fig>[]): BenchRun => ({ schema: 1, label: 'x', startedAt: '', gitHead: '', model: { file: 'm.gguf', bytes: 1 },
+  machine: { cpu: 'c', logicalCores: 1, ramBytes: 1 }, settings: { local_context: 32768 }, levers: {}, toolDefinitions: { chars: 1, tokens: null },
+  turns: figs.map((reuse, i) => ({ scenario: 'A', message: i + 1, phasesMs: {}, totalMs: 1, loadMs: null, loadStages: null, architecture: null, toolCalls: [],
+    reply: { chars: 1, truncated: false }, quality: {}, memory, placement: null, perfLines: [], status: 'done',
+    generations: [{ step: 0, inputTokens: reuse.evaluated, outputTokens: 10, generationMs: 1000, promptMs: 5, tokensPerSecond: 10, reuse }] })) });
+test('classifyReuse: cold, reused, and a hybrid checkpoint miss', () => {
+  assert.equal(classifyReuse(fig(0, 0, 4074, 4074)), 'froid');
+  assert.equal(classifyReuse(fig(4184, 4091, 4120, 30)), 'réutilisé');
+  assert.equal(classifyReuse(fig(4184, 4091, 4120, 4120)), 'point de sauvegarde manquant');
+});
+test('divergenceAt and the report line', () => {
+  assert.equal(divergenceAt(fig(0, 0, 4074, 4074), fig(4184, 4071, 4120, 4120)), 'dans le prompt précédent');
+  assert.equal(divergenceAt(fig(0, 0, 4074, 4074), fig(4184, 4080, 4120, 4120)), 'dans la réponse précédente');
+  assert.equal(divergenceAt(null, fig(0, 0, 1, 1)), null);
+  // A·2 holds fig(4184, 4080, 4120, 4120) after A·1's fig(0, 0, 4074, 4074).
+  assert.match(formatReuseReport(runOf([fig(0, 0, 4074, 4074), fig(4184, 4080, 4120, 4120)])),
+    /^A·2 étape 0 : tenus 4184 · communs 4080 · relus 4120 · réutilisés 0 — point de sauvegarde manquant \(dans la réponse précédente\)$/m);
 });

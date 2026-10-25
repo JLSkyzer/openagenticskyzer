@@ -16,6 +16,7 @@
     "bench:compare": "node --experimental-strip-types bench/compare.mts",
     "bench:tools": "node --experimental-strip-types bench/tool-tokens.mts",
     "bench:guard": "node --experimental-strip-types bench/guard.mts",
+    "bench:reuse": "node --experimental-strip-types bench/reuse-report.mts",
     "test:preload": "node tests/run-preload-bridge.cjs",
     "test:restart": "node tests/run-restart-app.cjs",
     "test:theme": "node tests/run-theme-visual.cjs",

@@ -164,7 +164,7 @@ export function compareRuns(before: BenchRun, after: BenchRun): ComparisonRow[] 
 /** The caps the protocol keeps equal on both sides: they bound a run, they are not the lever under test. */
 const CAPS = ['outputCap', 'thoughtTokens'] as const;
 
-/** Why `before` and `after` cannot be compared: another model, context or backend, or other caps. The lever under
+/** Why `before` and `after` cannot be compared: another model, context, backend or node-llama-cpp version, or other caps. The lever under
  * test may differ (it is the point of the comparison). [] = comparable. */
 export function comparability(before: BenchRun, after: BenchRun): string[] {
   const issues: string[] = [];
@@ -174,6 +174,8 @@ export function comparability(before: BenchRun, after: BenchRun): string[] {
   if (context(before) !== context(after)) issues.push(`contexte différent : ${context(before)} → ${context(after)}`);
   const backend = (run: BenchRun) => run.backend ?? '?';
   if (backend(before) !== backend(after)) issues.push(`moteur différent : ${backend(before)} → ${backend(after)}`);
+  const engine = (run: BenchRun) => run.nodeLlamaCpp ?? '?';
+  if (engine(before) !== engine(after)) issues.push(`node-llama-cpp différent : ${engine(before)} → ${engine(after)}`);
   for (const cap of CAPS) {
     const a = before.levers?.[cap];
     const b = after.levers?.[cap];

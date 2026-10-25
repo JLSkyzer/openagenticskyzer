@@ -3,7 +3,7 @@
 //
 //   node --experimental-strip-types bench/run.mts --model <gguf> --label <name> [--scenarios A,B,C] [--messages 1-4]
 //        [--context 32768] [--lever key=value]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dir>|none]
-//        [--turn-timeout <minutes>] [--out <dir>]
+//        [--turn-timeout <minutes>] [--install-timeout <minutes>] [--out <dir>]
 //
 // The 27B command of the benchmark protocol (with the user present, never while a game runs), word for word:
 //
@@ -19,6 +19,11 @@
 // as main.cjs does. A model over 1 GiB is refused unless the engine is CUDA, or `--backend` names another one.
 // Every turn is bounded by `--turn-timeout` (default 15 min): past it, the worker's `stop` op ends the turn, recorded
 // « stopped » and failed. The results file is rewritten after each turn and on Ctrl+C.
+// Stopping (Ctrl+C) is driven from here: the first one sends the child a stop over its IPC channel — the turn ends
+// through the worker's `stop` op, the worker shuts down and frees the model, the partial file is written, no further
+// session starts; a second one kills the child and exits at once. A child whose parent is gone stops by itself (its
+// channel closes), so an abort never leaves a model loaded. Each pack install is bounded by `--install-timeout`
+// (default 10 min), then cancelled through the worker; a child that still has not exited 4 min later is killed.
 // The children's output goes to `<out>/<file>.log`; each `[perf]` marker names its generation, whose perfLines it ends.
 // Exit codes: 0 ok, 2 bad arguments (a rejected lever included: ruling F24), 3 game running (heavy run: the model is
 // over 1 GiB, checked before each session), 4 a scenario failed. The partial results are written either way.
@@ -81,14 +86,26 @@ async function gitHead(): Promise<string> {
   }
 }
 
+/** Past the child's own bound (its install timeout), what it may still take to cancel and shut its worker down. */
+const CHILD_GRACE_MS = 4 * 60000;
+
 let child: ChildProcess | null = null;
-function runChild(config: ChildConfig, configPath: string, logPath: string): Promise<number | null> {
+/** Asks the running child to stop (its IPC channel): it ends its step and writes what it measured. */
+function stopChild(): void {
+  if (child?.connected) child.send({ type: 'stop' }, () => {});
+}
+/** Runs one child step; past `limitMs` (when given) the child is killed, and `killed` says so. */
+function runChild(config: ChildConfig, configPath: string, logPath: string, limitMs: number | null): Promise<{ code: number | null; killed: boolean }> {
   return new Promise((done, reject) => {
     void writeFile(configPath, JSON.stringify(config)).then(() => {
       const fd = openSync(logPath, 'a');
-      child = spawn(process.execPath, ['--experimental-strip-types', CHILD, configPath], { cwd: ELECTRON, stdio: ['ignore', fd, fd], windowsHide: true });
-      child.once('error', error => { closeSync(fd); child = null; reject(error); });
-      child.once('exit', code => { closeSync(fd); child = null; done(code); });
+      let killed = false;
+      const spawned = spawn(process.execPath, ['--experimental-strip-types', CHILD, configPath], { cwd: ELECTRON, stdio: ['ignore', fd, fd, 'ipc'], windowsHide: true });
+      child = spawned;
+      const limit = limitMs === null ? null : setTimeout(() => { killed = true; spawned.kill(); }, limitMs);
+      spawned.once('error', error => { if (limit) clearTimeout(limit); closeSync(fd); child = null; reject(error); });
+      spawned.once('exit', code => { if (limit) clearTimeout(limit); closeSync(fd); child = null; done({ code, killed }); });
+      if (interrupted) stopChild();
     }, reject);
   });
 }
@@ -100,13 +117,14 @@ function parseOptions() {
       model: { type: 'string' }, label: { type: 'string' }, scenarios: { type: 'string', default: 'A,B,C' }, messages: { type: 'string' },
       context: { type: 'string', default: '32768' }, lever: { type: 'string', multiple: true, default: [] }, out: { type: 'string' },
       backend: { type: 'string' }, 'cuda-pack': { type: 'string' }, 'turn-timeout': { type: 'string', default: '15' },
+      'install-timeout': { type: 'string', default: '10' },
     },
     allowPositionals: false,
   });
 }
 try { parsed = parseOptions(); } catch (error) { fail(2, error instanceof Error ? error.message : String(error)); }
 const { values } = parsed;
-if (!values.model || !values.label) fail(2, 'Usage : bench/run.mts --model <gguf> --label <nom> [--scenarios A,B,C] [--messages 1-4] [--context 32768] [--lever clé=valeur]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dossier>|none] [--turn-timeout <minutes>] [--out <dossier>]');
+if (!values.model || !values.label) fail(2, 'Usage : bench/run.mts --model <gguf> --label <nom> [--scenarios A,B,C] [--messages 1-4] [--context 32768] [--lever clé=valeur]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dossier>|none] [--turn-timeout <minutes>] [--install-timeout <minutes>] [--out <dossier>]');
 const scenarios = values.scenarios.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
 if (!scenarios.length || scenarios.some(s => !['A', 'B', 'C'].includes(s))) fail(2, `Scénarios inconnus : ${values.scenarios} (A, B, C)`);
 // `--messages n`: A plays its first n messages only (the scenario subset a lever targets, e.g. A·1–A·3).
@@ -118,6 +136,8 @@ const explicitBackend = values.backend as Backend | undefined;
 if (explicitBackend !== undefined && !BACKENDS.includes(explicitBackend)) fail(2, `Moteur invalide : ${values.backend} (${BACKENDS.join(', ')})`);
 const turnTimeoutMs = Math.round(Number(values['turn-timeout']) * 60000);
 if (!(turnTimeoutMs > 0)) fail(2, `--turn-timeout invalide : ${values['turn-timeout']} (minutes)`);
+const installTimeoutMs = Math.round(Number(values['install-timeout']) * 60000);
+if (!(installTimeoutMs > 0)) fail(2, `--install-timeout invalide : ${values['install-timeout']} (minutes)`);
 const askedLevers = Object.fromEntries(values.lever.map(leverOf));
 const leversJson = JSON.stringify(askedLevers);
 // A rejected lever would silently run the shipped value: « après » would equal « avant » (ruling F24).
@@ -180,18 +200,28 @@ async function writeResults(): Promise<void> {
 
 let interrupted = false;
 process.on('SIGINT', () => {
-  // The child got the same Ctrl+C: it stops its turn and writes what it measured. A second Ctrl+C does not wait.
-  if (interrupted) { void writeResults().finally(() => process.exit(130)); return; }
+  // The first Ctrl+C asks the child to stop (IPC): its turn ends, its worker frees the model, it writes what it
+  // measured. A second one does not wait: the child is killed (its process, so the model with it), then the file.
+  if (interrupted) {
+    child?.kill();
+    failures.push('banc interrompu (Ctrl+C), session tuée');
+    void writeResults().finally(() => process.exit(130));
+    return;
+  }
   interrupted = true;
-  console.error('[bench] interrompu : la session en cours s\'arrête, le fichier partiel suit (Ctrl+C encore pour ne pas attendre)');
+  stopChild();
+  console.error('[bench] interrompu : la session en cours s\'arrête, le fichier partiel suit (Ctrl+C encore pour tuer la session)');
 });
 
 async function step(name: string, config: ChildConfig): Promise<ChildResult | null> {
   console.info(`[bench] ${name}`);
   partialPath = config.resultPath;
   let code: number | null = null;
+  const limitMs = config.kind === 'install' ? config.timeoutMs + CHILD_GRACE_MS : null;
   try {
-    code = await runChild(config, join(temp, `${name}.config.json`), logPath);
+    const ended = await runChild(config, join(temp, `${name}.config.json`), logPath, limitMs);
+    code = ended.code;
+    if (ended.killed) failures.push(`${name} : processus tué après ${Math.round(limitMs! / 60000)} min`);
   } catch (error) {
     failures.push(`${name} : processus non lancé — ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -210,7 +240,7 @@ async function step(name: string, config: ChildConfig): Promise<ChildResult | nu
 async function home(name: string): Promise<string> {
   const dir = join(temp, name);
   await mkdir(dir);
-  if (packDir) await step(`installation-pack-${name}`, { kind: 'install', home: dir, packDir, resultPath: join(temp, `installation-${name}.result.json`) });
+  if (packDir && !interrupted) await step(`installation-pack-${name}`, { kind: 'install', home: dir, packDir, timeoutMs: installTimeoutMs, resultPath: join(temp, `installation-${name}.result.json`) });
   return dir;
 }
 

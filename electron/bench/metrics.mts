@@ -24,6 +24,9 @@ export interface TurnFigures {
   memory: MemorySample;
   placement: { backend: string; gpuLayers: number; totalLayers: number; contextSize: number; vramBytes: number; ramBytes: number } | null;
   perfLines: string[];
+  /** The template probe of the turn's model-ready line (Task 4): it renders the tools after the system text, so the
+   * contextPlacement lever can apply. Absent when the line has none. */
+  toolsAfterSystem?: boolean;
   /** How the turn ended (its `end` line); null when the log has no end. */
   status?: 'done' | 'stopped' | 'error' | null;
 }
@@ -105,6 +108,7 @@ export function turnFigures(lines: readonly Line[], meta: { scenario: TurnFigure
     loadMs: num(ready?.loadMs),
     loadStages: (ready?.loadStages as LoadStage[] | undefined) ?? null,
     architecture: (ready?.architecture as ModelArchitecture | undefined) ?? null,
+    ...(typeof ready?.toolsAfterSystem === 'boolean' ? { toolsAfterSystem: ready.toolsAfterSystem } : {}),
     generations, toolCalls,
     reply: { chars: text.length, truncated: text.includes(TRUNCATED_NOTICE) },
     quality,

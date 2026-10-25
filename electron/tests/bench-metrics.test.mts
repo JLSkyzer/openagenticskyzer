@@ -12,7 +12,7 @@ test('turnFigures: phase durations from the turn log, one figure per generation 
     { at: at(0), event: 'turn-start' },
     { at: at(0), event: 'phase', phase: 'preparing', previous: null, previousMs: null },
     { at: at(10), event: 'phase', phase: 'loading', previous: 'preparing', previousMs: 10 },
-    { at: at(510), event: 'model-ready', loadMs: 500, loadStages: [{ stage: 'engine', ms: 5, ok: true }], architecture: { hybrid: false, recurrent: false, swaSize: null, mtpWeights: false } },
+    { at: at(510), event: 'model-ready', loadMs: 500, loadStages: [{ stage: 'engine', ms: 5, ok: true }], architecture: { hybrid: false, recurrent: false, swaSize: null, mtpWeights: false }, toolsAfterSystem: true },
     { at: at(510), event: 'phase', phase: 'reading', previous: 'loading', previousMs: 500 },
     { at: at(710), event: 'phase', phase: 'writing', previous: 'reading', previousMs: 200 },
     { at: at(1710), event: 'generation', step: 0, inputTokens: 40, outputTokens: 50, generationMs: 1000, promptMs: 200, reuse },
@@ -24,6 +24,9 @@ test('turnFigures: phase durations from the turn log, one figure per generation 
   assert.equal(t.loadMs, 500);
   assert.deepEqual(t.generations, [{ step: 0, inputTokens: 40, outputTokens: 50, generationMs: 1000, promptMs: 200, tokensPerSecond: 50, reuse }]);
   assert.deepEqual(t.reply, { chars: 3, truncated: false });
+  // The template probe of the model-ready line (Task 4): the run file says whether the context could follow the tools.
+  assert.equal(t.toolsAfterSystem, true);
+  assert.equal('toolsAfterSystem' in turnFigures(lines.filter(line => line.event !== 'model-ready'), { scenario: 'A', message: 1, memory, placement: null, perfLines: [] }), false);
 });
 test('compareRuns and formatComparison: one row per tour and metric, with the change in percent', () => {
   const run = (evaluated: number, promptMs: number): BenchRun => ({ schema: 1, label: 'x', startedAt: '', gitHead: '', model: { file: 'm.gguf', bytes: 1 },

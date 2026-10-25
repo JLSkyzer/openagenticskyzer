@@ -25,8 +25,10 @@ export interface ChatMessage {
 /** A turn's figures, in ms: load, reading the request, first word of the answer, whole turn; output tokens and rate. */
 export interface TurnTiming { loadMs?: number; readMs?: number; firstTextMs?: number; totalMs: number; outputTokens?: number; tokensPerSecond?: number }
 /** The chat wrapper node-llama-cpp chose for a loaded model: its name and its segments (thought tags), as logged. */
-/** `opensThought`: the chat template opens <think> in the generation prompt (core/thought-prefill.mts). */
-export interface ChatWrapperInfo { name: string; segments: unknown; opensThought: boolean }
+/** `opensThought`: the chat template opens <think> in the generation prompt (core/thought-prefill.mts).
+ * `toolsAfterSystem`: it renders the tools after the system text, before the first message (core/prompt-layout.mts),
+ * so the project context can follow the tool block (the contextPlacement lever). */
+export interface ChatWrapperInfo { name: string; segments: unknown; opensThought: boolean; toolsAfterSystem: boolean }
 /** A model load as it happens: started, progress in (0, 1], ended (its time and chat wrapper). Only a real load
  * reports: a reused warm engine reports nothing. `retry`: a second native load begins, its progress starting again
  * from 0 — with fewer layers on the card (`fewer-layers`, the context did not fit) or on the processor (`cpu`). */
@@ -56,6 +58,9 @@ export interface CompletionOptions {
   // the answer, `text` (the template opened <think> and no </think> came).
   onReasoning?: (piece: { text: string; moved?: true; movedBack?: true }) => void;
   onStats?: (stats: GenerationStats) => void;
+  // The project's context (instructions, memory, learnings: context.mts) apart from the system message, which then
+  // holds the base alone. Passed only to a provider that declares `rendersProjectContext` (agent.mts).
+  projectContext?: string;
 }
 /** What the agent loop and compaction need from a model: the built-in engine (local-engine.mts::localProvider). */
 export interface ModelProvider {
@@ -65,4 +70,7 @@ export interface ModelProvider {
   contextWindow(options?: WindowOptions): Promise<number>;
   /** The output cap applied when no maxTokens is passed; undefined = none. */
   outputCap(): number | undefined;
+  /** It places `projectContext` itself (the local engine). Otherwise the agent folds the context back into the system
+   * message, as before (ruling F7). */
+  rendersProjectContext?: boolean;
 }

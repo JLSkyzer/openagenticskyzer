@@ -205,3 +205,36 @@ test('runAgent forwards the provider\'s reasoning and stats as thinking and stat
   assert.equal(result[1].reasoning, 'avantpensée');
   assert.equal(result[1].reasoningMs, 7);
 });
+
+test('the saved transcript has no context item, and the provider gets projectContext apart', async () => {
+  const { runAgent } = await import('../core/agent.mts');
+  const CTX = 'CTX ' + 'mémoire du projet '.repeat(200);
+  const turn = async (rendersProjectContext: boolean, projectContext?: string) => {
+    const seen: any[] = [];
+    const provider = {
+      ...(rendersProjectContext ? { rendersProjectContext: true } : {}),
+      complete: async (options: any) => { seen.push(options); return { role: 'assistant' as const, content: 'réponse' }; },
+      contextWindow: async () => 16384,
+      outputCap: () => 1_000_000,
+    };
+    const result = await runAgent({ provider, messages: [{ role: 'user', content: 'q' }], instructions: 'BASE', ...(projectContext === undefined ? {} : { projectContext }),
+      tools: [], contextWindow: 16384, settings: { mode: 'auto', permission_mode: 'auto' }, confirm: async () => true });
+    return { options: seen[0], result };
+  };
+  // A provider that renders the context itself: the system message is the base, the context comes apart.
+  const apart = await turn(true, CTX);
+  assert.equal(apart.options.projectContext, CTX);
+  assert.equal(apart.options.messages[0].content, 'BASE');
+  assert.equal(apart.result.some(m => JSON.stringify(m).includes('CTX')), false);
+  // Any other provider (the test seam's, ruling F7): the context folded back into the system message, as today.
+  const folded = await turn(false, CTX);
+  assert.equal('projectContext' in folded.options, false);
+  assert.equal(folded.options.messages[0].content, `${CTX}\n\nBASE`);
+  assert.equal(folded.result.some(m => JSON.stringify(m).includes('CTX')), false);
+  // The estimate counts the context on both paths: the output asked for is the same, and lower than without it.
+  const none = await turn(true);
+  assert.equal('projectContext' in none.options, false);
+  assert.equal(none.options.messages[0].content, 'BASE');
+  assert.equal(apart.options.maxTokens, folded.options.maxTokens);
+  assert.ok(apart.options.maxTokens < none.options.maxTokens, `${apart.options.maxTokens} < ${none.options.maxTokens}`);
+});

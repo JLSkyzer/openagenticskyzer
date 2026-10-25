@@ -128,3 +128,12 @@ test('responseToMessage flags a reply cut at maxTokens as truncated — the engi
   assert.deepEqual(responseToMessage({ response: 'abc', metadata: { stopReason: 'maxTokens' } }, () => 'x'), { role: 'assistant', content: 'abc', truncated: true });
   assert.equal('truncated' in responseToMessage({ response: 'abc', metadata: { stopReason: 'eogToken' } }, () => 'x'), false);
 });
+
+test('\'system\' placement keeps today\'s system text byte for byte', () => {
+  const messages = [{ role: 'system' as const, content: 'BASE' }, { role: 'user' as const, content: 'Q' }];
+  // The string buildInstructions joins today: the context, a blank line, the base.
+  assert.equal((historyFromMessages(messages, { projectContext: 'C', placement: 'system' })[0] as { text: string }).text, 'C\n\nBASE');
+  assert.deepEqual(historyFromMessages(messages, { projectContext: 'C', placement: 'system' }).slice(1), [{ type: 'user', text: 'Q' }]);
+  // No context: the history of today, whatever the placement.
+  assert.deepEqual(historyFromMessages(messages, { projectContext: '', placement: 'after-tools' }), historyFromMessages(messages));
+});

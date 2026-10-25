@@ -26,6 +26,10 @@ export interface PerfLevers {
    * thought the template opens, the reply) and take a checkpoint there, so the next turn restores right at its
    * divergence (Task 3b). Shipped false: LlamaChat reads the whole prompt in one go, as today. */
   promptCheckpoint: boolean;
+  /** Where the project context (OPENAGENT.md, custom prompt, memory, learnings) goes in a local model's prompt (Task 4):
+   * `'system'` heads the system text, before the tools, as today; `'after-tools'` is its own item after the tool block,
+   * applied only to a template that renders the tools after the system text (the `[chat]` probe). Shipped 'system'. */
+  contextPlacement: 'system' | 'after-tools';
 }
 
 export const PERF_LEVERS_ENV = 'OPENAGENT_PERF_LEVERS';
@@ -38,6 +42,7 @@ export const SHIPPED_LEVERS: Readonly<PerfLevers> = Object.freeze({
   checkpointMax: 32,
   checkpointMaxMemory: null,
   promptCheckpoint: false,
+  contextPlacement: 'system',
 });
 
 /** node-llama-cpp's own checkpoint interval (3.21.1, `defaultCheckpointOptions`): below it, a memory cap is required. */
@@ -52,6 +57,7 @@ const VALID: { [K in keyof PerfLevers]: (value: unknown) => boolean } = {
   checkpointMax: positiveInteger,
   checkpointMaxMemory: value => value === null || positiveInteger(value),
   promptCheckpoint: value => typeof value === 'boolean',
+  contextPlacement: value => value === 'system' || value === 'after-tools',
 };
 
 /** The levers `env` asks for: each valid key overrides its shipped value; an unknown key, a wrong type or invalid

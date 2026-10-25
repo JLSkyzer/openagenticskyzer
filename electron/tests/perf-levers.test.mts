@@ -19,6 +19,11 @@ test('perfLevers: no variable = the shipped levers (today\'s behaviour); a valid
   assert.deepEqual(leversInEffect({}, false), { levers: SHIPPED_LEVERS, notices: [] });
   assert.deepEqual(leversInEffect(env, true), { levers: { ...SHIPPED_LEVERS, outputCap: 64 }, notices: ['[levers] actifs : outputCap=64'] });
   assert.deepEqual(leversInEffect({}, true), { levers: SHIPPED_LEVERS, notices: [] });
+  // contextPlacement (Task 4, F19): shipped 'system'; 'after-tools' accepted; any other value rejected.
+  assert.equal(SHIPPED_LEVERS.contextPlacement, 'system');
+  assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ contextPlacement: 'after-tools' }) }).levers.contextPlacement, 'after-tools');
+  const placement = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ contextPlacement: 'après' }) });
+  assert.deepEqual([placement.levers.contextPlacement, placement.rejected], ['system', ['valeur invalide : contextPlacement']]);
 });
 
 test('the checkpoint levers: shipped at node-llama-cpp\'s defaults; a shorter interval needs a memory cap', () => {

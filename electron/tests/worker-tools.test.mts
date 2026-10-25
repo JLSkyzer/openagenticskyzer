@@ -366,3 +366,25 @@ test('search_ask: true asks before a network tool runs — refused, it never run
   assert.ok(approved.events.some(e => e.kind === 'tool-start' && e.tool === 'fetch_url'), 'approved: it runs');
   assert.equal((await lastTool()).content, RAN);
 });
+
+test('two listings in a row offer the same tools in the same order', async t => {
+  const { worker, bodies, send, home, project } = await setup(t);
+  // Two global plugins, the first file's tools not in name order: the order must come from the files, every time.
+  await mkdir(join(home, 'tools'), { recursive: true });
+  await writeFile(join(home, 'tools', 'zeta.mjs'), `export function getTools() { return [{ name: 'zeta_tool', description: 'z', category: 'read', properties: {}, execute: async () => 'z' }, { name: 'beta_tool', description: 'b', category: 'read', properties: {}, execute: async () => 'b' }]; }`);
+  await writeFile(join(home, 'tools', 'alpha.mjs'), `export function getTools() { return [{ name: 'alpha_tool', description: 'a', category: 'read', properties: {}, execute: async () => 'a' }]; }`);
+  const first = await callWorker(worker, 'plugin-list', { folder: project });
+  const second = await callWorker(worker, 'plugin-list', { folder: project });
+  assert.deepEqual(first.tools, ['alpha_tool', 'zeta_tool', 'beta_tool']);
+  assert.deepEqual(second.tools, first.tools);
+  // What a turn sends: the same names in the same order, turn after turn (the head of the prompt stays the same).
+  const r1 = await send(worker);
+  await until(() => finished(r1.events), 'the first run');
+  r1.stop();
+  const r2 = await send(worker);
+  await until(() => finished(r2.events), 'the second run');
+  r2.stop();
+  const names = (body: any) => body.tools.map((tool: any) => tool.function.name);
+  assert.ok(names(bodies[0]).includes('alpha_tool'), names(bodies[0]).join(', '));
+  assert.deepEqual(names(bodies[1]), names(bodies[0]));
+});

@@ -265,7 +265,7 @@ function logModelReady(model, contextTokens, loadMs, log, load = null) {
         ...(outcome.limit === undefined ? {} : { layerLimit: outcome.limit }),
       } : {}),
       contextSize: placement?.contextSize ?? (status.loaded ? status.contextWindow : contextTokens),
-      ...(wrapper ? { wrapper: wrapper.name, segments: wrapper.segments, opensThought: wrapper.opensThought } : {}),
+      ...(wrapper ? { wrapper: wrapper.name, segments: wrapper.segments, opensThought: wrapper.opensThought, toolsAfterSystem: wrapper.toolsAfterSystem } : {}),
       ...(loadMs === undefined ? {} : { loadMs }),
       ...(load?.stages ? { loadStages: load.stages } : {}),
       ...(load?.architecture ? { architecture: load.architecture } : {}),
@@ -752,7 +752,9 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     // Windows, how run_command's shell behaves (core/system-prompt.mts).
     const offered = offeredTools(tools, agentSettings).map(tool => tool.name);
     controller.signal.throwIfAborted();
-    const { instructions } = await untilAborted(buildInstructions({ folder, home: dataHome, base: basePrompt({ tools: offered, mode: agentSettings.mode, platform: process.platform }) }), controller.signal);
+    // The base and the project context apart (Task 4): the local engine places the context; runAgent folds it back
+    // into the system message for any provider that does not (ruling F7).
+    const { base: instructions, projectContext } = await untilAborted(buildInstructions({ folder, home: dataHome, base: basePrompt({ tools: offered, mode: agentSettings.mode, platform: process.platform }) }), controller.signal);
     const emit = event => {
       const { type: kind, ...rest } = event;
       // A generation's figures feed the clock only, and never end anything: pieces may still follow (ruling T2-m4).
@@ -831,7 +833,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     postModelStatus(model);
     logModelReady(model, contextTokens, clock.timing().loadMs, log, loadFigures);
     const result = await runAgent({
-      provider, messages: collected, instructions, tools, contextWindow: contextTokens,
+      provider, messages: collected, instructions, projectContext, tools, contextWindow: contextTokens,
       settings: agentSettings,
       signal: controller.signal, confirm, emit,
     });

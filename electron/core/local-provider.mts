@@ -6,6 +6,7 @@
 // every call (no session state kept between turns), which matches agent.mts's own stateless loop exactly:
 // it rebuilds `messages` fresh every iteration, so there is no session to keep in sync.
 import type { ChatMessage, ToolCall, ToolSchema } from './model-types.mts';
+import { contextItem } from './prompt-layout.mts';
 
 // ── node-llama-cpp's own shapes, declared locally (structural — no runtime import) ──────────────────────
 export interface GgufFunctionSpec { description?: string; params?: unknown }
@@ -46,8 +47,11 @@ const isAssistant = (role: string) => role === 'assistant' || role === 'ai';
  * Our flat `messages` array (system, user, assistant-with-tool_calls, tool-with-result, …) → node-llama-cpp's
  * history. A tool-role message is never its own item: it is folded INTO the `functionCall` it answers
  * (matched by id), because node-llama-cpp keeps a call and its result together on the model's own turn.
+ * `projectContext` (the project's instructions, memory, learnings: context.mts) goes where `placement` says: `'system'`
+ * (the default) heads the system text as today (`context\n\nbase`); `'after-tools'` is its own item right after the
+ * system one (prompt-layout.mts), where a template that renders the tools inside the system part puts it after them.
  */
-export function historyFromMessages(messages: readonly ChatMessage[]): GgufHistoryItem[] {
+export function historyFromMessages(messages: readonly ChatMessage[], options: { projectContext?: string; placement?: 'system' | 'after-tools' } = {}): GgufHistoryItem[] {
   const resultsByCallId = new Map<string, string>();
   for (const message of messages) if (message.role === 'tool' && message.tool_call_id) resultsByCallId.set(message.tool_call_id, message.content);
   const history: GgufHistoryItem[] = [];
@@ -67,6 +71,12 @@ export function historyFromMessages(messages: readonly ChatMessage[]): GgufHisto
     }
     // 'tool' messages are consumed above, not appended on their own.
   }
+  const context = options.projectContext;
+  if (!context) return history;
+  const system = history[0]?.type === 'system' ? 1 : 0;
+  if (options.placement === 'after-tools') history.splice(system, 0, contextItem(context));
+  else if (system) history[0] = { type: 'system', text: [context, (history[0] as { text: string }).text].filter(Boolean).join('\n\n') };
+  else history.unshift({ type: 'system', text: context });
   return history;
 }
 

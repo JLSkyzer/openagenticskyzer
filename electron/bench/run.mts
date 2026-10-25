@@ -3,7 +3,7 @@
 //
 //   node --experimental-strip-types bench/run.mts --model <gguf> --label <name> [--scenarios A,B,C] [--messages 1-4]
 //        [--context 32768] [--lever key=value]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dir>|none]
-//        [--turn-timeout <minutes>] [--install-timeout <minutes>] [--out <dir>]
+//        [--turn-timeout <minutes>] [--install-timeout <minutes>] [--touch-memory <message>] [--out <dir>]
 //
 // The 27B command of the benchmark protocol (with the user present, never while a game runs), word for word:
 //
@@ -118,19 +118,23 @@ function parseOptions() {
       model: { type: 'string' }, label: { type: 'string' }, scenarios: { type: 'string', default: 'A,B,C' }, messages: { type: 'string' },
       context: { type: 'string', default: '32768' }, lever: { type: 'string', multiple: true, default: [] }, out: { type: 'string' },
       backend: { type: 'string' }, 'cuda-pack': { type: 'string' }, 'turn-timeout': { type: 'string', default: '15' },
-      'install-timeout': { type: 'string', default: '10' },
+      'install-timeout': { type: 'string', default: '10' }, 'touch-memory': { type: 'string' },
     },
     allowPositionals: false,
   });
 }
 try { parsed = parseOptions(); } catch (error) { fail(2, error instanceof Error ? error.message : String(error)); }
 const { values } = parsed;
-if (!values.model || !values.label) fail(2, 'Usage : bench/run.mts --model <gguf> --label <nom> [--scenarios A,B,C] [--messages 1-4] [--context 32768] [--lever clé=valeur]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dossier>|none] [--turn-timeout <minutes>] [--install-timeout <minutes>] [--out <dossier>]');
+if (!values.model || !values.label) fail(2, 'Usage : bench/run.mts --model <gguf> --label <nom> [--scenarios A,B,C] [--messages 1-4] [--context 32768] [--lever clé=valeur]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dossier>|none] [--turn-timeout <minutes>] [--install-timeout <minutes>] [--touch-memory <message>] [--out <dossier>]');
 const scenarios = values.scenarios.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
 if (!scenarios.length || scenarios.some(s => !['A', 'B', 'C'].includes(s))) fail(2, `Scénarios inconnus : ${values.scenarios} (A, B, C)`);
 // `--messages n`: A plays its first n messages only (the scenario subset a lever targets, e.g. A·1–A·3).
 const messageCount = values.messages === undefined ? SCENARIO_A.length : Number(values.messages);
 if (!Number.isInteger(messageCount) || messageCount < 1 || messageCount > SCENARIO_A.length) fail(2, `--messages invalide : ${values.messages} (1 à ${SCENARIO_A.length})`);
+// `--touch-memory n` (Task 4): a line appended to A's project memory before message n (2 to the last played), as a
+// save_memory would: what the context placement lever is measured on.
+const touchMemory = values['touch-memory'] === undefined ? null : Number(values['touch-memory']);
+if (touchMemory !== null && (!scenarios.includes('A') || !Number.isInteger(touchMemory) || touchMemory < 2 || touchMemory > messageCount)) fail(2, `--touch-memory invalide : ${values['touch-memory']} (un message de A, 2 à ${messageCount})`);
 const context = values.context === 'max' ? 'max' : Number(values.context);
 if (!(CONTEXTS as readonly unknown[]).includes(context)) fail(2, `Contexte invalide : ${values.context} (${CONTEXTS.join(', ')})`);
 const explicitBackend = values.backend as Backend | undefined;
@@ -177,6 +181,7 @@ const run: BenchRun = {
   settings: { local_context: context as number | 'max' }, levers: { ...levers }, askedLevers: { ...levers },
   toolDefinitions: { chars: 0, tokens: null }, turns: [],
   backend: null, nodeLlamaCpp, qualityGate: modelBytes > QUALITY_MIN_BYTES, failures: [],
+  ...(touchMemory === null ? {} : { touchMemory }),
 };
 const failures: string[] = [];
 /** Folders a failure message may name, longest first: replaced by a placeholder, never written. */
@@ -293,7 +298,7 @@ try {
       await copyFile(FIXTURE_B, join(folder, SCENARIO_B_FILE));
       groups.push({ scenario: 'B', folder, messages: [SCENARIO_B_MESSAGE] });
     }
-    await session('session-ab', { home: await home('home-ab'), groups, settle: [] });
+    await session('session-ab', { home: await home('home-ab'), groups, settle: [], touchMemoryBefore: touchMemory });
   }
   if (scenarios.includes('C') && !interrupted) {
     const dir = await home('home-c');

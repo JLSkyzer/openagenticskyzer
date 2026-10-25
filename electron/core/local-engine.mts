@@ -16,6 +16,7 @@ import { untilAborted } from './abortable.mts';
 import { ReplyAccumulator, type SplitPiece } from './reasoning-split.mts';
 import { opensThought, type ThoughtSegment } from './thought-prefill.mts';
 import { perfLevers, type PerfLevers } from './perf-levers.mts';
+import { toolsAfterSystem } from './prompt-layout.mts';
 import { reuseOf, commonPrefixLength, type PromptCheckpointFigures } from './reuse.mts';
 
 /** What the engine context is sized from: the « Contexte des modèles locaux » setting. max_tokens takes no part
@@ -35,6 +36,8 @@ export interface LocalCompletionOptions {
   onReasoning?: CompletionOptions['onReasoning'];
   onStats?: CompletionOptions['onStats'];
   maxTokens?: number;
+  /** The project context, apart from the system message (model-types.mts::CompletionOptions). */
+  projectContext?: string;
   contextRequest?: ContextRequest;
   /** Follows the load this call may cause (model-types.mts::WindowOptions). */
   onLoad?: WindowOptions['onLoad'];
@@ -518,7 +521,8 @@ function keep(p: { modelPath: string; contextSize: number; generation: number; l
     reasoning: chat.chatWrapper instanceof JinjaTemplateChatWrapper ? chat.chatWrapper.reasoning ?? true : true,
     thought: segments?.thought as ThoughtSegment | undefined,
   });
-  const wrapper: ChatWrapperInfo = { name: chat.chatWrapper.wrapperName, segments: JSON.parse(JSON.stringify(segments ?? null)), opensThought: thinks };
+  // Does the template render the tools after the system text? Only then can the project context follow them (Task 4).
+  const wrapper: ChatWrapperInfo = { name: chat.chatWrapper.wrapperName, segments: JSON.parse(JSON.stringify(segments ?? null)), opensThought: thinks, toolsAfterSystem: toolsAfterSystem(chat.chatWrapper) };
   loaded = { path: p.modelPath, requested: p.contextSize, generation: p.generation, llama, model, context, chat, wrapper, outcome: p.outcome, vramBefore: p.vramBefore };
   console.info(placementLogLine({ backend: backendOf(llama), gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, useMmap: model.useMmap, vramBefore: p.vramBefore, padding: llama.vramPaddingSize, contextSize: context.contextSize, outcome: p.outcome }));
   console.info(chatWrapperLogLine(wrapper));
@@ -531,7 +535,7 @@ function keep(p: { modelPath: string; contextSize: number; generation: number; l
  * the template declares none, and a reasoning model's tags are then caught by reasoning-split.mts only), and whether
  * the template opens <think> itself (every reply then starts as reasoning). */
 export function chatWrapperLogLine(info: ChatWrapperInfo): string {
-  return `[chat] wrapper ${info.name} · segments ${JSON.stringify(info.segments ?? null)} · réflexion ouverte par le modèle de conversation : ${info.opensThought ? 'oui' : 'non'}`;
+  return `[chat] wrapper ${info.name} · segments ${JSON.stringify(info.segments ?? null)} · réflexion ouverte par le modèle de conversation : ${info.opensThought ? 'oui' : 'non'} · contexte après les outils : ${info.toolsAfterSystem ? 'oui' : 'non'}`;
 }
 
 /** The chat wrapper of the loaded `modelPath`, or null when it is not the model loaded now. Never loads anything. */
@@ -789,7 +793,10 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
   let promptCheckpoint: PromptCheckpointFigures | null = null;
   let response: Awaited<ReturnType<LlamaChat['generateResponse']>>;
   try {
-    const history = historyFromMessages(options.messages);
+    // The project context after the tool block only when the lever asks AND this template renders the tools after
+    // the system text (the `[chat]` probe); otherwise it heads the system text, as today (Task 4).
+    const placement = levers.contextPlacement === 'after-tools' && wrapper.toolsAfterSystem ? 'after-tools' : 'system';
+    const history = historyFromMessages(options.messages, { projectContext: options.projectContext, placement });
     const functions = toGgufFunctions(options.tools ?? []);
     const generate = () => tracked(chat.generateResponse(chatHistoryOf(history), {
       functions: functions as ChatModelFunctions | undefined,
@@ -848,8 +855,10 @@ export function localProvider(modelPath: string, request: ContextRequest = DEFAU
     complete: (options: Omit<LocalCompletionOptions, 'modelPath' | 'contextRequest'>) => completeLocal({
       modelPath, messages: options.messages, tools: options.tools, signal: options.signal, onDelta: options.onDelta,
       onReasoning: options.onReasoning, onStats: options.onStats, maxTokens: options.maxTokens,
-      contextRequest: request,
+      projectContext: options.projectContext, contextRequest: request,
     }),
+    // completeLocal places the project context itself (historyFromMessages): the agent passes it apart.
+    rendersProjectContext: true,
     contextWindow: (options?: WindowOptions) => engineContextSize(modelPath, request, options),
     outputCap: (): number | undefined => perfLevers().outputCap,
   };

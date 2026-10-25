@@ -50,5 +50,8 @@ export async function buildInstructions(options: { folder: string; home: string;
   if (learned.length) blocks.push(`[LEÇONS CONFIRMÉES]\n${learned.join('\n').slice(0, 6000)}\n[FIN LEÇONS]`);
   const prefix = blocks.join('\n\n');
   if (prefix.length > 20000) warnings.push('Contexte persistant tronqué à 20 000 caractères');
-  return { instructions: [prefix.slice(0, 20000), options.base].filter(Boolean).join('\n\n'), warnings: [...new Set(warnings)] };
+  // `projectContext` and `base` apart (Task 4): the local engine may place the context after the tool block.
+  // `instructions` is still their join, the system text every caller had until then.
+  const projectContext = prefix.slice(0, 20000);
+  return { instructions: [projectContext, options.base].filter(Boolean).join('\n\n'), warnings: [...new Set(warnings)], base: options.base, projectContext };
 }

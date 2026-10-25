@@ -15,7 +15,8 @@
 import { Worker } from 'node:worker_threads';
 import { createServer } from 'node:http';
 import { createReadStream, existsSync } from 'node:fs';
-import { lstat, readFile, readdir, writeFile } from 'node:fs/promises';
+import { appendFile, lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { metadataDirectory } from '../core/json-store.mts';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { turnLogDir } from '../core/turn-log.mts';
@@ -49,6 +50,19 @@ export interface SessionConfig extends Common {
   groups: ChildGroup[];
   /** Folders whose indexing (started by the worker itself: restore_last_folder) must settle before the first send. */
   settle: string[];
+  /** `--touch-memory n` (Task 4): before A's message n, a line is appended to A's project memory.md (null: never). */
+  touchMemoryBefore?: number | null;
+}
+
+/** What `--touch-memory` appends to the project memory: a change in the project context, as a save_memory makes. */
+export const TOUCH_MEMORY_TEXT = "\n<!-- bench -->\n- Le banc d'essai a noté une préférence.";
+
+/** Appends TOUCH_MEMORY_TEXT to `folder`'s project memory.md, at the path the worker itself reads (context.mts:
+ * metadataDirectory), creating it when absent. */
+export async function touchProjectMemory(folder: string): Promise<void> {
+  const dir = await metadataDirectory(folder);
+  await mkdir(dir, { recursive: true });
+  await appendFile(join(dir, 'memory.md'), TOUCH_MEMORY_TEXT, 'utf8');
 }
 export type ChildConfig = InstallConfig | SessionConfig;
 export interface ChildResult {
@@ -250,6 +264,10 @@ export async function runSession(config: SessionConfig, save: (result: ChildResu
         if (interrupted) break;
         const message = index + 1;
         const name = `${group.scenario}·${message}`;
+        if (group.scenario === 'A' && config.touchMemoryBefore === message) {
+          await touchProjectMemory(folder);
+          console.info(`[bench] mémoire du projet modifiée avant ${name}`);
+        }
         console.info(`[bench] ${name}`);
         const { runId, end, timedOut } = await sendAndWait(worker, folder, text, config.turnTimeoutMs);
         if (timedOut) result.failures.push(`${name} : délai dépassé (${Math.round(config.turnTimeoutMs / 1000)} s), arrêté`);

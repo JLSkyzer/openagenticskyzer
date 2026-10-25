@@ -42,6 +42,8 @@ export interface BenchRun {
   qualityGate?: boolean;
   /** What failed: a turn not done, a timeout, a quality miss, a session that did not end. No path in them. */
   failures?: string[];
+  /** `--touch-memory`: the A message before which the project memory was changed (absent: never). */
+  touchMemory?: number;
 }
 
 type Line = Record<string, unknown>;
@@ -164,7 +166,8 @@ export function compareRuns(before: BenchRun, after: BenchRun): ComparisonRow[] 
 /** The caps the protocol keeps equal on both sides: they bound a run, they are not the lever under test. */
 const CAPS = ['outputCap', 'thoughtTokens'] as const;
 
-/** Why `before` and `after` cannot be compared: another model, context, backend or node-llama-cpp version, or other caps. The lever under
+/** Why `before` and `after` cannot be compared: another model, context, backend or node-llama-cpp version, other caps, or
+ * the project memory changed before another message (`--touch-memory`). The lever under
  * test may differ (it is the point of the comparison). [] = comparable. */
 export function comparability(before: BenchRun, after: BenchRun): string[] {
   const issues: string[] = [];
@@ -176,6 +179,8 @@ export function comparability(before: BenchRun, after: BenchRun): string[] {
   if (backend(before) !== backend(after)) issues.push(`moteur différent : ${backend(before)} → ${backend(after)}`);
   const engine = (run: BenchRun) => run.nodeLlamaCpp ?? '?';
   if (engine(before) !== engine(after)) issues.push(`node-llama-cpp différent : ${engine(before)} → ${engine(after)}`);
+  const touched = (run: BenchRun) => (run.touchMemory === undefined ? 'jamais' : `avant A·${run.touchMemory}`);
+  if (touched(before) !== touched(after)) issues.push(`mémoire du projet modifiée différemment : ${touched(before)} → ${touched(after)}`);
   for (const cap of CAPS) {
     const a = before.levers?.[cap];
     const b = after.levers?.[cap];

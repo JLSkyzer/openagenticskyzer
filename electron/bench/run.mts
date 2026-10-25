@@ -29,7 +29,7 @@
 // over 1 GiB, checked before each session), 4 a scenario failed. The partial results are written either way.
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, openSync, closeSync } from 'node:fs';
 import os from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -94,10 +94,12 @@ let child: ChildProcess | null = null;
 function stopChild(): void {
   if (child?.connected) child.send({ type: 'stop' }, () => {});
 }
-/** Runs one child step; past `limitMs` (when given) the child is killed, and `killed` says so. */
-function runChild(config: ChildConfig, configPath: string, logPath: string, limitMs: number | null): Promise<{ code: number | null; killed: boolean }> {
+/** Runs one child step; past `limitMs` (when given) the child is killed, and `killed` says so. A stop asked before
+ * the spawn (M3) spawns nothing: `skipped`. */
+function runChild(config: ChildConfig, configPath: string, logPath: string, limitMs: number | null): Promise<{ code: number | null; killed: boolean; skipped?: true }> {
   return new Promise((done, reject) => {
     void writeFile(configPath, JSON.stringify(config)).then(() => {
+      if (interrupted) { done({ code: null, killed: false, skipped: true }); return; }
       const fd = openSync(logPath, 'a');
       let killed = false;
       const spawned = spawn(process.execPath, ['--experimental-strip-types', CHILD, configPath], { cwd: ELECTRON, stdio: ['ignore', fd, fd, 'ipc'], windowsHide: true });
@@ -105,7 +107,6 @@ function runChild(config: ChildConfig, configPath: string, logPath: string, limi
       const limit = limitMs === null ? null : setTimeout(() => { killed = true; spawned.kill(); }, limitMs);
       spawned.once('error', error => { if (limit) clearTimeout(limit); closeSync(fd); child = null; reject(error); });
       spawned.once('exit', code => { if (limit) clearTimeout(limit); closeSync(fd); child = null; done({ code, killed }); });
-      if (interrupted) stopChild();
     }, reject);
   });
 }
@@ -189,13 +190,22 @@ const withoutPaths = (text: string) => hidden.reduce((acc, [path, label]) => {
 /** The turns of the sessions already ended, and those of the one in progress (its partial results file). */
 const ended: BenchRun['turns'] = [];
 let partialPath: string | null = null;
-async function writeResults(): Promise<void> {
+/** The writes of the results file, one after the other (M4: a second Ctrl+C writes while the main flow may too); each
+ * goes to a temp file renamed over the results, so a reader never sees half a file. */
+let writing: Promise<void> = Promise.resolve();
+function writeResults(): Promise<void> {
+  const next = writing.then(writeResultsNow, writeResultsNow);
+  writing = next.catch(() => {});
+  return next;
+}
+async function writeResultsNow(): Promise<void> {
   const partial: ChildResult | null = partialPath ? await readFile(partialPath, 'utf8').then(text => JSON.parse(text) as ChildResult, () => null) : null;
   run.turns = [...ended, ...(partial?.turns ?? [])];
   const backends = [...new Set(run.turns.map(turn => turn.placement?.backend).filter((b): b is string => Boolean(b)))];
   run.backend = backends.length ? backends.join(', ') : null;
   run.failures = [...failures, ...(partial?.failures ?? [])].map(withoutPaths);
-  await writeFile(resultPath, `${JSON.stringify(run, null, 2)}\n`);
+  await writeFile(`${resultPath}.tmp`, `${JSON.stringify(run, null, 2)}\n`);
+  await rename(`${resultPath}.tmp`, resultPath);
 }
 
 let interrupted = false;
@@ -214,14 +224,16 @@ process.on('SIGINT', () => {
 });
 
 async function step(name: string, config: ChildConfig): Promise<ChildResult | null> {
+  if (interrupted) return null;
   console.info(`[bench] ${name}`);
   partialPath = config.resultPath;
   let code: number | null = null;
   const limitMs = config.kind === 'install' ? config.timeoutMs + CHILD_GRACE_MS : null;
   try {
-    const ended = await runChild(config, join(temp, `${name}.config.json`), logPath, limitMs);
-    code = ended.code;
-    if (ended.killed) failures.push(`${name} : processus tué après ${Math.round(limitMs! / 60000)} min`);
+    const exit = await runChild(config, join(temp, `${name}.config.json`), logPath, limitMs);
+    if (exit.skipped) { partialPath = null; return null; }
+    code = exit.code;
+    if (exit.killed) failures.push(`${name} : processus tué après ${Math.round(limitMs! / 60000)} min`);
   } catch (error) {
     failures.push(`${name} : processus non lancé — ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -248,6 +260,8 @@ let applied: Readonly<PerfLevers> | null = null;
 async function session(name: string, config: Omit<SessionConfig, 'kind' | 'model' | 'context' | 'levers' | 'backend' | 'requireBackend' | 'qualityGate' | 'turnTimeoutMs' | 'resultPath'>): Promise<ChildResult | null> {
   if (interrupted) return null;
   await guard();
+  // A Ctrl+C during the guard (M3): no session starts (step and runChild check again before the spawn).
+  if (interrupted) return null;
   const result = await step(name, {
     ...config, kind: 'session', model, context: context as number | 'max', levers: leversJson, backend, requireBackend,
     qualityGate: run.qualityGate ?? false, turnTimeoutMs, resultPath: join(temp, `${name}.result.json`),

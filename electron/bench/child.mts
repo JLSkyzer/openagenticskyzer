@@ -199,8 +199,10 @@ export async function installPack(config: InstallConfig): Promise<ChildResult> {
     clearTimeout(giveUp);
     current = null;
     const after = await callWorker(worker, 'cuda-pack-status');
-    if (why) result.failures.push(`pack CUDA non installé : ${why}, installation annulée (${end.state})`);
-    else if (end.state !== 'done' || after?.state !== 'installed') result.failures.push(`pack CUDA non installé : ${end.state}${end.message ? ` — ${end.message}` : ''}`);
+    // Installed is installed, even when the bound fell at the same moment (M6).
+    const installed = end.state === 'done' && after?.state === 'installed';
+    if (!installed && why) result.failures.push(`pack CUDA non installé : ${why}, installation annulée`);
+    else if (!installed) result.failures.push(`pack CUDA non installé : ${end.state}${end.message ? ` — ${end.message}` : ''}`);
   } catch (error) {
     result.failures.push(`pack CUDA non installé : ${error instanceof Error ? error.message : String(error)}`);
   } finally {

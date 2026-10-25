@@ -85,9 +85,19 @@ test('classifyReuse: cold, reused, and a hybrid checkpoint miss', () => {
   assert.equal(classifyReuse(fig(0, 0, 4074, 4074)), 'froid');
   assert.equal(classifyReuse(fig(4184, 4091, 4120, 30)), 'réutilisé');
   assert.equal(classifyReuse(fig(4184, 4091, 4120, 4120)), 'point de sauvegarde manquant');
+  // Held, but diverging at the start (the Task 4 case): 0 reused is not « réutilisé ».
+  assert.equal(classifyReuse(fig(4184, 0, 4120, 4120)), 'divergent dès le début');
+  assert.equal(classifyReuse(fig(4184, 16, 4120, 4120)), 'divergent dès le début');
+  assert.equal(classifyReuse(fig(4184, 17, 4120, 4120)), 'point de sauvegarde manquant');
+  // The prefix taken back, but the whole prompt read again anyway: not « réutilisé ».
+  assert.equal(classifyReuse({ ...fig(4184, 4091, 4120, 4110), reused: 4091 }), 'point de sauvegarde manquant');
 });
 test('divergenceAt and the report line', () => {
-  assert.equal(divergenceAt(fig(0, 0, 4074, 4074), fig(4184, 4071, 4120, 4120)), 'dans le prompt précédent');
+  assert.equal(divergenceAt(fig(0, 0, 4074, 4074), fig(4184, 4050, 4120, 4120)), 'dans le prompt précédent');
+  // Within RESTORE_SLACK of an approximate prompt end: the reply side.
+  assert.equal(divergenceAt(fig(0, 0, 4074, 4074), fig(4184, 4071, 4120, 4120)), 'dans la réponse précédente');
+  assert.equal(divergenceAt(fig(0, 0, 4074, 4074), fig(4184, 4058, 4120, 4120)), 'dans la réponse précédente');
+  assert.equal(divergenceAt(fig(0, 0, 4074, 4074), fig(4184, 4057, 4120, 4120)), 'dans le prompt précédent');
   assert.equal(divergenceAt(fig(0, 0, 4074, 4074), fig(4184, 4080, 4120, 4120)), 'dans la réponse précédente');
   assert.equal(divergenceAt(null, fig(0, 0, 1, 1)), null);
   // A·2 holds fig(4184, 4080, 4120, 4120) after A·1's fig(0, 0, 4074, 4074).

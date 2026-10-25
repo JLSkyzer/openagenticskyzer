@@ -6,7 +6,9 @@
 //
 // Verdicts:
 // - « froid »: the sequence held nothing (the first generation of a process, or after a reload);
-// - « réutilisé »: everything held up to the divergence was reused, give or take RESTORE_SLACK tokens;
+// - « divergent dès le début »: something was held, but the prompt diverged within its first RESTORE_SLACK tokens;
+// - « réutilisé »: everything held up to the divergence was reused, give or take RESTORE_SLACK tokens, and the prompt
+//   was not read again in full;
 // - « point de sauvegarde manquant »: the common prefix was there, but it was read again. On a hybrid or recurrent
 //   model (no attention-only KV to truncate), the state can only be restored from a checkpoint taken before the
 //   divergence: none was close enough.
@@ -20,18 +22,23 @@ import type { BenchRun } from './metrics.mts';
 
 /** Tokens: re-reading this little after the divergence still counts as reuse. */
 export const RESTORE_SLACK = 16;
-export type ReuseVerdict = 'froid' | 'réutilisé' | 'point de sauvegarde manquant';
+export type ReuseVerdict = 'froid' | 'divergent dès le début' | 'réutilisé' | 'point de sauvegarde manquant';
 export type Divergence = 'dans le prompt précédent' | 'dans la réponse précédente';
 
 export function classifyReuse(r: ReuseFigures): ReuseVerdict {
   if (r.held === 0) return 'froid';
-  return r.reused >= r.common - RESTORE_SLACK ? 'réutilisé' : 'point de sauvegarde manquant';
+  // Held, but diverging within the first tokens: nothing could be reused (the system text or the tools changed).
+  if (r.common <= RESTORE_SLACK) return 'divergent dès le début';
+  // Reused = the common prefix taken back AND the prompt not read again in full.
+  return r.reused >= r.common - RESTORE_SLACK && r.evaluated < r.prompt - RESTORE_SLACK ? 'réutilisé' : 'point de sauvegarde manquant';
 }
 
-/** null when there is no previous generation; else whether the common prefix ends before the previous prompt's end. */
+/** null when there is no previous generation; else whether the common prefix ends before the previous prompt's end.
+ * `prompt` is approximate (F27: about one token off), so the prefix must end more than RESTORE_SLACK tokens before it
+ * to count as « dans le prompt précédent ». */
 export function divergenceAt(previous: ReuseFigures | null, current: ReuseFigures): Divergence | null {
   if (previous === null) return null;
-  return current.common < previous.prompt ? 'dans le prompt précédent' : 'dans la réponse précédente';
+  return current.common < previous.prompt - RESTORE_SLACK ? 'dans le prompt précédent' : 'dans la réponse précédente';
 }
 
 /**

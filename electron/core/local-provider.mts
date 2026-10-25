@@ -6,7 +6,8 @@
 // every call (no session state kept between turns), which matches agent.mts's own stateless loop exactly:
 // it rebuilds `messages` fresh every iteration, so there is no session to keep in sync.
 import type { ChatMessage, ToolCall, ToolSchema } from './model-types.mts';
-import { contextItem } from './prompt-layout.mts';
+import { contextItem, type ThoughtKept } from './prompt-layout.mts';
+import { currentTurnStart } from './request-context.mts';
 
 // ── node-llama-cpp's own shapes, declared locally (structural — no runtime import) ──────────────────────
 export interface GgufFunctionSpec { description?: string; params?: unknown }
@@ -14,8 +15,11 @@ export type GgufFunctions = Record<string, GgufFunctionSpec>;
 export type GgufHistoryItem =
   | { type: 'system'; text: string }
   | { type: 'user'; text: string }
-  | { type: 'model'; response: Array<string | GgufFunctionCall> };
+  | { type: 'model'; response: GgufModelPart[] };
+export type GgufModelPart = string | GgufFunctionCall | GgufThoughtSegment;
 export interface GgufFunctionCall { type: 'functionCall'; name: string; params: unknown; result?: unknown }
+/** A reply's reasoning sent back (the keepThought lever): the thought segment the model generated, closed. */
+export interface GgufThoughtSegment { type: 'segment'; segmentType: 'thought'; text: string; ended: true }
 export interface GgufResponse {
   response: string;
   functionCalls?: readonly { functionName: string; params: unknown }[];
@@ -50,6 +54,8 @@ const isAssistant = (role: string) => role === 'assistant' || role === 'ai';
  * `projectContext` (the project's instructions, memory, learnings: context.mts) goes where `placement` says: `'system'`
  * (the default) heads the system text as today (`context\n\nbase`); `'after-tools'` is its own item right after the
  * system one (prompt-layout.mts), where a template that renders the tools inside the system part puts it after them.
+ * An assistant message's `reasoning` (present only when request-context.mts kept it: the keepThought lever) is its model
+ * item's first part, as the thought segment it was generated as.
  */
 export function historyFromMessages(messages: readonly ChatMessage[], options: { projectContext?: string; placement?: 'system' | 'after-tools' } = {}): GgufHistoryItem[] {
   const resultsByCallId = new Map<string, string>();
@@ -59,7 +65,8 @@ export function historyFromMessages(messages: readonly ChatMessage[], options: {
     if (message.role === 'system') history.push({ type: 'system', text: textOf(message.content) });
     else if (isUser(message.role)) history.push({ type: 'user', text: textOf(message.content) });
     else if (isAssistant(message.role)) {
-      const response: Array<string | GgufFunctionCall> = [];
+      const response: GgufModelPart[] = [];
+      if (typeof message.reasoning === 'string' && message.reasoning) response.push({ type: 'segment', segmentType: 'thought', text: message.reasoning, ended: true });
       const text = textOf(message.content);
       if (text) response.push(text);
       for (const call of message.tool_calls ?? []) {
@@ -78,6 +85,19 @@ export function historyFromMessages(messages: readonly ChatMessage[], options: {
   else if (system) history[0] = { type: 'system', text: [context, (history[0] as { text: string }).text].filter(Boolean).join('\n\n') };
   else history.unshift({ type: 'system', text: context });
   return history;
+}
+
+/** `messages` without the reasoning a template would not render back where the model wrote it (prompt-layout.mts
+ * `thoughtKept`, F15): before the last user message unless `kept.previousTurn`, from it on unless `kept.currentTurn`.
+ * The same array when both are kept; never modified. */
+export function thoughtsWhereKept(messages: readonly ChatMessage[], kept: Readonly<ThoughtKept>): readonly ChatMessage[] {
+  if (kept.previousTurn && kept.currentTurn) return messages;
+  const start = currentTurnStart(messages);
+  return messages.map((message, index) => {
+    if (!('reasoning' in message) || (index < start ? kept.previousTurn : kept.currentTurn)) return message;
+    const { reasoning: _reasoning, ...rest } = message;
+    return rest;
+  });
 }
 
 /** node-llama-cpp's response → our ChatMessage, in the exact shape `ModelProvider.complete()` returns: no

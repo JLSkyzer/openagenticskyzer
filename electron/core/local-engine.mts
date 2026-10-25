@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import os from 'node:os';
 import { LlamaChat, JinjaTemplateChatWrapper, InsufficientMemoryError, readGgufFileInfo, GgufInsights, GgmlType, type Llama, type LlamaModel, type LlamaContext, type LlamaContextSequence, type TokenPredictor, type ChatWrapper, type ChatHistoryItem, type ChatModelFunctions, type Token, type Tokenizer } from 'node-llama-cpp';
-import { historyFromMessages, responseToMessage, toGgufFunctions, type GgufFunctions, type GgufHistoryItem } from './local-provider.mts';
+import { historyFromMessages, responseToMessage, thoughtsWhereKept, toGgufFunctions, type GgufFunctions, type GgufHistoryItem } from './local-provider.mts';
 import type { ChatMessage, ChatWrapperInfo, CompletionOptions, GenerationStats, LoadStage, ModelArchitecture, ModelProvider, ToolSchema, WindowOptions } from './model-types.mts';
 import { localContextSize, DEFAULT_LOCAL_CONTEXT, type LocalContextSetting } from './context-budget.mts';
 import { runtimeLlama, runtimeGeneration, backendOf } from './llama-runtime.mts';
@@ -16,7 +16,7 @@ import { untilAborted } from './abortable.mts';
 import { ReplyAccumulator, type SplitPiece } from './reasoning-split.mts';
 import { opensThought, type ThoughtSegment } from './thought-prefill.mts';
 import { perfLevers, type PerfLevers } from './perf-levers.mts';
-import { toolsAfterSystem } from './prompt-layout.mts';
+import { toolsAfterSystem, thoughtKept } from './prompt-layout.mts';
 import { reuseOf, commonPrefixLength, type PromptCheckpointFigures } from './reuse.mts';
 
 /** What the engine context is sized from: the « Contexte des modèles locaux » setting. max_tokens takes no part
@@ -450,7 +450,7 @@ export function sequenceOptions(levers: Readonly<PerfLevers>): { checkpoints: { 
 export function chatHistoryOf(history: readonly GgufHistoryItem[]): ChatHistoryItem[] {
   return history.map((item): ChatHistoryItem => item.type !== 'model' ? item : {
     type: 'model',
-    response: item.response.map(part => typeof part === 'string' ? part : { ...part, result: part.result }),
+    response: item.response.map(part => typeof part === 'string' || part.type === 'segment' ? part : { ...part, result: part.result }),
   });
 }
 
@@ -522,7 +522,7 @@ function keep(p: { modelPath: string; contextSize: number; generation: number; l
     thought: segments?.thought as ThoughtSegment | undefined,
   });
   // Does the template render the tools after the system text? Only then can the project context follow them (Task 4).
-  const wrapper: ChatWrapperInfo = { name: chat.chatWrapper.wrapperName, segments: JSON.parse(JSON.stringify(segments ?? null)), opensThought: thinks, toolsAfterSystem: toolsAfterSystem(chat.chatWrapper) };
+  const wrapper: ChatWrapperInfo = { name: chat.chatWrapper.wrapperName, segments: JSON.parse(JSON.stringify(segments ?? null)), opensThought: thinks, toolsAfterSystem: toolsAfterSystem(chat.chatWrapper), thoughtKept: thoughtKept(chat.chatWrapper) };
   loaded = { path: p.modelPath, requested: p.contextSize, generation: p.generation, llama, model, context, chat, wrapper, outcome: p.outcome, vramBefore: p.vramBefore };
   console.info(placementLogLine({ backend: backendOf(llama), gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, useMmap: model.useMmap, vramBefore: p.vramBefore, padding: llama.vramPaddingSize, contextSize: context.contextSize, outcome: p.outcome }));
   console.info(chatWrapperLogLine(wrapper));
@@ -535,7 +535,7 @@ function keep(p: { modelPath: string; contextSize: number; generation: number; l
  * the template declares none, and a reasoning model's tags are then caught by reasoning-split.mts only), and whether
  * the template opens <think> itself (every reply then starts as reasoning). */
 export function chatWrapperLogLine(info: ChatWrapperInfo): string {
-  return `[chat] wrapper ${info.name} · segments ${JSON.stringify(info.segments ?? null)} · réflexion ouverte par le modèle de conversation : ${info.opensThought ? 'oui' : 'non'} · contexte après les outils : ${info.toolsAfterSystem ? 'oui' : 'non'}`;
+  return `[chat] wrapper ${info.name} · segments ${JSON.stringify(info.segments ?? null)} · réflexion ouverte par le modèle de conversation : ${info.opensThought ? 'oui' : 'non'} · contexte après les outils : ${info.toolsAfterSystem ? 'oui' : 'non'} · réflexion renvoyée rendue en place : ${info.thoughtKept.previousTurn ? 'oui' : 'non'} (tour précédent), ${info.thoughtKept.currentTurn ? 'oui' : 'non'} (tour en cours)`;
 }
 
 /** The chat wrapper of the loaded `modelPath`, or null when it is not the model loaded now. Never loads anything. */
@@ -796,7 +796,8 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
     // The project context after the tool block only when the lever asks AND this template renders the tools after
     // the system text (the `[chat]` probe); otherwise it heads the system text, as today (Task 4).
     const placement = levers.contextPlacement === 'after-tools' && wrapper.toolsAfterSystem ? 'after-tools' : 'system';
-    const history = historyFromMessages(options.messages, { projectContext: options.projectContext, placement });
+    // A reasoning sent back (keepThought) only where this template renders it in place (the `[chat]` probe, F15).
+    const history = historyFromMessages(thoughtsWhereKept(options.messages, wrapper.thoughtKept), { projectContext: options.projectContext, placement });
     const functions = toGgufFunctions(options.tools ?? []);
     const generate = () => tracked(chat.generateResponse(chatHistoryOf(history), {
       functions: functions as ChatModelFunctions | undefined,

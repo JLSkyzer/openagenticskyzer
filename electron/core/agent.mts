@@ -2,6 +2,7 @@ import type { ChatMessage, ModelProvider, ToolSchema } from './model-types.mts';
 import { object } from './json-store.mts';
 import { estimateRequestTokens, fitToBudget, requestMessages } from './request-context.mts';
 import { contextBudget } from './context-budget.mts';
+import { perfLevers } from './perf-levers.mts';
 
 export interface AgentTool {
   name: string; description: string; parameters: Record<string, unknown>;
@@ -103,7 +104,7 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
     // `messages` keeps the saved shape (files beside the typed text); the request is built here (H3): earlier
     // turns condensed, the turn in progress whole with its files expanded, fitted to the budget — or
     // CONTEXT_FULL, sending nothing. reserved_tokens only sizes that budget (H1).
-    const outgoing = requestMessages(messages.slice(1));
+    const outgoing = requestMessages(messages.slice(1), { keepThought: perfLevers().keepThought });
     const fitted = budgetTokens === undefined ? outgoing : fitToBudget(outgoing, { system: systemText, tools: schemas, budgetTokens });
     // M3: the output asked for must fit in the window beside the request — the model's cap (H1), lowered to
     // what the window leaves after the estimated request, never below 1. No window known, or no cap: nothing is

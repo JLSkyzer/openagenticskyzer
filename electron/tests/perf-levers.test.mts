@@ -24,6 +24,11 @@ test('perfLevers: no variable = the shipped levers (today\'s behaviour); a valid
   assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ contextPlacement: 'after-tools' }) }).levers.contextPlacement, 'after-tools');
   const placement = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ contextPlacement: 'après' }) });
   assert.deepEqual([placement.levers.contextPlacement, placement.rejected], ['system', ['valeur invalide : contextPlacement']]);
+  // keepThought (Task 5, F19): shipped off; a boolean only.
+  assert.equal(SHIPPED_LEVERS.keepThought, false);
+  assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ keepThought: true }) }).levers.keepThought, true);
+  const thought = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ keepThought: 'oui' }) });
+  assert.deepEqual([thought.levers.keepThought, thought.rejected], [false, ['valeur invalide : keepThought']]);
 });
 
 test('the checkpoint levers: shipped at node-llama-cpp\'s defaults; a shorter interval needs a memory cap', () => {

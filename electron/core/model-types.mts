@@ -27,8 +27,9 @@ export interface TurnTiming { loadMs?: number; readMs?: number; firstTextMs?: nu
 /** The chat wrapper node-llama-cpp chose for a loaded model: its name and its segments (thought tags), as logged. */
 /** `opensThought`: the chat template opens <think> in the generation prompt (core/thought-prefill.mts).
  * `toolsAfterSystem`: it renders the tools after the system text, before the first message (core/prompt-layout.mts),
- * so the project context can follow the tool block (the contextPlacement lever). */
-export interface ChatWrapperInfo { name: string; segments: unknown; opensThought: boolean; toolsAfterSystem: boolean }
+ * so the project context can follow the tool block (the contextPlacement lever).
+ * `thoughtKept`: where a thought sent back is rendered where the model wrote it (the keepThought lever). */
+export interface ChatWrapperInfo { name: string; segments: unknown; opensThought: boolean; toolsAfterSystem: boolean; thoughtKept: { previousTurn: boolean; currentTurn: boolean } }
 /** A model load as it happens: started, progress in (0, 1], ended (its time and chat wrapper). Only a real load
  * reports: a reused warm engine reports nothing. `retry`: a second native load begins, its progress starting again
  * from 0 — with fewer layers on the card (`fewer-layers`, the context did not fit) or on the processor (`cpu`). */

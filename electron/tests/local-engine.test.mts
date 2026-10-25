@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readGgufFileInfo, GgufInsights, LlamaChat, JinjaTemplateChatWrapper, type ChatModelFunctions } from 'node-llama-cpp';
+import { readGgufFileInfo, GgufInsights, LlamaChat, JinjaTemplateChatWrapper, QwenChatWrapper, type ChatModelFunctions, type ChatWrapper } from 'node-llama-cpp';
 import type { GgufFunctions, GgufHistoryItem } from '../core/local-provider.mts';
 import { commonPrefixLength, type PromptCheckpointFigures } from '../core/reuse.mts';
 import { SHIPPED_LEVERS } from '../core/perf-levers.mts';
@@ -341,8 +341,8 @@ test('c. a real load reports start, rising progress ending at 1, then end with i
   assert.ok(last.wrapper.name.length > 0);
   assert.deepEqual(loadedChatWrapper(modelPath), last.wrapper);
   assert.equal(loadedChatWrapper(`${modelPath}.other`), null);
-  assert.equal(chatWrapperLogLine({ name: 'Qwen', segments: { thought: { prefix: '<think>' } }, opensThought: false, toolsAfterSystem: true }), '[chat] wrapper Qwen · segments {"thought":{"prefix":"<think>"}} · réflexion ouverte par le modèle de conversation : non · contexte après les outils : oui');
-  assert.equal(chatWrapperLogLine({ name: 'JinjaTemplate', segments: null, opensThought: true, toolsAfterSystem: false }), '[chat] wrapper JinjaTemplate · segments null · réflexion ouverte par le modèle de conversation : oui · contexte après les outils : non');
+  assert.equal(chatWrapperLogLine({ name: 'Qwen', segments: { thought: { prefix: '<think>' } }, opensThought: false, toolsAfterSystem: true, thoughtKept: { previousTurn: false, currentTurn: true } }), '[chat] wrapper Qwen · segments {"thought":{"prefix":"<think>"}} · réflexion ouverte par le modèle de conversation : non · contexte après les outils : oui · réflexion renvoyée rendue en place : non (tour précédent), oui (tour en cours)');
+  assert.equal(chatWrapperLogLine({ name: 'JinjaTemplate', segments: null, opensThought: true, toolsAfterSystem: false, thoughtKept: { previousTurn: false, currentTurn: false } }), '[chat] wrapper JinjaTemplate · segments null · réflexion ouverte par le modèle de conversation : oui · contexte après les outils : non · réflexion renvoyée rendue en place : non (tour précédent), non (tour en cours)');
   assert.equal(last.wrapper.opensThought, false, 'stories260K has no think: the reply never starts as reasoning (Task 5b)');
   const again: LoadEvent[] = [];
   await localProvider(modelPath).contextWindow({ onLoad: e => again.push(e) });
@@ -482,6 +482,46 @@ for (const [name, makeWrapper, functions] of MIRROR_CASES) {
       assert.equal(sequence.tokenMeter.diff(before).usedInputTokens, tokens.length - 1 - divergence);
       history = [...history, { type: 'model', response: [reply.response] }, { type: 'user', text: next }];
       previous = figures;
+    }
+  });
+}
+
+// Task 5 (keepThought): with the thoughts sent back, the lever's prompt must stay LlamaChat's to the token — a previous
+// turn's kept thought, and tool steps whose model item ends in a function call after a thought, where LlamaChat reopens
+// the thought before reading (`reopenAfterFunctionCalls`, uncovered in 3b). The toy model never calls a tool: the tool
+// steps are written by hand.
+const thought = (text: string) => ({ type: 'segment' as const, segmentType: 'thought' as const, text, ended: true as const });
+const toolStep = (result: string) => ({ type: 'functionCall' as const, name: 'get_time', params: {}, result });
+const KEPT_THOUGHT_HISTORIES: GgufHistoryItem[][] = [
+  [{ type: 'system', text: 'You are a storyteller.' }, { type: 'user', text: 'Once upon a time' }, { type: 'model', response: [thought('She thought of a cat.'), 'A cat came.'] }, { type: 'user', text: 'And then' }],
+  [{ type: 'system', text: 'You are a storyteller.' }, { type: 'user', text: 'Once upon a time' }, { type: 'model', response: [thought('What time is it?'), toolStep('noon')] }],
+  [{ type: 'system', text: 'You are a storyteller.' }, { type: 'user', text: 'Once upon a time' }, { type: 'model', response: [thought('What time is it?'), toolStep('noon'), thought('Again.'), toolStep('one')] }],
+];
+const KEPT_THOUGHT_CASES: [string, () => ChatWrapper | undefined, GgufFunctions | undefined, number[]][] = [
+  ['Llama2Chat', () => undefined, undefined, [0]],
+  ['QWEN_LIKE (openedOnStart, reopens after calls) with tools', () => new JinjaTemplateChatWrapper({ template: QWEN_LIKE_TEMPLATE }), STORY_TOOLS, [0, 1, 2]],
+  ['QwenChatWrapper keeping past thoughts, with tools', () => new QwenChatWrapper({ keepOnlyLastThought: false }), STORY_TOOLS, [0, 1, 2]],
+];
+for (const [name, makeWrapper, functions, cases] of KEPT_THOUGHT_CASES) {
+  test(`checkpointPromptEnd with kept thoughts, ${name}: LlamaChat evaluates the prompt the lever predicted and reads only the rest`, { timeout: 60000 }, async t => {
+    const model = await (await runtimeLlama()).loadModel({ modelPath });
+    const context = await model.createContext({ contextSize: 2048 });
+    t.after(async () => { await context.dispose(); await model.dispose(); });
+    const sequence = context.getSequence();
+    const wrapper = makeWrapper();
+    const chat = new LlamaChat({ contextSequence: sequence, ...(wrapper ? { chatWrapper: wrapper } : {}) });
+    for (const index of cases) {
+      const history = KEPT_THOUGHT_HISTORIES[index];
+      await sequence.clearHistory(); // each history from an empty state: the checkpoint is really taken, not skipped because an earlier case already held the prompt
+      const { tokens } = stablePromptLength(chat.chatWrapper, model.tokenizer, history, functions);
+      const divergence = commonPrefixLength(sequence.contextTokens, tokens);
+      const before = sequence.tokenMeter.getState();
+      const figures = await checkpointPromptEnd(sequence, chat.chatWrapper, history, functions);
+      assert.ok(figures && figures.index !== null, `history ${index}: checkpointed ${JSON.stringify(figures)} held ${model.detokenize(sequence.contextTokens, true).slice(-80)} prompt ${model.detokenize(tokens, true).slice(-120)}`);
+      await chat.generateResponse(chatHistoryOf(history), { maxTokens: 4, ...(functions ? { functions: functions as ChatModelFunctions } : {}) });
+      assert.deepEqual(model.detokenize(sequence.contextTokens.slice(0, tokens.length), true), model.detokenize(tokens, true), `history ${index}: the same text`);
+      assert.deepEqual(sequence.contextTokens.slice(0, tokens.length), tokens, `history ${index}: LlamaChat evaluated the prompt the lever predicted`);
+      assert.equal(sequence.tokenMeter.diff(before).usedInputTokens, tokens.length - 1 - divergence, `history ${index}: nothing pre-evaluated was read again`);
     }
   });
 }

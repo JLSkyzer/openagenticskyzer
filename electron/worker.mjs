@@ -265,7 +265,7 @@ function logModelReady(model, contextTokens, loadMs, log, load = null) {
         ...(outcome.limit === undefined ? {} : { layerLimit: outcome.limit }),
       } : {}),
       contextSize: placement?.contextSize ?? (status.loaded ? status.contextWindow : contextTokens),
-      ...(wrapper ? { wrapper: wrapper.name, segments: wrapper.segments, opensThought: wrapper.opensThought, toolsAfterSystem: wrapper.toolsAfterSystem } : {}),
+      ...(wrapper ? { wrapper: wrapper.name, segments: wrapper.segments, opensThought: wrapper.opensThought, toolsAfterSystem: wrapper.toolsAfterSystem, thoughtKept: wrapper.thoughtKept } : {}),
       ...(loadMs === undefined ? {} : { loadMs }),
       ...(load?.stages ? { loadStages: load.stages } : {}),
       ...(load?.architecture ? { architecture: load.architecture } : {}),

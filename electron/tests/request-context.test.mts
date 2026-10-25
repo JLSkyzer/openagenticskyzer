@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import type { ChatMessage } from '../core/model-types.mts';
 
 const { requestMessages, fitToBudget, closeDanglingCalls, estimateRequestTokens, CONTEXT_FULL } = await import('../core/request-context.mts');
 const budget = await import('../core/context-budget.mts');
@@ -145,4 +146,34 @@ test('reasoning, reasoningMs and timing are never sent: not in the current turn,
   assert.deepEqual(sent.map(message => message.content), ['q1', 'a', 'q2', 'b', 'lu'], 'the contents are unchanged');
   assert.deepEqual(sent[3].tool_calls, stored[3].tool_calls, 'the calls still go out');
   assert.deepEqual(stored, before, 'the saved messages keep them');
+});
+
+// Task 5 (lever keepThought): the reasoning goes back to the model only with the lever, and the estimate counts it (F15).
+test('keepThought keeps the reasoning of the previous turn\'s last reply and of this turn, never reasoningMs or timing; the estimate counts it', () => {
+  const msgs = [
+    { role: 'user', content: 'a' }, { role: 'assistant', content: 'r0', reasoning: 'T0' }, { role: 'assistant', content: 'r1', reasoning: 'T1', reasoningMs: 5, timing: { totalMs: 1 } },
+    { role: 'user', content: 'b' }, { role: 'assistant', content: '', reasoning: 'T2', reasoningMs: 3, tool_calls: [{ id: 'c', type: 'function', function: { name: 'x', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'c', content: 'ok' },
+  ] as ChatMessage[];
+  const out = requestMessages(msgs, { keepThought: true });
+  assert.deepEqual(out[1], { role: 'assistant', content: 'r0' }, 'an earlier reply of the previous turn: its text only');
+  assert.deepEqual(out[2], { role: 'assistant', content: 'r1', reasoning: 'T1' });
+  assert.equal(out[4].reasoning, 'T2');
+  assert.equal('reasoningMs' in out[4], false);
+  const off = requestMessages(msgs);
+  assert.equal(off[2].reasoning, undefined, 'off by default');
+  assert.equal(off[4].reasoning, undefined);
+  assert.deepEqual(requestMessages(msgs, { keepThought: false }), off);
+  const thought = 'x'.repeat(4000);
+  const withThought = [{ role: 'user', content: 'q' }, { role: 'assistant', content: 'a', reasoning: thought }] as ChatMessage[];
+  assert.ok(estimateRequestTokens('', [], withThought) > estimateRequestTokens('', [], requestMessages(withThought)) + 500, 'a resent thought costs tokens');
+});
+
+// F15: fitToBudget counts a resent reasoning, so a request that fits without it and not with it is refused (or cut) rather than overflowing.
+test('fitToBudget counts the kept reasoning: a request that fits without it no longer fits with it', () => {
+  const msgs = [{ role: 'user', content: 'q' }, { role: 'assistant', content: 'a', reasoning: 'x'.repeat(4000) }] as ChatMessage[];
+  const sent = requestMessages(msgs, { keepThought: true });
+  const budgetTokens = estimateRequestTokens('', [], requestMessages(msgs)) + 100;
+  assert.deepEqual(fitToBudget(requestMessages(msgs), { system: '', tools: [], budgetTokens }), requestMessages(msgs));
+  assert.throws(() => fitToBudget(sent, { system: '', tools: [], budgetTokens }), { message: CONTEXT_FULL });
 });

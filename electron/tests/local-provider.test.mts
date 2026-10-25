@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { historyFromMessages, responseToMessage, toGgufFunctions } from '../core/local-provider.mts';
+import { historyFromMessages, responseToMessage, toGgufFunctions, thoughtsWhereKept } from '../core/local-provider.mts';
+import type { ChatMessage } from '../core/model-types.mts';
 
 // core/local-provider.mts is PURE — it never imports node-llama-cpp itself (that native binding lives in
 // local-engine.mts, loaded on first actual use). Every test here runs against plain fixtures shaped like
@@ -136,4 +137,27 @@ test('\'system\' placement keeps today\'s system text byte for byte', () => {
   assert.deepEqual(historyFromMessages(messages, { projectContext: 'C', placement: 'system' }).slice(1), [{ type: 'user', text: 'Q' }]);
   // No context: the history of today, whatever the placement.
   assert.deepEqual(historyFromMessages(messages, { projectContext: '', placement: 'after-tools' }), historyFromMessages(messages));
+});
+
+// Task 5 (lever keepThought): a reasoning that reaches the history (request-context.mts keeps it only with the lever)
+// goes back as the thought segment it was generated as.
+test('a reasoning becomes the first thought segment of the model item', () => {
+  const [, model] = historyFromMessages([{ role: 'user', content: 'a' }, { role: 'assistant', content: 'r', reasoning: 'T' }] as ChatMessage[]);
+  assert.deepEqual(model, { type: 'model', response: [{ type: 'segment', segmentType: 'thought', text: 'T', ended: true }, 'r'] });
+  const [, step] = historyFromMessages([{ role: 'user', content: 'a' }, { role: 'assistant', content: '', reasoning: 'T', tool_calls: [{ id: 'c', type: 'function', function: { name: 'x', arguments: '{}' } }] }, { role: 'tool', tool_call_id: 'c', content: 'ok' }] as ChatMessage[]);
+  assert.deepEqual(step, { type: 'model', response: [{ type: 'segment', segmentType: 'thought', text: 'T', ended: true }, { type: 'functionCall', name: 'x', params: {}, result: 'ok' }] });
+});
+
+// F15: a template that would not render a resent thought where the model wrote it (the 27B's, through node-llama-cpp
+// 3.21.1) gets none: the thought would land inside the reply text, after an empty <think></think>.
+test('thoughtsWhereKept strips the reasoning of the turns the template would not render back, and only those', () => {
+  const msgs = [
+    { role: 'system', content: 'S' }, { role: 'user', content: 'a' }, { role: 'assistant', content: 'r1', reasoning: 'T1' },
+    { role: 'user', content: 'b' }, { role: 'assistant', content: 'r2', reasoning: 'T2' },
+  ] as ChatMessage[];
+  assert.equal(thoughtsWhereKept(msgs, { previousTurn: true, currentTurn: true }), msgs, 'both kept: the same array');
+  assert.deepEqual(thoughtsWhereKept(msgs, { previousTurn: false, currentTurn: true }).map(m => m.reasoning), [undefined, undefined, undefined, undefined, 'T2']);
+  assert.deepEqual(thoughtsWhereKept(msgs, { previousTurn: true, currentTurn: false }).map(m => m.reasoning), [undefined, undefined, 'T1', undefined, undefined]);
+  assert.deepEqual(thoughtsWhereKept(msgs, { previousTurn: false, currentTurn: false }), msgs.map(({ reasoning: _r, ...m }) => m));
+  assert.equal(msgs[2].reasoning, 'T1', 'the input is not modified');
 });

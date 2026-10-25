@@ -30,6 +30,10 @@ export interface PerfLevers {
    * `'system'` heads the system text, before the tools, as today; `'after-tools'` is its own item after the tool block,
    * applied only to a template that renders the tools after the system text (the `[chat]` probe). Shipped 'system'. */
   contextPlacement: 'system' | 'after-tools';
+  /** Send the previous turn's last reply, and the replies of the turn in progress, back with their thought (a `thought`
+   * segment), so the next prompt renders the reply as the model wrote it (Task 5). Applied only where the template renders
+   * a resent thought in its place (the `[chat]` probe). Shipped false: the reasoning never goes back, as today. */
+  keepThought: boolean;
 }
 
 export const PERF_LEVERS_ENV = 'OPENAGENT_PERF_LEVERS';
@@ -43,6 +47,7 @@ export const SHIPPED_LEVERS: Readonly<PerfLevers> = Object.freeze({
   checkpointMaxMemory: null,
   promptCheckpoint: false,
   contextPlacement: 'system',
+  keepThought: false,
 });
 
 /** node-llama-cpp's own checkpoint interval (3.21.1, `defaultCheckpointOptions`): below it, a memory cap is required. */
@@ -58,6 +63,7 @@ const VALID: { [K in keyof PerfLevers]: (value: unknown) => boolean } = {
   checkpointMaxMemory: value => value === null || positiveInteger(value),
   promptCheckpoint: value => typeof value === 'boolean',
   contextPlacement: value => value === 'system' || value === 'after-tools',
+  keepThought: value => typeof value === 'boolean',
 };
 
 /** The levers `env` asks for: each valid key overrides its shipped value; an unknown key, a wrong type or invalid

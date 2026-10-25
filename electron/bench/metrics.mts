@@ -27,6 +27,8 @@ export interface TurnFigures {
   /** The template probe of the turn's model-ready line (Task 4): it renders the tools after the system text, so the
    * contextPlacement lever can apply. Absent when the line has none. */
   toolsAfterSystem?: boolean;
+  /** Where a thought sent back is rendered in place (Task 5, the keepThought lever). Absent when the line has none. */
+  thoughtKept?: { previousTurn: boolean; currentTurn: boolean };
   /** How the turn ended (its `end` line); null when the log has no end. */
   status?: 'done' | 'stopped' | 'error' | null;
 }
@@ -109,6 +111,7 @@ export function turnFigures(lines: readonly Line[], meta: { scenario: TurnFigure
     loadStages: (ready?.loadStages as LoadStage[] | undefined) ?? null,
     architecture: (ready?.architecture as ModelArchitecture | undefined) ?? null,
     ...(typeof ready?.toolsAfterSystem === 'boolean' ? { toolsAfterSystem: ready.toolsAfterSystem } : {}),
+    ...(ready?.thoughtKept && typeof ready.thoughtKept === 'object' ? { thoughtKept: ready.thoughtKept as { previousTurn: boolean; currentTurn: boolean } } : {}),
     generations, toolCalls,
     reply: { chars: text.length, truncated: text.includes(TRUNCATED_NOTICE) },
     quality,

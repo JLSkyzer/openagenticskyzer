@@ -10,6 +10,7 @@ import { removeAtEnd } from './teardown.mts';
 import { toolDefinitionTokens } from '../bench/tool-tokens.mts';
 import { builtInTools } from '../core/builtin-tools.mts';
 import { toolSchemas } from '../core/agent.mts';
+import { SHIPPED_LEVERS } from '../core/perf-levers.mts';
 
 const run = promisify(execFile);
 
@@ -47,7 +48,7 @@ test('the bench plays A, B and C on stories260K and writes one dated results fil
   assert.ok(result.turns.every((turn: any) => turn.status === 'done'));
   assert.ok(['cuda', 'vulkan', 'metal', 'cpu'].includes(result.backend), result.backend);
   assert.match(result.nodeLlamaCpp, /^\d+\.\d+\.\d+/);
-  assert.deepEqual(result.levers, { outputCap: 32, thoughtTokens: null, performanceTracking: false }, 'the levers the worker applied');
+  assert.deepEqual(result.levers, { ...SHIPPED_LEVERS, outputCap: 32 }, 'the levers the worker applied');
   assert.deepEqual(result.turns.map((t: any) => `${t.scenario}·${t.message}`), ['A·1', 'A·2', 'A·3', 'A·4', 'B·1', 'C-froid·1', 'C-chaud·1']);
   for (const turn of result.turns) {
     assert.ok(turn.generations.length >= 1 && turn.generations[0].outputTokens <= 32);

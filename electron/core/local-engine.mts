@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import os from 'node:os';
-import { LlamaChat, JinjaTemplateChatWrapper, InsufficientMemoryError, readGgufFileInfo, GgufInsights, GgmlType, type Llama, type LlamaModel, type LlamaContext } from 'node-llama-cpp';
+import { LlamaChat, JinjaTemplateChatWrapper, InsufficientMemoryError, readGgufFileInfo, GgufInsights, GgmlType, type Llama, type LlamaModel, type LlamaContext, type TokenPredictor } from 'node-llama-cpp';
 import { historyFromMessages, responseToMessage, toGgufFunctions } from './local-provider.mts';
 import type { ChatMessage, ChatWrapperInfo, CompletionOptions, GenerationStats, LoadStage, ModelArchitecture, ModelProvider, ToolSchema, WindowOptions } from './model-types.mts';
 import { localContextSize, DEFAULT_LOCAL_CONTEXT, type LocalContextSetting } from './context-budget.mts';
@@ -436,10 +436,16 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
   return await kept(model, context, outcome);
 }
 
+/** The options of the chat's context sequence, from the levers: the checkpoints a hybrid model restores a reused prefix
+ * from (shipped = node-llama-cpp's defaults, so the shipped app is unchanged). */
+export function sequenceOptions(levers: Readonly<PerfLevers>): { checkpoints: { max: number; interval: number; maxMemory: number | null }; tokenPredictor?: TokenPredictor } {
+  return { checkpoints: { max: levers.checkpointMax, interval: levers.checkpointInterval, maxMemory: levers.checkpointMaxMemory } };
+}
+
 function keep(p: { modelPath: string; contextSize: number; generation: number; llama: Llama; model: LlamaModel; context: LlamaContext; vramBefore: VramState | null; outcome: LoadOutcome; startedAt: number; onLoad?: EngineOptions['onLoad']; stages: readonly LoadStage[]; architecture: ModelArchitecture }): Loaded {
   const { llama, model, context } = p;
   const chatStart = performance.now();
-  const chat = new LlamaChat({ contextSequence: context.getSequence() });
+  const chat = new LlamaChat({ contextSequence: context.getSequence(sequenceOptions(perfLevers())) });
   const chatMs = performance.now() - chatStart;
   // The segments as plain JSON, once (ruling T2-m2): the log line and the turn log's model-ready show the same value.
   const segments = chat.chatWrapper.settings.segments;

@@ -14,6 +14,14 @@ export interface PerfLevers {
   thoughtTokens: number | null;
   /** llama.cpp's performance tracking, its timings printed after each generation (`[perf]` marker). */
   performanceTracking: boolean;
+  /** Hybrid models (Qwen 3.5/3.6) restore a reused prefix only from a checkpoint: one taken every this many evaluated
+   * tokens (shipped 8192 = node-llama-cpp's default). Ignored by attention-only models (`needsCheckpoints` false). */
+  checkpointInterval: number;
+  /** The checkpoints kept per sequence (shipped 32 = node-llama-cpp's default). */
+  checkpointMax: number;
+  /** A cap, in bytes, on the checkpoints' memory; null: none (node-llama-cpp's default). An interval below 8192 needs
+   * one, so a shorter interval never grows the RAM unbounded. */
+  checkpointMaxMemory: number | null;
 }
 
 export const PERF_LEVERS_ENV = 'OPENAGENT_PERF_LEVERS';
@@ -22,13 +30,22 @@ export const SHIPPED_LEVERS: Readonly<PerfLevers> = Object.freeze({
   outputCap: 8192,
   thoughtTokens: null,
   performanceTracking: false,
+  checkpointInterval: 8192,
+  checkpointMax: 32,
+  checkpointMaxMemory: null,
 });
+
+/** node-llama-cpp's own checkpoint interval (3.21.1, `defaultCheckpointOptions`): below it, a memory cap is required. */
+const NLC_CHECKPOINT_INTERVAL = 8192;
 
 const positiveInteger = (value: unknown) => Number.isInteger(value) && (value as number) > 0;
 const VALID: { [K in keyof PerfLevers]: (value: unknown) => boolean } = {
   outputCap: positiveInteger,
   thoughtTokens: value => value === null || (Number.isInteger(value) && (value as number) >= 0),
   performanceTracking: value => typeof value === 'boolean',
+  checkpointInterval: positiveInteger,
+  checkpointMax: positiveInteger,
+  checkpointMaxMemory: value => value === null || positiveInteger(value),
 };
 
 /** The levers `env` asks for: each valid key overrides its shipped value; an unknown key, a wrong type or invalid
@@ -45,6 +62,11 @@ export function readPerfLevers(env: NodeJS.ProcessEnv = process.env): { levers: 
     if (!Object.hasOwn(VALID, key)) rejected.push(`clé inconnue : ${key}`);
     else if (!VALID[key as keyof PerfLevers](value)) rejected.push(`valeur invalide : ${key}`);
     else levers[key] = value;
+  }
+  // A rule across keys: more checkpoints than node-llama-cpp takes are allowed only under a memory cap.
+  if ((levers.checkpointInterval as number) < NLC_CHECKPOINT_INTERVAL && levers.checkpointMaxMemory === null) {
+    rejected.push('valeur invalide : checkpointInterval sans checkpointMaxMemory');
+    levers.checkpointInterval = SHIPPED_LEVERS.checkpointInterval;
   }
   return { levers: Object.freeze(levers as unknown as PerfLevers), rejected };
 }

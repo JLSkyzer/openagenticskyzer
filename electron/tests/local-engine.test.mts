@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readGgufFileInfo, GgufInsights } from 'node-llama-cpp';
 import { SHIPPED_LEVERS } from '../core/perf-levers.mts';
-import { GenerationMeter, generationLimits, completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine } from '../core/local-engine.mts';
+import { GenerationMeter, generationLimits, completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine, sequenceOptions } from '../core/local-engine.mts';
 import type { GenerationStats, LoadEvent } from '../core/model-types.mts';
 import { runtimeLlama, backendOf } from '../core/llama-runtime.mts';
 import { removeAtEnd } from './teardown.mts';
@@ -415,4 +415,9 @@ test('generationLimits: the shipped levers send no budgets and the cap; a though
   assert.deepEqual(generationLimits(SHIPPED_LEVERS, 100), { maxTokens: 100 });
   assert.deepEqual(generationLimits({ ...SHIPPED_LEVERS, outputCap: 32, thoughtTokens: 512 }, 1000), { maxTokens: 32, budgets: { thoughtTokens: 512 } });
   assert.deepEqual(generationLimits({ ...SHIPPED_LEVERS, thoughtTokens: 0 }, undefined), { maxTokens: LOCAL_OUTPUT_CAP, budgets: { thoughtTokens: 0 } });
+});
+
+test('sequenceOptions passes the checkpoint levers to getSequence as they are', () => {
+  assert.deepEqual(sequenceOptions(SHIPPED_LEVERS), { checkpoints: { max: 32, interval: 8192, maxMemory: null } });
+  assert.deepEqual(sequenceOptions({ ...SHIPPED_LEVERS, checkpointInterval: 512, checkpointMaxMemory: 1 << 30 }).checkpoints, { max: 32, interval: 512, maxMemory: 1 << 30 });
 });

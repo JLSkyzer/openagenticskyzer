@@ -20,3 +20,17 @@ test('perfLevers: no variable = the shipped levers (today\'s behaviour); a valid
   assert.deepEqual(leversInEffect(env, true), { levers: { ...SHIPPED_LEVERS, outputCap: 64 }, notices: ['[levers] actifs : outputCap=64'] });
   assert.deepEqual(leversInEffect({}, true), { levers: SHIPPED_LEVERS, notices: [] });
 });
+
+test('the checkpoint levers: shipped at node-llama-cpp\'s defaults; a shorter interval needs a memory cap', () => {
+  assert.deepEqual([SHIPPED_LEVERS.checkpointInterval, SHIPPED_LEVERS.checkpointMax, SHIPPED_LEVERS.checkpointMaxMemory], [8192, 32, null]);
+  const ok = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ checkpointInterval: 1024, checkpointMaxMemory: 1610612736 }) });
+  assert.deepEqual([ok.levers.checkpointInterval, ok.rejected], [1024, []]);
+  const bad = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ checkpointInterval: 1024 }) });
+  assert.deepEqual([bad.levers.checkpointInterval, bad.rejected], [8192, ['valeur invalide : checkpointInterval sans checkpointMaxMemory']]);
+  // Ruling F19: each key's parsing, one valid and one rejected value.
+  const more = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ checkpointMax: 8, checkpointMaxMemory: 1 << 30 }) });
+  assert.deepEqual([more.levers.checkpointMax, more.levers.checkpointMaxMemory, more.rejected], [8, 1 << 30, []]);
+  const wrong = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ checkpointInterval: 0, checkpointMax: 1.5, checkpointMaxMemory: -1 }) });
+  assert.deepEqual([wrong.levers.checkpointInterval, wrong.levers.checkpointMax, wrong.levers.checkpointMaxMemory], [8192, 32, null]);
+  assert.deepEqual(wrong.rejected, ['valeur invalide : checkpointInterval', 'valeur invalide : checkpointMax', 'valeur invalide : checkpointMaxMemory']);
+});

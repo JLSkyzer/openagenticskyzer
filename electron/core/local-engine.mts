@@ -6,8 +6,8 @@
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import os from 'node:os';
-import { LlamaChat, JinjaTemplateChatWrapper, InsufficientMemoryError, readGgufFileInfo, GgufInsights, GgmlType, type Llama, type LlamaModel, type LlamaContext, type TokenPredictor } from 'node-llama-cpp';
-import { historyFromMessages, responseToMessage, toGgufFunctions } from './local-provider.mts';
+import { LlamaChat, JinjaTemplateChatWrapper, InsufficientMemoryError, readGgufFileInfo, GgufInsights, GgmlType, type Llama, type LlamaModel, type LlamaContext, type LlamaContextSequence, type TokenPredictor, type ChatWrapper, type ChatHistoryItem, type ChatModelFunctions, type Token, type Tokenizer } from 'node-llama-cpp';
+import { historyFromMessages, responseToMessage, toGgufFunctions, type GgufFunctions, type GgufHistoryItem } from './local-provider.mts';
 import type { ChatMessage, ChatWrapperInfo, CompletionOptions, GenerationStats, LoadStage, ModelArchitecture, ModelProvider, ToolSchema, WindowOptions } from './model-types.mts';
 import { localContextSize, DEFAULT_LOCAL_CONTEXT, type LocalContextSetting } from './context-budget.mts';
 import { runtimeLlama, runtimeGeneration, backendOf } from './llama-runtime.mts';
@@ -16,7 +16,7 @@ import { untilAborted } from './abortable.mts';
 import { ReplyAccumulator, type SplitPiece } from './reasoning-split.mts';
 import { opensThought, type ThoughtSegment } from './thought-prefill.mts';
 import { perfLevers, type PerfLevers } from './perf-levers.mts';
-import { reuseOf } from './reuse.mts';
+import { reuseOf, commonPrefixLength, type PromptCheckpointFigures } from './reuse.mts';
 
 /** What the engine context is sized from: the « Contexte des modèles locaux » setting. max_tokens takes no part
  * (ruling F6): it caps the request window only (context-budget.mts::effectiveWindow). */
@@ -442,6 +442,57 @@ export function sequenceOptions(levers: Readonly<PerfLevers>): { checkpoints: { 
   return { checkpoints: { max: levers.checkpointMax, interval: levers.checkpointInterval, maxMemory: levers.checkpointMaxMemory } };
 }
 
+/** LlamaChat's own prompt for `history` (node-llama-cpp 3.21.1, `getContextWindow` when the history fits the window,
+ * as `fitToBudget` ensures): the chat wrapper's context state for the history ending in a model turn
+ * (`ensureLastHistoryItemIsModel`), with the functions when there are any (`functionsEnabled`). */
+function promptTokensOf(wrapper: ChatWrapper, tokenizer: Tokenizer, history: readonly GgufHistoryItem[], functions: GgufFunctions | undefined): Token[] {
+  const chatHistory = (history.at(-1)?.type === 'model' ? [...history] : [...history, { type: 'model', response: [] }]) as unknown as ChatHistoryItem[];
+  const availableFunctions = functions && Object.keys(functions).length > 0 ? functions as ChatModelFunctions : undefined;
+  return wrapper.generateContextState({ chatHistory, availableFunctions }).contextText.tokenize(tokenizer);
+}
+
+/**
+ * The prompt LlamaChat will read for `history`, and how many of its first tokens the next turn renders the same
+ * (`stable`): the common prefix of the prompt and of the same history followed by a reply and a new message, at most
+ * the prompt's length − 1. The cap is the case that matters: a template that opens the thought in its generation
+ * prompt (Qwen 3.5/3.6, `openedOnStart`) ends it with `<think>\n`, and renders the reply back as `<think>\n\n</think>`;
+ * `\n\n` is one token, so the next turn parts at the prompt's LAST token, and only a checkpoint before it is reusable.
+ */
+export function stablePromptLength(wrapper: ChatWrapper, tokenizer: Tokenizer, history: readonly GgufHistoryItem[], functions: GgufFunctions | undefined): { tokens: Token[]; stable: number } {
+  const tokens = promptTokensOf(wrapper, tokenizer, history, functions);
+  const last = history.at(-1);
+  // The next turn's form: this turn's reply rendered back (appended to a model turn already open: a tool step), then a
+  // new message. Any text stands for the reply: only where the two renderings part matters.
+  const replied: GgufHistoryItem[] = last?.type === 'model'
+    ? [...history.slice(0, -1), { type: 'model', response: [...last.response, 'x'] }, { type: 'user', text: 'y' }]
+    : [...history, { type: 'model', response: ['x'] }, { type: 'user', text: 'y' }];
+  const stable = Math.min(commonPrefixLength(tokens, promptTokensOf(wrapper, tokenizer, replied, functions)), tokens.length - 1);
+  return { tokens, stable };
+}
+
+/**
+ * The promptCheckpoint lever (Task 3b), before `generateResponse`: aligns the sequence with the prompt as LlamaChat
+ * would (`alignCurrentSequenceStateWithCurrentTokens`: every token but the last, no shift), evaluates it up to its
+ * stable end, and takes a checkpoint there with the public `takeCheckpoint()`. LlamaChat then finds that state as its
+ * prefix and reads only the rest. On a hybrid model the next turn, diverging at the stable end, restores this
+ * checkpoint instead of re-reading the prompt: LlamaChat's own checkpoint, at the first generated token, sits on the
+ * prompt's last token, one past that divergence, and is pruned. A no-op checkpoint on an attention model.
+ * null when the prompt does not fit the window (LlamaChat would compress the history: other tokens).
+ */
+export async function checkpointPromptEnd(sequence: LlamaContextSequence, wrapper: ChatWrapper, history: readonly GgufHistoryItem[], functions: GgufFunctions | undefined): Promise<PromptCheckpointFigures | null> {
+  const { tokens, stable } = stablePromptLength(wrapper, sequence.model.tokenizer, history, functions);
+  if (tokens.length + 1 >= sequence.contextSize) return null;
+  await sequence.adaptStateToTokens(tokens.slice(0, -1), false);
+  const from = sequence.nextTokenIndex;
+  // The state already holds past the stable end (the same prompt sent again): nothing to evaluate, and a checkpoint
+  // there would need the held tokens erased.
+  if (from >= stable) return { prompt: tokens.length, stable, from, index: null };
+  await sequence.evaluateWithoutGeneratingNewTokens(tokens.slice(from, stable));
+  const index = sequence.nextTokenIndex - 1;
+  await sequence.takeCheckpoint();
+  return { prompt: tokens.length, stable, from, index };
+}
+
 function keep(p: { modelPath: string; contextSize: number; generation: number; llama: Llama; model: LlamaModel; context: LlamaContext; vramBefore: VramState | null; outcome: LoadOutcome; startedAt: number; onLoad?: EngineOptions['onLoad']; stages: readonly LoadStage[]; architecture: ModelArchitecture }): Loaded {
   const { llama, model, context } = p;
   const chatStart = performance.now();
@@ -708,10 +759,20 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
   const heldTokens = sequence.contextTokens;
   const generation = new GenerationMeter();
   const startedAt = performance.now();
+  const history = historyFromMessages(options.messages);
+  const functions = toGgufFunctions(options.tools ?? []);
+  let promptCheckpoint: PromptCheckpointFigures | null = null;
   let response: Awaited<ReturnType<LlamaChat['generateResponse']>>;
   try {
-    response = await tracked(chat.generateResponse(historyFromMessages(options.messages), {
-      functions: toGgufFunctions(options.tools ?? []),
+    if (levers.promptCheckpoint) {
+      // Outside LlamaChat's lock: a stopped generation still unwinding must be done before the sequence is touched, and
+      // this evaluation is tracked like one (nothing between turns may touch the engine before it ends).
+      await generationsIdle();
+      promptCheckpoint = await tracked(checkpointPromptEnd(sequence, chat.chatWrapper, history, functions));
+      options.signal?.throwIfAborted();
+    }
+    response = await tracked(chat.generateResponse(history as unknown as ChatHistoryItem[], {
+      functions: functions as ChatModelFunctions | undefined,
       onResponseChunk: chunk => {
         generation.chunk(chunk.tokens.length);
         deliver(reply.chunk(chunk));
@@ -726,7 +787,11 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
       ? { needed: true, memoryBytes: sequence.checkpointsMemoryUsage, lastIndex: sequence.lastCheckpointIndex }
       : null;
     // The meter's own output count (M1): a tool call's tokens are not all in the streamed chunks.
-    const reuse = reuseOf({ heldTokens, afterTokens: sequence.contextTokens, evaluated: used.usedInputTokens, outputTokens: used.usedOutputTokens, checkpoints });
+    const reuse = {
+      ...reuseOf({ heldTokens, afterTokens: sequence.contextTokens, evaluated: used.usedInputTokens, outputTokens: used.usedOutputTokens, checkpoints }),
+      // Only with the lever on: today's figures keep their shape.
+      ...(levers.promptCheckpoint ? { promptCheckpoint } : {}),
+    };
     // The id ties this generation's turn-log line to its `[perf]` timings in the log (the bench, M5).
     const generationId = randomUUID();
     options.onStats?.({ ...stats, promptMs: generation.promptMs(startedAt), reuse, generationId });

@@ -34,3 +34,10 @@ test('the checkpoint levers: shipped at node-llama-cpp\'s defaults; a shorter in
   assert.deepEqual([wrong.levers.checkpointInterval, wrong.levers.checkpointMax, wrong.levers.checkpointMaxMemory], [8192, 32, null]);
   assert.deepEqual(wrong.rejected, ['valeur invalide : checkpointInterval', 'valeur invalide : checkpointMax', 'valeur invalide : checkpointMaxMemory']);
 });
+
+test('the promptCheckpoint lever (Task 3b): shipped off; a boolean only', () => {
+  assert.equal(SHIPPED_LEVERS.promptCheckpoint, false);
+  assert.deepEqual(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ promptCheckpoint: true }) }), { levers: { ...SHIPPED_LEVERS, promptCheckpoint: true }, rejected: [] });
+  const wrong = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ promptCheckpoint: 'oui' }) });
+  assert.deepEqual([wrong.levers.promptCheckpoint, wrong.rejected], [false, ['valeur invalide : promptCheckpoint']]);
+});

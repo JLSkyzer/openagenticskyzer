@@ -8,6 +8,12 @@
 /** A hybrid or recurrent model's checkpoints, as its sequence reports them; null when it needs none. */
 export interface CheckpointFigures { needed: boolean; memoryBytes: number; lastIndex: number }
 
+/** What the promptCheckpoint lever did on one call (Task 3b, core/local-engine.mts::checkpointPromptEnd). `prompt`:
+ * LlamaChat's prompt length; `stable`: how many of its first tokens the next turn renders the same; `from`: where the
+ * held state stopped matching the prompt (what was evaluated from there); `index`: the checkpoint's last token
+ * (`stable` − 1), null when none was taken (the state already held past `stable`, or the prompt fills the window). */
+export interface PromptCheckpointFigures { prompt: number; stable: number; from: number; index: number | null }
+
 export interface ReuseFigures {
   /** Tokens the sequence held before the call. */
   held: number;
@@ -21,6 +27,8 @@ export interface ReuseFigures {
    * Δoutput), both from the tokenMeter (M1: a tool call's tokens are not all in the streamed chunks), at least 0. */
   reused: number;
   checkpoints: CheckpointFigures | null;
+  /** Only with the promptCheckpoint lever on (absent otherwise, so today's figures are unchanged). */
+  promptCheckpoint?: PromptCheckpointFigures | null;
 }
 
 export function commonPrefixLength(a: readonly number[], b: readonly number[]): number {

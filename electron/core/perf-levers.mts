@@ -22,6 +22,10 @@ export interface PerfLevers {
   /** A cap, in bytes, on the checkpoints' memory; null: none (node-llama-cpp's default). An interval below 8192 needs
    * one, so a shorter interval never grows the RAM unbounded. */
   checkpointMaxMemory: number | null;
+  /** Hybrid models: before generating, evaluate the prompt up to where the next turn will render it differently (the
+   * thought the template opens, the reply) and take a checkpoint there, so the next turn restores right at its
+   * divergence (Task 3b). Shipped false: LlamaChat reads the whole prompt in one go, as today. */
+  promptCheckpoint: boolean;
 }
 
 export const PERF_LEVERS_ENV = 'OPENAGENT_PERF_LEVERS';
@@ -33,6 +37,7 @@ export const SHIPPED_LEVERS: Readonly<PerfLevers> = Object.freeze({
   checkpointInterval: 8192,
   checkpointMax: 32,
   checkpointMaxMemory: null,
+  promptCheckpoint: false,
 });
 
 /** node-llama-cpp's own checkpoint interval (3.21.1, `defaultCheckpointOptions`): below it, a memory cap is required. */
@@ -46,6 +51,7 @@ const VALID: { [K in keyof PerfLevers]: (value: unknown) => boolean } = {
   checkpointInterval: positiveInteger,
   checkpointMax: positiveInteger,
   checkpointMaxMemory: value => value === null || positiveInteger(value),
+  promptCheckpoint: value => typeof value === 'boolean',
 };
 
 /** The levers `env` asks for: each valid key overrides its shipped value; an unknown key, a wrong type or invalid

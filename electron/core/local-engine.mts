@@ -442,11 +442,20 @@ export function sequenceOptions(levers: Readonly<PerfLevers>): { checkpoints: { 
   return { checkpoints: { max: levers.checkpointMax, interval: levers.checkpointInterval, maxMemory: levers.checkpointMaxMemory } };
 }
 
+/** Our history in node-llama-cpp's own type: a function call it is given always carries `result` (undefined when the
+ * call has none yet, which is how node-llama-cpp reads a missing one). */
+export function chatHistoryOf(history: readonly GgufHistoryItem[]): ChatHistoryItem[] {
+  return history.map((item): ChatHistoryItem => item.type !== 'model' ? item : {
+    type: 'model',
+    response: item.response.map(part => typeof part === 'string' ? part : { ...part, result: part.result }),
+  });
+}
+
 /** LlamaChat's own prompt for `history` (node-llama-cpp 3.21.1, `getContextWindow` when the history fits the window,
  * as `fitToBudget` ensures): the chat wrapper's context state for the history ending in a model turn
  * (`ensureLastHistoryItemIsModel`), with the functions when there are any (`functionsEnabled`). */
 function promptTokensOf(wrapper: ChatWrapper, tokenizer: Tokenizer, history: readonly GgufHistoryItem[], functions: GgufFunctions | undefined): Token[] {
-  const chatHistory = (history.at(-1)?.type === 'model' ? [...history] : [...history, { type: 'model', response: [] }]) as unknown as ChatHistoryItem[];
+  const chatHistory = chatHistoryOf(history.at(-1)?.type === 'model' ? history : [...history, { type: 'model', response: [] }]);
   const availableFunctions = functions && Object.keys(functions).length > 0 ? functions as ChatModelFunctions : undefined;
   return wrapper.generateContextState({ chatHistory, availableFunctions }).contextText.tokenize(tokenizer);
 }
@@ -477,12 +486,15 @@ export function stablePromptLength(wrapper: ChatWrapper, tokenizer: Tokenizer, h
  * prefix and reads only the rest. On a hybrid model the next turn, diverging at the stable end, restores this
  * checkpoint instead of re-reading the prompt: LlamaChat's own checkpoint, at the first generated token, sits on the
  * prompt's last token, one past that divergence, and is pruned. A no-op checkpoint on an attention model.
- * null when the prompt does not fit the window (LlamaChat would compress the history: other tokens).
+ * null when the prompt does not fit the window (LlamaChat would compress the history: other tokens). An aborted
+ * `signal` rejects before each step (the decode itself, like LlamaChat's, runs to its end once started).
  */
-export async function checkpointPromptEnd(sequence: LlamaContextSequence, wrapper: ChatWrapper, history: readonly GgufHistoryItem[], functions: GgufFunctions | undefined): Promise<PromptCheckpointFigures | null> {
+export async function checkpointPromptEnd(sequence: LlamaContextSequence, wrapper: ChatWrapper, history: readonly GgufHistoryItem[], functions: GgufFunctions | undefined, signal?: AbortSignal): Promise<PromptCheckpointFigures | null> {
+  signal?.throwIfAborted();
   const { tokens, stable } = stablePromptLength(wrapper, sequence.model.tokenizer, history, functions);
   if (tokens.length + 1 >= sequence.contextSize) return null;
   await sequence.adaptStateToTokens(tokens.slice(0, -1), false);
+  signal?.throwIfAborted();
   const from = sequence.nextTokenIndex;
   // The state already holds past the stable end (the same prompt sent again): nothing to evaluate, and a checkpoint
   // there would need the held tokens erased.
@@ -698,6 +710,21 @@ export function generationLimits(levers: Readonly<PerfLevers>, maxTokens: number
   };
 }
 
+/** One task at a time, in call order (review M2: the promptCheckpoint pre-evaluation runs outside LlamaChat's lock, so
+ * two turns waiting on one sequence could otherwise interleave). A stop releases its waiter at once, and its task never
+ * runs; the next task still waits for the one before. */
+export class TurnLock {
+  #last: Promise<unknown> = Promise.resolve();
+
+  run<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const previous = this.#last;
+    const result = untilAborted(previous, signal).then(task);
+    this.#last = Promise.allSettled([previous, result]);
+    return result;
+  }
+}
+const promptTurns = new TurnLock();
+
 /** Resolves once every generation started so far has ended, a stopped one included. Never rejects. */
 export async function generationsIdle(): Promise<void> {
   while (generations.size > 0) await Promise.all([...generations]);
@@ -759,19 +786,12 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
   const heldTokens = sequence.contextTokens;
   const generation = new GenerationMeter();
   const startedAt = performance.now();
-  const history = historyFromMessages(options.messages);
-  const functions = toGgufFunctions(options.tools ?? []);
   let promptCheckpoint: PromptCheckpointFigures | null = null;
   let response: Awaited<ReturnType<LlamaChat['generateResponse']>>;
   try {
-    if (levers.promptCheckpoint) {
-      // Outside LlamaChat's lock: a stopped generation still unwinding must be done before the sequence is touched, and
-      // this evaluation is tracked like one (nothing between turns may touch the engine before it ends).
-      await generationsIdle();
-      promptCheckpoint = await tracked(checkpointPromptEnd(sequence, chat.chatWrapper, history, functions));
-      options.signal?.throwIfAborted();
-    }
-    response = await tracked(chat.generateResponse(history as unknown as ChatHistoryItem[], {
+    const history = historyFromMessages(options.messages);
+    const functions = toGgufFunctions(options.tools ?? []);
+    const generate = () => tracked(chat.generateResponse(chatHistoryOf(history), {
       functions: functions as ChatModelFunctions | undefined,
       onResponseChunk: chunk => {
         generation.chunk(chunk.tokens.length);
@@ -780,6 +800,16 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
       signal: options.signal,
       ...generationLimits(levers, options.maxTokens),
     }));
+    response = !levers.promptCheckpoint ? await generate() : await promptTurns.run(async () => {
+      // Outside LlamaChat's lock, hence the turn lock: a stopped generation still unwinding must be done before the
+      // sequence is touched, and this evaluation is tracked like one (nothing between turns may touch the engine
+      // before it ends). A stop cuts the wait short and skips the decode (review I1).
+      options.signal?.throwIfAborted();
+      await untilAborted(generationsIdle(), options.signal);
+      promptCheckpoint = await tracked(checkpointPromptEnd(sequence, chat.chatWrapper, history, functions, options.signal));
+      options.signal?.throwIfAborted();
+      return generate();
+    }, options.signal);
   } finally {
     const used = meter.diff(before);
     const stats = generation.stats(used.usedInputTokens);

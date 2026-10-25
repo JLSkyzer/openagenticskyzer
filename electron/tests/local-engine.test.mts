@@ -7,11 +7,11 @@ import { promisify } from 'node:util';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readGgufFileInfo, GgufInsights, LlamaChat, JinjaTemplateChatWrapper, type ChatHistoryItem } from 'node-llama-cpp';
-import type { GgufHistoryItem } from '../core/local-provider.mts';
+import { readGgufFileInfo, GgufInsights, LlamaChat, JinjaTemplateChatWrapper, type ChatModelFunctions } from 'node-llama-cpp';
+import type { GgufFunctions, GgufHistoryItem } from '../core/local-provider.mts';
 import { commonPrefixLength, type PromptCheckpointFigures } from '../core/reuse.mts';
 import { SHIPPED_LEVERS } from '../core/perf-levers.mts';
-import { GenerationMeter, generationLimits, completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine, sequenceOptions, stablePromptLength, checkpointPromptEnd } from '../core/local-engine.mts';
+import { GenerationMeter, generationLimits, completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine, sequenceOptions, stablePromptLength, checkpointPromptEnd, chatHistoryOf, TurnLock } from '../core/local-engine.mts';
 import type { GenerationStats, LoadEvent } from '../core/model-types.mts';
 import { runtimeLlama, backendOf } from '../core/llama-runtime.mts';
 import { removeAtEnd } from './teardown.mts';
@@ -447,32 +447,71 @@ test('stablePromptLength: the prompt but its last token, for a template that ope
   assert.equal(plain.stable, plain.tokens.length - 1, 'Llama2Chat renders the reply after the whole prompt: all but the token LlamaChat reads itself');
 });
 
-test('checkpointPromptEnd: the prompt is evaluated up to its stable end and checkpointed there; LlamaChat reads only the rest, and the next prompt diverges at or after it', { timeout: 60000 }, async t => {
+// Both the stories default wrapper (Llama2Chat, no tools) and the 27B's path (openedOnStart thought, tools rendered by
+// node-llama-cpp itself since the template has none): the lever's prompt must be LlamaChat's to the token.
+const STORY_TOOLS: GgufFunctions = { get_time: { description: 'The current time', params: { type: 'object', properties: {} } } };
+const MIRROR_CASES: [string, () => JinjaTemplateChatWrapper | undefined, GgufFunctions | undefined][] = [
+  ['Llama2Chat', () => undefined, undefined],
+  ['QWEN_LIKE (openedOnStart) with tools', () => new JinjaTemplateChatWrapper({ template: QWEN_LIKE_TEMPLATE }), STORY_TOOLS],
+];
+for (const [name, makeWrapper, functions] of MIRROR_CASES) {
+  test(`checkpointPromptEnd, ${name}: the prompt is evaluated up to its stable end and checkpointed there; LlamaChat reads only the rest, and the next prompt diverges at or after it`, { timeout: 60000 }, async t => {
+    const model = await (await runtimeLlama()).loadModel({ modelPath });
+    const context = await model.createContext({ contextSize: 2048 });
+    t.after(async () => { await context.dispose(); await model.dispose(); });
+    const sequence = context.getSequence();
+    const wrapper = makeWrapper();
+    const chat = new LlamaChat({ contextSequence: sequence, ...(wrapper ? { chatWrapper: wrapper } : {}) });
+    let history: GgufHistoryItem[] = [{ type: 'system', text: 'You are a storyteller.' }, { type: 'user', text: 'Once upon a time' }];
+    let previous: PromptCheckpointFigures | null = null;
+    for (const next of ['And then', 'The end']) {
+      const held = sequence.contextTokens;
+      const { tokens } = stablePromptLength(chat.chatWrapper, model.tokenizer, history, functions);
+      const divergence = commonPrefixLength(held, tokens);
+      // The property the lever exists for: the previous checkpoint sits before where this prompt diverges.
+      if (previous) assert.ok(previous.index !== null && previous.index < divergence, `checkpoint ${previous.index} < divergence ${divergence}`);
+      const before = sequence.tokenMeter.getState();
+      const figures = await checkpointPromptEnd(sequence, chat.chatWrapper, history, functions);
+      assert.ok(figures);
+      assert.deepEqual(figures, { prompt: tokens.length, stable: figures.stable, from: divergence, index: figures.stable - 1 });
+      assert.ok(figures.stable > divergence && figures.stable < tokens.length);
+      assert.deepEqual(sequence.contextTokens, tokens.slice(0, figures.stable), 'the state at the checkpoint is the prompt up to its stable end');
+      const reply = await chat.generateResponse(chatHistoryOf(history), { maxTokens: 8, ...(functions ? { functions: functions as ChatModelFunctions } : {}) });
+      assert.deepEqual(sequence.contextTokens.slice(0, tokens.length), tokens, 'LlamaChat evaluated the same prompt the lever predicted');
+      // Read once in all (the last prompt token is counted as output, F27): nothing pre-evaluated was read again.
+      assert.equal(sequence.tokenMeter.diff(before).usedInputTokens, tokens.length - 1 - divergence);
+      history = [...history, { type: 'model', response: [reply.response] }, { type: 'user', text: next }];
+      previous = figures;
+    }
+  });
+}
+
+// Review I1: a stopped turn must not run a full prompt decode (about 30 s on the 27B) before its stop takes effect.
+test('checkpointPromptEnd: an aborted signal rejects before anything is evaluated', { timeout: 60000 }, async t => {
   const model = await (await runtimeLlama()).loadModel({ modelPath });
   const context = await model.createContext({ contextSize: 2048 });
   t.after(async () => { await context.dispose(); await model.dispose(); });
   const sequence = context.getSequence();
   const chat = new LlamaChat({ contextSequence: sequence });
-  let history: GgufHistoryItem[] = [{ type: 'system', text: 'You are a storyteller.' }, { type: 'user', text: 'Once upon a time' }];
-  let previous: PromptCheckpointFigures | null = null;
-  for (const next of ['And then', 'The end']) {
-    const held = sequence.contextTokens;
-    const { tokens } = stablePromptLength(chat.chatWrapper, model.tokenizer, history, undefined);
-    const divergence = commonPrefixLength(held, tokens);
-    // The property the lever exists for: the previous checkpoint sits before where this prompt diverges.
-    if (previous) assert.ok(previous.index !== null && previous.index < divergence, `checkpoint ${previous.index} < divergence ${divergence}`);
-    const before = sequence.tokenMeter.getState();
-    const figures = await checkpointPromptEnd(sequence, chat.chatWrapper, history, undefined);
-    assert.ok(figures);
-    assert.deepEqual(figures, { prompt: tokens.length, stable: figures.stable, from: divergence, index: figures.stable - 1 });
-    assert.ok(figures.stable > divergence && figures.stable < tokens.length);
-    const checkpointed = sequence.contextTokens;
-    assert.deepEqual(checkpointed, tokens.slice(0, figures.stable), 'the state at the checkpoint is the prompt up to its stable end');
-    const reply = await chat.generateResponse(history as unknown as ChatHistoryItem[], { maxTokens: 8 });
-    assert.deepEqual(sequence.contextTokens.slice(0, tokens.length), tokens, 'LlamaChat evaluated the same prompt the lever predicted');
-    // Read once in all (the last prompt token is counted as output, F27): nothing pre-evaluated was read again.
-    assert.equal(sequence.tokenMeter.diff(before).usedInputTokens, tokens.length - 1 - divergence);
-    history = [...history, { type: 'model', response: [reply.response] }, { type: 'user', text: next }];
-    previous = figures;
-  }
+  const before = sequence.tokenMeter.getState();
+  await assert.rejects(checkpointPromptEnd(sequence, chat.chatWrapper, [{ type: 'user', text: 'Once upon a time' }], undefined, AbortSignal.abort()), { name: 'AbortError' });
+  assert.equal(sequence.tokenMeter.diff(before).usedInputTokens, 0);
+  assert.equal(sequence.nextTokenIndex, 0);
+});
+
+test('TurnLock: one task at a time in call order; a stopped waiter is released at once and its task never runs (review M2)', async () => {
+  const lock = new TurnLock();
+  const order: string[] = [];
+  let release!: () => void;
+  const first = lock.run(async () => { order.push('first start'); await new Promise<void>(r => { release = r; }); order.push('first end'); });
+  const controller = new AbortController();
+  const stopped = lock.run(async () => { order.push('stopped ran'); }, controller.signal);
+  const third = lock.run(async () => { order.push('third'); });
+  await new Promise(r => setImmediate(r));
+  controller.abort(new DOMException('stop', 'AbortError'));
+  await assert.rejects(stopped, { name: 'AbortError' });
+  assert.deepEqual(order, ['first start'], 'the third still waits for the first');
+  release();
+  await Promise.all([first, third]);
+  assert.deepEqual(order, ['first start', 'first end', 'third']);
 });

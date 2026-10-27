@@ -737,7 +737,7 @@ export async function replacementCheck(modelPath: string): Promise<ReplacementDe
     freeAtLoad: vramBefore?.free ?? null, freeNow: now?.free ?? null,
     loadedVram: model.memoryUsage.vram + context.memoryUsage.vram,
     bytesPerLayer: totalLayers > 0 ? model.fileInsights.modelSize / totalLayers : 0,
-    rereadWeighting: levers.rereadWeighting, heldTokens: current.chat.sequence.contextTokens, readTokensPerSecond: current.lastReadRate,
+    rereadWeighting: levers.rereadWeighting, heldTokens: current.chat.sequence.contextTokens.length, readTokensPerSecond: current.lastReadRate,
   });
 }
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { historyFromMessages, responseToMessage, toGgufFunctions, thoughtsWhereKept } from '../core/local-provider.mts';
+import { compactSchema, historyFromMessages, responseToMessage, toGgufFunctions, thoughtsWhereKept } from '../core/local-provider.mts';
 import type { ChatMessage } from '../core/model-types.mts';
 
 // core/local-provider.mts is PURE — it never imports node-llama-cpp itself (that native binding lives in
@@ -13,6 +13,36 @@ test('toGgufFunctions maps our OpenAI-shaped tool schemas to node-llama-cpp\'s {
   ];
   assert.deepEqual(toGgufFunctions(tools), { read_file: { description: 'Lit un fichier', params: { type: 'object', properties: { path: { type: 'string' } } } } });
   assert.equal(toGgufFunctions([]), undefined, 'no tools at all: undefined, not an empty object (node-llama-cpp treats {} as "functions enabled, none defined")');
+});
+
+test('compactSchema drops $schema, title, examples and an empty required, and keeps types, enums, required, additionalProperties and descriptions', () => {
+  // An MCP-like schema: noise at every level, a parameter NAMED title, data that looks like noise.
+  const mcp = {
+    $schema: 'http://json-schema.org/draft-07/schema#', title: 'create_issue', $comment: 'generated', type: 'object', additionalProperties: false,
+    required: ['title', 'labels'],
+    properties: {
+      title: { type: 'string', title: 'Titre', description: 'Titre du ticket', maxLength: 200, examples: ['Bug'] },
+      labels: { type: 'array', items: { type: 'string', enum: ['bug', 'title'], title: 'Label' }, minItems: 1 },
+      meta: { type: 'object', required: [], properties: { draft: { type: 'boolean', default: { title: 'kept: data' } } }, additionalProperties: true },
+      kind: { const: { title: 'x' } },
+    },
+  };
+  assert.deepEqual(compactSchema(mcp), {
+    type: 'object', additionalProperties: false, required: ['title', 'labels'],
+    properties: {
+      title: { type: 'string', description: 'Titre du ticket', maxLength: 200 },
+      labels: { type: 'array', items: { type: 'string', enum: ['bug', 'title'] }, minItems: 1 },
+      meta: { type: 'object', properties: { draft: { type: 'boolean', default: { title: 'kept: data' } } }, additionalProperties: true },
+      kind: { const: { title: 'x' } },
+    },
+  });
+  assert.equal(mcp.title, 'create_issue', 'the input is not edited');
+  // A tool without parameters keeps an empty object schema node-llama-cpp accepts.
+  assert.deepEqual(compactSchema({ type: 'object', properties: {}, required: [], additionalProperties: false }), { type: 'object', properties: {}, additionalProperties: false });
+  // toGgufFunctions applies it only under the lever (shipped off: today's params, unchanged).
+  const tools = [{ type: 'function' as const, function: { name: 'create_issue', description: 'Créer un ticket', parameters: mcp } }];
+  assert.equal(toGgufFunctions(tools, false)?.create_issue.params, mcp);
+  assert.deepEqual(toGgufFunctions(tools, true)?.create_issue.params, compactSchema(mcp));
 });
 
 test('historyFromMessages: system and user turns map straight across', () => {

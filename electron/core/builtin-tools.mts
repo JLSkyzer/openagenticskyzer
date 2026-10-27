@@ -9,9 +9,13 @@ import { projectTools } from './project-analyzer.mts';
 import { shellTools } from './shell-tool.mts';
 import { webTools } from './web-tools.mts';
 import { searchTools } from './search-tools.mts';
+import { perfLevers } from './perf-levers.mts';
+import { slimToolDefinitions } from './tool-texts-slim.mts';
 
-export async function builtInTools(folder: string, dataHome: string, ignoredPatterns: string): Promise<AgentTool[]> {
-  return [
+/** `slim`: the slimmed descriptions (tool-texts-slim.mts) instead of the modules' own; the slimToolDefinitions lever by
+ * default (shipped off). */
+export async function builtInTools(folder: string, dataHome: string, ignoredPatterns: string, slim: boolean = perfLevers().slimToolDefinitions): Promise<AgentTool[]> {
+  const tools = [
     ...await workspaceTools(folder, ignoredPatterns),
     ...await memoryTools(folder, dataHome),
     ...await gitTools(folder, ignoredPatterns),
@@ -20,4 +24,5 @@ export async function builtInTools(folder: string, dataHome: string, ignoredPatt
     ...await webTools(),
     ...await searchTools(folder, dataHome, ignoredPatterns),
   ];
+  return slim ? slimToolDefinitions(tools) : tools;
 }

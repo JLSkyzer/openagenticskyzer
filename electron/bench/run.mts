@@ -277,9 +277,10 @@ async function session(name: string, config: Omit<SessionConfig, 'kind' | 'model
 
 try {
   try {
-    const schemas = await defaultToolSchemas();
+    // Counted under the levers asked for the run (this process's own are the shipped ones): slimToolDefinitions changes them.
+    const schemas = await defaultToolSchemas(levers.slimToolDefinitions);
     run.toolDefinitions = { chars: JSON.stringify(schemas).length, tokens: null };
-    run.toolDefinitions.tokens = (await toolDefinitionTokens(model, schemas)).tokens;
+    run.toolDefinitions.tokens = (await toolDefinitionTokens(model, schemas, levers.slimToolDefinitions)).tokens;
   } catch (error) {
     console.warn(`[bench] jetons des outils non comptés : ${error instanceof Error ? error.message : error}`);
   } finally {

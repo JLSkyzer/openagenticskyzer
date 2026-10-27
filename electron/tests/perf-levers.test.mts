@@ -29,6 +29,11 @@ test('perfLevers: no variable = the shipped levers (today\'s behaviour); a valid
   assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ keepThought: true }) }).levers.keepThought, true);
   const thought = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ keepThought: 'oui' }) });
   assert.deepEqual([thought.levers.keepThought, thought.rejected], [false, ['valeur invalide : keepThought']]);
+  // slimToolDefinitions (Task 6, F19, ruling F4): shipped off; a boolean only.
+  assert.equal(SHIPPED_LEVERS.slimToolDefinitions, false);
+  assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ slimToolDefinitions: true }) }).levers.slimToolDefinitions, true);
+  const slim = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ slimToolDefinitions: 1 }) });
+  assert.deepEqual([slim.levers.slimToolDefinitions, slim.rejected], [false, ['valeur invalide : slimToolDefinitions']]);
 });
 
 test('the checkpoint levers: shipped at node-llama-cpp\'s defaults; a shorter interval needs a memory cap', () => {

@@ -1,0 +1,520 @@
+[
+  {
+    "name": "analyze_project_and_init",
+    "category": "write",
+    "required": [],
+    "additionalProperties": false,
+    "properties": {
+      "overwrite": {
+        "type": "boolean"
+      }
+    }
+  },
+  {
+    "name": "create_dir",
+    "category": "write",
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "create_file",
+    "category": "write",
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "type": "string"
+      },
+      "content": {
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "delete_dir",
+    "category": "write",
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "delete_file",
+    "category": "write",
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "edit_file",
+    "category": "write",
+    "required": [
+      "new_string",
+      "old_string",
+      "path"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "type": "string"
+      },
+      "old_string": {
+        "type": "string"
+      },
+      "new_string": {
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "fetch_url",
+    "category": "network",
+    "required": [
+      "url"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "url": {
+        "type": "string",
+        "maxLength": 2000
+      },
+      "max_chars": {
+        "type": "integer",
+        "maximum": 50000
+      }
+    }
+  },
+  {
+    "name": "forget_memory",
+    "category": "write",
+    "required": [
+      "keyword"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "keyword": {
+        "type": "string",
+        "maxLength": 200
+      },
+      "scope": {
+        "type": "string",
+        "enum": [
+          "project",
+          "global"
+        ]
+      }
+    }
+  },
+  {
+    "name": "git_add",
+    "category": "write",
+    "required": [
+      "files"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "files": {
+        "type": "string",
+        "maxLength": 4000
+      }
+    }
+  },
+  {
+    "name": "git_blame",
+    "category": "read",
+    "required": [
+      "file"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "file": {
+        "type": "string",
+        "maxLength": 1000
+      },
+      "start": {
+        "type": "integer"
+      },
+      "end": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  },
+  {
+    "name": "git_branch_list",
+    "category": "read",
+    "required": [],
+    "additionalProperties": false,
+    "properties": {}
+  },
+  {
+    "name": "git_checkout",
+    "category": "write",
+    "required": [
+      "branch"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "branch": {
+        "type": "string",
+        "maxLength": 200
+      }
+    }
+  },
+  {
+    "name": "git_commit",
+    "category": "write",
+    "required": [
+      "message"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "message": {
+        "type": "string",
+        "maxLength": 5000
+      },
+      "files": {
+        "type": "string",
+        "maxLength": 4000
+      }
+    }
+  },
+  {
+    "name": "git_create_branch",
+    "category": "write",
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "type": "string",
+        "maxLength": 200
+      },
+      "from_branch": {
+        "type": "string",
+        "maxLength": 200
+      }
+    }
+  },
+  {
+    "name": "git_diff",
+    "category": "read",
+    "required": [],
+    "additionalProperties": false,
+    "properties": {
+      "file": {
+        "type": "string",
+        "maxLength": 1000
+      }
+    }
+  },
+  {
+    "name": "git_diff_staged",
+    "category": "read",
+    "required": [],
+    "additionalProperties": false,
+    "properties": {}
+  },
+  {
+    "name": "git_log",
+    "category": "read",
+    "required": [],
+    "additionalProperties": false,
+    "properties": {
+      "n": {
+        "type": "integer",
+        "maximum": 200
+      },
+      "oneline": {
+        "type": "boolean"
+      }
+    }
+  },
+  {
+    "name": "git_pull",
+    "category": "shell",
+    "required": [],
+    "additionalProperties": false,
+    "properties": {
+      "remote": {
+        "type": "string",
+        "maxLength": 100
+      }
+    }
+  },
+  {
+    "name": "git_push",
+    "category": "shell",
+    "required": [],
+    "additionalProperties": false,
+    "properties": {
+      "remote": {
+        "type": "string",
+        "maxLength": 100
+      },
+      "branch": {
+        "type": "string",
+        "maxLength": 200
+      }
+    }
+  },
+  {
+    "name": "git_stash",
+    "category": "write",
+    "required": [],
+    "additionalProperties": false,
+    "properties": {
+      "message": {
+        "type": "string",
+        "maxLength": 200
+      }
+    }
+  },
+  {
+    "name": "git_stash_pop",
+    "category": "write",
+    "required": [],
+    "additionalProperties": false,
+    "properties": {}
+  },
+  {
+    "name": "git_status",
+    "category": "read",
+    "required": [],
+    "additionalProperties": false,
+    "properties": {}
+  },
+  {
+    "name": "glob_files",
+    "category": "read",
+    "required": [
+      "pattern"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "pattern": {
+        "type": "string",
+        "maxLength": 500
+      },
+      "path": {
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "grep_codebase",
+    "category": "read",
+    "required": [
+      "pattern"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "pattern": {
+        "type": "string",
+        "maxLength": 500
+      },
+      "path": {
+        "type": "string"
+      },
+      "file_glob": {
+        "type": "string",
+        "maxLength": 200
+      }
+    }
+  },
+  {
+    "name": "grep_file",
+    "category": "read",
+    "required": [
+      "path",
+      "pattern"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "type": "string"
+      },
+      "pattern": {
+        "type": "string",
+        "maxLength": 1000
+      }
+    }
+  },
+  {
+    "name": "internet_search",
+    "category": "network",
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "query": {
+        "type": "string",
+        "maxLength": 500
+      },
+      "max_results": {
+        "type": "integer",
+        "maximum": 20
+      },
+      "topic": {
+        "type": "string",
+        "enum": [
+          "general",
+          "news",
+          "finance"
+        ]
+      },
+      "include_raw_content": {
+        "type": "boolean"
+      }
+    }
+  },
+  {
+    "name": "knowledge_search",
+    "category": "read",
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "query": {
+        "type": "string",
+        "maxLength": 2000
+      },
+      "n": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20
+      }
+    }
+  },
+  {
+    "name": "list_dir",
+    "category": "read",
+    "required": [],
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "type": "string"
+      }
+    }
+  },
+  {
+    "name": "read_file",
+    "category": "read",
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "type": "string"
+      },
+      "offset": {
+        "type": "integer"
+      },
+      "limit": {
+        "type": "integer"
+      }
+    }
+  },
+  {
+    "name": "read_memory",
+    "category": "read",
+    "required": [],
+    "additionalProperties": false,
+    "properties": {}
+  },
+  {
+    "name": "run_command",
+    "category": "shell",
+    "required": [
+      "command"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "command": {
+        "type": "string",
+        "maxLength": 8000
+      },
+      "timeout": {
+        "type": "integer",
+        "maximum": 600
+      }
+    }
+  },
+  {
+    "name": "save_memory",
+    "category": "write",
+    "required": [
+      "facts"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "facts": {
+        "type": "string",
+        "maxLength": 20000
+      },
+      "scope": {
+        "type": "string",
+        "enum": [
+          "project",
+          "global"
+        ]
+      }
+    }
+  },
+  {
+    "name": "semantic_search",
+    "category": "read",
+    "required": [
+      "query"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "query": {
+        "type": "string",
+        "maxLength": 2000
+      },
+      "n": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20
+      }
+    }
+  },
+  {
+    "name": "view_file",
+    "category": "read",
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "type": "string"
+      }
+    }
+  }
+]

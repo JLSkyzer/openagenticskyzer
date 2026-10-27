@@ -34,6 +34,10 @@ export interface PerfLevers {
    * segment), so the next prompt renders the reply as the model wrote it (Task 5). Applied only where the template renders
    * a resent thought in its place (the `[chat]` probe). Shipped false: the reasoning never goes back, as today. */
   keepThought: boolean;
+  /** Lighter tool definitions (Task 6): the built-in tools carry their slimmed descriptions (tool-texts-slim.mts) and the
+   * local engine drops schema noise (`$schema`, `title`, `examples`, `$comment`, an empty `required`) from every tool it is
+   * sent, MCP ones included. Names and argument contracts never change. Shipped false: today's texts and schemas. */
+  slimToolDefinitions: boolean;
 }
 
 export const PERF_LEVERS_ENV = 'OPENAGENT_PERF_LEVERS';
@@ -48,6 +52,7 @@ export const SHIPPED_LEVERS: Readonly<PerfLevers> = Object.freeze({
   promptCheckpoint: false,
   contextPlacement: 'system',
   keepThought: false,
+  slimToolDefinitions: false,
 });
 
 /** node-llama-cpp's own checkpoint interval (3.21.1, `defaultCheckpointOptions`): below it, a memory cap is required. */
@@ -64,6 +69,7 @@ const VALID: { [K in keyof PerfLevers]: (value: unknown) => boolean } = {
   promptCheckpoint: value => typeof value === 'boolean',
   contextPlacement: value => value === 'system' || value === 'after-tools',
   keepThought: value => typeof value === 'boolean',
+  slimToolDefinitions: value => typeof value === 'boolean',
 };
 
 /** The levers `env` asks for: each valid key overrides its shipped value; an unknown key, a wrong type or invalid

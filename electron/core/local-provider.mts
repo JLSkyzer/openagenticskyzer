@@ -8,6 +8,7 @@
 import type { ChatMessage, ToolCall, ToolSchema } from './model-types.mts';
 import { contextItem, type ThoughtKept } from './prompt-layout.mts';
 import { currentTurnStart } from './request-context.mts';
+import { perfLevers } from './perf-levers.mts';
 
 // ── node-llama-cpp's own shapes, declared locally (structural — no runtime import) ──────────────────────
 export interface GgufFunctionSpec { description?: string; params?: unknown }
@@ -27,12 +28,36 @@ export interface GgufResponse {
   metadata?: { stopReason?: string };
 }
 
+/** The keys a JSON schema carries for people, not for the model's arguments: dropped by compactSchema. */
+const SCHEMA_NOISE = new Set(['$schema', 'title', 'examples', '$comment']);
+/** The keys whose value is argument data, not a schema: copied as they are. */
+const SCHEMA_DATA = new Set(['enum', 'const', 'default']);
+
+/** `schema` without its noise, recursively: `$schema`, `title`, `examples`, `$comment` and an empty `required: []`.
+ * Everything else stays — types, enums, limits, a non-empty `required`, `additionalProperties`, descriptions. A
+ * `properties` map's keys are parameter names, never schema keys: a parameter named `title` is kept; `enum`, `const`
+ * and `default` hold data, copied untouched. */
+export function compactSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(compactSchema);
+  if (!schema || typeof schema !== 'object') return schema;
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (SCHEMA_NOISE.has(key) || (key === 'required' && Array.isArray(value) && value.length === 0)) continue;
+    if (SCHEMA_DATA.has(key)) kept[key] = value;
+    else if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+      kept[key] = Object.fromEntries(Object.entries(value).map(([name, inner]) => [name, compactSchema(inner)]));
+    } else kept[key] = compactSchema(value);
+  }
+  return kept;
+}
+
 /** OpenAI tool schemas → node-llama-cpp's `functions` option. `undefined` (not `{}`) when there are none:
- * an empty object still turns function-calling grammar ON with nothing to call. */
-export function toGgufFunctions(tools: readonly ToolSchema[]): GgufFunctions | undefined {
+ * an empty object still turns function-calling grammar ON with nothing to call. `compact` (the slimToolDefinitions
+ * lever by default, shipped off) passes every tool's parameters through compactSchema, MCP tools included. */
+export function toGgufFunctions(tools: readonly ToolSchema[], compact: boolean = perfLevers().slimToolDefinitions): GgufFunctions | undefined {
   if (tools.length === 0) return undefined;
   const functions: GgufFunctions = {};
-  for (const tool of tools) functions[tool.function.name] = { description: tool.function.description, params: tool.function.parameters };
+  for (const tool of tools) functions[tool.function.name] = { description: tool.function.description, params: compact ? compactSchema(tool.function.parameters) : tool.function.parameters };
   return functions;
 }
 

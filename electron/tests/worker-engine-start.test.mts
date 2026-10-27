@@ -10,13 +10,20 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp, mkdir, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 import { callWorker } from './support/worker-events.mts';
+import { PERF_LEVERS_ENV } from '../core/perf-levers.mts';
 
 const STORIES = fileURLToPath(new URL('./fixtures/stories260K.gguf', import.meta.url));
 const WORKER = fileURLToPath(new URL('../worker.mjs', import.meta.url));
 // Longer than the worker's bounded wait (HARDWARE_WAIT_MS, 5 s), far shorter than main's 30 s cap.
 const DELAY_MS = 8000;
+const { stopWorker } = createRequire(import.meta.url)('../main.cjs');
+const QUIT_CHILD = fileURLToPath(new URL('./support/quit-child.mts', import.meta.url));
+// What a native crash looks like from the parent: STATUS_STACK_BUFFER_OVERRUN.
+const NATIVE_CRASH = 0xC0000409;
 
 /** Resolves with the first {type:'event', event} message the worker posts from now on. */
 function nextEvent(worker: Worker, event: string, timeoutMs: number): Promise<any> {
@@ -81,4 +88,41 @@ test('a slow first engine start: hardware-info, model-status and estimate-model 
   // The estimate was remembered under the real hardware key: the model status reads it back.
   const after = await callWorker(worker, 'model-status', {});
   assert.deepEqual(after.placement, estimated.estimate);
+});
+
+// Task 7, lever engineAtBoot: the engine starts when the worker starts, if a local model is active. The setting must be
+// saved before that start, so a first worker saves it and quits, then a second one starts on the same home with the
+// lever, its 'engine' listener attached at once (ruling F10).
+test('with engineAtBoot and an active local model, the engine is ready without any op', { timeout: 120000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-engine-boot-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  await mkdir(home);
+  const model = join(root, 'stories260K.gguf');
+  await copyFile(STORIES, model);
+  const env = { ...process.env, OPENAGENT_HOME: home };
+  const setup = new Worker(WORKER, { env });
+  terminateAtEnd(t, setup);
+  const entry = await callWorker(setup, 'gguf-add', { path: model });
+  await callWorker(setup, 'save-global-settings', { patch: { active_local_model: entry.id } });
+  await stopWorker(setup);
+
+  const worker = new Worker(WORKER, { env: { ...env, [PERF_LEVERS_ENV]: JSON.stringify({ engineAtBoot: true }) }, workerData: { perfLeversAllowed: true } });
+  const ready = nextEvent(worker, 'engine', 100000);
+  terminateAtEnd(t, worker);
+  const event = await ready;
+  assert.equal(event.state, 'ready', JSON.stringify(event));
+});
+
+test('shutdown right after start with engineAtBoot ends cleanly (no 0xC0000409), once the engine it started is created', { timeout: 120000 }, () => {
+  const child = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', QUIT_CHILD, 'boot-engine'], { encoding: 'utf8', timeout: 110000 });
+  const output = `${child.stdout}\n${child.stderr}`.slice(-2000);
+  const status = child.status ?? -1;
+  assert.notEqual(status >>> 0, NATIVE_CRASH, `native crash 0xC0000409:\n${output}`);
+  assert.equal(status, 0, output);
+  const report = JSON.parse((child.stdout ?? '').trim().split('\n').at(-1) ?? '');
+  assert.equal(report.outcome, 'exited', output);
+  assert.equal(report.exitCode, 0, 'the worker ended itself, it was not terminated');
+  // The quit landed 50 ms after the start: the engine was being created, and the quit waited for it.
+  assert.equal(report.engine, 'ready', `the engine started at boot: ${output}`);
 });

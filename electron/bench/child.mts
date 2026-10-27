@@ -52,6 +52,14 @@ export interface SessionConfig extends Common {
   settle: string[];
   /** `--touch-memory n` (Task 4): before A's message n, a line is appended to A's project memory.md (null: never). */
   touchMemoryBefore?: number | null;
+  /** `--idle-before-send ms` (Task 7): the session starts as the app does when the user waits before writing. The model
+   * is made active by a first worker that then quits (the lever engineAtBoot reads it at start), the measured worker
+   * gets no op before the first message (no hardware-info: the Matériel tab is not open), and that message is sent
+   * this long after the worker's start. The backend is then read after that first turn. null: as before. */
+  idleBeforeSendMs?: number | null;
+  /** `--mcp-fake ms` (Task 7, ruling F13): a global MCP server (the tests' fake one) whose initialize answers after this
+   * long, written in the home's mcp.json before the worker starts: each turn's tool preparation waits for it. */
+  mcpFakeMs?: number | null;
 }
 
 /** What `--touch-memory` appends to the project memory: a change in the project context, as a save_memory makes. */
@@ -74,6 +82,7 @@ export interface ChildResult {
 const ELECTRON = fileURLToPath(new URL('..', import.meta.url));
 const WORKER = join(ELECTRON, 'worker.mjs');
 const MANIFEST = join(ELECTRON, 'resources', 'cuda-pack', 'manifest.json');
+const FAKE_MCP_SERVER = join(ELECTRON, 'tests', 'fixtures', 'fake-mcp-server.cjs');
 const INDEX_WAIT_MS = 300000;
 const STOP_WAIT_MS = 120000;
 
@@ -238,22 +247,46 @@ export async function runSession(config: SessionConfig, save: (result: ChildResu
       process.env.PATH = process.env.PATH ? `${cudaRuntimeDir}${delimiter}${process.env.PATH}` : cudaRuntimeDir;
     }
   }
+  const workerData = { perfLeversAllowed: true, cudaPackManifest: MANIFEST, gpuBackend: config.backend, cudaRuntimeDir };
+  const idleMs = config.idleBeforeSendMs ?? null;
+  if (config.mcpFakeMs != null) {
+    await writeFile(join(config.home, 'mcp.json'), JSON.stringify([{
+      id: 'banc-mcp', command: process.execPath, args: [FAKE_MCP_SERVER], env: { FAKE_MCP_INIT_DELAY_MS: String(config.mcpFakeMs) }, added_at: new Date().toISOString(),
+    }]));
+  }
+  const activate = async (target: Worker) => {
+    const entry = await callWorker(target, 'gguf-add', { path: config.model });
+    await callWorker(target, 'save-global-settings', { patch: { active_local_model: entry.id, local_context: config.context } });
+  };
+  // `--idle-before-send`: the model is made active before the measured worker starts, by a worker that creates no Llama
+  // (no hardware-info), so the measured one starts its engine itself — at boot with engineAtBoot, else on the turn.
+  if (idleMs !== null) {
+    const setup = new Worker(WORKER, { env: { ...process.env, OPENAGENT_HOME: config.home }, workerData });
+    try { await activate(setup); } finally { await shutdown(setup); }
+  }
   const worker = new Worker(WORKER, {
     env: { ...process.env, OPENAGENT_HOME: config.home, [PERF_LEVERS_ENV]: config.levers },
-    workerData: { perfLeversAllowed: true, cudaPackManifest: MANIFEST, gpuBackend: config.backend, cudaRuntimeDir },
+    workerData,
   });
+  const workerStart = Date.now();
   let crashed: Error | null = null;
   worker.on('error', (error: Error) => { crashed = error; console.error(`[bench] le worker s'est arrêté : ${error.message}`); });
-  try {
+  /** The engine's backend, as hardware-info reads it; false (and a failure) when it is not the one required. */
+  const checkBackend = async (when: string) => {
     const hardware = await hardwareInfo(worker);
     result.backend = typeof hardware?.backend === 'string' ? hardware.backend : null;
     console.info(`[bench] moteur ${result.backend ?? 'inconnu'} (choix ${config.backend}, pack CUDA ${cudaRuntimeDir ? 'activé' : 'absent'})`);
     if (config.requireBackend && result.backend !== config.requireBackend) {
-      result.failures.push(`moteur ${result.backend ?? 'inconnu'} au lieu de ${config.requireBackend} : aucun message envoyé`);
-      return result;
+      result.failures.push(`moteur ${result.backend ?? 'inconnu'} au lieu de ${config.requireBackend} : ${when}`);
+      return false;
     }
-    const entry = await callWorker(worker, 'gguf-add', { path: config.model });
-    await callWorker(worker, 'save-global-settings', { patch: { active_local_model: entry.id, local_context: config.context } });
+    return true;
+  };
+  try {
+    if (idleMs === null) {
+      if (!await checkBackend('aucun message envoyé')) return result;
+      await activate(worker);
+    }
     for (const folder of config.settle) await indexSettled(worker, folder);
     for (const group of config.groups) {
       if (interrupted) break;
@@ -267,6 +300,12 @@ export async function runSession(config: SessionConfig, save: (result: ChildResu
         if (group.scenario === 'A' && config.touchMemoryBefore === message) {
           await touchProjectMemory(folder);
           console.info(`[bench] mémoire du projet modifiée avant ${name}`);
+        }
+        const first = result.turns.length === 0;
+        if (first && idleMs !== null) {
+          const wait = Math.max(0, workerStart + idleMs - Date.now());
+          console.info(`[bench] attente avant le premier message : ${wait} ms (${idleMs} ms après le démarrage du worker)`);
+          await new Promise(resolve => setTimeout(resolve, wait));
         }
         console.info(`[bench] ${name}`);
         const { runId, end, timedOut } = await sendAndWait(worker, folder, text, config.turnTimeoutMs);
@@ -286,6 +325,8 @@ export async function runSession(config: SessionConfig, save: (result: ChildResu
         }
         result.turns.push(figures);
         await save(result);
+        // `--idle-before-send`: the backend is known only now (hardware-info before the turn would start the engine).
+        if (first && idleMs !== null && !await checkBackend('aucun autre message envoyé')) return result;
       }
     }
     if (interrupted) result.failures.push('interrompu (arrêt demandé par le banc)');

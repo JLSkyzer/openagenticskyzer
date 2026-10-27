@@ -49,6 +49,11 @@ export interface BenchRun {
   failures?: string[];
   /** `--touch-memory`: the A message before which the project memory was changed (absent: never). */
   touchMemory?: number;
+  /** `--idle-before-send` (Task 7): how long after its worker's start each session sent its first message (absent: as
+   * before, right after a hardware-info that started the engine). */
+  idleBeforeSendMs?: number;
+  /** `--mcp-fake` (Task 7): the initialize delay of the fake global MCP server each home held (absent: none). */
+  mcpFakeMs?: number;
 }
 
 type Line = Record<string, unknown>;

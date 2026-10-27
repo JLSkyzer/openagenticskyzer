@@ -38,6 +38,13 @@ export interface PerfLevers {
    * local engine drops schema noise (`$schema`, `title`, `examples`, `$comment`, an empty `required`) from every tool it is
    * sent, MCP ones included. Names and argument contracts never change. Shipped false: today's texts and schemas. */
   slimToolDefinitions: boolean;
+  /** Start the engine (the Llama: node-llama-cpp's binary test, then the backend) when the worker starts, if a local
+   * model is active (Task 7), so the first turn need not wait for it. Shipped false: it starts on the first turn, or on
+   * the first visit to the Matériel tab, as today. */
+  engineAtBoot: boolean;
+  /** Load the model while the turn's tools (MCP discovery included) and instructions are prepared, instead of after them
+   * (Task 7). The page then shows « Chargement » during that preparation (F31). Shipped false: the load follows them. */
+  overlapLoad: boolean;
 }
 
 export const PERF_LEVERS_ENV = 'OPENAGENT_PERF_LEVERS';
@@ -53,6 +60,8 @@ export const SHIPPED_LEVERS: Readonly<PerfLevers> = Object.freeze({
   contextPlacement: 'system',
   keepThought: false,
   slimToolDefinitions: false,
+  engineAtBoot: false,
+  overlapLoad: false,
 });
 
 /** node-llama-cpp's own checkpoint interval (3.21.1, `defaultCheckpointOptions`): below it, a memory cap is required. */
@@ -70,6 +79,8 @@ const VALID: { [K in keyof PerfLevers]: (value: unknown) => boolean } = {
   contextPlacement: value => value === 'system' || value === 'after-tools',
   keepThought: value => typeof value === 'boolean',
   slimToolDefinitions: value => typeof value === 'boolean',
+  engineAtBoot: value => typeof value === 'boolean',
+  overlapLoad: value => typeof value === 'boolean',
 };
 
 /** The levers `env` asks for: each valid key overrides its shipped value; an unknown key, a wrong type or invalid

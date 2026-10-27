@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, mkdir, copyFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, copyFile, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
@@ -12,9 +12,12 @@ import { removeAtEnd, terminateAtEnd } from './teardown.mts';
 import { testWorkerOptions } from './support/test-model-provider.mts';
 import { withTrainContext } from './support/gguf-fixture.mts';
 import { callWorker, recordAgentEvents, phasesOf } from './support/worker-events.mts';
+import { PERF_LEVERS_ENV } from '../core/perf-levers.mts';
+import { turnLogDir } from '../core/turn-log.mts';
 
 const STORIES = fileURLToPath(new URL('./fixtures/stories260K.gguf', import.meta.url));
 const WORKER = fileURLToPath(new URL('../worker.mjs', import.meta.url));
+const FAKE_MCP_SERVER = fileURLToPath(new URL('./fixtures/fake-mcp-server.cjs', import.meta.url));
 
 /** A real worker on a temp home, stories260K copied and activated as in worker-local-model.test.mts::setup.
  * `trainContext`: the copy's train context is rewritten (a bigger context, a slower creation). */
@@ -189,4 +192,42 @@ test('5. with the scripted provider, a tool turn: preparing → reading → tool
   assert.equal(Object.hasOwn(done.timing, 'outputTokens'), false, 'the scripted provider reports no stats');
   const saved = await callWorker(worker, 'messages', { folder: project, branchId: 'main' });
   assert.deepEqual(saved.at(-1).timing, done.timing);
+});
+
+/** Every turn log line of `home`, in order. */
+async function logLines(home: string): Promise<any[]> {
+  const dir = turnLogDir(home);
+  const names = (await readdir(dir)).filter(name => name.endsWith('.jsonl')).sort();
+  return (await Promise.all(names.map(name => readFile(join(dir, name), 'utf8')))).join('').split('\n').filter(Boolean).map(line => JSON.parse(line));
+}
+
+// Task 7, lever overlapLoad: the model loads while the turn's tools are prepared. A global MCP server (the fake one, as
+// worker-mcp.test.mts writes it in mcp.json) answers its initialize after 1.5 s, which today holds « preparing » that
+// long before the load. The durations are the worker's own: a phase line's `previousMs` (its `at` is the time the line
+// was written, and lines before the log opens are written together once registerTools has returned).
+test('6. with overlapLoad, the load starts while the tools are still being prepared (a 1.5 s MCP server)', { timeout: 120000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-turn-phases-overlap-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const folder = join(root, 'projet');
+  await Promise.all([mkdir(home), mkdir(folder)]);
+  const model = join(root, 'stories260K.gguf');
+  await copyFile(STORIES, model);
+  await writeFile(join(home, 'mcp.json'), JSON.stringify([{ id: 'lent', command: process.execPath, args: [FAKE_MCP_SERVER], env: { FAKE_MCP_INIT_DELAY_MS: '1500' }, added_at: new Date().toISOString() }]));
+  const worker = new Worker(WORKER, { env: { ...process.env, OPENAGENT_HOME: home, [PERF_LEVERS_ENV]: JSON.stringify({ overlapLoad: true }) }, workerData: { perfLeversAllowed: true } });
+  terminateAtEnd(t, worker);
+  const entry = await callWorker(worker, 'gguf-add', { path: model });
+  await callWorker(worker, 'save-global-settings', { patch: { active_local_model: entry.id } });
+  const rec = recordAgentEvents(worker);
+  t.after(() => rec.stop());
+  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'Once upon a time' });
+  const events = await rec.until(runId, { timeoutMs: 110000 });
+  assert.equal(events.at(-1).kind, 'done', dump(events));
+  assert.deepEqual(phasesOf(events), ['preparing', 'loading', 'reading', 'writing'], dump(events));
+  const phases = (await logLines(home)).filter(line => line.runId === runId && line.event === 'phase');
+  const loading = phases.find(line => line.phase === 'loading');
+  const reading = phases.find(line => line.phase === 'reading');
+  assert.ok(loading.previousMs < 1000, `loading started ${loading.previousMs} ms after the turn, before the MCP server answered`);
+  // Not vacuous: the turn did wait for the MCP server, inside « loading ».
+  assert.ok(reading.previousMs >= 1000, `loading lasted ${reading.previousMs} ms: the MCP server's 1.5 s should fall in it`);
 });

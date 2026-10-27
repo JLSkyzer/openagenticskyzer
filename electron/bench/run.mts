@@ -3,7 +3,8 @@
 //
 //   node --experimental-strip-types bench/run.mts --model <gguf> --label <name> [--scenarios A,B,C] [--messages 1-4]
 //        [--context 32768] [--lever key=value]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dir>|none]
-//        [--turn-timeout <minutes>] [--install-timeout <minutes>] [--touch-memory <message>] [--out <dir>]
+//        [--turn-timeout <minutes>] [--install-timeout <minutes>] [--touch-memory <message>] [--idle-before-send <ms>]
+//        [--mcp-fake <ms>] [--out <dir>]
 //
 // The 27B command of the benchmark protocol (with the user present, never while a game runs), word for word:
 //
@@ -119,13 +120,14 @@ function parseOptions() {
       context: { type: 'string', default: '32768' }, lever: { type: 'string', multiple: true, default: [] }, out: { type: 'string' },
       backend: { type: 'string' }, 'cuda-pack': { type: 'string' }, 'turn-timeout': { type: 'string', default: '15' },
       'install-timeout': { type: 'string', default: '10' }, 'touch-memory': { type: 'string' },
+      'idle-before-send': { type: 'string' }, 'mcp-fake': { type: 'string' },
     },
     allowPositionals: false,
   });
 }
 try { parsed = parseOptions(); } catch (error) { fail(2, error instanceof Error ? error.message : String(error)); }
 const { values } = parsed;
-if (!values.model || !values.label) fail(2, 'Usage : bench/run.mts --model <gguf> --label <nom> [--scenarios A,B,C] [--messages 1-4] [--context 32768] [--lever clé=valeur]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dossier>|none] [--turn-timeout <minutes>] [--install-timeout <minutes>] [--touch-memory <message>] [--out <dossier>]');
+if (!values.model || !values.label) fail(2, 'Usage : bench/run.mts --model <gguf> --label <nom> [--scenarios A,B,C] [--messages 1-4] [--context 32768] [--lever clé=valeur]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dossier>|none] [--turn-timeout <minutes>] [--install-timeout <minutes>] [--touch-memory <message>] [--idle-before-send <ms>] [--mcp-fake <ms>] [--out <dossier>]');
 const scenarios = values.scenarios.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
 if (!scenarios.length || scenarios.some(s => !['A', 'B', 'C'].includes(s))) fail(2, `Scénarios inconnus : ${values.scenarios} (A, B, C)`);
 // `--messages n`: A plays its first n messages only (the scenario subset a lever targets, e.g. A·1–A·3).
@@ -135,6 +137,18 @@ if (!Number.isInteger(messageCount) || messageCount < 1 || messageCount > SCENAR
 // save_memory would: what the context placement lever is measured on.
 const touchMemory = values['touch-memory'] === undefined ? null : Number(values['touch-memory']);
 if (touchMemory !== null && (!scenarios.includes('A') || !Number.isInteger(touchMemory) || touchMemory < 2 || touchMemory > messageCount)) fail(2, `--touch-memory invalide : ${values['touch-memory']} (un message de A, 2 à ${messageCount})`);
+// `--idle-before-send ms` (Task 7): each session starts as the app does when the user waits that long after its start
+// before writing — no hardware-info first, the model made active before the worker starts (bench/child.mts).
+// `--mcp-fake ms` (Task 7, ruling F13): a global MCP server answering its initialize after that long, in each home.
+const msOption = (name: 'idle-before-send' | 'mcp-fake') => {
+  const raw = values[name];
+  if (raw === undefined) return null;
+  const ms = Number(raw);
+  if (!Number.isInteger(ms) || ms < 0) fail(2, `--${name} invalide : ${raw} (millisecondes, un entier positif ou nul)`);
+  return ms;
+};
+const idleBeforeSendMs = msOption('idle-before-send');
+const mcpFakeMs = msOption('mcp-fake');
 const context = values.context === 'max' ? 'max' : Number(values.context);
 if (!(CONTEXTS as readonly unknown[]).includes(context)) fail(2, `Contexte invalide : ${values.context} (${CONTEXTS.join(', ')})`);
 const explicitBackend = values.backend as Backend | undefined;
@@ -182,6 +196,8 @@ const run: BenchRun = {
   toolDefinitions: { chars: 0, tokens: null }, turns: [],
   backend: null, nodeLlamaCpp, qualityGate: modelBytes > QUALITY_MIN_BYTES, failures: [],
   ...(touchMemory === null ? {} : { touchMemory }),
+  ...(idleBeforeSendMs === null ? {} : { idleBeforeSendMs }),
+  ...(mcpFakeMs === null ? {} : { mcpFakeMs }),
 };
 const failures: string[] = [];
 /** Folders a failure message may name, longest first: replaced by a placeholder, never written. */
@@ -262,14 +278,14 @@ async function home(name: string): Promise<string> {
 }
 
 let applied: Readonly<PerfLevers> | null = null;
-async function session(name: string, config: Omit<SessionConfig, 'kind' | 'model' | 'context' | 'levers' | 'backend' | 'requireBackend' | 'qualityGate' | 'turnTimeoutMs' | 'resultPath'>): Promise<ChildResult | null> {
+async function session(name: string, config: Omit<SessionConfig, 'kind' | 'model' | 'context' | 'levers' | 'backend' | 'requireBackend' | 'qualityGate' | 'turnTimeoutMs' | 'resultPath' | 'idleBeforeSendMs' | 'mcpFakeMs'>): Promise<ChildResult | null> {
   if (interrupted) return null;
   await guard();
   // A Ctrl+C during the guard (M3): no session starts (step and runChild check again before the spawn).
   if (interrupted) return null;
   const result = await step(name, {
     ...config, kind: 'session', model, context: context as number | 'max', levers: leversJson, backend, requireBackend,
-    qualityGate: run.qualityGate ?? false, turnTimeoutMs, resultPath: join(temp, `${name}.result.json`),
+    qualityGate: run.qualityGate ?? false, turnTimeoutMs, resultPath: join(temp, `${name}.result.json`), idleBeforeSendMs, mcpFakeMs,
   });
   if (result?.levers && !applied) applied = result.levers;
   return result;

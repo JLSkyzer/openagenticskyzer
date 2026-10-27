@@ -29,6 +29,7 @@ import { PromptLibrary } from './core/prompts.mts';
 import { readProjectMemory } from './core/project-memory.mts';
 import { validateAttachments } from './core/attachments.mts';
 import { turnWindow } from './core/turn-window.mts';
+import { effectiveWindow } from './core/context-budget.mts';
 import { TurnClock } from './core/turn-clock.mts';
 import { activeModel, modelStatus, turnModelStatus, contextRequestOf, NO_LOCAL_MODEL, LOCAL_MODEL_MISSING } from './core/active-model.mts';
 import { closeDanglingCalls } from './core/request-context.mts';
@@ -724,8 +725,35 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     logClosed = true;
     await logger?.flush();
   };
+  // A real load (none for a warm engine) shows « loading », its progress in whole percents. Once the run is
+  // aborted, the load going on natively behind the stop reports nothing more; a load that fails or is stopped never
+  // calls 'end', so the turn has no loadMs, and its terminal event closes the phase (ruling T2-m5).
+  // A second load of the same turn (fewer layers, or the processor: core/local-engine.mts) is labelled by its
+  // `attempt`, so its progress never silently restarts at 0.
+  let attempt;
+  // The load's stages and the model's architecture, from its `end` (none for a warm engine): logged on model-ready.
+  let loadFigures = null;
+  const onLoad = event => {
+    if (controller.signal.aborted) return;
+    if (event.kind === 'start') { clock.loadStart(); phase('loading'); }
+    if (event.kind === 'retry') { attempt = event.mode; phase('loading', { attempt, progress: 0 }); }
+    if (event.kind === 'progress') phase('loading', { ...(attempt ? { attempt } : {}), progress: Math.min(100, Math.max(0, Math.floor(event.progress * 100))) });
+    if (event.kind === 'end') { clock.loadEnd(); loadFigures = { stages: event.stages, architecture: event.architecture }; }
+  };
+  // Lever overlapLoad (Task 7, core/perf-levers.mts): the engine window is asked for now, so the model loads while the
+  // tools (MCP discovery included) and the instructions are prepared; it is awaited once they are, and capped by
+  // max_tokens there (known only from the project's settings). windowFor cancels the estimates and waits for them first,
+  // as on the path below, and the run's signal stops it. A failure or a stop surfaces at that await, never as an
+  // unhandled rejection (the `.catch` below only marks it handled); a turn that ends before the await leaves the load to
+  // the engine's lock, which a later load and the quit's dispose wait behind. Tracked, so the quit's report names it.
+  // « Chargement » then shows during the preparation (F31).
+  let earlyWindow = null;
   try {
     phase('preparing');
+    if (perfLevers().overlapLoad) {
+      earlyWindow = track(windowFor(provider, null, { signal: controller.signal, onLoad }), 'chargement du modèle');
+      earlyWindow.catch(() => {});
+    }
     const globalConfig = await settings.global().catch(() => null);
     if (globalConfig) {
       logLevel = globalConfig.turn_log;
@@ -814,22 +842,9 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
       signal.addEventListener('abort', () => { pendingPermissions.delete(requestId); reject(signal.reason); }, { once: true });
       post({ kind: 'permission-request', requestId, tool: request.tool, category: toolCategory.get(request.tool), arguments: request.arguments });
     });
-    // A real load (none for a warm engine) shows « loading », its progress in whole percents. Once the run is
-    // aborted, the load going on natively behind the stop reports nothing more; a load that fails or is stopped never
-    // calls 'end', so the turn has no loadMs, and its terminal event closes the phase (ruling T2-m5).
-    // A second load of the same turn (fewer layers, or the processor: core/local-engine.mts) is labelled by its
-    // `attempt`, so its progress never silently restarts at 0.
-    let attempt;
-    // The load's stages and the model's architecture, from its `end` (none for a warm engine): logged on model-ready.
-    let loadFigures = null;
-    const onLoad = event => {
-      if (controller.signal.aborted) return;
-      if (event.kind === 'start') { clock.loadStart(); phase('loading'); }
-      if (event.kind === 'retry') { attempt = event.mode; phase('loading', { attempt, progress: 0 }); }
-      if (event.kind === 'progress') phase('loading', { ...(attempt ? { attempt } : {}), progress: Math.min(100, Math.max(0, Math.floor(event.progress * 100))) });
-      if (event.kind === 'end') { clock.loadEnd(); loadFigures = { stages: event.stages, architecture: event.architecture }; }
-    };
-    const contextTokens = await windowFor(provider, effective.max_tokens, { signal: controller.signal, onLoad });
+    const contextTokens = earlyWindow
+      ? effectiveWindow(await earlyWindow, effective.max_tokens)
+      : await windowFor(provider, effective.max_tokens, { signal: controller.signal, onLoad });
     postModelStatus(model);
     logModelReady(model, contextTokens, clock.timing().loadMs, log, loadFigures);
     const result = await runAgent({
@@ -893,6 +908,8 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     else finish('error', { message });
   } finally {
     active.delete(runId);
+    // A turn that failed before awaiting its early load (overlapLoad) stops it: nothing posts for a turn that has ended.
+    if (earlyWindow) controller.abort();
     // Between turns only, and never awaited by the turn: it is over for the page. The shutdown op waits for it.
     track(maybeReplace(model), 'réallocation entre deux tours');
   }
@@ -931,6 +948,14 @@ async function engineWithin(ms) {
   } finally {
     clearTimeout(timer);
   }
+}
+// Lever engineAtBoot (Task 7, core/perf-levers.mts): with a local model active, the engine starts now, through the same
+// startEngine as hardware-info (its 'engine' event included), so the first turn finds it created. Tracked like any work:
+// a quit right after the start waits for the creation instead of ending the thread inside it. Here, not with the other
+// start-up steps: startEngine's state (engineStart) is initialised only from this point of the module. Off: the engine
+// starts on the first turn or the first hardware-info, as before.
+if (perfLevers().engineAtBoot) {
+  track(settings.global().then(saved => (saved.active_local_model ? startEngine() : undefined)).catch(() => {}), 'démarrage du moteur');
 }
 
 // Re-placement between turns (item 4): after a turn, one cheap VRAM read decides (core/local-engine.mts::

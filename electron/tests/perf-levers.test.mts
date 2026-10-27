@@ -34,6 +34,12 @@ test('perfLevers: no variable = the shipped levers (today\'s behaviour); a valid
   assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ slimToolDefinitions: true }) }).levers.slimToolDefinitions, true);
   const slim = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ slimToolDefinitions: 1 }) });
   assert.deepEqual([slim.levers.slimToolDefinitions, slim.rejected], [false, ['valeur invalide : slimToolDefinitions']]);
+  // engineAtBoot and overlapLoad (Task 7, F19): shipped off; booleans only.
+  assert.deepEqual([SHIPPED_LEVERS.engineAtBoot, SHIPPED_LEVERS.overlapLoad], [false, false]);
+  const load = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ engineAtBoot: true, overlapLoad: true }) }).levers;
+  assert.deepEqual([load.engineAtBoot, load.overlapLoad], [true, true]);
+  const badLoad = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ engineAtBoot: 'oui', overlapLoad: 1 }) });
+  assert.deepEqual([badLoad.levers.engineAtBoot, badLoad.levers.overlapLoad, badLoad.rejected], [false, false, ['valeur invalide : engineAtBoot', 'valeur invalide : overlapLoad']]);
 });
 
 test('the checkpoint levers: shipped at node-llama-cpp\'s defaults; a shorter interval needs a memory cap', () => {

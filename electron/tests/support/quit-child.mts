@@ -5,8 +5,9 @@
 //   loaded      a turn stopped, then the quit, the model warm
 //   generating  the quit while the turn writes (a generation inside node-llama-cpp's native decode)
 //   loading     the quit while the turn loads the model
-//   boot-engine (Task 7) a worker started with engineAtBoot on a home whose local model is already active, quit 50 ms
-//               after its start: while the engine it started at boot is still being created. The report then holds
+//   boot-engine (Task 7) a worker started with engineAtBoot on a home whose local model is already active, quit as soon
+//               as it answers a first op (its boot read of the settings is then done): while the engine it started at
+//               boot is still being created. The report then holds
 //               { outcome, quitMs, exitCode, steps, engine } (engine: the state of its 'engine' event, null if none).
 // After the quit, a second worker reads the conversation back: what the stopped turn saved.
 import { Worker } from 'node:worker_threads';
@@ -40,7 +41,8 @@ async function bootEngine(env: NodeJS.ProcessEnv, model: string): Promise<void> 
     if (message?.type === 'event' && message.event === 'engine') engine = message.state;
     if (typeof message?.id === 'string' && message.id.startsWith('shutdown-') && message.ok) steps = message.result.steps;
   });
-  await new Promise(resolve => setTimeout(resolve, 50));
+  // Not a fixed delay: a quit that lands before the boot read of the settings starts no engine at all (Task 8, M2).
+  await callWorker(worker, 'global-settings');
   const started = Date.now();
   const outcome = await (capMs === undefined ? stopWorker(worker) : stopWorker(worker, capMs));
   await exited;

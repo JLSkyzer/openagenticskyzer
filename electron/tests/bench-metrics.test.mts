@@ -78,6 +78,12 @@ test('compareRuns: a turn missing on one side, an incomplete old file, status, q
   // --touch-memory (Task 4): both runs must change the memory before the same message, or neither.
   assert.deepEqual(comparability({ ...base, touchMemory: 3 }, { ...base, touchMemory: 3 }), []);
   assert.deepEqual(comparability(base, { ...base, touchMemory: 3 }), ['mémoire du projet modifiée différemment : jamais → avant A·3']);
+  // --idle-before-send and --mcp-fake (Task 7): same conditions on both sides, or the timings say nothing.
+  assert.deepEqual(comparability({ ...base, idleBeforeSendMs: 5000, mcpFakeMs: 1500 }, { ...base, idleBeforeSendMs: 5000, mcpFakeMs: 1500 }), []);
+  assert.deepEqual(comparability(base, { ...base, idleBeforeSendMs: 5000, mcpFakeMs: 1500 }), [
+    'attente avant le premier message différente : aucune → 5000 ms',
+    'serveur MCP factice différent : aucun → 1500 ms',
+  ]);
 });
 
 const fig = (held: number, common: number, prompt: number, evaluated: number) => ({ held, common, prompt, evaluated, reused: Math.max(0, prompt - evaluated), checkpoints: null });

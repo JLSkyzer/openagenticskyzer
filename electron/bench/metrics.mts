@@ -193,6 +193,11 @@ export function comparability(before: BenchRun, after: BenchRun): string[] {
   if (engine(before) !== engine(after)) issues.push(`node-llama-cpp différent : ${engine(before)} → ${engine(after)}`);
   const touched = (run: BenchRun) => (run.touchMemory === undefined ? 'jamais' : `avant A·${run.touchMemory}`);
   if (touched(before) !== touched(after)) issues.push(`mémoire du projet modifiée différemment : ${touched(before)} → ${touched(after)}`);
+  // Task 7's conditions: a run that waited before its first message, or held a slow MCP server, is not timed like one that did not.
+  const idle = (run: BenchRun) => (run.idleBeforeSendMs === undefined ? 'aucune' : `${run.idleBeforeSendMs} ms`);
+  if (idle(before) !== idle(after)) issues.push(`attente avant le premier message différente : ${idle(before)} → ${idle(after)}`);
+  const mcp = (run: BenchRun) => (run.mcpFakeMs === undefined ? 'aucun' : `${run.mcpFakeMs} ms`);
+  if (mcp(before) !== mcp(after)) issues.push(`serveur MCP factice différent : ${mcp(before)} → ${mcp(after)}`);
   for (const cap of CAPS) {
     const a = before.levers?.[cap];
     const b = after.levers?.[cap];

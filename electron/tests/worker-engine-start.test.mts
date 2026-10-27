@@ -123,6 +123,6 @@ test('shutdown right after start with engineAtBoot ends cleanly (no 0xC0000409),
   const report = JSON.parse((child.stdout ?? '').trim().split('\n').at(-1) ?? '');
   assert.equal(report.outcome, 'exited', output);
   assert.equal(report.exitCode, 0, 'the worker ended itself, it was not terminated');
-  // The quit landed 50 ms after the start: the engine was being created, and the quit waited for it.
+  // The quit landed once the worker answered its first op: the engine was being created, and the quit waited for it.
   assert.equal(report.engine, 'ready', `the engine started at boot: ${output}`);
 });

@@ -953,10 +953,8 @@ async function engineWithin(ms) {
 // startEngine as hardware-info (its 'engine' event included), so the first turn finds it created. Tracked like any work:
 // a quit right after the start waits for the creation instead of ending the thread inside it. Here, not with the other
 // start-up steps: startEngine's state (engineStart) is initialised only from this point of the module. Off: the engine
-// starts on the first turn or the first hardware-info, as before.
-if (perfLevers().engineAtBoot) {
-  track(settings.global().then(saved => (saved.active_local_model ? startEngine() : undefined)).catch(() => {}), 'démarrage du moteur');
-}
+// starts on the first turn or the first hardware-info, as before. The block follows `shuttingDown`'s declaration
+// (below): a quit that lands while the settings are read starts no engine.
 
 // Re-placement between turns (item 4): after a turn, one cheap VRAM read decides (core/local-engine.mts::
 // replacementDecision) whether the model, loaded on the processor or with fewer layers, now has clearly more room on
@@ -977,6 +975,13 @@ let pendingSends = 0;
 let shuttingDown = false;
 function cancelReplacement() {
   replacement?.controller.abort();
+}
+// The lever engineAtBoot (its comment is after engineWithin). A failed start is said in the app log; the 'engine'
+// event already tells the page.
+if (perfLevers().engineAtBoot) {
+  track(settings.global().then(saved => (saved.active_local_model && !shuttingDown ? startEngine() : undefined)).catch(error => {
+    console.warn(`[moteur] démarrage au lancement du worker échoué : ${error instanceof Error ? error.message : String(error)}`);
+  }), 'démarrage du moteur');
 }
 function postReplacing(model, replacing) {
   try {

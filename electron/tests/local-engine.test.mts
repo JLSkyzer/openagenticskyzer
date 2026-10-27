@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readGgufFileInfo, GgufInsights, LlamaChat, JinjaTemplateChatWrapper, QwenChatWrapper, type ChatModelFunctions, type ChatWrapper } from 'node-llama-cpp';
+import { readGgufFileInfo, GgufInsights, LlamaChat, JinjaTemplateChatWrapper, QwenChatWrapper, InputLookupTokenPredictor, type ChatModelFunctions, type ChatWrapper } from 'node-llama-cpp';
 import type { GgufFunctions, GgufHistoryItem } from '../core/local-provider.mts';
 import { commonPrefixLength, type PromptCheckpointFigures } from '../core/reuse.mts';
 import { SHIPPED_LEVERS } from '../core/perf-levers.mts';
@@ -436,6 +436,42 @@ test('thoughtBudget: null when neither the setting nor the lever caps; the lever
 test('sequenceOptions passes the checkpoint levers to getSequence as they are', () => {
   assert.deepEqual(sequenceOptions(SHIPPED_LEVERS), { checkpoints: { max: 32, interval: 8192, maxMemory: null } });
   assert.deepEqual(sequenceOptions({ ...SHIPPED_LEVERS, checkpointInterval: 512, checkpointMaxMemory: 1 << 30 }).checkpoints, { max: 32, interval: 512, maxMemory: 1 << 30 });
+});
+
+// Task 10: the inputLookup lever adds node-llama-cpp's InputLookupTokenPredictor; off, the options keep T3's shape.
+test('sequenceOptions adds an InputLookupTokenPredictor only with the lever', () => {
+  assert.equal('tokenPredictor' in sequenceOptions(SHIPPED_LEVERS), false);
+  const on = sequenceOptions({ ...SHIPPED_LEVERS, inputLookup: true });
+  assert.ok(on.tokenPredictor instanceof InputLookupTokenPredictor, 'an InputLookupTokenPredictor');
+  assert.deepEqual(on.checkpoints, sequenceOptions(SHIPPED_LEVERS).checkpoints, 'the checkpoints are unchanged');
+  assert.notEqual(sequenceOptions({ ...SHIPPED_LEVERS, inputLookup: true }).tokenPredictor, on.tokenPredictor, 'one predictor per sequence');
+});
+
+// perfLevers() is read once per thread: each lever value gets a process of its own. Greedy decoding (LlamaChat's
+// default temperature 0): a token prediction validated by the model changes nothing in the text. Only in principle
+// over long spans: a draft is checked in a batch, whose logits may differ in the last bits from a one-token decode, so
+// on a near-tie the greedy pick can flip (seen on stories260K past ~1,400 characters on the processor, ~6,000 on
+// Vulkan, 8,192 tokens, 2026-10-27). 24 tokens stay well short of that.
+test('with inputLookup, stories260K writes the same greedy text and counts its predictions', { timeout: 200000 }, async () => {
+  const body = `
+    const stats = [];
+    const reply = await m.completeLocal({ modelPath: ${JSON.stringify(modelPath)}, messages: [{ role: 'user', content: 'Once upon a time' }], maxTokens: 24, onStats: s => stats.push(s) });
+    out.text = reply.content;
+    out.outputTokens = stats[0].outputTokens;
+    out.predictions = stats[0].predictions ?? null;
+    out.hasKey = 'predictions' in stats[0];
+    await m.disposeEngine();`;
+  const off = await inChild(body, { OPENAGENT_PERF_LEVERS: '' });
+  const on = await inChild(body, { OPENAGENT_PERF_LEVERS: JSON.stringify({ inputLookup: true }) });
+  assert.ok(off.text.length > 0, 'the toy model wrote something');
+  assert.equal(on.text, off.text, 'the same greedy text with the predictor');
+  assert.equal(on.outputTokens, off.outputTokens);
+  assert.equal(off.hasKey, false, 'lever off: no predictions key, the stats keep their shape');
+  const p = on.predictions;
+  assert.ok(p, 'lever on: the predictions are counted');
+  assert.ok(p.validated + p.refuted > 0, JSON.stringify(p));
+  assert.ok([p.validated, p.refuted, p.used, p.unused].every(n => Number.isInteger(n) && n >= 0), JSON.stringify(p));
+  assert.ok(p.used <= p.validated, JSON.stringify(p));
 });
 
 // Task 3b: the prompt checkpoint. stories260K is an attention model (needsCheckpoints false), so takeCheckpoint is a

@@ -6,9 +6,9 @@
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import os from 'node:os';
-import { LlamaChat, JinjaTemplateChatWrapper, InsufficientMemoryError, readGgufFileInfo, GgufInsights, GgmlType, type Llama, type LlamaModel, type LlamaContext, type LlamaContextSequence, type TokenPredictor, type ChatWrapper, type ChatHistoryItem, type ChatModelFunctions, type Token, type Tokenizer } from 'node-llama-cpp';
+import { LlamaChat, JinjaTemplateChatWrapper, InsufficientMemoryError, InputLookupTokenPredictor, readGgufFileInfo, GgufInsights, GgmlType, type Llama, type LlamaModel, type LlamaContext, type LlamaContextSequence, type TokenPredictor, type ChatWrapper, type ChatHistoryItem, type ChatModelFunctions, type Token, type Tokenizer } from 'node-llama-cpp';
 import { historyFromMessages, responseToMessage, thoughtsWhereKept, toGgufFunctions, type GgufFunctions, type GgufHistoryItem } from './local-provider.mts';
-import type { ChatMessage, ChatWrapperInfo, CompletionOptions, GenerationStats, LoadStage, ModelArchitecture, ModelProvider, ToolSchema, WindowOptions } from './model-types.mts';
+import type { ChatMessage, ChatWrapperInfo, CompletionOptions, GenerationStats, LoadStage, ModelArchitecture, ModelProvider, TokenPredictions, ToolSchema, WindowOptions } from './model-types.mts';
 import { localContextSize, DEFAULT_LOCAL_CONTEXT, type LocalContextSetting } from './context-budget.mts';
 import { runtimeLlama, runtimeGeneration, backendOf } from './llama-runtime.mts';
 import { fitOf, type Placement } from './placement.mts';
@@ -463,9 +463,18 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
 }
 
 /** The options of the chat's context sequence, from the levers: the checkpoints a hybrid model restores a reused prefix
- * from (shipped = node-llama-cpp's defaults, so the shipped app is unchanged). */
+ * from (shipped = node-llama-cpp's defaults, so the shipped app is unchanged), and with the inputLookup lever (Task 10)
+ * a token predictor of its own (the sequence disposes it). Lever off: no `tokenPredictor` key, as today. */
 export function sequenceOptions(levers: Readonly<PerfLevers>): { checkpoints: { max: number; interval: number; maxMemory: number | null }; tokenPredictor?: TokenPredictor } {
-  return { checkpoints: { max: levers.checkpointMax, interval: levers.checkpointInterval, maxMemory: levers.checkpointMaxMemory } };
+  return {
+    checkpoints: { max: levers.checkpointMax, interval: levers.checkpointInterval, maxMemory: levers.checkpointMaxMemory },
+    ...(levers.inputLookup ? { tokenPredictor: new InputLookupTokenPredictor() } : {}),
+  };
+}
+
+/** What `sequence.tokenPredictions` (cumulative over the sequence's life) gained since `before`: one call's predictions. */
+export function predictionsSince(before: Readonly<TokenPredictions>, after: Readonly<TokenPredictions>): TokenPredictions {
+  return { validated: after.validated - before.validated, refuted: after.refuted - before.refuted, used: after.used - before.used, unused: after.unused - before.unused };
 }
 
 /** Our history in node-llama-cpp's own type: a function call it is given always carries `result` (undefined when the
@@ -819,6 +828,8 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
   const before = meter.getState();
   // What the sequence held before the call: what the new prompt may reuse (core/reuse.mts).
   const heldTokens = sequence.contextTokens;
+  // The predictor's counters before the call (inputLookup lever): the call's own are their difference.
+  const predictionsBefore = sequence.tokenPredictor ? sequence.tokenPredictions : null;
   const generation = new GenerationMeter();
   const startedAt = performance.now();
   let promptCheckpoint: PromptCheckpointFigures | null = null;
@@ -863,7 +874,9 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
     };
     // The id ties this generation's turn-log line to its `[perf]` timings in the log (the bench, M5).
     const generationId = randomUUID();
-    options.onStats?.({ ...stats, promptMs: generation.promptMs(startedAt), reuse, generationId });
+    // Only with a predictor: today's stats keep their shape (ruling F12).
+    const predictions = predictionsBefore ? { predictions: predictionsSince(predictionsBefore, sequence.tokenPredictions) } : {};
+    options.onStats?.({ ...stats, promptMs: generation.promptMs(startedAt), reuse, generationId, ...predictions });
     if (levers.performanceTracking) {
       await context.printTimings().catch((error: unknown) => console.warn(`[perf] mesures illisibles : ${(error as Error | undefined)?.message ?? error}`));
       console.info(`[perf] génération terminée ${generationId}`);

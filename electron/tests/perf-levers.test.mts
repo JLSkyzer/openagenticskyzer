@@ -45,6 +45,11 @@ test('perfLevers: no variable = the shipped levers (today\'s behaviour); a valid
   assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ numericLimitLoad: true }) }).levers.numericLimitLoad, true);
   const numeric = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ numericLimitLoad: 'oui' }) });
   assert.deepEqual([numeric.levers.numericLimitLoad, numeric.rejected], [false, ['valeur invalide : numericLimitLoad']]);
+  // inputLookup (Task 10, F19): shipped off; a boolean only.
+  assert.equal(SHIPPED_LEVERS.inputLookup, false);
+  assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ inputLookup: true }) }).levers.inputLookup, true);
+  const lookup = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ inputLookup: 'oui' }) });
+  assert.deepEqual([lookup.levers.inputLookup, lookup.rejected], [false, ['valeur invalide : inputLookup']]);
 });
 
 test('the checkpoint levers: shipped at node-llama-cpp\'s defaults; a shorter interval needs a memory cap', () => {

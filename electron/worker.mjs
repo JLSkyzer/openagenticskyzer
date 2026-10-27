@@ -794,6 +794,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
           event: 'generation', step, inputTokens: rest.inputTokens, outputTokens: rest.outputTokens, generationMs: rest.generationMs,
           ...(rest.promptMs === undefined ? {} : { promptMs: rest.promptMs }), ...(rest.reuse ? { reuse: rest.reuse } : {}),
           ...(rest.generationId ? { generationId: rest.generationId } : {}),
+          ...(rest.predictions ? { predictions: rest.predictions } : {}),
         });
         return;
       }

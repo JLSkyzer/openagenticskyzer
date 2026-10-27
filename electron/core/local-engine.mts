@@ -373,18 +373,35 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
   // The cap of the next fitContext load: the remembered limit, else none at first.
   let max: number | null = limit;
   let cause: 'loadModel' | 'createContext' = 'createContext';
+  // Lever numericLimitLoad (Task 8): the first attempt at a remembered limit loads that count as a plain number, which
+  // node-llama-cpp checks once instead of searching every count up to it. useMmap is explicit: with 'auto' and a number,
+  // the resolver weighs mmap on and off (two estimates), and may turn it off.
+  let numeric = limit !== null && perfLevers().numericLimitLoad;
   for (;;) {
     let model: LlamaModel;
+    const numericAttempt = numeric;
+    numeric = false;
     try {
       nativeLoads += 1;
-      // fitContext places as many layers as node-llama-cpp thinks fit with this context; after a refusal, at most `max`.
-      const gpuLayers = max === null ? { fitContext: { contextSize } } : { min: 0, max, fitContext: { contextSize } };
-      model = await llama.loadModel({ modelPath, gpuLayers, loadSignal: signal, onLoadProgress });
+      if (numericAttempt) {
+        model = await llama.loadModel({ modelPath, gpuLayers: max as number, useMmap: llama.supportsMmap, loadSignal: signal, onLoadProgress });
+      } else {
+        // fitContext places as many layers as node-llama-cpp thinks fit with this context; after a refusal, at most `max`.
+        const gpuLayers = max === null ? { fitContext: { contextSize } } : { min: 0, max, fitContext: { contextSize } };
+        model = await llama.loadModel({ modelPath, gpuLayers, loadSignal: signal, onLoadProgress });
+      }
       liveModels += 1;
       stage('loadModel', true, { gpuLayers: model.gpuLayers });
     } catch (error) {
       if (!(error instanceof InsufficientMemoryError)) throw error;
       stage('loadModel', false);
+      if (numericAttempt) {
+        // The count no longer fits as such (less free VRAM than when it was noted): today's search under the limit,
+        // which may find fewer layers — never the processor straight away (lesson 2026-10-24, 25/66 → 0/66).
+        memoryWarning('loadModel', `numérique ${max}`, error);
+        signal?.throwIfAborted();
+        continue;
+      }
       // node-llama-cpp's resolver: the card cannot take even 0 layers with this context (a game holding the VRAM).
       memoryWarning('loadModel', max === null ? 'fitContext' : `fitContext ≤ ${max}`, error);
       cause = 'loadModel';

@@ -45,6 +45,11 @@ export interface PerfLevers {
   /** Load the model while the turn's tools (MCP discovery included) and instructions are prepared, instead of after them
    * (Task 7). The page then shows « Chargement » during that preparation (F31). Shipped false: the load follows them. */
   overlapLoad: boolean;
+  /** Load a remembered layer limit (LayerLimit, local-engine.mts) as a plain number with an explicit useMmap (Task 8), so
+   * node-llama-cpp checks that one count instead of searching every count up to it with fitContext. Refused there
+   * (InsufficientMemoryError), the load goes on with that search under the limit, never straight to the processor.
+   * Shipped false: a remembered limit loads as `{ min: 0, max: limit, fitContext }`, as today. */
+  numericLimitLoad: boolean;
 }
 
 export const PERF_LEVERS_ENV = 'OPENAGENT_PERF_LEVERS';
@@ -62,6 +67,7 @@ export const SHIPPED_LEVERS: Readonly<PerfLevers> = Object.freeze({
   slimToolDefinitions: false,
   engineAtBoot: false,
   overlapLoad: false,
+  numericLimitLoad: false,
 });
 
 /** node-llama-cpp's own checkpoint interval (3.21.1, `defaultCheckpointOptions`): below it, a memory cap is required. */
@@ -81,6 +87,7 @@ const VALID: { [K in keyof PerfLevers]: (value: unknown) => boolean } = {
   slimToolDefinitions: value => typeof value === 'boolean',
   engineAtBoot: value => typeof value === 'boolean',
   overlapLoad: value => typeof value === 'boolean',
+  numericLimitLoad: value => typeof value === 'boolean',
 };
 
 /** The levers `env` asks for: each valid key overrides its shipped value; an unknown key, a wrong type or invalid

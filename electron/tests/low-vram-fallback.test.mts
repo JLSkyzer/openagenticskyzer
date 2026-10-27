@@ -15,6 +15,7 @@ import { readGgufFileInfo, GgufInsights } from 'node-llama-cpp';
 import { cpuFallback, placementLogLine, outcomeNote, stepDownMax, MAX_STEP_DOWNS, limitStillHolds, LIMIT_RETRY_MIN_BYTES } from '../core/local-engine.mts';
 import { runtimeLlama, envGpuChoice, vramPaddingFor } from '../core/llama-runtime.mts';
 import { removeAtEnd } from './teardown.mts';
+import { PERF_LEVERS_ENV } from '../core/perf-levers.mts';
 
 const execFileAsync = promisify(execFile);
 const GIB = 1024 ** 3;
@@ -23,7 +24,7 @@ const modelPath = fileURLToPath(new URL('./fixtures/stories260K.gguf', import.me
 /** Runs `body` in a Node process of its own, from a script FILE: node-llama-cpp tests a GPU binary in a fork() that
  * inherits execArgv, so an `-e` child can never resolve a card. `n` node-llama-cpp (the very module the engine
  * imports), `m` core/local-engine.mts, `r` core/llama-runtime.mts, `e` core/offload-estimate.mts. NODE_LLAMA_CPP_GPU is removed: the runtime Llama resolves « auto » as the app does. */
-async function inChild(t: { after(fn: () => unknown): void }, body: string): Promise<{ out: any; stdout: string; stderr: string }> {
+async function inChild(t: { after(fn: () => unknown): void }, body: string, extraEnv: NodeJS.ProcessEnv = {}): Promise<{ out: any; stdout: string; stderr: string }> {
   const root = await mkdtemp(join(tmpdir(), 'openagent-low-vram-'));
   removeAtEnd(t, root);
   const script = join(root, 'child.mjs');
@@ -37,7 +38,7 @@ async function inChild(t: { after(fn: () => unknown): void }, body: string): Pro
     ${body}
     await r.disposeLlama();
     process.stdout.write('RESULT ' + JSON.stringify(out) + '\\n');`);
-  const env: NodeJS.ProcessEnv = { ...process.env, OPENAGENT_HOME: root };
+  const env: NodeJS.ProcessEnv = { ...process.env, OPENAGENT_HOME: root, ...extraEnv };
   delete env.NODE_LLAMA_CPP_GPU;
   const { stdout, stderr } = await execFileAsync(process.execPath, ['--experimental-strip-types', script], {
     env, maxBuffer: 16 * 1024 * 1024, timeout: 150000,
@@ -310,6 +311,139 @@ test('a remembered limit is used only for its own key: another context size or a
   assert.deepEqual(out.otherSizeOutcome, { kind: 'direct' });
   assert.equal(out.otherMtime.gpuLayers, out.refusedAt, 'the file changed: full fitContext');
   assert.deepEqual(out.otherMtimeOutcome, { kind: 'direct' });
+});
+
+// Task 8, lever numericLimitLoad: a remembered limit is loaded as a plain number with an explicit useMmap, so
+// node-llama-cpp checks that one count instead of searching every count up to the limit with fitContext. What changes is
+// the gpuLayers option passed (F8: the load count, the « limite mémorisée » note and the resolved mmap are the same with
+// the lever off), so the child records each llama.loadModel's options (a spy on the real call, which still runs).
+const numericLimitLoad = { [PERF_LEVERS_ENV]: JSON.stringify({ numericLimitLoad: true }) };
+/** In the child: a limit remembered by a first load that stepped down (`known`: its count), then `calls` lists the
+ * gpuLayers and useMmap of every llama.loadModel from there on. `refuseNumeric`: the first numeric load throws the
+ * resolver's InsufficientMemoryError instead of loading. */
+const rememberedThenSpied = (home: string, refuseNumeric: boolean) => `
+      ${rememberIn(home)}
+      ${failFirstContext(`new n.InsufficientMemoryError('A context size of 16384 is too large for the available VRAM')`)}
+      out.first = await m.loadLocalModel(path, 16384);
+      await m.disposeEngine();
+      out.loads1 = m.nativeLoadCount();
+      out.supportsMmap = llama.supportsMmap;
+      out.calls = [];
+      let refuse = ${refuseNumeric};
+      const load = llama.loadModel.bind(llama);
+      llama.loadModel = options => {
+        out.calls.push({ gpuLayers: options.gpuLayers, useMmap: options.useMmap ?? null });
+        if (refuse && typeof options.gpuLayers === 'number') {
+          refuse = false;
+          return Promise.reject(new n.InsufficientMemoryError('Not enough VRAM to fit the model with the specified settings'));
+        }
+        return load(options);
+      };
+      console.log('--- second load');`;
+
+test('numericLimitLoad: the second cold load makes one loadModel with gpuLayers equal to the remembered count and an explicit useMmap', { timeout: 200000 }, async t => {
+  const home = await mkdtemp(join(tmpdir(), 'openagent-layer-limit-'));
+  removeAtEnd(t, home);
+  const { out, stdout } = await inChild(t, `
+    const path = ${JSON.stringify(modelPath)};
+    const llama = await r.runtimeLlama();
+    out.gpu = llama.gpu;
+    if (llama.gpu !== false) {
+      ${rememberedThenSpied(home, false)}
+      const events = [];
+      out.second = await m.loadLocalModel(path, 16384, { onLoad: event => events.push(event.kind === 'retry' ? 'retry:' + event.mode : event.kind) });
+      out.events = events.filter(kind => kind !== 'progress');
+      out.loads2 = m.nativeLoadCount();
+      out.secondOutcome = m.loadedOutcome(path);
+      await m.disposeEngine();
+      out.live = m.liveModelCount();
+    }`, numericLimitLoad);
+  if (out.gpu === false) {
+    t.skip('no GPU backend here: a processor Llama has no layer limit');
+    return;
+  }
+  const known = out.first.gpuLayers;
+  assert.ok(known > 0 && known < out.refusedAt, `the first load stepped down: ${out.refusedAt} → ${known}`);
+  assert.equal(out.loads2 - out.loads1, 1, 'one load');
+  assert.deepEqual(out.calls, [{ gpuLayers: known, useMmap: out.supportsMmap }], 'the remembered count as a number, mmap said explicitly');
+  assert.deepEqual(out.events, ['start', 'end'], 'no retry announced');
+  assert.equal(out.second.gpuLayers, known);
+  assert.deepEqual(out.secondOutcome, { kind: 'direct', limit: known });
+  assert.equal(out.live, 0);
+  const second = stdout.split('--- second load')[1].split('\n').filter(line => line.startsWith('[placement] backend'));
+  assert.equal(second.length, 1, stdout.slice(-2000));
+  assert.match(second[0], new RegExp(`couches ${known}/\\d+ sur la carte · limite mémorisée : ${known} couches · mmap ${out.supportsMmap ? 'oui' : 'non'} ·`));
+});
+
+test('numericLimitLoad: a numeric load refused by loadModel continues at fitContext ≤ the limit, never the processor', { timeout: 200000 }, async t => {
+  const home = await mkdtemp(join(tmpdir(), 'openagent-layer-limit-'));
+  removeAtEnd(t, home);
+  const { out, stdout, stderr } = await inChild(t, `
+    const path = ${JSON.stringify(modelPath)};
+    const llama = await r.runtimeLlama();
+    out.gpu = llama.gpu;
+    if (llama.gpu !== false) {
+      ${rememberedThenSpied(home, true)}
+      const events = [];
+      out.second = await m.loadLocalModel(path, 16384, { onLoad: event => events.push(event.kind === 'retry' ? 'retry:' + event.mode : event.kind) });
+      out.events = events.filter(kind => kind !== 'progress');
+      out.loads2 = m.nativeLoadCount();
+      out.secondOutcome = m.loadedOutcome(path);
+      await m.disposeEngine();
+      out.live = m.liveModelCount();
+    }`, numericLimitLoad);
+  if (out.gpu === false) {
+    t.skip('no GPU backend here: a processor Llama has no layer limit');
+    return;
+  }
+  const known = out.first.gpuLayers;
+  assert.deepEqual(out.calls, [
+    { gpuLayers: known, useMmap: out.supportsMmap },
+    { gpuLayers: { min: 0, max: known, fitContext: { contextSize: 16384 } }, useMmap: null },
+  ], 'the numeric load, then today\'s fitContext search under the limit');
+  assert.equal(out.loads2 - out.loads1, 2);
+  assert.ok(out.second.gpuLayers > 0 && out.second.gpuLayers <= known, `still on the card, under the limit: ${out.second.gpuLayers}`);
+  assert.notEqual(out.second.fit, 'cpu');
+  assert.deepEqual(out.secondOutcome, { kind: 'direct', limit: known }, 'not the fallback');
+  assert.ok(!out.events.includes('retry:cpu'), `no processor retry: ${out.events}`);
+  assert.equal(out.live, 0);
+  assert.match(stderr, new RegExp(`\\[placement\\] InsufficientMemoryError \\(loadModel, numérique ${known} couches\\) : Not enough VRAM`), stderr.slice(-2000));
+  const second = stdout.split('--- second load')[1].split('\n').filter(line => line.startsWith('[placement] backend'));
+  assert.equal(second.length, 1, stdout.slice(-2000));
+  assert.doesNotMatch(second[0], /repli/);
+});
+
+test('numericLimitLoad: on a full card (setVramCap(1)) node-llama-cpp itself refuses the numeric load; fitContext ≤ the limit is tried before the processor', { timeout: 200000 }, async t => {
+  const home = await mkdtemp(join(tmpdir(), 'openagent-layer-limit-'));
+  removeAtEnd(t, home);
+  const { out, stderr } = await inChild(t, `
+    const path = ${JSON.stringify(modelPath)};
+    const llama = await r.runtimeLlama();
+    out.gpu = llama.gpu;
+    if (llama.gpu !== false) {
+      ${rememberedThenSpied(home, false)}
+      // Not 0: a total of 0 makes the resolver answer 0 layers without an error. Less free VRAM than at the record:
+      // the limit still applies.
+      await llama.setVramCap(1);
+      try { out.second = await m.loadLocalModel(path, 16384); } catch (error) { out.message = error.message; }
+      out.loads2 = m.nativeLoadCount();
+      out.secondOutcome = m.loadedOutcome(path);
+      await m.disposeEngine();
+      out.live = m.liveModelCount();
+    }`, numericLimitLoad);
+  if (out.gpu === false) {
+    t.skip('no GPU backend here: a processor Llama has no layer limit');
+    return;
+  }
+  const known = out.first.gpuLayers;
+  assert.equal(out.message, undefined, `the load was not refused: ${out.message}`);
+  assert.deepEqual(out.calls.map((call: { gpuLayers: unknown }) => call.gpuLayers), [known, { min: 0, max: known, fitContext: { contextSize: 16384 } }, 0], 'numeric, then fitContext ≤ the limit, then the processor');
+  assert.equal(out.loads2 - out.loads1, 3);
+  assert.equal(out.second.gpuLayers, 0);
+  assert.deepEqual(out.secondOutcome, { kind: 'fallback', cause: 'loadModel', refused: [], limit: known });
+  assert.match(stderr, new RegExp(`\\[placement\\] InsufficientMemoryError \\(loadModel, numérique ${known} couches\\)`), stderr.slice(-2000));
+  assert.match(stderr, new RegExp(`\\[placement\\] InsufficientMemoryError \\(loadModel, fitContext ≤ ${known} couches\\)`), stderr.slice(-2000));
+  assert.equal(out.live, 0);
 });
 
 test('B: a plain Error from createContext comes out unchanged, with no retry and no fallback',{ timeout: 200000 }, async t => {

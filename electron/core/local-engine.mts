@@ -168,7 +168,8 @@ export function warmContext(): LlamaContext | null {
  * Refuses, before any native code runs, a context that cannot fit even with every layer on the processor: on a
  * Vulkan card, node-llama-cpp's own fitContext resolution of such a size can abort the whole process natively
  * instead of throwing. Conservative on purpose — it must never refuse a load that would fit:
- * - the requirement is the KV cache alone (no weights, no graph overhead), at f16, which is what loadModel uses here;
+ * - the requirement is the KV cache alone (no weights, no graph overhead), at f16 (loadModel's, or larger than the
+ *   kvCacheType lever's q8_0);
  * - the room is ALL the RAM plus ALL the VRAM, free or not; a card whose VRAM cannot be read counts as unlimited.
  * The V1 estimate is arithmetic on the header (plus constant lookups in the already loaded binding): no tensor is
  * allocated, unlike the V2 simulation. Returns the insights, which the processor fallback (cpuFallback) reuses.
@@ -212,11 +213,18 @@ function howNote(outcome: LoadOutcome): string {
 
 /** The one line a load logs (I-1): where its layers went, against which free VRAM and padding, and how it got there
  * when node-llama-cpp's placement was not kept as is (outcomeNote: fewer layers, or the processor fallback). */
-export function placementLogLine(p: { backend: string; gpuLayers: number; totalLayers: number; useMmap: boolean; vramBefore: VramState | null; padding: number; contextSize: number; outcome?: LoadOutcome }): string {
+export function placementLogLine(p: { backend: string; gpuLayers: number; totalLayers: number; useMmap: boolean; vramBefore: VramState | null; padding: number; contextSize: number; outcome?: LoadOutcome; context?: ContextFigures }): string {
   const before = p.vramBefore ? `libre ${mib(p.vramBefore.free)} / total ${mib(p.vramBefore.total)} (utilisée ${mib(p.vramBefore.used)})` : 'illisible';
   const note = outcomeNote(p.outcome);
-  return `[placement] backend ${p.backend} · couches ${p.gpuLayers}/${p.totalLayers} sur la carte${note ? ` · ${note}` : ''} · mmap ${p.useMmap ? 'oui' : 'non'} · VRAM avant chargement : ${before} · marge VRAM ${mib(p.padding)} · contexte ${p.contextSize}`;
+  const c = p.context;
+  const context = c ? ` · lot ${c.batchSize} · cache KV ${c.kvCacheKeyType}/${c.kvCacheValueType} · threads demandés ${c.requestedThreads ?? 'défaut'}, idéaux ${c.idealThreads}, en cours ${c.currentThreads} (cœurs de calcul ${c.cpuMathCores})` : '';
+  return `[placement] backend ${p.backend} · couches ${p.gpuLayers}/${p.totalLayers} sur la carte${note ? ` · ${note}` : ''} · mmap ${p.useMmap ? 'oui' : 'non'} · VRAM avant chargement : ${before} · marge VRAM ${mib(p.padding)} · contexte ${p.contextSize}${context}`;
 }
+
+/** What the context levers (Task 11) gave the loaded context, for the [placement] line: its batch size, its KV cache
+ * types, the threads asked for (null: node-llama-cpp's default), the ideal count node-llama-cpp kept after clamping it to
+ * llama.maxThreads (F21), the count in use now, and the machine's math cores (llama.cpuMathCores). */
+export interface ContextFigures { batchSize: number; kvCacheKeyType: string; kvCacheValueType: string; requestedThreads: number | null; idealThreads: number; currentThreads: number; cpuMathCores: number }
 
 /** At most this many loads with fewer layers after createContext refused the context, before the processor. */
 export const MAX_STEP_DOWNS = 3;
@@ -302,15 +310,17 @@ export interface CpuFallback { fits: boolean; ramBytes: number; vramBytes: numbe
  * figure shown is the one loaded. Needed because node-llama-cpp's fitContext resolution THROWS InsufficientMemoryError
  * when even 0 layers needs some VRAM (a compute buffer stays on the card), instead of answering 0 layers
  * (3.21.1, resolveModelGpuLayersOption.js). The fit is fitOf's: the RAM estimate against all the RAM (os.totalmem()).
- * The estimates are node-llama-cpp's V2 ones with what loadModel and createContext use here: f16 KV cache,
- * flash attention 'auto' when supported, no full SWA cache. `internal`: node-llama-cpp's simulator session, if any.
+ * The estimates are node-llama-cpp's V2 ones with what loadModel and createContext use here: the KV cache type of the
+ * kvCacheType lever (f16 shipped, Task 11), flash attention 'auto' when supported, no full SWA cache, node-llama-cpp's
+ * default batch (a batchSize lever's larger compute buffer is not counted: on 0 layers it sits mostly in the RAM, and
+ * createContext checks it). `internal`: node-llama-cpp's simulator session, if any.
  */
-export async function cpuFallback(insights: GgufInsights, contextSize: number, useMmap: boolean, options: { ramTotal?: number; internal?: object } = {}): Promise<CpuFallback> {
-  const { ramTotal = os.totalmem(), internal = {} } = options;
+export async function cpuFallback(insights: GgufInsights, contextSize: number, useMmap: boolean, options: { ramTotal?: number; internal?: object; kvCacheType?: GgmlType } = {}): Promise<CpuFallback> {
+  const { ramTotal = os.totalmem(), internal = {}, kvCacheType = GgmlType[perfLevers().kvCacheType] } = options;
   const flashAttention = insights.flashAttentionSupported ? 'auto' as const : false;
   const model = await insights.estimateModelResourceRequirementsV2({ gpuLayers: 0, useMmap, ...internal });
   const context = await insights.estimateContextResourceRequirementsV2({
-    contextSize, modelGpuLayers: 0, flashAttention, swaFullCache: false, kvCacheKeyType: GgmlType.F16, kvCacheValueType: GgmlType.F16, useMmap, ...internal,
+    contextSize, modelGpuLayers: 0, flashAttention, swaFullCache: false, kvCacheKeyType: kvCacheType, kvCacheValueType: kvCacheType, useMmap, ...internal,
   });
   const ramBytes = model.cpuRam + context.cpuRam;
   return { fits: ramBytes <= ramTotal, ramBytes, vramBytes: model.gpuVram + context.gpuVram };
@@ -369,6 +379,10 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
   const architecture: ModelArchitecture = { hybrid: insights.isHybrid, recurrent: insights.isRecurrent, swaSize: insights.swaSize ?? null, mtpWeights: insights.hasMtpWeights };
   // llama.cpp's own timings, printed after each generation (completeLocal), when the bench asks for them.
   const tracking = perfLevers().performanceTracking ? { performanceTracking: true } : {};
+  // The context levers (Task 11): {} at the shipped values. The KV type also goes to loadModel, whose fitContext
+  // resolution then sizes the context's KV cache at that type (the estimate does the same).
+  const contextLevers = contextOptions(perfLevers());
+  const modelLevers = modelOptions(perfLevers());
   // The layer counts createContext refused, in order (read by `kept` once the loop ends).
   const refused: number[] = [];
   const kept = async (model: LlamaModel, context: LlamaContext, outcome: LoadOutcome) => {
@@ -390,11 +404,11 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
     try {
       nativeLoads += 1;
       if (numericAttempt) {
-        model = await llama.loadModel({ modelPath, gpuLayers: max as number, useMmap: llama.supportsMmap, loadSignal: signal, onLoadProgress });
+        model = await llama.loadModel({ modelPath, gpuLayers: max as number, useMmap: llama.supportsMmap, loadSignal: signal, onLoadProgress, ...modelLevers });
       } else {
         // fitContext places as many layers as node-llama-cpp thinks fit with this context; after a refusal, at most `max`.
         const gpuLayers = max === null ? { fitContext: { contextSize } } : { min: 0, max, fitContext: { contextSize } };
-        model = await llama.loadModel({ modelPath, gpuLayers, loadSignal: signal, onLoadProgress });
+        model = await llama.loadModel({ modelPath, gpuLayers, loadSignal: signal, onLoadProgress, ...modelLevers });
       }
       liveModels += 1;
       stage('loadModel', true, { gpuLayers: model.gpuLayers });
@@ -415,7 +429,7 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
     }
     try {
       // A fixed size: no silent shrink on failure (node-llama-cpp only retries an 'auto' size, said here anyway).
-      const context = await model.createContext({ contextSize, failedCreationRemedy: false, createSignal: signal, ...tracking });
+      const context = await model.createContext({ contextSize, failedCreationRemedy: false, createSignal: signal, ...tracking, ...contextLevers });
       stage('createContext', true);
       return await kept(model, context, refused.length ? { kind: 'step-down', refused: [...refused] } : { kind: 'direct' });
     } catch (error) {
@@ -445,12 +459,12 @@ async function loadFresh(modelPath: string, contextSize: number, { signal, onLoa
   nativeLoads += 1;
   // The fallback's own load: its time starts here, not at the refusal before it.
   stageStart = performance.now();
-  const model = await llama.loadModel({ modelPath, gpuLayers: 0, useMmap, ignoreMemorySafetyChecks: true, loadSignal: signal, onLoadProgress });
+  const model = await llama.loadModel({ modelPath, gpuLayers: 0, useMmap, ignoreMemorySafetyChecks: true, loadSignal: signal, onLoadProgress, ...modelLevers });
   liveModels += 1;
   stage('loadModel', true, { gpuLayers: model.gpuLayers });
   let context: LlamaContext;
   try {
-    context = await model.createContext({ contextSize, failedCreationRemedy: false, ignoreMemorySafetyChecks: true, createSignal: signal, ...tracking });
+    context = await model.createContext({ contextSize, failedCreationRemedy: false, ignoreMemorySafetyChecks: true, createSignal: signal, ...tracking, ...contextLevers });
     stage('createContext', true);
   } catch (error) {
     // Even 0 layers keeps a compute buffer on the card: an allocation the full card refuses ends here.
@@ -470,6 +484,23 @@ export function sequenceOptions(levers: Readonly<PerfLevers>): { checkpoints: { 
     checkpoints: { max: levers.checkpointMax, interval: levers.checkpointInterval, maxMemory: levers.checkpointMaxMemory },
     ...(levers.inputLookup ? { tokenPredictor: new InputLookupTokenPredictor() } : {}),
   };
+}
+
+/** The options the context levers (Task 11) add to both createContext calls (the fitContext loop with its step-downs,
+ * and the processor fallback): no key for a shipped value, so the shipped app passes exactly today's options. */
+export function contextOptions(levers: Readonly<PerfLevers>): { batchSize?: number; threads?: number; experimentalKvCacheKeyType?: 'Q8_0'; experimentalKvCacheValueType?: 'Q8_0' } {
+  return {
+    ...(levers.batchSize === null ? {} : { batchSize: levers.batchSize }),
+    ...(levers.threads === null ? {} : { threads: levers.threads }),
+    ...(levers.kvCacheType === 'Q8_0' ? { experimentalKvCacheKeyType: 'Q8_0' as const, experimentalKvCacheValueType: 'Q8_0' as const } : {}),
+  };
+}
+
+/** What the kvCacheType lever adds to the three loadModel calls: the default KV type of the model's contexts, which its
+ * fitContext layer resolution sizes the KV cache with (3.21.1, resolveModelGpuLayersOption.js) — without it, a Q8_0
+ * context would be placed as if f16, and could never gain the layer it saves. {} when shipped. */
+export function modelOptions(levers: Readonly<PerfLevers>): { experimentalDefaultContextKvCacheKeyType?: 'Q8_0'; experimentalDefaultContextKvCacheValueType?: 'Q8_0' } {
+  return levers.kvCacheType === 'Q8_0' ? { experimentalDefaultContextKvCacheKeyType: 'Q8_0', experimentalDefaultContextKvCacheValueType: 'Q8_0' } : {};
 }
 
 /** What `sequence.tokenPredictions` (cumulative over the sequence's life) gained since `before`: one call's predictions. */
@@ -540,6 +571,13 @@ export async function checkpointPromptEnd(sequence: LlamaContextSequence, wrappe
   return { prompt: tokens.length, stable, from, index };
 }
 
+function contextFigures(llama: Llama, context: LlamaContext): ContextFigures {
+  return {
+    batchSize: context.batchSize, kvCacheKeyType: GgmlType[context.kvCacheKeyType] ?? String(context.kvCacheKeyType), kvCacheValueType: GgmlType[context.kvCacheValueType] ?? String(context.kvCacheValueType),
+    requestedThreads: perfLevers().threads, idealThreads: context.idealThreads, currentThreads: context.currentThreads, cpuMathCores: llama.cpuMathCores,
+  };
+}
+
 function keep(p: { modelPath: string; contextSize: number; generation: number; llama: Llama; model: LlamaModel; context: LlamaContext; vramBefore: VramState | null; outcome: LoadOutcome; startedAt: number; onLoad?: EngineOptions['onLoad']; stages: readonly LoadStage[]; architecture: ModelArchitecture }): Loaded {
   const { llama, model, context } = p;
   const chatStart = performance.now();
@@ -556,7 +594,7 @@ function keep(p: { modelPath: string; contextSize: number; generation: number; l
   // Does the template render the tools after the system text? Only then can the project context follow them (Task 4).
   const wrapper: ChatWrapperInfo = { name: chat.chatWrapper.wrapperName, segments: JSON.parse(JSON.stringify(segments ?? null)), opensThought: thinks, toolsAfterSystem: toolsAfterSystem(chat.chatWrapper), thoughtKept: thoughtKept(chat.chatWrapper) };
   loaded = { path: p.modelPath, requested: p.contextSize, generation: p.generation, llama, model, context, chat, wrapper, outcome: p.outcome, vramBefore: p.vramBefore };
-  console.info(placementLogLine({ backend: backendOf(llama), gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, useMmap: model.useMmap, vramBefore: p.vramBefore, padding: llama.vramPaddingSize, contextSize: context.contextSize, outcome: p.outcome }));
+  console.info(placementLogLine({ backend: backendOf(llama), gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, useMmap: model.useMmap, vramBefore: p.vramBefore, padding: llama.vramPaddingSize, contextSize: context.contextSize, outcome: p.outcome, context: contextFigures(llama, context) }));
   console.info(chatWrapperLogLine(wrapper));
   const stages: LoadStage[] = [...p.stages, { stage: 'chat', ms: Math.round(chatMs * 10) / 10, ok: true }];
   p.onLoad?.({ kind: 'end', ms: Math.round(performance.now() - p.startedAt), wrapper, stages, architecture: p.architecture });

@@ -11,6 +11,7 @@ import { runtimeLlama, backendOf } from './llama-runtime.mts';
 import { readHardware } from './hardware.mts';
 import { contextOverflow, cpuFallback, type LayerLimit, type LayerLimitStore } from './local-engine.mts';
 import { fitOf, type Backend, type Placement } from './placement.mts';
+import { perfLevers } from './perf-levers.mts';
 
 /** Where the model file is. 'remote' is prepared for reading a model's header over the network (project 2): the
  * type and the cache key accept it, the estimate refuses it for now. */
@@ -173,7 +174,10 @@ export async function estimatePlacement(source: ModelSource, options: { contextS
   const internals = insights as unknown as InsightsInternals;
   internals._defaultUseMmap = useMmap === 'auto' ? true : useMmap;
   const flashAttention = insights.flashAttentionSupported ? 'auto' as const : false;
-  const kvCacheType = GgmlType.F16;
+  // The kvCacheType lever's type (f16 shipped, Task 11), as loadModel's fitContext and createContext get it. The
+  // batchSize lever is not counted: the resolver sizes the context at node-llama-cpp's default batch, as the load's
+  // fitContext does; a larger batch's compute buffer is caught by createContext, and the load steps down from there.
+  const kvCacheType = GgmlType[perfLevers().kvCacheType];
   const session = typeof internals._createSimulatorSession === 'function' ? internals._createSimulatorSession() : undefined;
   // Spread from an untyped object: `_simulatorSession` is an internal option of node-llama-cpp.
   const internal: object = session ? { _simulatorSession: session } : {};
@@ -200,7 +204,7 @@ export async function estimatePlacement(source: ModelSource, options: { contextS
     } catch (error) {
       if (!(error instanceof InsufficientMemoryError)) throw error;
       // loadLocked's fallback passes useMmap: llama.supportsMmap, which is `useMmap !== false` here.
-      fallback = await cpuFallback(insights, contextSize, resolvedMmap, { internal });
+      fallback = await cpuFallback(insights, contextSize, resolvedMmap, { internal, kvCacheType });
     }
     step('layers');
 

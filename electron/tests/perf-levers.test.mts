@@ -50,6 +50,14 @@ test('perfLevers: no variable = the shipped levers (today\'s behaviour); a valid
   assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ inputLookup: true }) }).levers.inputLookup, true);
   const lookup = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ inputLookup: 'oui' }) });
   assert.deepEqual([lookup.levers.inputLookup, lookup.rejected], [false, ['valeur invalide : inputLookup']]);
+  // batchSize, threads and kvCacheType (Task 11, F19): shipped at node-llama-cpp's defaults (null, null, 'F16');
+  // positive integers (or null) for the first two, 'F16' or 'Q8_0' for the KV cache.
+  assert.deepEqual([SHIPPED_LEVERS.batchSize, SHIPPED_LEVERS.threads, SHIPPED_LEVERS.kvCacheType], [null, null, 'F16']);
+  const context = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ batchSize: 1024, threads: 6, kvCacheType: 'Q8_0' }) });
+  assert.deepEqual([context.levers.batchSize, context.levers.threads, context.levers.kvCacheType, context.rejected], [1024, 6, 'Q8_0', []]);
+  const badContext = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ batchSize: 0, threads: 2.5, kvCacheType: 'Q4_0' }) });
+  assert.deepEqual([badContext.levers.batchSize, badContext.levers.threads, badContext.levers.kvCacheType, badContext.rejected],
+    [null, null, 'F16', ['valeur invalide : batchSize', 'valeur invalide : threads', 'valeur invalide : kvCacheType']]);
 });
 
 test('the checkpoint levers: shipped at node-llama-cpp\'s defaults; a shorter interval needs a memory cap', () => {

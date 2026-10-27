@@ -56,6 +56,19 @@ export interface PerfLevers {
    * tokens: diverged at character 6259 on Vulkan, 1420 on the processor, 2026-10-27), so a measurement must compare the
    * texts. On a hybrid model each speculative round takes a checkpoint. Shipped false: no predictor. */
   inputLookup: boolean;
+  /** The prompt batch size of the context (Task 11): how many prompt tokens one evaluation reads. A larger batch reads a
+   * long prompt in fewer passes but has a larger compute buffer on the card, which node-llama-cpp's fitContext layer
+   * resolution does not count (it sizes the context at its default batch): createContext's own check does, and refuses
+   * it, so the load steps down a layer count (MAX_STEP_DOWNS). null: node-llama-cpp's default (min(context, 512)). */
+  batchSize: number | null;
+  /** The context's ideal thread count (Task 11). node-llama-cpp clamps it to `llama.maxThreads` (on the processor
+   * backend max(cpuMathCores, 4), so cpuMathCores + 2 may be cut: the [placement] line says what was kept, F21).
+   * null: node-llama-cpp's default (llama.maxThreads). */
+  threads: number | null;
+  /** The KV cache type, keys and values (Task 11), for the context, loadModel's fitContext resolution, the estimate and
+   * the processor fallback alike, so the figure shown is the one loaded. node-llama-cpp marks a quantized KV cache
+   * experimental (« may crash the process », F22). Shipped 'F16': node-llama-cpp's default. */
+  kvCacheType: 'F16' | 'Q8_0';
 }
 
 export const PERF_LEVERS_ENV = 'OPENAGENT_PERF_LEVERS';
@@ -75,6 +88,9 @@ export const SHIPPED_LEVERS: Readonly<PerfLevers> = Object.freeze({
   overlapLoad: false,
   numericLimitLoad: false,
   inputLookup: false,
+  batchSize: null,
+  threads: null,
+  kvCacheType: 'F16',
 });
 
 /** node-llama-cpp's own checkpoint interval (3.21.1, `defaultCheckpointOptions`): below it, a memory cap is required. */
@@ -96,6 +112,9 @@ const VALID: { [K in keyof PerfLevers]: (value: unknown) => boolean } = {
   overlapLoad: value => typeof value === 'boolean',
   numericLimitLoad: value => typeof value === 'boolean',
   inputLookup: value => typeof value === 'boolean',
+  batchSize: value => value === null || positiveInteger(value),
+  threads: value => value === null || positiveInteger(value),
+  kvCacheType: value => value === 'F16' || value === 'Q8_0',
 };
 
 /** The levers `env` asks for: each valid key overrides its shipped value; an unknown key, a wrong type or invalid

@@ -7,11 +7,11 @@ import { promisify } from 'node:util';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readGgufFileInfo, GgufInsights, LlamaChat, JinjaTemplateChatWrapper, QwenChatWrapper, InputLookupTokenPredictor, type ChatModelFunctions, type ChatWrapper } from 'node-llama-cpp';
+import { readGgufFileInfo, GgufInsights, GgmlType, LlamaChat, JinjaTemplateChatWrapper, QwenChatWrapper, InputLookupTokenPredictor, type ChatModelFunctions, type ChatWrapper } from 'node-llama-cpp';
 import type { GgufFunctions, GgufHistoryItem } from '../core/local-provider.mts';
 import { commonPrefixLength, type PromptCheckpointFigures } from '../core/reuse.mts';
 import { SHIPPED_LEVERS } from '../core/perf-levers.mts';
-import { GenerationMeter, generationLimits, completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine, sequenceOptions, stablePromptLength, checkpointPromptEnd, chatHistoryOf, TurnLock, thoughtBudget } from '../core/local-engine.mts';
+import { GenerationMeter, generationLimits, completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine, sequenceOptions, stablePromptLength, checkpointPromptEnd, chatHistoryOf, TurnLock, thoughtBudget, contextOptions, modelOptions } from '../core/local-engine.mts';
 import type { GenerationStats, LoadEvent } from '../core/model-types.mts';
 import { runtimeLlama, backendOf } from '../core/llama-runtime.mts';
 import { removeAtEnd } from './teardown.mts';
@@ -445,6 +445,63 @@ test('sequenceOptions adds an InputLookupTokenPredictor only with the lever', ()
   assert.ok(on.tokenPredictor instanceof InputLookupTokenPredictor, 'an InputLookupTokenPredictor');
   assert.deepEqual(on.checkpoints, sequenceOptions(SHIPPED_LEVERS).checkpoints, 'the checkpoints are unchanged');
   assert.notEqual(sequenceOptions({ ...SHIPPED_LEVERS, inputLookup: true }).tokenPredictor, on.tokenPredictor, 'one predictor per sequence');
+});
+
+// Task 11: the context levers. At the shipped values nothing is passed, so loadModel and both createContext calls get
+// exactly today's options; the KV type also reaches loadModel, whose fitContext resolution sizes the KV cache with it.
+test('contextOptions maps the levers and returns {} at the shipped values', () => {
+  assert.deepEqual(contextOptions(SHIPPED_LEVERS), {});
+  assert.deepEqual(modelOptions(SHIPPED_LEVERS), {});
+  assert.deepEqual(contextOptions({ ...SHIPPED_LEVERS, batchSize: 2048 }), { batchSize: 2048 });
+  assert.deepEqual(contextOptions({ ...SHIPPED_LEVERS, threads: 6 }), { threads: 6 });
+  assert.deepEqual(contextOptions({ ...SHIPPED_LEVERS, kvCacheType: 'Q8_0' }), { experimentalKvCacheKeyType: 'Q8_0', experimentalKvCacheValueType: 'Q8_0' });
+  assert.deepEqual(modelOptions({ ...SHIPPED_LEVERS, kvCacheType: 'Q8_0' }), { experimentalDefaultContextKvCacheKeyType: 'Q8_0', experimentalDefaultContextKvCacheValueType: 'Q8_0' });
+  assert.deepEqual(modelOptions({ ...SHIPPED_LEVERS, batchSize: 2048, threads: 6 }), {}, 'loadModel takes the KV type only');
+});
+
+// node-llama-cpp marks experimentalKvCache* « may crash the process » (F22): each load runs in a child process, which
+// also reads the levers once at its start. threads 2 is within maxThreads on every backend (at least the math cores).
+// stories260K cannot hold a Q8_0 KV cache: its heads are 8 wide (64 / 8) and a q8_0 block is 32, which llama.cpp
+// refuses at context creation (« K cache type q8_0 with block size 32 does not divide n_embd_head_k=8 », 3.21.1,
+// 2026-10-27). So the Q8_0 run proves the type reaches llama.cpp's context, and that the refusal is a clean error that
+// leaves nothing loaded, not a crash; a Q8_0 context that loads is checked on the 27B (head size 256) in S2.
+test('stories260K loads and writes with batchSize 1024 and a Q8_0 KV cache', { timeout: 120000 }, async () => {
+  const levers = { batchSize: 1024, threads: 2 };
+  const out = await inChild(`
+    const lines = [];
+    const info = console.info;
+    console.info = (...args) => { lines.push(args.join(' ')); };
+    const reply = await m.completeLocal({ modelPath: ${JSON.stringify(modelPath)}, messages: [{ role: 'user', content: 'Once upon a time' }], maxTokens: 24 });
+    console.info = info;
+    const context = m.warmContext();
+    out.text = reply.content;
+    out.batchSize = context.batchSize;
+    out.kv = [context.kvCacheKeyType, context.kvCacheValueType];
+    out.idealThreads = context.idealThreads;
+    out.placement = lines.find(line => line.startsWith('[placement] backend')) ?? null;
+    await m.disposeEngine();`, { OPENAGENT_PERF_LEVERS: JSON.stringify(levers) });
+  assert.ok(out.text.length > 0, 'the toy model wrote something');
+  assert.equal(out.batchSize, 1024);
+  assert.deepEqual(out.kv, [GgmlType.F16, GgmlType.F16], 'the KV cache stays f16 without its lever');
+  assert.equal(out.idealThreads, 2);
+  assert.match(out.placement, / · lot 1024 · cache KV F16\/F16 · threads demandés 2, idéaux 2, en cours \d+ \(cœurs de calcul \d+\)$/, out.placement);
+
+  const q8 = await inChild(`
+    const lines = [];
+    for (const level of ['log', 'info', 'warn', 'error']) {
+      const original = console[level];
+      console[level] = (...args) => { lines.push(args.join(' ')); original(...args); };
+    }
+    try {
+      await m.completeLocal({ modelPath: ${JSON.stringify(modelPath)}, messages: [{ role: 'user', content: 'Once upon a time' }], maxTokens: 24 });
+      out.error = null;
+    } catch (error) { out.error = error.message; }
+    out.loaded = m.warmContext() !== null;
+    out.q8Lines = lines.filter(line => /K cache type q8_0/.test(line));
+    await m.disposeEngine();`, { OPENAGENT_PERF_LEVERS: JSON.stringify({ ...levers, kvCacheType: 'Q8_0' }) });
+  assert.ok(q8.q8Lines.length > 0, 'llama.cpp got a q8_0 K cache');
+  assert.equal(typeof q8.error, 'string', 'the refusal is an error, the child process lives on');
+  assert.equal(q8.loaded, false, 'nothing stays loaded');
 });
 
 // perfLevers() is read once per thread: each lever value gets a process of its own. Greedy decoding (LlamaChat's

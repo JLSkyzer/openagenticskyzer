@@ -1076,7 +1076,7 @@ This is a user decision (spec, 2026-10-25), not a measured lever. The setting st
 ## Task 10: Write faster (1) — prediction by input lookup
 
 **Hypothesis.**
-- `InputLookupTokenPredictor` drafts tokens that repeat the input, with no extra model and an unchanged output.
+- `InputLookupTokenPredictor` drafts tokens that repeat the input, with no extra model and an output unchanged in principle (a draft verified in a batch can flip a near-tie on a long reply: compare the texts).
 - Expected: tok/s +10 to +30 % on echo-heavy replies (B, which quotes the file) and ≈ 0 or negative on prose (A) [hypothèse, external figures only].
 - On a hybrid model each speculative round takes a checkpoint (`LlamaContext.js:1620-1627`, per the research), which may cancel the gain.
 - Metric: tok/s on B and A, `predictions.validated / (validated + refuted)`.
@@ -1093,7 +1093,7 @@ This is a user decision (spec, 2026-10-25), not a measured lever. The setting st
 **Steps:**
 - [ ] **Step 1: Failing tests** (`local-engine.test.mts`):
   - `sequenceOptions adds an InputLookupTokenPredictor only with the lever`: `instanceof InputLookupTokenPredictor`, and no key when off.
-  - `with inputLookup, stories260K writes the same greedy text and counts its predictions`:
+  - `with inputLookup, a short stories260K completion keeps its greedy text, validates drafts and counts its predictions`:
     - one engine load per lever value: a child process with `OPENAGENT_PERF_LEVERS`, using `low-vram-fallback`'s `inChild` pattern, since `perfLevers()` is read once per thread;
     - the same 24-token completion of `'Once upon a time'` both times;
     - assert the texts are equal and `predictions.validated + predictions.refuted > 0` with the lever.

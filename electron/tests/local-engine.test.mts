@@ -451,11 +451,14 @@ test('sequenceOptions adds an InputLookupTokenPredictor only with the lever', ()
 // default temperature 0): a token prediction validated by the model changes nothing in the text. Only in principle
 // over long spans: a draft is checked in a batch, whose logits may differ in the last bits from a one-token decode, so
 // on a near-tie the greedy pick can flip (seen on stories260K past ~1,400 characters on the processor, ~6,000 on
-// Vulkan, 8,192 tokens, 2026-10-27). 24 tokens stay well short of that.
-test('with inputLookup, stories260K writes the same greedy text and counts its predictions', { timeout: 200000 }, async () => {
+// Vulkan, 8,192 tokens, 2026-10-27). 48 tokens (~100 characters) stay well short of that. The prompt repeats itself,
+// so the predictor finds the reply's words in it and some drafts are validated and used (5 validated, 4 used on both
+// backends, 2026-10-27): the test proves accepted drafts keep the text, not only that refuted ones are erased cleanly.
+const ECHO_PROMPT = 'One day, a little girl named Lily went to the park. She saw a big dog. One day, a little girl named Lily went to the park.';
+test('with inputLookup, a short stories260K completion keeps its greedy text, validates drafts and counts its predictions', { timeout: 200000 }, async () => {
   const body = `
     const stats = [];
-    const reply = await m.completeLocal({ modelPath: ${JSON.stringify(modelPath)}, messages: [{ role: 'user', content: 'Once upon a time' }], maxTokens: 24, onStats: s => stats.push(s) });
+    const reply = await m.completeLocal({ modelPath: ${JSON.stringify(modelPath)}, messages: [{ role: 'user', content: ${JSON.stringify(ECHO_PROMPT)} }], maxTokens: 48, onStats: s => stats.push(s) });
     out.text = reply.content;
     out.outputTokens = stats[0].outputTokens;
     out.predictions = stats[0].predictions ?? null;
@@ -469,7 +472,7 @@ test('with inputLookup, stories260K writes the same greedy text and counts its p
   assert.equal(off.hasKey, false, 'lever off: no predictions key, the stats keep their shape');
   const p = on.predictions;
   assert.ok(p, 'lever on: the predictions are counted');
-  assert.ok(p.validated + p.refuted > 0, JSON.stringify(p));
+  assert.ok(p.validated > 0 && p.used > 0, `some drafts validated and used: ${JSON.stringify(p)}`);
   assert.ok([p.validated, p.refuted, p.used, p.unused].every(n => Number.isInteger(n) && n >= 0), JSON.stringify(p));
   assert.ok(p.used <= p.validated, JSON.stringify(p));
 });

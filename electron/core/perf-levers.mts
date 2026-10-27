@@ -51,8 +51,10 @@ export interface PerfLevers {
    * Shipped false: a remembered limit loads as `{ min: 0, max: limit, fitContext }`, as today. */
   numericLimitLoad: boolean;
   /** Give the chat's sequence node-llama-cpp's InputLookupTokenPredictor (Task 10): it drafts the tokens that follow
-   * where the last ones already appear in the prompt, and the model checks the draft in the same batch, so the greedy
-   * text is unchanged. On a hybrid model each speculative round takes a checkpoint. Shipped false: no predictor. */
+   * where the last ones already appear in the prompt, and the model checks the draft in the same batch. The text is
+   * unchanged in principle, but a draft verified in a batch can flip a near-tie on a long reply (stories260K, 8192
+   * tokens: diverged at character 6259 on Vulkan, 1420 on the processor, 2026-10-27), so a measurement must compare the
+   * texts. On a hybrid model each speculative round takes a checkpoint. Shipped false: no predictor. */
   inputLookup: boolean;
 }
 

@@ -70,6 +70,9 @@ interface Loaded {
   /** How the load got there (LoadOutcome), and the VRAM free just before it: what a re-placement compares with. */
   outcome: LoadOutcome;
   vramBefore: VramState | null;
+  /** Tokens read per second by the last generation (`reuse.evaluated` over its `promptMs`): what a re-placement
+   * estimates the re-read of the conversation with (Task 12). null until a generation ran. */
+  lastReadRate: number | null;
 }
 type VramState = { total: number; used: number; free: number };
 
@@ -602,7 +605,7 @@ function keep(p: { modelPath: string; contextSize: number; generation: number; l
   });
   // Does the template render the tools after the system text? Only then can the project context follow them (Task 4).
   const wrapper: ChatWrapperInfo = { name: chat.chatWrapper.wrapperName, segments: JSON.parse(JSON.stringify(segments ?? null)), opensThought: thinks, toolsAfterSystem: toolsAfterSystem(chat.chatWrapper), thoughtKept: thoughtKept(chat.chatWrapper) };
-  loaded = { path: p.modelPath, requested: p.contextSize, generation: p.generation, llama, model, context, chat, wrapper, outcome: p.outcome, vramBefore: p.vramBefore };
+  loaded = { path: p.modelPath, requested: p.contextSize, generation: p.generation, llama, model, context, chat, wrapper, outcome: p.outcome, vramBefore: p.vramBefore, lastReadRate: null };
   console.info(placementLogLine({ backend: backendOf(llama), gpuLayers: model.gpuLayers, totalLayers: model.fileInsights.totalLayers, useMmap: model.useMmap, vramBefore: p.vramBefore, padding: llama.vramPaddingSize, contextSize: context.contextSize, outcome: p.outcome, context: contextFigures(llama, context) }));
   console.info(chatWrapperLogLine(wrapper));
   const stages: LoadStage[] = [...p.stages, { stage: 'chat', ms: Math.round(chatMs * 10) / 10, ok: true }];
@@ -670,8 +673,11 @@ async function disposeLocked(): Promise<void> {
  *   a gain of 1 to 3 layers is within the margin that made the first load step down or fall back — it would most
  *   likely end where it started. A reload that ends where it started does not repeat: its own load becomes the
  *   reference.
+ * - With the rereadWeighting lever (Task 12), a reload also empties the cache, so the next message re-reads the
+ *   `heldTokens` of the conversation: one more layer is required per REREAD_MS_PER_EXTRA_LAYER of that estimate.
  */
 export const REPLACE_MIN_LAYERS = 4;
+export const REREAD_MS_PER_EXTRA_LAYER = 15_000;
 export interface ReplacementInput {
   outcome: LoadOutcome['kind'];
   /** The load started at a remembered layer limit: a `direct` one is then open to the re-placement too. */
@@ -682,6 +688,12 @@ export interface ReplacementInput {
   freeNow: number | null;
   loadedVram: number;
   bytesPerLayer: number;
+  /** The rereadWeighting lever (Task 12); absent or false: REPLACE_MIN_LAYERS alone. */
+  rereadWeighting?: boolean;
+  /** The tokens the sequence holds, which a reload would have to read again. */
+  heldTokens?: number;
+  /** The last generation's reading speed; null when unknown. */
+  readTokensPerSecond?: number | null;
 }
 export interface ReplacementDecision { replace: boolean; extraLayers: number; reason: string }
 
@@ -692,9 +704,13 @@ export function replacementDecision(input: ReplacementInput): ReplacementDecisio
   if (input.freeAtLoad === null || input.freeNow === null || !(input.bytesPerLayer > 0)) return no('VRAM illisible');
   const gain = input.freeNow + input.loadedVram - input.freeAtLoad;
   const extraLayers = Math.max(0, Math.min(input.totalLayers - input.gpuLayers, Math.floor(gain / input.bytesPerLayer)));
-  if (extraLayers < REPLACE_MIN_LAYERS) return { replace: false, extraLayers, reason: `pas assez de place en plus (${extraLayers} couches)` };
+  const rate = input.readTokensPerSecond;
+  const rereadMs = input.rereadWeighting && rate && rate > 0 ? (input.heldTokens ?? 0) / rate * 1000 : 0;
+  const required = REPLACE_MIN_LAYERS + Math.floor(rereadMs / REREAD_MS_PER_EXTRA_LAYER);
+  const rereadNote = input.rereadWeighting && rereadMs > 0 ? `, relecture estimée ${Math.round(rereadMs / 1000)} s` : '';
+  if (extraLayers < required) return { replace: false, extraLayers, reason: `pas assez de place en plus (${extraLayers} couches${rereadNote ? `${rereadNote}, ${required} requises` : ''})` };
   const from = input.outcome === 'fallback' ? 'repli processeur' : `${input.gpuLayers} couches`;
-  return { replace: true, extraLayers, reason: `${from}, environ ${extraLayers} couches de plus tiennent maintenant sur la carte (${mib(Math.max(0, gain))} libérés)` };
+  return { replace: true, extraLayers, reason: `${from}, environ ${extraLayers} couches de plus tiennent maintenant sur la carte (${mib(Math.max(0, gain))} libérés)${rereadNote}` };
 }
 
 /** The re-placement decision for the loaded `modelPath`, from one cheap VRAM read (getVramState); null when it is not
@@ -713,6 +729,7 @@ export async function replacementCheck(modelPath: string): Promise<ReplacementDe
   const current = loaded;
   if (!isCurrent(current)) return null;
   const { llama, model, context, outcome, vramBefore } = current;
+  const levers = perfLevers();
   const now = await llama.getVramState().catch(() => null);
   const { totalLayers } = model.fileInsights;
   return replacementDecision({
@@ -720,6 +737,7 @@ export async function replacementCheck(modelPath: string): Promise<ReplacementDe
     freeAtLoad: vramBefore?.free ?? null, freeNow: now?.free ?? null,
     loadedVram: model.memoryUsage.vram + context.memoryUsage.vram,
     bytesPerLayer: totalLayers > 0 ? model.fileInsights.modelSize / totalLayers : 0,
+    rereadWeighting: levers.rereadWeighting, heldTokens: current.chat.sequence.contextTokens, readTokensPerSecond: current.lastReadRate,
   });
 }
 
@@ -923,7 +941,10 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
     const generationId = randomUUID();
     // Only with a predictor: today's stats keep their shape (ruling F12).
     const predictions = predictionsBefore ? { predictions: predictionsSince(predictionsBefore, sequence.tokenPredictions) } : {};
-    options.onStats?.({ ...stats, promptMs: generation.promptMs(startedAt), reuse, generationId, ...predictions });
+    const promptMs = generation.promptMs(startedAt);
+    // What a re-placement estimates its re-read with (Task 12); a generation with no reading time keeps the last rate.
+    if (loaded?.chat === chat && promptMs && promptMs > 0 && reuse.evaluated > 0) loaded.lastReadRate = reuse.evaluated / (promptMs / 1000);
+    options.onStats?.({ ...stats, promptMs, reuse, generationId, ...predictions });
     if (levers.performanceTracking) {
       await context.printTimings().catch((error: unknown) => console.warn(`[perf] mesures illisibles : ${(error as Error | undefined)?.message ?? error}`));
       console.info(`[perf] génération terminée ${generationId}`);

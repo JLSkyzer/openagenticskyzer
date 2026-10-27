@@ -58,6 +58,11 @@ test('perfLevers: no variable = the shipped levers (today\'s behaviour); a valid
   const badContext = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ batchSize: 0, threads: 2.5, kvCacheType: 'Q4_0' }) });
   assert.deepEqual([badContext.levers.batchSize, badContext.levers.threads, badContext.levers.kvCacheType, badContext.rejected],
     [null, null, 'F16', ['valeur invalide : batchSize', 'valeur invalide : threads', 'valeur invalide : kvCacheType']]);
+  // rereadWeighting (Task 12, F19): shipped off; a boolean only.
+  assert.equal(SHIPPED_LEVERS.rereadWeighting, false);
+  assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ rereadWeighting: true }) }).levers.rereadWeighting, true);
+  const reread = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ rereadWeighting: 'oui' }) });
+  assert.deepEqual([reread.levers.rereadWeighting, reread.rejected], [false, ['valeur invalide : rereadWeighting']]);
 });
 
 test('the checkpoint levers: shipped at node-llama-cpp\'s defaults; a shorter interval needs a memory cap', () => {

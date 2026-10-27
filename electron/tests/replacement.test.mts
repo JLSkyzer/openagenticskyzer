@@ -4,7 +4,7 @@
 // (processor fallback, or fewer layers) is ever reloaded.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { replacementDecision, REPLACE_MIN_LAYERS } from '../core/local-engine.mts';
+import { replacementDecision, REPLACE_MIN_LAYERS, REREAD_MS_PER_EXTRA_LAYER } from '../core/local-engine.mts';
 
 const MIB = 1024 ** 2;
 // The 27B of 2026-10-24: 66 layers, about 189 MiB each on the card (4724 MiB for 25 layers).
@@ -54,4 +54,26 @@ test('every layer already on the card, or a VRAM figure missing: no reload', () 
   assert.equal(replacementDecision({ ...base, freeAtLoad: null, freeNow: 9000 * MIB }).replace, false);
   assert.equal(replacementDecision({ ...base, freeNow: null }).replace, false);
   assert.equal(replacementDecision({ ...base, bytesPerLayer: 0, freeNow: 9000 * MIB }).replace, false);
+});
+
+// Task 12: the rereadWeighting lever (shipped off) makes a reload ask one more extra layer per 15 s of re-read.
+test('rereadWeighting on: a long conversation to re-read asks for more extra layers before reloading', () => {
+  assert.equal(REREAD_MS_PER_EXTRA_LAYER, 15_000);
+  const b = { outcome: 'step-down' as const, gpuLayers: 19, totalLayers: 66, freeAtLoad: 0, loadedVram: 0, bytesPerLayer: 100, rereadWeighting: true };
+  // 5 extra layers fit; 4 100 tokens at 141 tok/s is about 29 s, so 4 + 1 = 5 required: reload
+  assert.equal(replacementDecision({ ...b, freeNow: 500, heldTokens: 4100, readTokensPerSecond: 141 }).replace, true);
+  // 9 000 tokens is about 64 s, so 4 + 4 = 8 required: no reload
+  const no = replacementDecision({ ...b, freeNow: 500, heldTokens: 9000, readTokensPerSecond: 141 });
+  assert.equal(no.replace, false);
+  assert.match(no.reason, /relecture estimée 64 s/);
+  // Lever off: the same case reloads, with today's rule and reason.
+  const off = replacementDecision({ ...b, rereadWeighting: false, freeNow: 500, heldTokens: 9000, readTokensPerSecond: 141 });
+  assert.equal(off.replace, true);
+  assert.doesNotMatch(off.reason, /relecture/);
+});
+
+test('rereadWeighting on, nothing held or no read rate known: the rule is unchanged (REPLACE_MIN_LAYERS)', () => {
+  const b = { outcome: 'fallback' as const, gpuLayers: 0, totalLayers: 66, freeAtLoad: 0, loadedVram: 0, bytesPerLayer: 100, freeNow: 400, rereadWeighting: true };
+  assert.equal(replacementDecision({ ...b, heldTokens: 0, readTokensPerSecond: 141 }).replace, true);
+  assert.equal(replacementDecision({ ...b, heldTokens: 9000, readTokensPerSecond: null }).replace, true);
 });

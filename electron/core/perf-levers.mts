@@ -70,6 +70,10 @@ export interface PerfLevers {
    * experimental (« may crash the process », F22). A Q8_0 V cache needs flash attention, so a model or backend without
    * it fails to load (cleanly), as does a model whose head size is not a multiple of 32 (stories260K). Shipped 'F16'. */
   kvCacheType: 'F16' | 'Q8_0';
+  /** The re-placement between turns weighs the cost of emptying the cache (Task 12): a reload re-reads the whole
+   * conversation, so it asks one more extra layer per REREAD_MS_PER_EXTRA_LAYER of estimated re-read. Shipped off
+   * (REPLACE_MIN_LAYERS alone, as today) until a re-placement is measured with and without it [hypothèse]. */
+  rereadWeighting: boolean;
 }
 
 export const PERF_LEVERS_ENV = 'OPENAGENT_PERF_LEVERS';
@@ -92,6 +96,7 @@ export const SHIPPED_LEVERS: Readonly<PerfLevers> = Object.freeze({
   batchSize: null,
   threads: null,
   kvCacheType: 'F16',
+  rereadWeighting: false,
 });
 
 /** node-llama-cpp's own checkpoint interval (3.21.1, `defaultCheckpointOptions`): below it, a memory cap is required. */
@@ -116,6 +121,7 @@ const VALID: { [K in keyof PerfLevers]: (value: unknown) => boolean } = {
   batchSize: value => value === null || positiveInteger(value),
   threads: value => value === null || positiveInteger(value),
   kvCacheType: value => value === 'F16' || value === 'Q8_0',
+  rereadWeighting: value => typeof value === 'boolean',
 };
 
 /** The levers `env` asks for: each valid key overrides its shipped value; an unknown key, a wrong type or invalid

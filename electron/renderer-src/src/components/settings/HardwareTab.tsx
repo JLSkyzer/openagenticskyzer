@@ -14,7 +14,7 @@ import {
 } from '../../ipc/bridge';
 import { cleanIpcError } from '../../ipc/errors';
 import { DEFAULT_LOCAL_CONTEXT, type LocalContextSetting } from '../../../../core/context-budget.mts';
-import { adoptInstall, backendChoiceView, cudaAdvice, cudaPackView, GPU_BACKEND_OPTIONS, hardwareLines, LOCAL_CONTEXT_OPTIONS } from './hardware-view';
+import { adoptInstall, backendChoiceView, cudaAdvice, cudaPackView, GPU_BACKEND_OPTIONS, hardwareLines, LOCAL_CONTEXT_OPTIONS, THOUGHT_BUDGET_OPTIONS } from './hardware-view';
 import type { SettingsDraft } from './useSettingsDraft';
 import { Group, Row, Section } from './parts';
 
@@ -109,6 +109,7 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
 
   const localContext = draft.get<LocalContextSetting>('local_context', DEFAULT_LOCAL_CONTEXT);
   const gpuBackend = draft.get<GpuBackendChoice>('gpu_backend', 'auto');
+  const thoughtTokens = draft.get<number | null>('max_thought_tokens', null);
   const cuda = info !== null && pack !== null ? cudaPackView(pack, info, progress) : null;
   const choice = info !== null ? backendChoiceView(info, gpuBackend, cuda?.state ?? 'hidden') : { restart: null };
   const advice = info !== null ? cudaAdvice(info) : null;
@@ -258,7 +259,6 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
           <Row
             label="Contexte des modèles locaux"
             hint="Plafonné par ce que le modèle supporte et par la limite de contexte (Contexte & Mémoire). Changer la valeur recharge le modèle au message suivant."
-            last
           >
             <select
               data-setting="local_context"
@@ -269,6 +269,23 @@ export function HardwareTab({ draft }: { draft: SettingsDraft }) {
             >
               {LOCAL_CONTEXT_OPTIONS.map(option => (
                 <option key={String(option.value)} value={String(option.value)}>{option.label}</option>
+              ))}
+            </select>
+          </Row>
+          <Row
+            label="Longueur maximale de la réflexion"
+            hint="En jetons. Au-delà, le modèle arrête de réfléchir et écrit sa réponse."
+            last
+          >
+            <select
+              data-setting="max_thought_tokens"
+              value={thoughtTokens === null ? 'none' : String(thoughtTokens)}
+              onChange={event => draft.set('max_thought_tokens', event.target.value === 'none' ? null : Number(event.target.value))}
+              className="w-36 rounded px-2 py-1 text-xs text-gray-200 outline-none"
+              style={selectStyle}
+            >
+              {THOUGHT_BUDGET_OPTIONS.map(option => (
+                <option key={String(option.value)} value={option.value === null ? 'none' : String(option.value)}>{option.label}</option>
               ))}
             </select>
           </Row>

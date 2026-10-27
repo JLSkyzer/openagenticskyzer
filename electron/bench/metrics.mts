@@ -35,7 +35,7 @@ export interface TurnFigures {
 export interface BenchRun {
   schema: 1; label: string; startedAt: string; gitHead: string;
   model: { file: string; bytes: number }; machine: { cpu: string; logicalCores: number; ramBytes: number };
-  settings: { local_context: number | 'max' }; levers: Partial<PerfLevers>;
+  settings: { local_context: number | 'max' } & Record<string, unknown>; levers: Partial<PerfLevers>;
   toolDefinitions: { chars: number; tokens: number | null }; turns: TurnFigures[];
   // Optional: older or partial files may lack them (compare reads them as unknown).
   /** The levers asked on the command line (`levers` is what the worker applied). */

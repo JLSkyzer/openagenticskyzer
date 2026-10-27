@@ -53,6 +53,19 @@ test('local_context setting: default 32768, the five values accepted, anything e
   }
 });
 
+// « Longueur maximale de la réflexion » (Task 9): a user setting, no limit by default.
+test('max_thought_tokens: no limit by default; accepts null and the listed sizes; refuses anything else', async t => {
+  const service = new SettingsService(await tempDir(t));
+  assert.equal((await service.global()).max_thought_tokens, null);
+  for (const ok of [null, 512, 1024, 2048, 4096, 8192]) {
+    await service.saveGlobal({ max_thought_tokens: ok });
+    assert.equal((await service.global()).max_thought_tokens, ok);
+  }
+  for (const bad of [0, -1, 100, '512', Infinity]) {
+    await assert.rejects(service.saveGlobal({ max_thought_tokens: bad }), { message: 'Paramètre invalide : max_thought_tokens' }, String(bad));
+  }
+});
+
 test('withTrainContext writes a real GGUF whose train context node-llama-cpp reads back', async t => {
   const tmp = join(await tempDir(t), 'patched.gguf');
   const before = (await GgufInsights.from(await readGgufFileInfo(stories260K))).trainContextSize;

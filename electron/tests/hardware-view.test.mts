@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   adoptInstall, backendChoiceView, CUDA_ADVICE, cudaAdvice, CUDA_PACK_UNAVAILABLE_TEXT, cudaMismatchText, cudaPackView, GPU_BACKEND_OPTIONS, hardwareLines,
-  isPackFailureNotice, LOCAL_CONTEXT_OPTIONS, maxTokensSliderMax,
+  isPackFailureNotice, LOCAL_CONTEXT_OPTIONS, maxTokensSliderMax, THOUGHT_BUDGET_OPTIONS,
 } from '../renderer-src/src/components/settings/hardware-view.ts';
 // What op hardware-info answers: core/hardware.mts::HardwareInfo plus the worker's backendChoice and restartRequired.
 import type { CudaPackView, HardwareInfo } from '../renderer-src/src/ipc/types.ts';
@@ -62,6 +62,11 @@ const absentPack: CudaPackView = {
   expectedVersion: '3.18.1', restartRequired: false, notice: null, install: null,
 };
 const installedPack: CudaPackView = { ...absentPack, state: 'installed', installedVersion: '3.18.1' };
+
+test('THOUGHT_BUDGET_OPTIONS: « Sans limite (défaut) » first, then 512 to 8k', () => {
+  assert.deepEqual(THOUGHT_BUDGET_OPTIONS.map(o => o.label), ['Sans limite (défaut)', '512', '1k', '2k', '4k', '8k']);
+  assert.deepEqual(THOUGHT_BUDGET_OPTIONS.map(o => o.value), [null, 512, 1024, 2048, 4096, 8192]);
+});
 
 test('cudaPackView: hidden without NVIDIA, the size before download, progress and cancel, installed, restart, mismatch, failed', () => {
   assert.deepEqual(cudaPackView(absentPack, { ...card, nvidia: false }, null), {

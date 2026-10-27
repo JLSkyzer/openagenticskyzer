@@ -37,6 +37,16 @@ export const LOCAL_CONTEXT_OPTIONS: ReadonlyArray<{ value: LocalContextSetting; 
   { value: 'max', label: 'max du modèle' },
 ];
 
+/** « Longueur maximale de la réflexion »: the values of settings.mts::max_thought_tokens, in tokens; null is no limit. */
+export const THOUGHT_BUDGET_OPTIONS: ReadonlyArray<{ value: number | null; label: string }> = [
+  { value: null, label: 'Sans limite (défaut)' },
+  { value: 512, label: '512' },
+  { value: 1024, label: '1k' },
+  { value: 2048, label: '2k' },
+  { value: 4096, label: '4k' },
+  { value: 8192, label: '8k' },
+];
+
 const LARGEST_FIXED_CHOICE = Math.max(...LOCAL_CONTEXT_CHOICES.filter((choice): choice is Exclude<LocalContextSetting, 'max'> => choice !== 'max'));
 
 /**

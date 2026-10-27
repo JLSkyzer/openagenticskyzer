@@ -41,7 +41,13 @@ export interface LocalCompletionOptions {
   contextRequest?: ContextRequest;
   /** Follows the load this call may cause (model-types.mts::WindowOptions). */
   onLoad?: WindowOptions['onLoad'];
+  /** The user's generation settings (worker.mjs `turnProvider`). */
+  generation?: GenerationRequest;
 }
+
+/** The user's generation settings for the built-in engine: « Longueur maximale de la réflexion » (settings.mts
+ * max_thought_tokens), null for no limit. */
+export interface GenerationRequest { thoughtTokens: number | null }
 
 /** The one error shown when the model does not fit even with no layer on the card. */
 export function localModelTooBig(contextSize: number): string {
@@ -721,13 +727,21 @@ function tracked<T>(generation: Promise<T>): Promise<T> {
   void settled.then(() => generations.delete(settled));
   return generation;
 }
+/** The thought cap of one generation: the bench's thoughtTokens lever, else the user's « Longueur maximale de la
+ * réflexion », else null — no cap, and then no `budgets` is sent (ruling F5): node-llama-cpp 3.21.1 limits no segment
+ * when `budgets` is absent, but caps an undefined `thoughtTokens` at 75 % of the context (LlamaChat.js:2216-2228). */
+export function thoughtBudget(setting: number | null, lever: number | null): number | null {
+  return lever ?? setting ?? null;
+}
+
 /** The limits one generation runs under: the outputCap lever (shipped LOCAL_OUTPUT_CAP) bounds whatever the caller
- * asked (ruling F1); `budgets` only when a thought cap applies — without one, LlamaChat limits no segment, as today
- * (ruling F5). */
-export function generationLimits(levers: Readonly<PerfLevers>, maxTokens: number | undefined): { maxTokens: number; budgets?: { thoughtTokens: number } } {
+ * asked (ruling F1); `budgets` only when a thought cap applies (`thoughtBudget`) — without one, LlamaChat limits no
+ * segment, as today (ruling F5). */
+export function generationLimits(levers: Readonly<PerfLevers>, maxTokens: number | undefined, thoughtSetting: number | null = null): { maxTokens: number; budgets?: { thoughtTokens: number } } {
+  const thoughtTokens = thoughtBudget(thoughtSetting, levers.thoughtTokens);
   return {
     maxTokens: Math.min(maxTokens ?? levers.outputCap, levers.outputCap),
-    ...(levers.thoughtTokens === null ? {} : { budgets: { thoughtTokens: levers.thoughtTokens } }),
+    ...(thoughtTokens === null ? {} : { budgets: { thoughtTokens } }),
   };
 }
 
@@ -823,7 +837,7 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
         deliver(reply.chunk(chunk));
       },
       signal: options.signal,
-      ...generationLimits(levers, options.maxTokens),
+      ...generationLimits(levers, options.maxTokens, options.generation?.thoughtTokens ?? null),
     }));
     response = !levers.promptCheckpoint ? await generate() : await promptTurns.run(async () => {
       // Outside LlamaChat's lock, hence the turn lock: a stopped generation still unwinding must be done before the
@@ -867,13 +881,13 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
 /** The built-in engine as a ModelProvider (worker.mjs `turnProvider`): its window is the context size it really
  * runs with (H3), sized from `request`; its output cap the outputCap lever (shipped LOCAL_OUTPUT_CAP, which the bench
  * may lower: ruling F1); the agent lowers the cap to what the window leaves after the request (M3) and passes it as
- * `maxTokens`. */
-export function localProvider(modelPath: string, request: ContextRequest = DEFAULT_CONTEXT_REQUEST): ModelProvider {
+ * `maxTokens`. `generation` carries the user's generation settings (the thought cap). */
+export function localProvider(modelPath: string, request: ContextRequest = DEFAULT_CONTEXT_REQUEST, generation?: GenerationRequest): ModelProvider {
   return {
-    complete: (options: Omit<LocalCompletionOptions, 'modelPath' | 'contextRequest'>) => completeLocal({
+    complete: (options: Omit<LocalCompletionOptions, 'modelPath' | 'contextRequest' | 'generation'>) => completeLocal({
       modelPath, messages: options.messages, tools: options.tools, signal: options.signal, onDelta: options.onDelta,
       onReasoning: options.onReasoning, onStats: options.onStats, maxTokens: options.maxTokens,
-      projectContext: options.projectContext, contextRequest: request,
+      projectContext: options.projectContext, contextRequest: request, generation,
     }),
     // completeLocal places the project context itself (historyFromMessages): the agent passes it apart.
     rendersProjectContext: true,

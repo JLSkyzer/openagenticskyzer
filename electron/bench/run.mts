@@ -4,7 +4,7 @@
 //   node --experimental-strip-types bench/run.mts --model <gguf> --label <name> [--scenarios A,B,C] [--messages 1-4]
 //        [--context 32768] [--lever key=value]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dir>|none]
 //        [--turn-timeout <minutes>] [--install-timeout <minutes>] [--touch-memory <message>] [--idle-before-send <ms>]
-//        [--mcp-fake <ms>] [--out <dir>]
+//        [--mcp-fake <ms>] [--setting key=value]… [--out <dir>]
 //
 // The 27B command of the benchmark protocol (with the user present, never while a game runs), word for word:
 //
@@ -121,13 +121,14 @@ function parseOptions() {
       backend: { type: 'string' }, 'cuda-pack': { type: 'string' }, 'turn-timeout': { type: 'string', default: '15' },
       'install-timeout': { type: 'string', default: '10' }, 'touch-memory': { type: 'string' },
       'idle-before-send': { type: 'string' }, 'mcp-fake': { type: 'string' },
+      setting: { type: 'string', multiple: true, default: [] },
     },
     allowPositionals: false,
   });
 }
 try { parsed = parseOptions(); } catch (error) { fail(2, error instanceof Error ? error.message : String(error)); }
 const { values } = parsed;
-if (!values.model || !values.label) fail(2, 'Usage : bench/run.mts --model <gguf> --label <nom> [--scenarios A,B,C] [--messages 1-4] [--context 32768] [--lever clé=valeur]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dossier>|none] [--turn-timeout <minutes>] [--install-timeout <minutes>] [--touch-memory <message>] [--idle-before-send <ms>] [--mcp-fake <ms>] [--out <dossier>]');
+if (!values.model || !values.label) fail(2, 'Usage : bench/run.mts --model <gguf> --label <nom> [--scenarios A,B,C] [--messages 1-4] [--context 32768] [--lever clé=valeur]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dossier>|none] [--turn-timeout <minutes>] [--install-timeout <minutes>] [--touch-memory <message>] [--idle-before-send <ms>] [--mcp-fake <ms>] [--setting clé=valeur]… [--out <dossier>]');
 const scenarios = values.scenarios.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
 if (!scenarios.length || scenarios.some(s => !['A', 'B', 'C'].includes(s))) fail(2, `Scénarios inconnus : ${values.scenarios} (A, B, C)`);
 // `--messages n`: A plays its first n messages only (the scenario subset a lever targets, e.g. A·1–A·3).
@@ -158,6 +159,11 @@ if (!(turnTimeoutMs > 0)) fail(2, `--turn-timeout invalide : ${values['turn-time
 const installTimeoutMs = Math.round(Number(values['install-timeout']) * 60000);
 if (!(installTimeoutMs > 0)) fail(2, `--install-timeout invalide : ${values['install-timeout']} (minutes)`);
 const askedLevers = Object.fromEntries(values.lever.map(leverOf));
+// `--setting key=value` (Task 9, ruling F20): a global setting saved in each session's home through
+// save-global-settings, as Réglages saves it (e.g. max_thought_tokens=512); the worker refuses an invalid one. The model
+// and its context stay --model and --context.
+const askedSettings: Record<string, unknown> = Object.fromEntries(values.setting.map(leverOf));
+for (const key of ['active_local_model', 'local_context']) if (Object.hasOwn(askedSettings, key)) fail(2, `--setting ${key} refusé : utilise ${key === 'local_context' ? '--context' : '--model'}`);
 const leversJson = JSON.stringify(askedLevers);
 // A rejected lever would silently run the shipped value: « après » would equal « avant » (ruling F24).
 const { levers, rejected } = readPerfLevers({ [PERF_LEVERS_ENV]: leversJson });
@@ -192,7 +198,7 @@ const run: BenchRun = {
   schema: 1, label: values.label, startedAt: startedAt.toISOString(), gitHead: await gitHead(),
   model: { file: basename(model), bytes: modelBytes },
   machine: { cpu: os.cpus()[0]?.model.trim() ?? 'inconnu', logicalCores: os.availableParallelism(), ramBytes: os.totalmem() },
-  settings: { local_context: context as number | 'max' }, levers: { ...levers }, askedLevers: { ...levers },
+  settings: { ...askedSettings, local_context: context as number | 'max' }, levers: { ...levers }, askedLevers: { ...levers },
   toolDefinitions: { chars: 0, tokens: null }, turns: [],
   backend: null, nodeLlamaCpp, qualityGate: modelBytes > QUALITY_MIN_BYTES, failures: [],
   ...(touchMemory === null ? {} : { touchMemory }),
@@ -278,7 +284,7 @@ async function home(name: string): Promise<string> {
 }
 
 let applied: Readonly<PerfLevers> | null = null;
-async function session(name: string, config: Omit<SessionConfig, 'kind' | 'model' | 'context' | 'levers' | 'backend' | 'requireBackend' | 'qualityGate' | 'turnTimeoutMs' | 'resultPath' | 'idleBeforeSendMs' | 'mcpFakeMs'>): Promise<ChildResult | null> {
+async function session(name: string, config: Omit<SessionConfig, 'kind' | 'model' | 'context' | 'levers' | 'backend' | 'requireBackend' | 'qualityGate' | 'turnTimeoutMs' | 'resultPath' | 'idleBeforeSendMs' | 'mcpFakeMs' | 'settings'>): Promise<ChildResult | null> {
   if (interrupted) return null;
   await guard();
   // A Ctrl+C during the guard (M3): no session starts (step and runChild check again before the spawn).
@@ -286,6 +292,7 @@ async function session(name: string, config: Omit<SessionConfig, 'kind' | 'model
   const result = await step(name, {
     ...config, kind: 'session', model, context: context as number | 'max', levers: leversJson, backend, requireBackend,
     qualityGate: run.qualityGate ?? false, turnTimeoutMs, resultPath: join(temp, `${name}.result.json`), idleBeforeSendMs, mcpFakeMs,
+    settings: askedSettings,
   });
   if (result?.levers && !applied) applied = result.levers;
   return result;

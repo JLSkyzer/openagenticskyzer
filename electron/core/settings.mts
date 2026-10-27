@@ -14,6 +14,9 @@ export const globalDefaults = {
   active_local_model: '',
   // « Contexte des modèles locaux »: the engine context asked for, capped by the model (context-budget.mts::localContextSize).
   local_context: 32768 as number | 'max',
+  // « Longueur maximale de la réflexion » (Matériel): the built-in engine's cap on thought tokens per reply. null: no
+  // limit, and no `budgets` sent at all — the request is today's (local-engine.mts::thoughtBudget).
+  max_thought_tokens: null as number | null,
   // « Moteur » (hardware and offload, Task 10): auto | cuda | vulkan | cpu, applied at the next app start
   // (core/llama-runtime.mts decides the backend once per worker; main.cjs reads it before creating the worker).
   gpu_backend: 'auto' as 'auto' | 'cuda' | 'vulkan' | 'cpu',
@@ -37,6 +40,7 @@ const globalRules: Record<string, Rule> = {
   agent_mode: choice('ask', 'auto', 'plan'), auto_compact: bool, compact_threshold: integer(40, 95),
   max_tokens: v => v === null || integer(2048, 2097152)(v), reserved_tokens: integer(1, 65536),
   local_context: choice(16384, 32768, 65536, 131072, 'max'),
+  max_thought_tokens: v => v === null || choice(512, 1024, 2048, 4096, 8192)(v),
   gpu_backend: choice('auto', 'cuda', 'vulkan', 'cpu'),
   turn_log: choice('full', 'metadata', 'off'),
   show_context_bar: bool, session_retention_days: choice(0, 7, 30, 90), animations: bool,

@@ -60,6 +60,9 @@ export interface SessionConfig extends Common {
   /** `--mcp-fake ms` (Task 7, ruling F13): a global MCP server (the tests' fake one) whose initialize answers after this
    * long, written in the home's mcp.json before the worker starts: each turn's tool preparation waits for it. */
   mcpFakeMs?: number | null;
+  /** `--setting key=value` (Task 9, ruling F20): global settings saved through save-global-settings with the model's
+   * activation, as Réglages would save them (e.g. max_thought_tokens). Absent or {}: none. */
+  settings?: Record<string, unknown>;
 }
 
 /** What `--touch-memory` appends to the project memory: a change in the project context, as a save_memory makes. */
@@ -256,7 +259,7 @@ export async function runSession(config: SessionConfig, save: (result: ChildResu
   }
   const activate = async (target: Worker) => {
     const entry = await callWorker(target, 'gguf-add', { path: config.model });
-    await callWorker(target, 'save-global-settings', { patch: { active_local_model: entry.id, local_context: config.context } });
+    await callWorker(target, 'save-global-settings', { patch: { ...config.settings, active_local_model: entry.id, local_context: config.context } });
   };
   // `--idle-before-send`: the model is made active before the measured worker starts, by a worker that creates no Llama
   // (no hardware-info), so the measured one starts its engine itself — at boot with engineAtBoot, else on the turn.

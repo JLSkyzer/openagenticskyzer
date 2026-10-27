@@ -577,11 +577,13 @@ async function turnProvider(payload) {
   // model at the next message. max_tokens is not part of it (it caps the request window only, windowFor).
   if (model) {
     const request = await contextRequestOf(settings);
+    // « Longueur maximale de la réflexion » (Matériel), read on every send like the context; null: no cap, no budgets.
+    const generation = { thoughtTokens: (await settings.global()).max_thought_tokens ?? null };
     // A turn has the machine to itself: a background estimate would compete with its load for the same memory.
     // Cancelled with no await left before the caller registers the run in `active` (after which estimate-model is
     // refused); windowFor cancels again and waits for the cancelled run to end before the load.
     estimateJobs.cancelAll();
-    return { provider: localProvider(model.path, request), model };
+    return { provider: localProvider(model.path, request, generation), model };
   }
   if (testSeam && payload.testModel) return { provider: testSeam.createTestProvider(payload.testModel), model: null };
   throw new Error(NO_LOCAL_MODEL);

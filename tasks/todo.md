@@ -3684,6 +3684,7 @@ Banc d'essai : `electron/bench/` (`npm run bench`, `bench:compare`, `bench:tools
   | save_memory (car.) | 471 | 393 |
 
   Gardé provisoirement (ruling F4). Décision en S2 : A·1 en jetons évalués, et qualité B, au 27B. Avant = un worktree à 377d873, après = HEAD levier on.
+- **« Longueur maximale de la réflexion » (tâche 9)** : réglage utilisateur dans Réglages › Matériel (`max_thought_tokens`, « Sans limite (défaut) », 512, 1k, 2k, 4k, 8k), pas un levier mesuré. Sans limite, aucun `budgets` n'est envoyé : la requête est celle d'aujourd'hui (ruling F5 ; node-llama-cpp 3.21.1 plafonne à 75 % du contexte un `thoughtTokens` absent d'un `budgets` présent, et ne limite rien sans `budgets`). Le levier de banc `thoughtTokens` prime sur le réglage. Banc : `--setting clé=valeur` (enregistré par `save-global-settings` dans chaque dossier de données ; `local_context` et `active_local_model` refusés). Vérifié sur stories260K (sonde sur `LlamaChat.generateResponse` dans le worker, `--scenarios C --lever outputCap=32`) : avec `--setting max_thought_tokens=512`, chaque génération reçoit `budgets: { thoughtTokens: 512 }` ; sans, aucune clé `budgets`. Mesure au 27B (pensées par réponse avec 512) : en S2, avec l'utilisateur.
 
 ## À faire — lots suivants (demandes de l'utilisateur, 2026-10-17)
 

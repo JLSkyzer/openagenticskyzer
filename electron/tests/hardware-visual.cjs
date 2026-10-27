@@ -235,6 +235,22 @@ app.whenReady().then(async () => {
     const saved = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
     assert.equal(saved.local_context, 65536, 'config.json holds local_context: 65536');
 
+    // ── 5b. « Longueur maximale de la réflexion »: no limit by default, 1k saved by Enregistrer ──
+    assert.equal(await js(`document.querySelector('[data-setting="max_thought_tokens"]').value`), 'none', 'the default is « Sans limite »');
+    assert.equal(saved.max_thought_tokens, undefined, 'no value in config.json before the choice');
+    await js(`(() => {
+      const el = document.querySelector('[data-setting="max_thought_tokens"]');
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(el, '1024');
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await click('#oa-settings-save-btn');
+    // Waited on config.json itself: the « Paramètres sauvegardés » of step 5 may still be shown, so it proves nothing
+    // here; the key is absent from the file until this save writes it (asserted just above).
+    const readConfig = async () => JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
+    await waitFor(async () => (await readConfig()).max_thought_tokens === 1024, { what: 'config.json holds max_thought_tokens: 1024' });
+    assert.equal((await readConfig()).local_context, 65536, 'the earlier choice is kept');
+    assert.equal(await js(`document.querySelector('[data-setting="max_thought_tokens"]').value`), '1024', 'the select shows 1k after the save');
+
     // ── 6. One capture for a human look ─────────────────────────────────────────────────
     await writeFile(join(screenshotDir, 'settings-hardware.png'), await capturePng(win));
 

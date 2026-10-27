@@ -11,7 +11,7 @@ import { readGgufFileInfo, GgufInsights, LlamaChat, JinjaTemplateChatWrapper, Qw
 import type { GgufFunctions, GgufHistoryItem } from '../core/local-provider.mts';
 import { commonPrefixLength, type PromptCheckpointFigures } from '../core/reuse.mts';
 import { SHIPPED_LEVERS } from '../core/perf-levers.mts';
-import { GenerationMeter, generationLimits, completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine, sequenceOptions, stablePromptLength, checkpointPromptEnd, chatHistoryOf, TurnLock } from '../core/local-engine.mts';
+import { GenerationMeter, generationLimits, completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine, sequenceOptions, stablePromptLength, checkpointPromptEnd, chatHistoryOf, TurnLock, thoughtBudget } from '../core/local-engine.mts';
 import type { GenerationStats, LoadEvent } from '../core/model-types.mts';
 import { runtimeLlama, backendOf } from '../core/llama-runtime.mts';
 import { removeAtEnd } from './teardown.mts';
@@ -417,6 +417,20 @@ test('generationLimits: the shipped levers send no budgets and the cap; a though
   assert.deepEqual(generationLimits(SHIPPED_LEVERS, 100), { maxTokens: 100 });
   assert.deepEqual(generationLimits({ ...SHIPPED_LEVERS, outputCap: 32, thoughtTokens: 512 }, 1000), { maxTokens: 32, budgets: { thoughtTokens: 512 } });
   assert.deepEqual(generationLimits({ ...SHIPPED_LEVERS, thoughtTokens: 0 }, undefined), { maxTokens: LOCAL_OUTPUT_CAP, budgets: { thoughtTokens: 0 } });
+});
+
+// « Longueur maximale de la réflexion » (Task 9, rulings F5 and T9/F5): no limit means no `budgets` at all — the
+// request is today's (node-llama-cpp 3.21.1 caps an undefined thoughtTokens at 75 % of the context, not no budgets).
+test('thoughtBudget: null when neither the setting nor the lever caps; the lever wins over the setting; no budgets without a cap', () => {
+  assert.equal(thoughtBudget(null, null), null);
+  assert.equal(thoughtBudget(1024, null), 1024);
+  assert.equal(thoughtBudget(1024, 256), 256);
+  assert.equal(thoughtBudget(null, 256), 256);
+  // What generateResponse receives (completeLocal spreads generationLimits into its options).
+  assert.equal('budgets' in generationLimits(SHIPPED_LEVERS, 100, null), false);
+  assert.equal('budgets' in generationLimits(SHIPPED_LEVERS, undefined), false);
+  assert.deepEqual(generationLimits(SHIPPED_LEVERS, 100, 1024), { maxTokens: 100, budgets: { thoughtTokens: 1024 } });
+  assert.deepEqual(generationLimits({ ...SHIPPED_LEVERS, thoughtTokens: 256 }, 100, 1024), { maxTokens: 100, budgets: { thoughtTokens: 256 } });
 });
 
 test('sequenceOptions passes the checkpoint levers to getSequence as they are', () => {

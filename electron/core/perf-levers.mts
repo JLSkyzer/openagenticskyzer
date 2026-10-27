@@ -67,7 +67,8 @@ export interface PerfLevers {
   threads: number | null;
   /** The KV cache type, keys and values (Task 11), for the context, loadModel's fitContext resolution, the estimate and
    * the processor fallback alike, so the figure shown is the one loaded. node-llama-cpp marks a quantized KV cache
-   * experimental (« may crash the process », F22). Shipped 'F16': node-llama-cpp's default. */
+   * experimental (« may crash the process », F22). A Q8_0 V cache needs flash attention, so a model or backend without
+   * it fails to load (cleanly), as does a model whose head size is not a multiple of 32 (stories260K). Shipped 'F16'. */
   kvCacheType: 'F16' | 'Q8_0';
 }
 

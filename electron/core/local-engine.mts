@@ -271,10 +271,18 @@ export function limitStillHolds(p: { freeAtRecord: number | null; freeNow: numbe
   return p.freeNow - p.freeAtRecord < Math.max(REPLACE_MIN_LAYERS * p.bytesPerLayer, LIMIT_RETRY_MIN_BYTES);
 }
 
+/** Whether layer limits are recalled and remembered under these levers: only at the shipped context VRAM. A batchSize
+ * or kvCacheType lever changes the context's VRAM, so its step-down would cap later shipped loads, and a recalled
+ * limit would hide the lever's own placement; threads uses no VRAM. */
+export function layerLimitsApply(levers: Readonly<PerfLevers>): boolean {
+  return levers.batchSize === null && levers.kvCacheType === 'F16';
+}
+
 /** The limit remembered for this load, and whether it applies (`apply`: false for a re-placement, which must be free
  * to go higher). Never fails a load: an unreadable store reads as no limit. */
 async function recallLimit(p: { modelPath: string; contextSize: number; llama: Llama; insights: GgufInsights; vramBefore: VramState | null; apply: boolean }): Promise<{ record: LayerLimit; applies: boolean } | null> {
-  if (!layerLimits || p.llama.gpu === false) return null;
+  // Not under a batchSize or kvCacheType lever: its placement is measured on its own (layerLimitsApply).
+  if (!layerLimits || p.llama.gpu === false || !layerLimitsApply(perfLevers())) return null;
   const record = await layerLimits.recall(p.modelPath, p.contextSize).catch((error: unknown) => {
     console.warn(`[placement] limite mémorisée illisible : ${(error as Error | undefined)?.message ?? error}`);
     return null;
@@ -292,7 +300,8 @@ async function recallLimit(p: { modelPath: string; contextSize: number; llama: L
  * Nothing for the processor (0 layers), nor for a load that only stayed under its limit. Never fails a load. */
 async function rememberLimit(p: { modelPath: string; contextSize: number; loaded: Loaded; refused: readonly number[]; record: LayerLimit | null }): Promise<void> {
   const { gpuLayers } = p.loaded.model;
-  if (!layerLimits || p.loaded.llama.gpu === false || gpuLayers <= 0) return;
+  // Not under a batchSize or kvCacheType lever: its step-down would cap later shipped loads (layerLimitsApply).
+  if (!layerLimits || p.loaded.llama.gpu === false || gpuLayers <= 0 || !layerLimitsApply(perfLevers())) return;
   if (p.refused.length === 0 && !(p.record && gpuLayers > p.record.gpuLayers)) return;
   await layerLimits.remember(p.modelPath, p.contextSize, { gpuLayers, freeVram: p.loaded.vramBefore?.free ?? null, placement: placementOf(p.loaded) }).catch((error: unknown) => {
     console.warn(`[placement] limite de couches non mémorisée : ${(error as Error | undefined)?.message ?? error}`);

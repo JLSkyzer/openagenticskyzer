@@ -12,10 +12,10 @@ import { copyFile, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readGgufFileInfo, GgufInsights } from 'node-llama-cpp';
-import { cpuFallback, placementLogLine, outcomeNote, stepDownMax, MAX_STEP_DOWNS, limitStillHolds, LIMIT_RETRY_MIN_BYTES } from '../core/local-engine.mts';
+import { cpuFallback, placementLogLine, outcomeNote, stepDownMax, MAX_STEP_DOWNS, limitStillHolds, LIMIT_RETRY_MIN_BYTES, layerLimitsApply } from '../core/local-engine.mts';
 import { runtimeLlama, envGpuChoice, vramPaddingFor } from '../core/llama-runtime.mts';
 import { removeAtEnd } from './teardown.mts';
-import { PERF_LEVERS_ENV } from '../core/perf-levers.mts';
+import { PERF_LEVERS_ENV, SHIPPED_LEVERS } from '../core/perf-levers.mts';
 
 const execFileAsync = promisify(execFile);
 const GIB = 1024 ** 3;
@@ -238,6 +238,25 @@ test('a remembered step-down: the second cold load makes exactly 1 attempt, at t
   const second = stdout.split('--- second load')[1].split('\n').filter(line => line.startsWith('[placement] backend'));
   assert.equal(second.length, 1, stdout.slice(-2000));
   assert.match(second[0], new RegExp(`couches ${known}/\\d+ sur la carte · limite mémorisée : ${known} couches ·`));
+
+  // Task 11 fix d1: under a lever that changes the context's VRAM (batchSize, kvCacheType), the same home's limit is
+  // neither recalled (the lever's placement is measured on its own) nor overwritten by the lever's own step-down (which
+  // would cap a later load at the shipped values). The record is first lowered to 2 layers, so a recall (start at 2,
+  // step down to 1) or a write (the step-down's count) would both show.
+  const { out: lever } = await inChild(t, `
+    const path = ${JSON.stringify(modelPath)};
+    ${rememberIn(home)}
+    const k = await key(path, 16384);
+    await cache.setLimit(k, { ...(await cache.limit(k)), gpuLayers: 2 });
+    ${failFirstContext(`new n.InsufficientMemoryError('A context size of 16384 is too large for the available VRAM')`)}
+    await m.loadLocalModel(path, 16384);
+    out.outcome = m.loadedOutcome(path);
+    await m.disposeEngine();
+    out.limit = await cache.limit(k);`, { [PERF_LEVERS_ENV]: JSON.stringify({ batchSize: 1024 }) });
+  assert.equal(lever.refusals, 1);
+  assert.deepEqual(lever.outcome, { kind: 'step-down', refused: [lever.refusedAt] }, 'no remembered limit under the lever: the full fitContext');
+  assert.ok(lever.refusedAt > 2, `it started above the remembered 2 layers: ${lever.refusedAt}`);
+  assert.equal(lever.limit?.gpuLayers, 2, 'the lever\'s step-down is not remembered');
 });
 
 test('a remembered limit is ignored when the free VRAM grew past the threshold: the full fitContext runs again, and its higher success becomes the record', { timeout: 200000 }, async t => {
@@ -544,6 +563,12 @@ test('limitStillHolds: a remembered limit applies unless the free VRAM grew by m
   assert.equal(LIMIT_RETRY_MIN_BYTES, 512 * MIB);
   assert.equal(limitStillHolds({ ...big, freeAtRecord: null, freeNow: 9000 * MIB }), true, 'unreadable VRAM: the record holds');
   assert.equal(limitStillHolds({ ...big, freeNow: null }), true);
+  // Task 11 fix d1: a limit is remembered and recalled only at the shipped context VRAM (batchSize, kvCacheType);
+  // threads uses no VRAM.
+  assert.equal(layerLimitsApply(SHIPPED_LEVERS), true);
+  assert.equal(layerLimitsApply({ ...SHIPPED_LEVERS, threads: 6 }), true);
+  assert.equal(layerLimitsApply({ ...SHIPPED_LEVERS, batchSize: 1024 }), false);
+  assert.equal(layerLimitsApply({ ...SHIPPED_LEVERS, kvCacheType: 'Q8_0' }), false);
 });
 
 test('stepDownMax: about 10 % fewer layers, at least one, none below 1', () => {

@@ -45,6 +45,23 @@ test('compactSchema drops $schema, title, examples and an empty required, and ke
   assert.deepEqual(toGgufFunctions(tools, true)?.create_issue.params, compactSchema(mcp));
 });
 
+test('compactSchema keeps the names in $defs, definitions and patternProperties (a definition named title survives) and compacts what they hold', () => {
+  const schema = {
+    type: 'object', title: 'root',
+    $defs: { title: { type: 'string', title: 'noise', maxLength: 80 }, $comment: { type: 'integer', $comment: 'noise' } },
+    definitions: { examples: { type: 'array', items: { $ref: '#/$defs/title' }, examples: [['x']] } },
+    patternProperties: { '^title$': { type: 'boolean', title: 'noise' } },
+    properties: { name: { $ref: '#/$defs/title' } },
+  };
+  assert.deepEqual(compactSchema(schema), {
+    type: 'object',
+    $defs: { title: { type: 'string', maxLength: 80 }, $comment: { type: 'integer' } },
+    definitions: { examples: { type: 'array', items: { $ref: '#/$defs/title' } } },
+    patternProperties: { '^title$': { type: 'boolean' } },
+    properties: { name: { $ref: '#/$defs/title' } },
+  });
+});
+
 test('historyFromMessages: system and user turns map straight across', () => {
   const history = historyFromMessages([
     { role: 'system', content: 'Tu es un agent.' },

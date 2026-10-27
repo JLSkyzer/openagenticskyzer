@@ -32,11 +32,13 @@ export interface GgufResponse {
 const SCHEMA_NOISE = new Set(['$schema', 'title', 'examples', '$comment']);
 /** The keys whose value is argument data, not a schema: copied as they are. */
 const SCHEMA_DATA = new Set(['enum', 'const', 'default']);
+/** The keys whose value maps NAMES (a parameter, a definition, a pattern) to schemas: the names are kept as they are. */
+const SCHEMA_MAPS = new Set(['properties', '$defs', 'definitions', 'patternProperties']);
 
 /** `schema` without its noise, recursively: `$schema`, `title`, `examples`, `$comment` and an empty `required: []`.
- * Everything else stays — types, enums, limits, a non-empty `required`, `additionalProperties`, descriptions. A
- * `properties` map's keys are parameter names, never schema keys: a parameter named `title` is kept; `enum`, `const`
- * and `default` hold data, copied untouched. */
+ * Everything else stays — types, enums, limits, a non-empty `required`, `additionalProperties`, descriptions. The keys
+ * of `properties`, `$defs`, `definitions` and `patternProperties` are names, never schema keys: a parameter or a
+ * definition named `title` is kept; `enum`, `const` and `default` hold data, copied untouched. */
 export function compactSchema(schema: unknown): unknown {
   if (Array.isArray(schema)) return schema.map(compactSchema);
   if (!schema || typeof schema !== 'object') return schema;
@@ -44,7 +46,7 @@ export function compactSchema(schema: unknown): unknown {
   for (const [key, value] of Object.entries(schema)) {
     if (SCHEMA_NOISE.has(key) || (key === 'required' && Array.isArray(value) && value.length === 0)) continue;
     if (SCHEMA_DATA.has(key)) kept[key] = value;
-    else if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+    else if (SCHEMA_MAPS.has(key) && value && typeof value === 'object' && !Array.isArray(value)) {
       kept[key] = Object.fromEntries(Object.entries(value).map(([name, inner]) => [name, compactSchema(inner)]));
     } else kept[key] = compactSchema(value);
   }

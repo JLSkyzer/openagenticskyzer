@@ -4,11 +4,60 @@
 // (tests/tool-contracts.test.mts) checks the slimmed tools against the contracts frozen before. Every refusal, limit and
 // source a description states is kept. Shipped off: until the 27B measurement (S2) decides, the modules' own texts go
 // out; a keep moves these texts into the modules, a revert deletes this file.
+import { createHash } from 'node:crypto';
 import type { AgentTool } from './agent.mts';
 
 /** A tool's slimmed texts: `description` replaces the tool's; each `params` entry replaces that parameter's
  * description, or removes it (`null`). A tool or parameter not listed keeps its own text. */
 export interface SlimTexts { description?: string; params?: Record<string, string | null> }
+
+/** The built-in tools left out of SLIM_TOOL_TEXTS on purpose: their description is already short (≤ 62 characters)
+ * and their parameters carry no description to cut. A new built-in tool must be added to the map or here
+ * (tests/tool-contracts.test.mts). */
+export const UNSLIMMED_TOOLS: readonly string[] = ['git_checkout', 'git_create_branch', 'git_stash', 'git_stash_pop'];
+
+/** The 16 first hex digits of the SHA-256 of a text: how REPLACED names the module text a slim text stands for. */
+export const textHash = (text: string): string => createHash('sha256').update(text).digest('hex').slice(0, 16);
+
+/** For each slim text (`tool`, or `tool.param`), the textHash of the module's description it replaces, taken at 377d873.
+ * A module text that changed since no longer matches: slimToolDefinitions then keeps the module's text, and the
+ * tool-contract test fails until this map is brought up to date. */
+export const REPLACED: Readonly<Record<string, string>> = {
+  'read_file': 'c570163a9922d267', 'read_file.path': '941b1cf6bbe7243b',
+  'view_file': 'be46ad69da3c8524', 'view_file.path': '941b1cf6bbe7243b',
+  'list_dir': 'e345d1c348b127d5', 'list_dir.path': '941b1cf6bbe7243b',
+  'create_file': '05dd770e14261092', 'create_file.path': '941b1cf6bbe7243b',
+  'edit_file': '52ad4ccf82383e84', 'edit_file.path': '941b1cf6bbe7243b',
+  'create_dir': '1fa58f6c96b82670', 'create_dir.path': '941b1cf6bbe7243b',
+  'delete_file': 'a149dd6f7a1e3f92', 'delete_file.path': '941b1cf6bbe7243b',
+  'delete_dir': '10d6e89a26f496fb', 'delete_dir.path': '941b1cf6bbe7243b',
+  'grep_file': '69fe1ba28264de00', 'grep_file.path': '941b1cf6bbe7243b', 'grep_file.pattern': 'ceb193d9e09bf90b',
+  'glob_files': '42676ec41e914d7b', 'glob_files.pattern': '5bbdb75afe2ec94a', 'glob_files.path': '941b1cf6bbe7243b',
+  'grep_codebase': 'a8d2e9e2a8874c84', 'grep_codebase.pattern': '845e34532f352ec7', 'grep_codebase.path': '941b1cf6bbe7243b',
+  'grep_codebase.file_glob': 'd25cb528560f4252',
+  'save_memory': 'dac064411f421494', 'save_memory.facts': 'f27229dbc3f33d7c', 'save_memory.scope': '60e44b1c1b82a799',
+  'read_memory': 'f061ac135d1a5a54',
+  'forget_memory': '5df2896bdc8bebb1', 'forget_memory.keyword': '6b4a57345fbe7c08', 'forget_memory.scope': '60e44b1c1b82a799',
+  'git_status': '2f2bdccfee55d8f2',
+  'git_diff': 'ddf5302f054d6318', 'git_diff.file': 'ce479d654c39ab34',
+  'git_diff_staged': '5b01d7b2356d93f0',
+  'git_log.n': 'e5d40ea231a1838f', 'git_log.oneline': 'efbeb622e490dd5d',
+  'git_blame': '22e46f882bccbfff', 'git_blame.start': '5129d3ec71451942', 'git_blame.end': '0182becbfc052302',
+  'git_branch_list': '906db7afb8ccb2f5',
+  'git_add.files': '7a8d32e920158dc7',
+  'git_commit': 'f10697f5fd3f65e9', 'git_commit.files': '7a8d32e920158dc7',
+  'git_push': 'bd8c8f4f33cf2b20',
+  'git_pull': '934c53092c654249',
+  'analyze_project_and_init': '6cc821b73ce57b1c', 'analyze_project_and_init.overwrite': 'eaee35de168ca9fc',
+  'run_command': '2f6b2aa9211db3d8', 'run_command.command': 'bccdb66e2474b43e', 'run_command.timeout': '04ca6e091ec8094d',
+  'fetch_url': '1bd486174a9f2135', 'fetch_url.max_chars': '019bc9e19745b12e',
+  'internet_search': '76a24bc7b480a1dd', 'internet_search.max_results': 'acdc58ce9f02af04', 'internet_search.include_raw_content': '94f7883b8f3c2609',
+  'semantic_search': '8a5d578d72737b6f', 'semantic_search.query': '336f8766bb986e6c', 'semantic_search.n': 'ebbe97520957f42b',
+  'knowledge_search': '7c8387473bab3d7b', 'knowledge_search.query': '336f8766bb986e6c', 'knowledge_search.n': 'ebbe97520957f42b',
+};
+
+/** Whether the module text behind slim text `key` is still the one REPLACED names (an absent description is ''). */
+export const replacesCurrent = (key: string, moduleText: string | undefined): boolean => REPLACED[key] === textHash(moduleText ?? '');
 
 const PATH = 'Chemin dans le projet';
 const FILES = 'Séparés par des espaces ; guillemets si un nom en contient';
@@ -64,7 +113,8 @@ export const SLIM_TOOL_TEXTS: Readonly<Record<string, SlimTexts>> = {
 };
 
 /** `tools` with their slimmed texts: copies (the modules share parameter objects between tools), same names, same
- * schemas but for the descriptions, same `validate` and `execute`. */
+ * schemas but for the descriptions, same `validate` and `execute`. A slim text whose module text changed since
+ * (REPLACED) is not applied: the module's newer text goes out. */
 export function slimToolDefinitions(tools: readonly AgentTool[]): AgentTool[] {
   return tools.map(tool => {
     const slim = SLIM_TOOL_TEXTS[tool.name];
@@ -73,12 +123,13 @@ export function slimToolDefinitions(tools: readonly AgentTool[]): AgentTool[] {
     const properties: Record<string, Record<string, unknown>> = {};
     for (const [name, rule] of Object.entries(parameters.properties ?? {})) {
       const text = slim.params && Object.hasOwn(slim.params, name) ? slim.params[name] : undefined;
-      if (text === undefined) { properties[name] = rule; continue; }
+      if (text === undefined || !replacesCurrent(`${tool.name}.${name}`, rule.description as string | undefined)) { properties[name] = rule; continue; }
       // In place, so the schema renders its keys in the same order as before.
       const entries = Object.entries(rule).filter(([key]) => key !== 'description' || text !== null).map(([key, value]): [string, unknown] => [key, key === 'description' ? text : value]);
       if (text !== null && !Object.hasOwn(rule, 'description')) entries.push(['description', text]);
       properties[name] = Object.fromEntries(entries);
     }
-    return { ...tool, description: slim.description ?? tool.description, parameters: { ...tool.parameters, properties } };
+    const description = slim.description !== undefined && replacesCurrent(tool.name, tool.description) ? slim.description : tool.description;
+    return { ...tool, description, parameters: { ...tool.parameters, properties } };
   });
 }

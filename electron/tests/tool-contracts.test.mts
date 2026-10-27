@@ -7,8 +7,9 @@ import { readFile, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { builtInTools } from '../core/builtin-tools.mts';
-import { SLIM_TOOL_TEXTS, slimToolDefinitions } from '../core/tool-texts-slim.mts';
+import { REPLACED, SLIM_TOOL_TEXTS, UNSLIMMED_TOOLS, replacesCurrent, slimToolDefinitions } from '../core/tool-texts-slim.mts';
 import { defaultToolSchemas, toolDefinitionTokens } from '../bench/tool-tokens.mts';
 import { toolContract, type ToolContract } from './support/tool-contract.mts';
 import { removeAtEnd } from './teardown.mts';
@@ -57,4 +58,38 @@ test('the slimmed texts: within their limits, aimed at real tools and parameters
   const after = await toolDefinitionTokens(fixture, await defaultToolSchemas(true), true);
   assert.ok(after.tokens < before.tokens, `${after.tokens} jetons avec le levier, ${before.tokens} sans`);
   assert.ok(after.chars < before.chars);
+});
+
+test('the slim map is complete and current: every built-in tool is mapped or on the allow-list, and each slim text replaces the module text it was written for', async t => {
+  const today = await tools(t, false);
+  const names = today.map(tool => tool.name);
+  for (const name of names) assert.ok(Object.hasOwn(SLIM_TOOL_TEXTS, name) !== UNSLIMMED_TOOLS.includes(name), `${name} : ni dans SLIM_TOOL_TEXTS ni dans UNSLIMMED_TOOLS (ou dans les deux)`);
+  for (const name of UNSLIMMED_TOOLS) assert.ok(names.includes(name), `${name} : aucun outil de ce nom`);
+  // Stale-text guard: a module description changed since the slim text was written fails here, by name.
+  const keys: string[] = [];
+  for (const [name, texts] of Object.entries(SLIM_TOOL_TEXTS)) {
+    const tool = today.find(candidate => candidate.name === name)!;
+    if (texts.description !== undefined) {
+      keys.push(name);
+      assert.ok(replacesCurrent(name, tool.description), `${name} : la description du module a changé ; mettre à jour le texte allégé et REPLACED`);
+    }
+    for (const param of Object.keys(texts.params ?? {})) {
+      keys.push(`${name}.${param}`);
+      const rule = (tool.parameters as { properties: Record<string, { description?: string }> }).properties[param];
+      assert.ok(replacesCurrent(`${name}.${param}`, rule.description), `${name}.${param} : la description du module a changé ; mettre à jour le texte allégé et REPLACED`);
+    }
+  }
+  assert.deepEqual(Object.keys(REPLACED).sort(), keys.sort(), 'REPLACED names exactly the slim texts');
+  // And at run time a changed module text is never overridden: the module's newer text goes out.
+  const read = today.find(tool => tool.name === 'read_file')!;
+  const changed = { ...read, description: 'Texte du module modifié.', parameters: { ...read.parameters, properties: { ...(read.parameters as { properties: object }).properties, path: { type: 'string', description: 'Autre chemin' } } } };
+  const [slimmed] = slimToolDefinitions([changed]);
+  assert.equal(slimmed.description, 'Texte du module modifié.');
+  assert.equal((slimmed.parameters as { properties: Record<string, { description?: string }> }).properties.path.description, 'Autre chemin');
+});
+
+test('the lever-off tool block is pinned: today\'s texts and schemas, byte for byte (SHA-256 of the default tool set\'s JSON at 377d873)', async () => {
+  const json = JSON.stringify(await defaultToolSchemas(false));
+  assert.equal(json.length, 12394);
+  assert.equal(createHash('sha256').update(json).digest('hex'), '84a27aa8bb0b649af482666d3f931480c3ffda8dad245cd8e435841777ca498a');
 });

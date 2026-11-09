@@ -63,6 +63,13 @@ test('perfLevers: no variable = the shipped levers (today\'s behaviour); a valid
   assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ rereadWeighting: true }) }).levers.rereadWeighting, true);
   const reread = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ rereadWeighting: 'oui' }) });
   assert.deepEqual([reread.levers.rereadWeighting, reread.rejected], [false, ['valeur invalide : rereadWeighting']]);
+  // indexDuringTurns and embedThreads (Task 13, F19): shipped 'run' and null; 'run' or 'pause', a positive integer or null.
+  assert.deepEqual([SHIPPED_LEVERS.indexDuringTurns, SHIPPED_LEVERS.embedThreads], ['run', null]);
+  const index = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ indexDuringTurns: 'pause', embedThreads: 2 }) });
+  assert.deepEqual([index.levers.indexDuringTurns, index.levers.embedThreads, index.rejected], ['pause', 2, []]);
+  const badIndex = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ indexDuringTurns: 'stop', embedThreads: 0 }) });
+  assert.deepEqual([badIndex.levers.indexDuringTurns, badIndex.levers.embedThreads, badIndex.rejected],
+    ['run', null, ['valeur invalide : indexDuringTurns', 'valeur invalide : embedThreads']]);
 });
 
 test('the checkpoint levers: shipped at node-llama-cpp\'s defaults; a shorter interval needs a memory cap', () => {

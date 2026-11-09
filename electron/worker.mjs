@@ -44,6 +44,7 @@ import { initializeProject } from './core/project-analyzer.mts';
 import { McpConfigStore, readProjectMcpConfig, mergeServerConfigs, redactSecrets, expandServerPlaceholders, serverIdentity } from './core/mcp-config.mts';
 import { mcpTools, stopAllMcpServers } from './core/mcp-client.mts';
 import { indexFolder } from './core/semantic-index.mts';
+import { IndexGate } from './core/index-gate.mts';
 import { setModelsDir, DEFAULT_MODELS_DIR, stopEmbeddings, embeddingsIdle } from './core/embeddings.mts';
 import { loadPlugins, projectPythonPluginFiles } from './core/plugin-loader.mts';
 import { ProjectTrustService } from './core/project-trust.mts';
@@ -147,6 +148,12 @@ function postIndexEvent(folder, patch) {
   indexStatus.set(key, status);
   parentPort.postMessage({ type: 'event', event: 'index', folder: key, ...status });
 }
+// Lever indexDuringTurns (Task 13, core/perf-levers.mts): every indexing run passes this gate between two files, and
+// with 'pause' a turn or a compaction holds it from its start to its end (pauseIndexing), so the indexing's ONNX runs
+// never compete with the model's threads. Never held under the shipped 'run': the gate then never waits.
+const indexGate = new IndexGate();
+/** Holds the indexing for a turn or a compaction under the lever 'pause'; returns its resume (idempotent). */
+const pauseIndexing = () => (perfLevers().indexDuringTurns === 'pause' ? indexGate.pause() : () => {});
 /** Fire-and-forget: indexes `folder`'s codebase in the background (semantic-index.mts), streaming
  * progress through the 'index' event. One run at a time per folder — a second trigger while one is
  * already in flight (e.g. re-activating the same folder) is a harmless no-op, not a queued restart. */
@@ -159,7 +166,7 @@ async function triggerIndexing(folder) {
     // it): an ignored or secret file is never indexed, and the rebuild purges what an older index held of it. An
     // unreadable project config ends in 'error' with nothing written.
     const { ignored_patterns: ignoredPatterns } = await settings.project(folder);
-    await indexFolder(folder, dataHome, (current, total) => postIndexEvent(folder, { state: 'indexing', current, total }), ignoredPatterns);
+    await indexFolder(folder, dataHome, (current, total) => postIndexEvent(folder, { state: 'indexing', current, total }), ignoredPatterns, { gate: indexGate });
     postIndexEvent(folder, { state: 'ready', current: undefined, total: undefined, message: undefined });
   } catch (error) {
     postIndexEvent(folder, { state: 'error', current: undefined, total: undefined, message: error instanceof Error ? error.message : 'Erreur interne' });
@@ -287,6 +294,8 @@ function logModelReady(model, contextTokens, loadMs, log, load = null) {
 async function runCompaction(compactionId, folder, branchId, before, { provider, model }) {
   const post = message => parentPort.postMessage({ type: 'event', event: 'agent', runId: compactionId, ...message });
   let outcome;
+  // Lever indexDuringTurns 'pause' (Task 13): as a turn, the summary's generation holds the indexing until it ends.
+  const resumeIndexing = pauseIndexing();
   try {
     // max_tokens is a global setting only (core/settings.mts), so the global config is the whole answer here.
     const { signal } = active.get(compactionId).controller;
@@ -304,6 +313,8 @@ async function runCompaction(compactionId, folder, branchId, before, { provider,
   } catch (error) {
     const aborted = error?.name === 'AbortError';
     outcome = { kind: 'compact-failed', message: aborted ? 'Compaction interrompue.' : error instanceof Error ? error.message : 'Erreur interne' };
+  } finally {
+    resumeIndexing();
   }
   // Release the folder BEFORE announcing the end, so whoever reacts to the event finds it free.
   active.delete(compactionId);
@@ -750,6 +761,9 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
   // the engine's lock, which a later load and the quit's dispose wait behind. Tracked, so the quit's report names it.
   // « Chargement » then shows during the preparation (F31).
   let earlyWindow = null;
+  // Lever indexDuringTurns 'pause' (Task 13): the indexing holds from here, before the early load, to the finally below,
+  // which resumes it first — a turn that fails, is stopped or whose early load rejects included.
+  const resumeIndexing = pauseIndexing();
   try {
     phase('preparing');
     if (perfLevers().overlapLoad) {
@@ -910,6 +924,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     if (aborted) post({ kind: 'stopped', timing });
     else finish('error', { message });
   } finally {
+    resumeIndexing();
     active.delete(runId);
     // A turn that failed before awaiting its early load (overlapLoad) stops it: nothing posts for a turn that has ended.
     if (earlyWindow) controller.abort();

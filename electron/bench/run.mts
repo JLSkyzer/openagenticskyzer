@@ -4,7 +4,10 @@
 //   node --experimental-strip-types bench/run.mts --model <gguf> --label <name> [--scenarios A,B,C] [--messages 1-4]
 //        [--context 32768] [--lever key=value]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dir>|none]
 //        [--turn-timeout <minutes>] [--install-timeout <minutes>] [--touch-memory <message>] [--idle-before-send <ms>]
-//        [--mcp-fake <ms>] [--setting key=value]… [--out <dir>]
+//        [--mcp-fake <ms>] [--setting key=value]… [--project-files <n>] [--out <dir>]
+//
+// `--project-files n` (Task 13): A's folder holds a synthetic project of n files, indexed at its activation while A's
+// turns run; the run records `indexMs` (activation to the index's `ready`, wall clock).
 //
 // The 27B command of the benchmark protocol (with the user present, never while a game runs), word for word:
 //
@@ -79,6 +82,23 @@ export function perfLinesById(log: string): Map<string, string[]> {
   return byId;
 }
 
+/** `--project-files n`: n TypeScript files of about 1.7 KB each (three chunks of the index), ten per folder under
+ * `src/`, each with its own names and words, the same for every run. */
+async function writeSyntheticProject(folder: string, count: number): Promise<void> {
+  const words = ['facture', 'client', 'commande', 'stock', 'livraison', 'paiement', 'remise', 'adresse', 'rapport', 'journal'];
+  for (let i = 0; i < count; i++) {
+    const dir = join(folder, 'src', `module-${String(Math.floor(i / 10)).padStart(3, '0')}`);
+    await mkdir(dir, { recursive: true });
+    const name = `${words[i % words.length]}${i}`;
+    const lines = [`// Module ${i} : gestion de ${words[i % words.length]} et de ${words[(i * 7 + 3) % words.length]}.`];
+    for (let f = 0; f < 12; f++) {
+      const word = words[(i + f) % words.length];
+      lines.push(`export function ${name}_${word}_${f}(valeur: number): number {`, `  // Calcule le ${word} n°${f} du module ${i}.`, `  return valeur * ${f + 1} + ${i};`, '}');
+    }
+    await writeFile(join(dir, `${name}.ts`), `${lines.join('\n')}\n`);
+  }
+}
+
 async function gitHead(): Promise<string> {
   try {
     return (await promisify(execFile)('git', ['describe', '--always', '--dirty'], { cwd: ELECTRON })).stdout.trim();
@@ -121,14 +141,14 @@ function parseOptions() {
       backend: { type: 'string' }, 'cuda-pack': { type: 'string' }, 'turn-timeout': { type: 'string', default: '15' },
       'install-timeout': { type: 'string', default: '10' }, 'touch-memory': { type: 'string' },
       'idle-before-send': { type: 'string' }, 'mcp-fake': { type: 'string' },
-      setting: { type: 'string', multiple: true, default: [] },
+      setting: { type: 'string', multiple: true, default: [] }, 'project-files': { type: 'string' },
     },
     allowPositionals: false,
   });
 }
 try { parsed = parseOptions(); } catch (error) { fail(2, error instanceof Error ? error.message : String(error)); }
 const { values } = parsed;
-if (!values.model || !values.label) fail(2, 'Usage : bench/run.mts --model <gguf> --label <nom> [--scenarios A,B,C] [--messages 1-4] [--context 32768] [--lever clé=valeur]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dossier>|none] [--turn-timeout <minutes>] [--install-timeout <minutes>] [--touch-memory <message>] [--idle-before-send <ms>] [--mcp-fake <ms>] [--setting clé=valeur]… [--out <dossier>]');
+if (!values.model || !values.label) fail(2, 'Usage : bench/run.mts --model <gguf> --label <nom> [--scenarios A,B,C] [--messages 1-4] [--context 32768] [--lever clé=valeur]… [--backend auto|cuda|vulkan|cpu] [--cuda-pack <dossier>|none] [--turn-timeout <minutes>] [--install-timeout <minutes>] [--touch-memory <message>] [--idle-before-send <ms>] [--mcp-fake <ms>] [--setting clé=valeur]… [--project-files <n>] [--out <dossier>]');
 const scenarios = values.scenarios.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
 if (!scenarios.length || scenarios.some(s => !['A', 'B', 'C'].includes(s))) fail(2, `Scénarios inconnus : ${values.scenarios} (A, B, C)`);
 // `--messages n`: A plays its first n messages only (the scenario subset a lever targets, e.g. A·1–A·3).
@@ -150,6 +170,9 @@ const msOption = (name: 'idle-before-send' | 'mcp-fake') => {
 };
 const idleBeforeSendMs = msOption('idle-before-send');
 const mcpFakeMs = msOption('mcp-fake');
+// `--project-files n` (Task 13): a synthetic project of n files in A's folder (A only: B's folder holds its one file).
+const projectFiles = values['project-files'] === undefined ? null : Number(values['project-files']);
+if (projectFiles !== null && (!scenarios.includes('A') || !Number.isInteger(projectFiles) || projectFiles < 1)) fail(2, `--project-files invalide : ${values['project-files']} (un nombre de fichiers, avec le scénario A)`);
 const context = values.context === 'max' ? 'max' : Number(values.context);
 if (!(CONTEXTS as readonly unknown[]).includes(context)) fail(2, `Contexte invalide : ${values.context} (${CONTEXTS.join(', ')})`);
 const explicitBackend = values.backend as Backend | undefined;
@@ -204,6 +227,7 @@ const run: BenchRun = {
   ...(touchMemory === null ? {} : { touchMemory }),
   ...(idleBeforeSendMs === null ? {} : { idleBeforeSendMs }),
   ...(mcpFakeMs === null ? {} : { mcpFakeMs }),
+  ...(projectFiles === null ? {} : { projectFiles, indexMs: null }),
 };
 const failures: string[] = [];
 /** Folders a failure message may name, longest first: replaced by a placeholder, never written. */
@@ -284,7 +308,7 @@ async function home(name: string): Promise<string> {
 }
 
 let applied: Readonly<PerfLevers> | null = null;
-async function session(name: string, config: Omit<SessionConfig, 'kind' | 'model' | 'context' | 'levers' | 'backend' | 'requireBackend' | 'qualityGate' | 'turnTimeoutMs' | 'resultPath' | 'idleBeforeSendMs' | 'mcpFakeMs' | 'settings'>): Promise<ChildResult | null> {
+async function session(name: string, config: Omit<SessionConfig, 'kind' | 'model' | 'context' | 'levers' | 'backend' | 'requireBackend' | 'qualityGate' | 'turnTimeoutMs' | 'resultPath' | 'idleBeforeSendMs' | 'mcpFakeMs' | 'settings' | 'projectFiles'>): Promise<ChildResult | null> {
   if (interrupted) return null;
   await guard();
   // A Ctrl+C during the guard (M3): no session starts (step and runChild check again before the spawn).
@@ -292,9 +316,10 @@ async function session(name: string, config: Omit<SessionConfig, 'kind' | 'model
   const result = await step(name, {
     ...config, kind: 'session', model, context: context as number | 'max', levers: leversJson, backend, requireBackend,
     qualityGate: run.qualityGate ?? false, turnTimeoutMs, resultPath: join(temp, `${name}.result.json`), idleBeforeSendMs, mcpFakeMs,
-    settings: askedSettings,
+    settings: askedSettings, projectFiles,
   });
   if (result?.levers && !applied) applied = result.levers;
+  if (result && result.indexMs !== undefined) run.indexMs = result.indexMs;
   return result;
 }
 
@@ -314,6 +339,7 @@ try {
     if (scenarios.includes('A')) {
       const folder = join(temp, 'travail-a');
       await mkdir(folder);
+      if (projectFiles !== null) await writeSyntheticProject(folder, projectFiles);
       groups.push({ scenario: 'A', folder, messages: SCENARIO_A.slice(0, messageCount) });
     }
     if (scenarios.includes('B')) {

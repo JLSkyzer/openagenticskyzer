@@ -30,6 +30,13 @@ export async function metadataDirectory(folder: string) {
 // The main process is the sole data writer. This queue also spans service instances.
 const writes = new Map<string, Promise<unknown>>();
 export class JsonStore {
+  /** The JSON indentation of every write: 2 by default (a file a person may read); 0 writes it on one line (the
+   * semantic index, a cache of vectors: core/semantic-index.mts). */
+  private readonly indent: number;
+  constructor(options: { indent?: number } = {}) {
+    this.indent = options.indent ?? 2;
+  }
+
   async read<T>(file: string, fallback: T): Promise<T> {
     await regularFile(file);
     let raw: string;
@@ -49,7 +56,7 @@ export class JsonStore {
     const next = previous.catch(() => {}).then(async () => {
       const current = await this.read(file, fallback);
       const value = await change(current);
-      const encoded = JSON.stringify(value, null, 2);
+      const encoded = JSON.stringify(value, null, this.indent);
       if (encoded === undefined) throw new Error('Valeur JSON invalide');
       await mkdir(dirname(file), { recursive: true });
       await regularFile(file);

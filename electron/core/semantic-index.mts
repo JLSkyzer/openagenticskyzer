@@ -21,9 +21,23 @@ export interface IndexEntry {
 /** 2: vectors of the bundled quantized model (core/embeddings.mts). A version-1 index holds fp32 vectors: it is
  * never compared with a quantized query vector, and the next activation or startup pre-warm rebuilds it. */
 export const INDEX_VERSION = 2;
+/** What a file was when its entries were computed: an index update reuses them while both are unchanged. */
+export interface FileStamp {
+  size: number;
+  mtimeMs: number;
+}
 interface IndexFile {
   version: number;
   entries: IndexEntry[];
+  /** Each indexed file's stamp (Task 13). An index without them (written before) is rebuilt in full once. */
+  files?: Record<string, FileStamp>;
+}
+export interface IndexResult {
+  chunks: number;
+  /** Files read and embedded by this run. */
+  embeddedFiles: number;
+  /** Unchanged files whose entries were kept as they were, without embedding them again. */
+  reusedFiles: number;
 }
 export interface SearchResult {
   file: string;
@@ -61,39 +75,81 @@ async function scanFiles(root: string, excluded: (rel: string) => boolean): Prom
   return files;
 }
 
+/** The previous index's entries by file, with the stamp each was computed under; null when it cannot be reused as a
+ * whole: absent, unreadable, of another format version, or written without stamps (before Task 13). */
+async function previousIndex(file: string): Promise<Map<string, { stamp: FileStamp; entries: IndexEntry[] }> | null> {
+  let data: IndexFile;
+  try {
+    data = await new JsonStore().read<IndexFile>(file, { version: INDEX_VERSION, entries: [] });
+  } catch {
+    return null; // the write below meets the same file and reports it
+  }
+  if (data?.version !== INDEX_VERSION || !Array.isArray(data.entries) || !data.files || typeof data.files !== 'object') return null;
+  const byFile = new Map<string, { stamp: FileStamp; entries: IndexEntry[] }>();
+  for (const [rel, stamp] of Object.entries(data.files)) {
+    if (Number.isFinite(stamp?.size) && Number.isFinite(stamp?.mtimeMs)) byFile.set(rel, { stamp: { size: stamp.size, mtimeMs: stamp.mtimeMs }, entries: [] });
+  }
+  for (const entry of data.entries) byFile.get(entry?.file)?.entries.push(entry);
+  return byFile;
+}
+
 /**
- * Scans, chunks and embeds every matching file under `folder`, replacing the whole store with
- * the freshly computed result. Always a full rebuild (like indexer.py's own index_folder — no
- * incrementality either side of this port), but because the store is REPLACED wholesale rather
- * than upserted by id, a deleted or shrunk file can never leave stale vectors behind — the
- * previous app's own indexer.py never purged them (fixed here, not reproduced).
+ * Scans, chunks and embeds every matching file under `folder`, replacing the whole store with the result. Since
+ * Task 13 the update is per file: the store keeps each file's stamp ({size, mtimeMs}), and a file whose stamp is
+ * unchanged keeps its entries without being read or embedded again; a changed or new file is embedded, and a file no
+ * longer scanned (deleted, ignored, now secret) leaves nothing behind, because the store is still REPLACED wholesale
+ * rather than upserted by id — the previous app's own indexer.py never purged stale vectors (fixed here, not
+ * reproduced). An index without stamps, or of another version, is rebuilt in full. The store is written on one line
+ * (indent 0): it is a cache of vectors, and an indented one took longer to encode on the worker's thread.
  *
  * `ignoredPatterns` is the project's ignored_patterns: what the file tools' searches hide is never indexed
  * (core/file-filter.mts), and the rebuild purges what an older index held of it. JsonStore keeps a one-time copy of
  * the first version of any file it rewrites (`.pre-electron.bak`); for this cache that copy would keep the first index
  * ever written — secret files included for an index built before 2026-10-05 — so it is removed after each write.
+ *
+ * `options.gate` (core/index-gate.mts, lever indexDuringTurns): awaited at the top of each file, before its progress,
+ * so a paused gate holds the indexing between two files (the file being embedded finishes first).
  */
 export async function indexFolder(
   folder: string,
   home: string,
   onProgress?: (current: number, total: number, filepath: string) => void,
   ignoredPatterns = '',
-): Promise<{ chunks: number }> {
+  options: { gate?: { wait(): Promise<void> } } = {},
+): Promise<IndexResult> {
   if (!isAbsolute(folder) || !isAbsolute(home)) throw new Error('Chemins absolus requis');
+  const file = await storePath(folder);
+  const previous = await previousIndex(file);
   const files = await scanFiles(folder, searchExclusion(ignoredPatterns));
   const entries: IndexEntry[] = [];
+  const stamps: Record<string, FileStamp> = {};
+  let embeddedFiles = 0;
+  let reusedFiles = 0;
   for (let i = 0; i < files.length; i++) {
+    await options.gate?.wait();
     const absolute = files[i];
     const relFile = relative(folder, absolute).split(sep).join('/');
     onProgress?.(i + 1, files.length, relFile);
     let content: string;
+    let stamp: FileStamp;
     try {
       const info = await statFs(absolute);
+      stamp = { size: info.size, mtimeMs: info.mtimeMs };
+      const kept = previous?.get(relFile);
+      if (kept && kept.stamp.size === stamp.size && kept.stamp.mtimeMs === stamp.mtimeMs) {
+        entries.push(...kept.entries);
+        stamps[relFile] = stamp;
+        reusedFiles++;
+        continue;
+      }
       if (info.size > MAX_FILE_BYTES) continue;
       content = await readFileFs(absolute, 'utf8');
     } catch {
       continue; // unreadable/binary file: skip, like indexer.py's per-file try/except
     }
+    // The stamp read BEFORE the content: a file changed in between has a newer one on disk, and is embedded again next time.
+    stamps[relFile] = stamp;
+    embeddedFiles++;
     const chunks = chunkText(content);
     if (!chunks.length) continue;
     const vectors = await embed(chunks);
@@ -101,7 +157,6 @@ export async function indexFolder(
       entries.push({ id: `${relFile}:${chunkIndex}`, file: relFile, chunk: chunkIndex, text, vector: vectors[chunkIndex] });
     });
   }
-  const file = await storePath(folder);
   // The index is a cache: in a git project it must never show as `?? .openagent/`. A `*` .gitignore in the index
   // directory (the one storePath validated) hides it, and touches nothing else — not .git/, not the git config, no
   // other file of .openagent/. It is written BEFORE the store: written after, a `git status` run during the store
@@ -114,10 +169,10 @@ export async function indexFolder(
   } catch {
     // EEXIST (already there) or any write error.
   }
-  const store = new JsonStore();
-  await store.update<IndexFile>(file, { version: INDEX_VERSION, entries: [] }, () => ({ version: INDEX_VERSION, entries }));
+  const store = new JsonStore({ indent: 0 });
+  await store.update<IndexFile>(file, { version: INDEX_VERSION, entries: [] }, () => ({ version: INDEX_VERSION, entries, files: stamps }));
   await rm(`${file}.pre-electron.bak`, { force: true });
-  return { chunks: entries.length };
+  return { chunks: entries.length, embeddedFiles, reusedFiles };
 }
 
 /** Top-`n` chunks by cosine similarity to `query` — score = cosine similarity itself (this

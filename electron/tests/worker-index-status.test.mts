@@ -5,7 +5,10 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp, mkdir, writeFile, rm, access, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer, type ServerResponse } from 'node:http';
 import { removeAtEnd, terminateAtEnd } from './teardown.mts';
+import { TEST_PROVIDER_MODULE } from './support/test-model-provider.mts';
+import { PERF_LEVERS_ENV } from '../core/perf-levers.mts';
 
 function callWorker(worker: Worker, op: string, payload: unknown = {}): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -156,4 +159,104 @@ test('a committed clean git repo stays clean once its activation indexing is rea
   const status = await untilReady(worker, folder);
   assert.equal(status.state, 'ready', JSON.stringify(status));
   assert.deepEqual(await callWorker(worker, 'git-status', { folder }), { branch: 'main', dirty: false });
+});
+
+// ── lever indexDuringTurns (Task 13): 'pause' holds the indexing while a turn runs ──────────────────────────────
+
+/** A fake model on 127.0.0.1 whose answers are held until release() (and given at once after it): the turn stays open
+ * as long as the test wants. */
+async function heldModel(t: { after(fn: () => unknown): void }) {
+  const held: Array<{ response: ServerResponse; answer: () => void }> = [];
+  let released = false;
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      const answer = () => { response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] })); };
+      if (released) answer(); else held.push({ response, answer });
+    });
+  });
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  t.after(() => new Promise(resolve => { for (const h of held) h.response.destroy(); server.closeAllConnections?.(); server.close(() => resolve(undefined)); }));
+  return {
+    testModel: { base_url: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`, model: 'm' },
+    release: () => { released = true; for (const h of held.splice(0)) h.answer(); },
+  };
+}
+
+/**
+ * A worker with the lever indexDuringTurns 'pause', a project of 60 files (two or three chunks each) activated, and a
+ * send made once the indexing has really started (its first progress event: never true before the activation). Every
+ * worker message is kept in order, `sentAt` marking where the send's reply arrived.
+ */
+async function turnDuringIndexing(t: any, name: string) {
+  // Registered first, so it runs before removeAtEnd's terminate(): a failed assertion can leave the indexing inside an
+  // ONNX run, and ending the thread there crashes the whole test process (worker.mjs, shutdownWorker). The shutdown op
+  // stops the turn and the indexing and waits for them; the thread then ends itself.
+  let worker: Worker | null = null;
+  t.after(async () => {
+    if (!worker) return;
+    const exited = new Promise(resolve => worker!.once('exit', resolve));
+    worker.postMessage({ id: 'shutdown-at-end', op: 'shutdown', payload: {} });
+    await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 60000))]);
+  });
+  const root = await mkdtemp(join(tmpdir(), `openagent-worker-index-${name}-`));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  for (let i = 0; i < 60; i++) {
+    const text = Array.from({ length: 30 }, (_, line) => `Fichier ${i}, ligne ${line} : une phrase pour remplir les morceaux de l'index.`).join('\n');
+    await writeFile(join(project, `f${String(i).padStart(2, '0')}.md`), text);
+  }
+  const model = await heldModel(t);
+  worker = new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), {
+    env: { ...process.env, OPENAGENT_HOME: home, [PERF_LEVERS_ENV]: JSON.stringify({ indexDuringTurns: 'pause' }) },
+    workerData: { testProviderModule: TEST_PROVIDER_MODULE, perfLeversAllowed: true },
+  });
+  terminateAtEnd(t, worker);
+  const messages: any[] = [];
+  const waiters: Array<() => void> = [];
+  worker.on('message', message => { messages.push(message); for (const wake of waiters.splice(0)) wake(); });
+  /** Resolves with the index of the first message from `from` on that `match`es, waiting for it at most `ms`. */
+  const until = async (match: (message: any) => boolean, from: number, ms: number): Promise<number> => {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const at = messages.findIndex((message, i) => i >= from && match(message));
+      if (at >= 0) return at;
+      if (Date.now() > deadline) throw new Error(`timed out; last messages: ${JSON.stringify(messages.slice(-3))}`);
+      await new Promise<void>(resolve => { waiters.push(resolve); setTimeout(resolve, 100); });
+    }
+  };
+  const { folder } = await callWorker(worker, 'activate_folder', { folder: project });
+  const isIndex = (message: any) => message?.type === 'event' && message.event === 'index' && message.folder === folder;
+  await until(message => isIndex(message) && message.state === 'indexing' && message.current >= 1, 0, 30000);
+  const { runId } = await callWorker(worker, 'send', { folder, branchId: 'main', text: 'salut', testModel: model.testModel });
+  const sentAt = messages.findIndex(message => message?.ok === true && message.result?.runId === runId) + 1;
+  assert.ok(sentAt > 0);
+  const atSend = await callWorker(worker, 'index-status', { folder });
+  assert.equal(atSend.state, 'indexing', `the indexing is still running when the turn starts: ${JSON.stringify(atSend)}`);
+  assert.ok(atSend.current < atSend.total, JSON.stringify(atSend));
+  // The turn is held open (its model call unanswered) for a while: long enough for several files to be indexed.
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  return { worker, folder, runId, model, messages, sentAt, until, isIndex };
+}
+
+test('a send pauses the indexing until the turn ends (lever indexDuringTurns: pause)', { timeout: 90000 }, async t => {
+  const { worker, folder, runId, model, messages, sentAt, until, isIndex } = await turnDuringIndexing(t, 'pause');
+  assert.equal((await callWorker(worker, 'index-status', { folder })).state, 'indexing', 'still indexing, held while the turn runs');
+  model.release();
+  const doneAt = await until(message => message?.event === 'agent' && message.runId === runId && message.kind === 'done', sentAt, 30000);
+  assert.deepEqual(messages.slice(sentAt, doneAt).filter(isIndex), [], 'no index event between send-started and done');
+  const readyAt = await until(message => isIndex(message) && message.state === 'ready', sentAt, 60000);
+  assert.ok(readyAt > doneAt, 'ready only after done');
+  assert.ok(messages.slice(doneAt, readyAt).some(message => isIndex(message) && message.state === 'indexing'), 'the indexing went on after the turn');
+});
+
+test('a stopped turn resumes the indexing (lever indexDuringTurns: pause)', { timeout: 90000 }, async t => {
+  const { worker, runId, messages, sentAt, until, isIndex } = await turnDuringIndexing(t, 'stop');
+  await callWorker(worker, 'stop', { runId });
+  const stoppedAt = await until(message => message?.event === 'agent' && message.runId === runId && message.kind === 'stopped', sentAt, 30000);
+  assert.deepEqual(messages.slice(sentAt, stoppedAt).filter(isIndex), [], 'no index event between send-started and stopped');
+  const readyAt = await until(message => isIndex(message) && message.state === 'ready', stoppedAt, 60000);
+  assert.ok(readyAt > stoppedAt);
 });

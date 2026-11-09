@@ -192,3 +192,100 @@ test('the .gitignore is in place BEFORE the index is written: git never sees the
   await assert.rejects(indexFolder(project, home));
   assert.equal(await readFile(join(dirname(store), '.gitignore'), 'utf8'), '*\n', 'written before the store, not after');
 });
+// Task 13: the index is updated file by file. Each file's stamp ({size, mtimeMs}) is kept in the store; an unchanged
+// file keeps its entries without being embedded again.
+const storeOf = async (project: string) => {
+  const { storePath } = await import('../core/semantic-index.mts');
+  return JSON.parse(await readFile(await storePath(project), 'utf8'));
+};
+
+test('an unchanged file keeps its vectors without embedding again; a changed file is re-embedded; a removed one is dropped', { timeout: 60000 }, async t => {
+  const { home, project } = await fixture(t);
+  await writeFile(join(project, 'a.py'), 'def sort_list(items):\n    return sorted(items)\n');
+  await writeFile(join(project, 'b.py'), 'def get_weather(city):\n    return call_weather_api(city)\n');
+  await writeFile(join(project, 'c.md'), '# Notes\n\nTemporary notes.\n');
+  const { indexFolder } = await import('../core/semantic-index.mts');
+  const first = await indexFolder(project, home);
+  assert.deepEqual([first.embeddedFiles, first.reusedFiles], [3, 0]);
+  const before = await storeOf(project);
+  assert.deepEqual(Object.keys(before.files).sort(), ['a.py', 'b.py', 'c.md']);
+
+  await writeFile(join(project, 'b.py'), 'def add(a, b):\n    """Adds two numbers."""\n    return a + b\n');
+  await rm(join(project, 'c.md'));
+  const second = await indexFolder(project, home);
+  assert.deepEqual([second.embeddedFiles, second.reusedFiles], [1, 1]);
+  const after = await storeOf(project);
+  assert.deepEqual(Object.keys(after.files).sort(), ['a.py', 'b.py']);
+  assert.deepEqual([...new Set(after.entries.map((e: any) => e.file))], ['a.py', 'b.py'], 'the removed file left no entry');
+  const vectorsOf = (store: any, file: string) => store.entries.filter((e: any) => e.file === file).map((e: any) => e.vector);
+  assert.deepEqual(vectorsOf(after, 'a.py'), vectorsOf(before, 'a.py'), 'the unchanged file kept its very vectors');
+  assert.match(after.entries.filter((e: any) => e.file === 'b.py').map((e: any) => e.text).join(''), /Adds two numbers/);
+  assert.equal(second.chunks, after.entries.length);
+});
+
+test('an incremental update equals a full rebuild', { timeout: 60000 }, async t => {
+  const { home, project } = await fixture(t);
+  const long = (topic: string) => Array.from({ length: 30 }, (_, i) => `${topic} ligne ${i} : une phrase assez longue pour remplir le morceau.`).join('\n');
+  await writeFile(join(project, 'a.md'), long('le tri des listes'));
+  await writeFile(join(project, 'b.md'), long('la météo de Paris'));
+  await writeFile(join(project, 'c.md'), long('la base de données'));
+  await writeFile(join(project, 'd.py'), 'def gone():\n    pass\n');
+  const { indexFolder, storePath } = await import('../core/semantic-index.mts');
+  await indexFolder(project, home);
+  await writeFile(join(project, 'b.md'), long('les réseaux de neurones'));
+  await rm(join(project, 'd.py'));
+  await writeFile(join(project, 'e.txt'), long('un nouveau fichier'));
+  const incremental = await indexFolder(project, home);
+  assert.deepEqual([incremental.embeddedFiles, incremental.reusedFiles], [2, 2]);
+  const updated = await storeOf(project);
+
+  await rm(await storePath(project));
+  const full = await indexFolder(project, home);
+  assert.deepEqual([full.embeddedFiles, full.reusedFiles], [4, 0]);
+  const rebuilt = await storeOf(project);
+
+  assert.deepEqual(updated.entries.map((e: any) => [e.id, e.file, e.chunk, e.text]), rebuilt.entries.map((e: any) => [e.id, e.file, e.chunk, e.text]));
+  assert.deepEqual(Object.keys(updated.files).sort(), Object.keys(rebuilt.files).sort());
+  assert.deepEqual(updated.files, rebuilt.files, 'the same stamps');
+  // Not an exact equality: a quantized vector shifts slightly with the batch it was embedded in (lesson 2026-10-17).
+  const { cosineSimilarity } = await import('../core/semantic-chunk.mts');
+  updated.entries.forEach((entry: any, i: number) => {
+    const cosine = cosineSimilarity(entry.vector, rebuilt.entries[i].vector);
+    assert.ok(cosine >= 0.98, `${entry.id}: cosine ${cosine}`);
+  });
+});
+
+test('an index without file stamps is rebuilt fully', { timeout: 60000 }, async t => {
+  const { home, project } = await fixture(t);
+  await writeFile(join(project, 'a.py'), 'def sort_list(items):\n    return sorted(items)\n');
+  await writeFile(join(project, 'b.md'), '# Project\n\nA small demo project.\n');
+  const { indexFolder, storePath } = await import('../core/semantic-index.mts');
+  await indexFolder(project, home);
+  const { files, ...withoutStamps } = await storeOf(project);
+  assert.ok(files, 'the first run wrote the stamps');
+  await writeFile(await storePath(project), JSON.stringify(withoutStamps));
+  const result = await indexFolder(project, home);
+  assert.deepEqual([result.embeddedFiles, result.reusedFiles], [2, 0]);
+  assert.deepEqual(Object.keys((await storeOf(project)).files).sort(), ['a.py', 'b.md'], 'the rebuild writes the stamps');
+});
+
+test('indexFolder waits at the gate between files and resumes', { timeout: 60000 }, async t => {
+  const { home, project } = await fixture(t);
+  for (const name of ['a.md', 'b.md', 'c.md']) await writeFile(join(project, name), `le fichier ${name}`);
+  const { indexFolder } = await import('../core/semantic-index.mts');
+  const { IndexGate } = await import('../core/index-gate.mts');
+  const gate = new IndexGate();
+  const resume = gate.pause();
+  assert.equal(gate.paused, true);
+  const progress: number[] = [];
+  const run = indexFolder(project, home, current => progress.push(current), '', { gate });
+  // Without the gate, the first progress is posted as soon as the 3 files are listed (a few milliseconds).
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.deepEqual(progress, [], 'nothing starts while the gate is paused');
+  resume();
+  resume(); // idempotent: the count never goes below 0
+  assert.equal(gate.paused, false);
+  const result = await run;
+  assert.deepEqual(progress, [1, 2, 3]);
+  assert.equal(result.embeddedFiles, 3);
+});

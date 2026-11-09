@@ -74,6 +74,13 @@ export interface PerfLevers {
    * conversation, so it asks one more extra layer per REREAD_MS_PER_EXTRA_LAYER of estimated re-read. Shipped off
    * (REPLACE_MIN_LAYERS alone, as today) until a re-placement is measured with and without it [hypothèse]. */
   rereadWeighting: boolean;
+  /** The background indexing while a turn or a compaction runs (Task 13): 'run' goes on, as today; 'pause' holds it
+   * between two files (core/index-gate.mts) from the turn's start to its end, stopped turns included, so its ONNX
+   * runs never compete with the model's threads. Shipped 'run'. */
+  indexDuringTurns: 'run' | 'pause';
+  /** The ONNX threads of the embeddings (Task 13, core/embeddings.mts::sessionOptions): that many intra-op threads and
+   * one inter-op thread. null: onnxruntime's defaults, as today. */
+  embedThreads: number | null;
 }
 
 export const PERF_LEVERS_ENV = 'OPENAGENT_PERF_LEVERS';
@@ -97,6 +104,8 @@ export const SHIPPED_LEVERS: Readonly<PerfLevers> = Object.freeze({
   threads: null,
   kvCacheType: 'F16',
   rereadWeighting: false,
+  indexDuringTurns: 'run',
+  embedThreads: null,
 });
 
 /** node-llama-cpp's own checkpoint interval (3.21.1, `defaultCheckpointOptions`): below it, a memory cap is required. */
@@ -122,6 +131,8 @@ const VALID: { [K in keyof PerfLevers]: (value: unknown) => boolean } = {
   threads: value => value === null || positiveInteger(value),
   kvCacheType: value => value === 'F16' || value === 'Q8_0',
   rereadWeighting: value => typeof value === 'boolean',
+  indexDuringTurns: value => value === 'run' || value === 'pause',
+  embedThreads: value => value === null || positiveInteger(value),
 };
 
 /** The levers `env` asks for: each valid key overrides its shipped value; an unknown key, a wrong type or invalid

@@ -56,6 +56,10 @@ export interface BenchRun {
   idleBeforeSendMs?: number;
   /** `--mcp-fake` (Task 7): the initialize delay of the fake global MCP server each home held (absent: none). */
   mcpFakeMs?: number;
+  /** `--project-files` (Task 13): the synthetic project's file count in A's folder (absent: none). */
+  projectFiles?: number;
+  /** `--project-files`: A's indexing, from its folder's activation to the index's `ready` (wall clock); null: not ready. */
+  indexMs?: number | null;
 }
 
 type Line = Record<string, unknown>;
@@ -201,6 +205,9 @@ export function comparability(before: BenchRun, after: BenchRun): string[] {
   if (idle(before) !== idle(after)) issues.push(`attente avant le premier message différente : ${idle(before)} → ${idle(after)}`);
   const mcp = (run: BenchRun) => (run.mcpFakeMs === undefined ? 'aucun' : `${run.mcpFakeMs} ms`);
   if (mcp(before) !== mcp(after)) issues.push(`serveur MCP factice différent : ${mcp(before)} → ${mcp(after)}`);
+  // Task 13: A's turns run while a synthetic project of that size is indexed.
+  const project = (run: BenchRun) => (run.projectFiles === undefined ? 'aucun' : `${run.projectFiles} fichiers`);
+  if (project(before) !== project(after)) issues.push(`projet synthétique différent : ${project(before)} → ${project(after)}`);
   for (const cap of CAPS) {
     const a = before.levers?.[cap];
     const b = after.levers?.[cap];

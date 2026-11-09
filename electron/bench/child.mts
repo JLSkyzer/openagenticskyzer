@@ -63,6 +63,10 @@ export interface SessionConfig extends Common {
   /** `--setting key=value` (Task 9, ruling F20): global settings saved through save-global-settings with the model's
    * activation, as Réglages would save them (e.g. max_thought_tokens). Absent or {}: none. */
   settings?: Record<string, unknown>;
+  /** `--project-files n` (Task 13): A's folder holds a synthetic project of n files (written by run.mts). Its
+   * activation indexing is NOT waited for before A's first message (the turns run while it indexes), and the index
+   * duration (activation to `ready`, wall clock, pauses included) is recorded once A's messages are done. */
+  projectFiles?: number | null;
 }
 
 /** What `--touch-memory` appends to the project memory: a change in the project context, as a save_memory makes. */
@@ -80,6 +84,8 @@ export interface ChildResult {
   turns: TurnFigures[]; failures: string[]; folders: string[];
   /** The engine's backend (hardware-info), the levers the worker applied (its model-ready line). */
   backend: string | null; levers: Readonly<PerfLevers> | null;
+  /** `--project-files`: A's indexing, from its folder's activation to the worker's `ready` event (null: not ready). */
+  indexMs?: number | null;
 }
 
 const ELECTRON = fileURLToPath(new URL('..', import.meta.url));
@@ -291,11 +297,20 @@ export async function runSession(config: SessionConfig, save: (result: ChildResu
       await activate(worker);
     }
     for (const folder of config.settle) await indexSettled(worker, folder);
+    // `--project-files`: every `index` event's arrival, for A's index duration.
+    const indexEvents: { at: number; folder: string; state: string; message?: string }[] = [];
+    worker.on('message', (message: any) => {
+      if (message?.type === 'event' && message.event === 'index') indexEvents.push({ at: Date.now(), folder: message.folder, state: message.state, message: message.message });
+    });
     for (const group of config.groups) {
       if (interrupted) break;
+      const timedIndex = group.scenario === 'A' && config.projectFiles != null;
+      const activatedAt = Date.now();
       const { folder } = await callWorker(worker, 'activate_folder', { folder: group.folder });
       result.folders.push(folder);
-      await indexSettled(worker, folder);
+      // F29: the activation's indexing settles before the first message — except the synthetic project's, which the
+      // turns are measured against.
+      if (!timedIndex) await indexSettled(worker, folder);
       for (const [index, text] of group.messages.entries()) {
         if (interrupted) break;
         const message = index + 1;
@@ -330,6 +345,15 @@ export async function runSession(config: SessionConfig, save: (result: ChildResu
         await save(result);
         // `--idle-before-send`: the backend is known only now (hardware-info before the turn would start the engine).
         if (first && idleMs !== null && !await checkBackend('aucun autre message envoyé')) return result;
+      }
+      if (timedIndex && !interrupted) {
+        await indexSettled(worker, folder);
+        const end = indexEvents.find(event => event.folder === folder && event.at >= activatedAt && (event.state === 'ready' || event.state === 'error'));
+        result.indexMs = end?.state === 'ready' ? end.at - activatedAt : null;
+        if (end?.state === 'error') result.failures.push(`indexation de A en erreur${end.message ? ` — ${end.message}` : ''}`);
+        else if (!end) result.failures.push('indexation de A non terminée');
+        else console.info(`[bench] indexation de A (${config.projectFiles} fichiers) : ${result.indexMs} ms`);
+        await save(result);
       }
     }
     if (interrupted) result.failures.push('interrompu (arrêt demandé par le banc)');

@@ -84,6 +84,14 @@ test('embed() runs fixed slices of EMBED_BATCH texts and returns every vector in
   }
 });
 
+// Lever embedThreads (Task 13): the ONNX session's thread counts (onnxruntime's intraOpNumThreads and interOpNumThreads,
+// which @huggingface/transformers passes through from pipeline's session_options); null leaves onnxruntime's defaults.
+test('sessionOptions: a thread cap sets intra-op threads and one inter-op thread; null sets nothing', async () => {
+  const { sessionOptions } = await import('../core/embeddings.mts');
+  assert.deepEqual(sessionOptions(2), { intraOpNumThreads: 2, interOpNumThreads: 1 });
+  assert.deepEqual(sessionOptions(null), {});
+});
+
 // The app closing (final fix wave, item 7): once stopped, embed() starts no ONNX run, and embeddingsIdle() resolves
 // when the run in flight has ended — the worker's shutdown waits for it before the thread ends (ending it during a
 // native run crashes the process). In a worker of its own: the stop is for the whole module, for good.

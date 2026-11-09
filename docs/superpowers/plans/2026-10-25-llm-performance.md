@@ -1462,3 +1462,7 @@ This is a user decision (spec, 2026-10-25), not a measured lever. The setting st
 5. T13, worker-index-status « a stopped turn resumes the indexing ».
 
 **Proportion:** the plan holds signatures, pinned values, real failing tests, commands and the measurement protocol. Bodies left out are those the signatures and tests determine. Task 6's text edits are bounded by rules plus a frozen-contract guard rather than written out.
+
+## Bilan
+
+Executed 2026-10-25 → 2026-11-09. Kept: `promptCheckpoint` with a 1.5 GiB cap, `slimToolDefinitions`, `mcpKeepAlive`, the per-file index, `max_thought_tokens`. Retired for no measured gain: every other lever of the S2 list. S2 and S3 ran on a same-size public model, not S1's. Figures, decisions and what stayed unproven: `tasks/todo.md`, « Bilan du lot — vitesse du LLM local ».

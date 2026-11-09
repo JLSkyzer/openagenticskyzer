@@ -3686,6 +3686,62 @@ Banc d'essai : `electron/bench/` (`npm run bench`, `bench:compare`, `bench:tools
   Gardé provisoirement (ruling F4). Décision en S2 : A·1 en jetons évalués, et qualité B, au 27B. Avant = un worktree à 377d873, après = HEAD levier on.
 - **« Longueur maximale de la réflexion » (tâche 9)** : réglage utilisateur dans Réglages › Matériel (`max_thought_tokens`, « Sans limite (défaut) », 512, 1k, 2k, 4k, 8k), pas un levier mesuré. Sans limite, aucun `budgets` n'est envoyé : la requête est celle d'aujourd'hui (ruling F5 ; node-llama-cpp 3.21.1 plafonne à 75 % du contexte un `thoughtTokens` absent d'un `budgets` présent, et ne limite rien sans `budgets`). Le levier de banc `thoughtTokens` prime sur le réglage. Banc : `--setting clé=valeur` (enregistré par `save-global-settings` dans chaque dossier de données ; `local_context` et `active_local_model` refusés). Vérifié sur stories260K (sonde sur `LlamaChat.generateResponse` dans le worker, `--scenarios C --lever outputCap=32`) : avec `--setting max_thought_tokens=512`, chaque génération reçoit `budgets: { thoughtTokens: 512 }` ; sans, aucune clé `budgets`. Mesure au 27B (pensées par réponse avec 512) : en S2, avec l'utilisateur.
 
+## Bilan du lot — vitesse du LLM local (2026-10-25 → 2026-11-09)
+
+**Le gain.** Une conversation ne relit plus tout son prompt au deuxième message. Trois leviers sont livrés, onze groupes sont retirés faute de gain mesuré, tous au banc sur le 27B.
+
+**Validité des mesures.** S2 et S3 ont tourné sur `hotdogs/Qwen3.8-27B-abliterated-MTP-GGUF` IQ3_M (`D:\Models`, 12 768 331 360 octets, SHA-256 vérifié), de même famille et de même taille, car le fichier de S1 a disparu et son dépôt est restreint. **Ce tableau ne se compare pas à S1.** Chaque décision se fait contre son propre « avant ». Machine partagée : Minecraft de développement noté par le banc dans 4 passages de S2 et pendant `27b-final` de S3, pas au contrôle de `27b-off`. Bruit mesuré à réglages identiques : A·1 de 1,31 à 2,16 tok/s, lecture de 19 à 73 s. Les jetons et les couches GPU sont fiables ; les temps seuls sous 10 % ne prouvent rien.
+
+**Tableau final (S3, mesuré, 2026-11-09)**, même build 124ae39 et même séance, plafonds `outputCap` 1024 et `thoughtTokens` 512, contexte 32 768, CUDA, 25/66 couches, sans échec (`20261109-204039-27b-off.json`, `20261109-205459-27b-final.json`, `npm run bench:compare`) :
+
+| Mesure | 3 leviers éteints | livré | |
+|---|---|---|---|
+| Lecture du message 2 (A·2) | 4 143 jetons, 21,7 s | **69 jetons, 3,3 s** | −98 % jetons, −85 % temps |
+| A·3 | 125 jetons, 3,5 s | 50 jetons, 3,0 s | |
+| Message froid (A·1, C) | 4 076 / 4 080 jetons | 3 789 / 3 793 jetons | −7 % |
+| Durée totale A·1 à A·4 | 370,1 s | 334,5 s | −9,6 %, sous le seuil de 10 % |
+| tok/s (médiane A·1–A·4) | 1,56 | 1,28 | voir ci-dessous |
+| Chargement à froid (C-froid) | 18,9 s | 25,5 s | aucun levier gardé n'y touche |
+| Chargement à chaud (C-chaud) | 16,9 s | 17,6 s | |
+| B : outil appelé et sentinelle citée | oui | oui | |
+| Points de sauvegarde (max.) | 941 Mo | 1 098 Mo | sous le plafond de 1,5 Gio |
+
+Le débit plus bas de `27b-final` n'est pas expliqué : aucun levier gardé n'agit sur la génération, S2 mesurait l'inverse (A·1 à A·3 de 1,69 à 2,07 tok/s avec le point en fin de prompt), l'écart reste dans le bruit mesuré, et un Minecraft de développement tournait pendant cette moitié. Non tranché : il faudrait une séance sur machine calme.
+
+**Décisions, levier par levier (S2, mesuré, `.superpowers/bench/20261109-*-s2-*.json`).** Règle : pour les jetons, toute baisse ; pour les temps, au moins 10 % sur la médiane visée, dans le même sens sur chaque message.
+
+| Objectif | Levier | Mesure | Décision |
+|---|---|---|---|
+| Relecture | `promptCheckpoint` + plafond 1,5 Gio | A·2 4 143 → 67 jetons, 24,0 → 2,2 s ; A·3 125 → 58 | **gardé** f0005de |
+| Relecture | `checkpointInterval` 1024 | A·2 4 143, inchangé | retiré 0250972 |
+| Relecture | `contextPlacement` | A·3 après mémoire modifiée : inchangé (sonde du modèle : non) | retiré |
+| Relecture | `keepThought` | jetons inchangés (sonde du modèle : non) | retiré |
+| Outils | `slimToolDefinitions` | 3 737 → 3 450 jetons, A·1 4 076 → 3 789, qualité B intacte | **gardé** f0005de |
+| Chargement | `engineAtBoot` | C 19,1 / 18,2 → 21,7 / 23,0 s | retiré |
+| Chargement | `numericLimitLoad` | C 40,7 / 21,3 s, pas de gain | retiré |
+| Chargement | `overlapLoad` (MCP lent) | préparation + chargement 17,4 / 17,7 → 17,5 / 19,5 s | retiré |
+| Écriture | `batchSize` 1024, 2048 | lecture ≈ 20 → 15,3 / 14,0 s mais couches 25 → 22 → 19 et tour plus long | retiré |
+| Écriture | `threads` 6, 10 | 1,70 / 2,12 tok/s, dans le bruit | retiré |
+| Écriture | `kvCacheType` Q8_0 | sans plantage sur A, B, C ; 27 couches, RSS −0,7 Gio, pas de gain de vitesse, réponses changées | retiré |
+| Écriture | `inputLookup` | 0 prédiction utilisée, 1,24 tok/s, RSS +2 Gio, texte changé | retiré |
+| Arrière-plan | `indexDuringTurns=pause` | indexation 36,9 → 221,9 s, pas de gain prouvé | retiré |
+| Arrière-plan | `embedThreads` 2 | indexation 36,9 → 50,7 s, pas de gain prouvé | retiré |
+| Arrière-plan | index par fichier (sans levier) | 400 fichiers inchangés : 36,9 s → 0,43 s | **gardé** ab0afdc |
+| Arrière-plan | `mcpKeepAlive` (serveur factice à 1,5 s) | préparation A·2, A·3 : 1,7 / 1,8 → 0,0 s | **gardé** f0005de |
+| Réglage | `max_thought_tokens` | sans limite par défaut ; passe propre au 27B | **gardé** 6dfbff5 |
+
+**Vérifié (2026-11-09).** Suite complète 1136/1136 à 124ae39 (1157 − 27 tests de leviers retirés + 6 ajoutés, 3 à la pose et 3 aux relectures) ; tsc cœur 4 erreurs anciennes, interface 0 ; build de l'interface. Fenêtres, une fois chacune, PASS : `test:hardware`, `test:settings-tabs`, `test:mcp`. Les captures ont disparu avec leurs dossiers temporaires : non regardées. Paquet `package:win` et `test:package` PASS, `app.asar` contient `perf-levers`, `reuse`, `builtin-tools`, `tool-texts-slim`, ni `bench/` ni `tests/`. Relecture finale (0250972..124ae39 inclus) : 0 critique, 0 important.
+
+**Non prouvé.** La règle de replacement `rereadWeighting` (livrée éteinte, les scénarios ne la déclenchent pas) ; une machine sans NVIDIA ; un point de sauvegarde en fin de prompt sur une longue conversation (150 Mio à 4 100 jetons : s'il grossissait au-delà de la moitié du plafond, il serait évincé et on retrouverait la relecture complète) ; la limite de réflexion au 27B (90 jetons produits, jamais 512 : prouvée par ses tests seuls) ; les modèles SWA ou récurrents qui prennent aussi cette voie.
+
+**Différé, mineur.** Figures mêlées quand deux dossiers utilisent un même modèle en même temps ; une exception dans `checkpointPromptEnd` ferait échouer le tour (aucun déclencheur trouvé) ; un serveur MCP gardé d'un projet retiré vit jusqu'à 10 min ; un serveur global occupé par un long appel peut faire expirer la découverte d'un autre dossier ; retrait de confiance pendant une découverte, un démarrage en trop ; un `codebase.json` corrompu ne se reconstruit pas (antérieur au lot).
+
+**Choix sur les ambiguïtés de la spécification.** Les leviers gardés restent des leviers, à la valeur gagnante, pour pouvoir mesurer éteint contre allumé ; la réflexion reste sans limite par défaut (décision de l'utilisateur) ; le retrait d'un levier se fait à la main (F14).
+
+**À surveiller.** Prédiction multi-jetons : à intégrer quand node-llama-cpp l'exposera. Le fichier 27B de S1 comme celui de S2/S3 ont des poids MTP (`architecture.mtpWeights` true, mesuré).
+
+**Pour l'utilisateur.** La bibliothèque de l'app pointe encore vers l'ancien chemin `Downloads` : réimporter le modèle depuis `D:\Models\`. Un dossier vide `I:\models` reste à supprimer.
+
 ## À faire — lots suivants (demandes de l'utilisateur, 2026-10-17)
 
 1. **Modèles 100 % locaux** — LIVRÉ (2026-10-18, voir « Bilan du lot — modèles 100 % locaux ») : `test:model` PASS à sa relance ; `test:gitstatus` PASS à son troisième et dernier lancement, après la relecture du témoin git quand l'index est prêt (97783e4). (conception `docs/superpowers/specs/2026-10-17-local-only-models-design.md`) : la sélection du modèle ne propose plus que les fichiers `.gguf` locaux ; clés des fournisseurs en ligne effacées ; modèle d'embeddings livré dans l'app. **Aucun outil ni réglage retiré** (outils web, jeton Hugging Face, images… restent).
@@ -3694,4 +3750,5 @@ Banc d'essai : `electron/bench/` (`npm run bench`, `bench:compare`, `bench:tools
    - débordement : **LIVRÉ le 2026-10-21, voir « Bilan du lot — matériel et débordement »** ; demandé depuis longtemps par l'utilisateur et **jamais porté** depuis Python (`estimate_gpu_layers` dans `utils/utils.py`, étiquette `python-final`, servait à LM Studio / llama.cpp serveur) ; le moteur `.gguf` actuel s'en remet au réglage par défaut de node-llama-cpp, **non vérifié** : mesurer un modèle plus gros que la VRAM, reprendre une répartition explicite si nécessaire, afficher couches GPU / CPU.
 3. **Audit des outils** (demandé le 2026-10-17, après le lot 1) : « tout doit être conservé, voire ajouté s'il en manque » — comparer les outils de l'agent à ceux de l'ancienne app Python (`python-final`) et à ce qu'on attend d'un agent de code, proposer ceux qui manquent.
 4. **Diagnostic des tours** — LIVRÉ (2026-10-24, voir « Bilan du lot — diagnostic des tours »). Statut et chronomètre en direct, réflexion séparée, stop qui coupe, journal des tours, dossiers de données visibles.
-5. **Suite** : le lot de performance du LLM (mesures d'abord, voir le backlog du bilan) ou le projet 2 (le catalogue) ; l'utilisateur décide de l'ordre.
+5. **Vitesse du LLM local** — LIVRÉ (2026-11-09, voir « Bilan du lot — vitesse du LLM local »).
+6. **Suite** : le projet 2 (catalogue Hugging Face), puis le projet 3 (perception), puis l'audit des outils ; décision à venir sur la publication du pack CUDA.

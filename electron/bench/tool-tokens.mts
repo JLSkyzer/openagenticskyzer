@@ -3,7 +3,8 @@
 // token counts is the tools' cost. Only the vocabulary is loaded (vocabOnly): no weights, no context.
 // CLI: `node --experimental-strip-types bench/tool-tokens.mts --model <gguf> [--slim]` prints { slim, chars, tokens,
 // perTool } for the default tool set (the built-ins in an empty temp folder, agent_mode auto, permission_mode demander);
-// `--slim` counts them under the slimToolDefinitions lever (default: the lever in effect, shipped on).
+// `--slim` counts them under the slimToolDefinitions lever (default: the lever in effect, shipped on; to count the full
+// texts, set OPENAGENT_PERF_LEVERS to {"slimToolDefinitions":false}).
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';

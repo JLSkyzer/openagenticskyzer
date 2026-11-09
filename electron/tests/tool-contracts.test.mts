@@ -50,7 +50,7 @@ test('the slimmed texts: within their limits, aimed at real tools and parameters
       assert.ok((rule.description ?? '').length <= 80, `${tool.name}.${param} : description de ${rule.description?.length} caractères`);
     }
   }
-  // The modules' own objects (parameter rules shared between tools) are copied, never edited: off stays today's texts.
+  // The modules' own objects (parameter rules shared between tools) are copied, never edited: off stays the modules' own texts.
   const snapshot = JSON.stringify(today);
   slimToolDefinitions(today);
   assert.equal(JSON.stringify(today), snapshot);

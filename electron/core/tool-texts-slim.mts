@@ -2,8 +2,8 @@
 // parameter a shorter description or `null` where it only repeated the name and type. Only texts live here: names,
 // types, limits, `required` and `additionalProperties` stay those of the tool's own module, and the contract guard
 // (tests/tool-contracts.test.mts) checks the slimmed tools against the contracts frozen before. Every refusal, limit and
-// source a description states is kept. Shipped off: until the 27B measurement (S2) decides, the modules' own texts go
-// out; a keep moves these texts into the modules, a revert deletes this file.
+// source a description states is kept. Shipped on since the 27B measurement (3737 → 3450 tokens, 2026-11-09); with the
+// lever off, the modules' own texts go out.
 import { createHash } from 'node:crypto';
 import type { AgentTool } from './agent.mts';
 

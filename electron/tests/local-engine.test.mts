@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readGgufFileInfo, GgufInsights, LlamaChat, JinjaTemplateChatWrapper, type ChatModelFunctions } from 'node-llama-cpp';
+import { readGgufFileInfo, GgufInsights, LlamaChat, JinjaTemplateChatWrapper, QwenChatWrapper, type ChatModelFunctions, type ChatWrapper } from 'node-llama-cpp';
 import type { GgufFunctions, GgufHistoryItem } from '../core/local-provider.mts';
 import { commonPrefixLength, type PromptCheckpointFigures } from '../core/reuse.mts';
 import { SHIPPED_LEVERS } from '../core/perf-levers.mts';
@@ -508,6 +508,38 @@ for (const [name, makeWrapper, functions] of MIRROR_CASES) {
       assert.equal(sequence.tokenMeter.diff(before).usedInputTokens, tokens.length - 1 - divergence);
       history = [...history, { type: 'model', response: [reply.response] }, { type: 'user', text: next }];
       previous = figures;
+    }
+  });
+}
+
+// The shipped path on a hybrid model runs at every tool step too: a history that ends in a function call, written by
+// hand since the toy model calls no tool. Each from an empty state, so the checkpoint is really taken.
+const toolStep = (result: string) => ({ type: 'functionCall' as const, name: 'get_time', params: {}, result });
+const TOOL_STEP_HISTORIES: GgufHistoryItem[][] = [
+  [{ type: 'system', text: 'You are a storyteller.' }, { type: 'user', text: 'Once upon a time' }, { type: 'model', response: [toolStep('noon')] }],
+  [{ type: 'system', text: 'You are a storyteller.' }, { type: 'user', text: 'Once upon a time' }, { type: 'model', response: [toolStep('noon'), toolStep('one')] }],
+  [{ type: 'system', text: 'You are a storyteller.' }, { type: 'user', text: 'Once upon a time' }, { type: 'model', response: ['Let me look.', toolStep('noon')] }],
+];
+const TOOL_STEP_CASES: [string, () => ChatWrapper][] = [
+  ['QWEN_LIKE (openedOnStart)', () => new JinjaTemplateChatWrapper({ template: QWEN_LIKE_TEMPLATE })],
+  ['QwenChatWrapper', () => new QwenChatWrapper()],
+];
+for (const [name, makeWrapper] of TOOL_STEP_CASES) {
+  test(`checkpointPromptEnd on a tool step, ${name}: LlamaChat evaluates the prompt the lever predicted and reads only the rest`, { timeout: 60000 }, async t => {
+    const model = await (await runtimeLlama()).loadModel({ modelPath });
+    const context = await model.createContext({ contextSize: 2048 });
+    t.after(async () => { await context.dispose(); await model.dispose(); });
+    const sequence = context.getSequence();
+    const chat = new LlamaChat({ contextSequence: sequence, chatWrapper: makeWrapper() });
+    for (const [index, history] of TOOL_STEP_HISTORIES.entries()) {
+      await sequence.clearHistory();
+      const { tokens } = stablePromptLength(chat.chatWrapper, model.tokenizer, history, STORY_TOOLS);
+      const before = sequence.tokenMeter.getState();
+      const figures = await checkpointPromptEnd(sequence, chat.chatWrapper, history, STORY_TOOLS);
+      assert.ok(figures && figures.index !== null, `history ${index}: checkpointed ${JSON.stringify(figures)}`);
+      await chat.generateResponse(chatHistoryOf(history), { maxTokens: 4, functions: STORY_TOOLS as ChatModelFunctions });
+      assert.deepEqual(sequence.contextTokens.slice(0, tokens.length), tokens, `history ${index}: LlamaChat evaluated the prompt the lever predicted`);
+      assert.equal(sequence.tokenMeter.diff(before).usedInputTokens, tokens.length - 1, `history ${index}: nothing pre-evaluated was read again`);
     }
   });
 }

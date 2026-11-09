@@ -29,11 +29,11 @@ const SCHEMA_NOISE = new Set(['$schema', 'title', 'examples', '$comment']);
 /** The keys whose value is argument data, not a schema: copied as they are. */
 const SCHEMA_DATA = new Set(['enum', 'const', 'default']);
 /** The keys whose value maps NAMES (a parameter, a definition, a pattern) to schemas: the names are kept as they are. */
-const SCHEMA_MAPS = new Set(['properties', '$defs', 'definitions', 'patternProperties']);
+const SCHEMA_MAPS = new Set(['properties', '$defs', 'definitions', 'patternProperties', 'dependentRequired', 'dependentSchemas', 'dependencies']);
 
 /** `schema` without its noise, recursively: `$schema`, `title`, `examples`, `$comment` and an empty `required: []`.
  * Everything else stays — types, enums, limits, a non-empty `required`, `additionalProperties`, descriptions. The keys
- * of `properties`, `$defs`, `definitions` and `patternProperties` are names, never schema keys: a parameter or a
+ * of `properties`, `$defs`, `definitions`, `patternProperties` and the `dependent*` maps are names, never schema keys: a parameter or a
  * definition named `title` is kept; `enum`, `const` and `default` hold data, copied untouched. */
 export function compactSchema(schema: unknown): unknown {
   if (Array.isArray(schema)) return schema.map(compactSchema);

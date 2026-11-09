@@ -17,7 +17,7 @@ export interface PerfLevers {
   performanceTracking: boolean;
   /** A cap, in bytes, on the memory of a hybrid model's checkpoints (Qwen 3.5/3.6 restore a reused prefix only from
    * one; attention-only models take none); null: none (node-llama-cpp's default). Shipped 1.5 GiB (S2 on the 27B:
-   * about 157 Mio of checkpoints per message, the RSS up by 0.1 Gio, mesuré). */
+   * about 150 Mio of checkpoints per message, the RSS up by 0.1 Gio, mesuré). */
   checkpointMaxMemory: number | null;
   /** Hybrid models: before generating, evaluate the prompt up to where the next turn will render it differently (the
    * thought the template opens, the reply) and take a checkpoint there, so the next turn restores right at its

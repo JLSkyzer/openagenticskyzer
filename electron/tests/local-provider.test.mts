@@ -38,10 +38,23 @@ test('compactSchema drops $schema, title, examples and an empty required, and ke
   assert.equal(mcp.title, 'create_issue', 'the input is not edited');
   // A tool without parameters keeps an empty object schema node-llama-cpp accepts.
   assert.deepEqual(compactSchema({ type: 'object', properties: {}, required: [], additionalProperties: false }), { type: 'object', properties: {}, additionalProperties: false });
-  // toGgufFunctions applies it only under the lever (shipped off: today's params, unchanged).
+  // toGgufFunctions applies it only under the lever (off: the params unchanged).
   const tools = [{ type: 'function' as const, function: { name: 'create_issue', description: 'Créer un ticket', parameters: mcp } }];
   assert.equal(toGgufFunctions(tools, false)?.create_issue.params, mcp);
   assert.deepEqual(toGgufFunctions(tools, true)?.create_issue.params, compactSchema(mcp));
+});
+
+test('compactSchema keeps the parameter names in dependentRequired, dependentSchemas and dependencies', () => {
+  const schema = {
+    dependentRequired: { title: ['author'] },
+    dependentSchemas: { examples: { type: 'object', title: 'noise', required: ['x'] } },
+    dependencies: { $comment: ['y'], $schema: { title: 'noise', required: ['z'] } },
+  };
+  assert.deepEqual(compactSchema(schema), {
+    dependentRequired: { title: ['author'] },
+    dependentSchemas: { examples: { type: 'object', required: ['x'] } },
+    dependencies: { $comment: ['y'], $schema: { required: ['z'] } },
+  });
 });
 
 test('compactSchema keeps the names in $defs, definitions and patternProperties (a definition named title survives) and compacts what they hold', () => {

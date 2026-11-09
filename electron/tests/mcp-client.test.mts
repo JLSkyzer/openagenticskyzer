@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -214,6 +216,21 @@ async function until(check: () => boolean | Promise<boolean>, what: string, time
   }
 }
 const toolNames = (tools: { name: string }[]) => tools.map(tool => tool.name).sort();
+/** The PIDs `taskkill` was really started for while `action` ran. */
+async function taskkillsDuring(action: () => Promise<unknown>): Promise<string[]> {
+  const killed: string[] = [];
+  const realSpawn = childProcess.spawn;
+  (childProcess as any).spawn = (command: string, args: string[], ...rest: unknown[]) => {
+    if (command === 'taskkill') killed.push(args[1]);
+    return (realSpawn as any)(command, args, ...rest);
+  };
+  syncBuiltinESMExports();
+  try { await action(); } finally {
+    (childProcess as any).spawn = realSpawn;
+    syncBuiltinESMExports();
+  }
+  return killed;
+}
 const pooled = async (t: any, options?: { idleMs?: number }) => {
   const { McpPool } = await import('../core/mcp-client.mts');
   const pool = new McpPool(options);
@@ -269,7 +286,7 @@ test('a tool call reuses the discovery\'s process', { timeout: 30000 }, async t 
 });
 
 test('a crashed server is started again at the next discovery', { timeout: 30000 }, async t => {
-  const { mcpTools } = await import('../core/mcp-client.mts');
+  const { mcpTools, stopAllMcpServers } = await import('../core/mcp-client.mts');
   const { dir, file, pids } = await pidFileIn(t);
   const pool = await pooled(t);
   const target = config({ FAKE_MCP_PID_FILE: file, FAKE_MCP_CALL_DELAY_MS: '30000' });
@@ -305,6 +322,55 @@ test('a crashed server is started again at the next discovery', { timeout: 30000
   await copyFile(FAKE_SERVER, script);
   const found = await mcpTools([late], { pool });
   assert.deepEqual([found.errors, toolNames(found.tools)], [[], ['mcp_boom', 'mcp_echo']]);
+
+  // A process seen to exit leaves the pool at once, and its PID, free for the system to reuse, is never killed.
+  const ended = await pool.session(config({ FAKE_MCP_PID_FILE: file, WHICH: 'mort' }), 10000);
+  const endedPid = (await pids()).at(-1)!;
+  const keptBefore = (pool as any).kept.size;
+  process.kill(endedPid);
+  await until(() => !ended.alive(), 'its exit seen');
+  assert.equal((pool as any).kept.size, keptBefore - 1, 'evicted on exit, not 10 min later');
+  const live = await pool.session(config({ FAKE_MCP_PID_FILE: file, WHICH: 'vivant' }), 10000);
+  const livePid = (await pids()).at(-1)!;
+  const killed = await taskkillsDuring(async () => {
+    await ended.close();
+    // close and stopAllMcpServers on the same live process, as at quit: one kill.
+    await Promise.all([live.close(), stopAllMcpServers()]);
+  });
+  assert.deepEqual(killed.filter(pid => pid === String(endedPid)), [], 'no kill aimed at an exited process');
+  if (process.platform === 'win32') assert.deepEqual(killed.filter(pid => pid === String(livePid)), [String(livePid)], 'one taskkill for the live one');
+  assert.ok(!isAlive(livePid));
+});
+
+test('a stopped or timed-out request leaves a shared process running while another request is in flight', { timeout: 30000 }, async t => {
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  const { file, pids } = await pidFileIn(t);
+  const pool = await pooled(t);
+  const never = new AbortController().signal;
+  // Every answer takes 300 ms and a call 1.2 s more; the fixture handles requests concurrently.
+  const target = config({ FAKE_MCP_PID_FILE: file, FAKE_MCP_DELAY_MS: '300', FAKE_MCP_CALL_DELAY_MS: '1200' });
+  const { tools, errors } = await mcpTools([target], { pool });
+  assert.deepEqual(errors, []);
+  const echo = tools.find(tool => tool.name === 'mcp_echo')!;
+  const [pid] = await pids();
+
+  const stopping = new AbortController();
+  const stopped = echo.execute({ text: 'arrêté' }, stopping.signal);
+  const other = echo.execute({ text: 'continue' }, never);
+  await new Promise(resolve => setTimeout(resolve, 200)); // Both written: only microtasks separate them from here.
+  stopping.abort(new Error('arrêt demandé'));
+  await assert.rejects(stopped, /arrêt demandé/);
+  assert.equal(await other, 'continue', 'the other call finishes on the shared process');
+  assert.ok(isAlive(pid), 'the shared process stays');
+
+  // Another folder's discovery timing out beside a slow call does not end that call either.
+  const flight = echo.execute({ text: 'lent' }, never);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const timedOut = await mcpTools([target], { pool, discoveryTimeoutMs: 50 });
+  assert.match(timedOut.errors[0], /délai dépassé \(tools\/list\)/);
+  assert.equal(await flight, 'lent');
+  assert.ok(isAlive(pid));
+  assert.deepEqual(await pids(), [pid], 'one process throughout');
 });
 
 test('closeWhere kills the process', { timeout: 30000 }, async t => {

@@ -1376,13 +1376,13 @@ async function quiet() {
   }
 }
 const age = (since, now) => `depuis ${Math.round((now - since) / 1000)} s`;
-const MCP_POOL_CLOSE_BOUND_MS = 5000;
-/** Ends the kept MCP sessions and refuses new ones. Bounded: a taskkill that never returns does not hold the quit. */
-function closeMcpPool() {
-  if (!mcpPool) return Promise.resolve();
+const MCP_STOP_BOUND_MS = 5000;
+/** Ends every MCP process and refuses new kept sessions (one kill per process: core/mcp-client.mts::killOnce). Bounded:
+ * a taskkill that never returns does not hold the quit. */
+function stopMcpAtQuit() {
   let timer;
-  const bound = new Promise(done => { timer = setTimeout(done, MCP_POOL_CLOSE_BOUND_MS); });
-  return Promise.race([mcpPool.closeAll().catch(() => {}), bound]).finally(() => clearTimeout(timer));
+  const bound = new Promise(done => { timer = setTimeout(done, MCP_STOP_BOUND_MS); });
+  return Promise.race([Promise.all([stopAllMcpServers(), mcpPool?.closeAll()]).catch(() => {}), bound]).finally(() => clearTimeout(timer));
 }
 async function shutdownSteps() {
   const started = Date.now();
@@ -1416,7 +1416,7 @@ async function shutdownSteps() {
   try {
     await Promise.all([
       // A discovery has no abort signal, and a call's MCP session only closes once it unwinds: killed here.
-      timed('servers', Promise.all([stopAllServers(), stopAllMcpServers(), closeMcpPool()])),
+      timed('servers', Promise.all([stopAllServers(), stopMcpAtQuit()])),
       timed('work', settled),
     ]);
     // Then the local model and the Llama: nothing else touches them any more. Its own creation, if still running (a

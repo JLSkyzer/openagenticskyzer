@@ -759,6 +759,44 @@ test('mcp-remove and trust withdrawal stop the kept server', { timeout: 60000 },
   await stopWorker(worker, 3000);
 });
 
+test('kept servers of two trusted projects: a turn in one leaves the other\'s alive, a withdrawal ends only its own', { timeout: 60000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-kept-two-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const alpha = join(root, 'alpha');
+  const beta = join(root, 'beta');
+  await Promise.all([mkdir(home), mkdir(alpha), mkdir(beta)]);
+  const alphaFile = join(root, 'alpha-pids.txt');
+  const betaFile = join(root, 'beta-pids.txt');
+  const alphaPids = pidsIn(alphaFile);
+  const betaPids = pidsIn(betaFile);
+  // The same command and args, differing by env only: two targets, so two processes.
+  const mcpJson = (pidFile: string) => JSON.stringify({ mcpServers: { fake: { command: process.execPath, args: [FAKE_MCP_SERVER], env: { FAKE_MCP_PID_FILE: pidFile } } } });
+  await writeFile(join(alpha, '.mcp.json'), mcpJson(alphaFile));
+  await writeFile(join(beta, '.mcp.json'), mcpJson(betaFile));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), keepAliveOptions(home)));
+  await approveProject(worker, alpha);
+  await approveProject(worker, beta);
+  const { testModel } = await model(t, false);
+
+  assert.equal((await runTurn(worker, alpha, testModel)).at(-1).kind, 'done');
+  assert.equal((await runTurn(worker, beta, testModel)).at(-1).kind, 'done');
+  const [alphaServer] = await alphaPids();
+  const [betaServer] = await betaPids();
+  assert.ok(isAlive(alphaServer), 'a turn in beta leaves alpha\'s server running');
+  assert.ok(isAlive(betaServer));
+  assert.equal((await runTurn(worker, alpha, testModel)).at(-1).kind, 'done');
+  assert.ok(isAlive(betaServer), 'a turn in alpha leaves beta\'s server running');
+  assert.deepEqual([await alphaPids(), await betaPids()], [[alphaServer], [betaServer]], 'neither was restarted');
+
+  await callWorker(worker, 'trust-project', { folder: alpha, decision: 'revoke' });
+  await until(() => !isAlive(alphaServer), 'alpha\'s server gone after its withdrawal', 5000);
+  assert.ok(isAlive(betaServer), 'beta is still trusted: its server stays');
+
+  await stopWorker(worker, 3000);
+  await until(() => !isAlive(betaServer), 'beta\'s server gone after the quit', 5000);
+});
+
 test('shutdown leaves no MCP process', { timeout: 60000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-kept-quit-'));
   removeAtEnd(t, root);

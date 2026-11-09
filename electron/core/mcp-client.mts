@@ -29,11 +29,14 @@ const MAX_ARGS_BYTES = 1024 * 1024;
 const PROTOCOL_VERSION = '2024-11-05';
 
 export interface Session {
-  /** `requestTimeoutMs`: this request's own limit; by default the one the session was opened with. */
-  request(method: string, params?: unknown, requestTimeoutMs?: number): Promise<any>;
+  /** `requestTimeoutMs`: this request's own limit; by default the one the session was opened with. `signal` (stdio): an
+   * abort rejects the request and stops counting it as pending. */
+  request(method: string, params?: unknown, requestTimeoutMs?: number, signal?: AbortSignal): Promise<any>;
   close(): Promise<void>;
   /** False once the session can no longer answer: its process ended, or its pipe or connection broke. */
   alive(): boolean;
+  /** The requests still waiting for their answer. */
+  pendingRequests(): number;
 }
 
 /** The server's own JSON-RPC answer that a request failed: the process that said so is fine, and a kept one stays. */
@@ -43,17 +46,31 @@ class McpAnswerError extends Error {}
 // worker thread's termination does not end the processes it spawned, and a server that ignores its stdin closing (some
 // real servers, `npx` wrappers) would outlive the app.
 const liveChildren = new Set<ChildProcess>();
+const killing = new WeakMap<ChildProcess, Promise<void>>();
+
+/** Kills a process tree once, whoever asks and however many times. Never a process already seen to exit: its PID is
+ * free, and the system may have given it to something else. */
+function killOnce(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  let kill = killing.get(child);
+  if (!kill) {
+    kill = killTree(child).catch(() => {});
+    killing.set(child, kill);
+  }
+  return kill;
+}
 
 /** Kills every MCP process still running, whole process trees included — worker.mjs's 'shutdown' calls it. */
 export async function stopAllMcpServers(): Promise<void> {
   const children = [...liveChildren];
   liveChildren.clear();
-  await Promise.all(children.map(child => killTree(child).catch(() => {})));
+  await Promise.all(children.map(killOnce));
 }
 
 /** A JSON-RPC 2.0 session over stdio. Short-lived by default — one per discovery, one per call, exactly like
- * mcp_client/adapter.py's own _discover/_invoke; `kept` is the McpPool's long-lived one. */
-function openStdioSession(target: McpServerTarget, timeoutMs: number, kept = false): Session {
+ * mcp_client/adapter.py's own _discover/_invoke; `onEnded` makes it the McpPool's long-lived one, and is told when the
+ * process has ended. */
+function openStdioSession(target: McpServerTarget, timeoutMs: number, onEnded?: () => void): Session {
   const child = spawn(target.command, target.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, ...target.env },
@@ -89,28 +106,34 @@ function openStdioSession(target: McpServerTarget, timeoutMs: number, kept = fal
   };
   child.on('error', (error: NodeJS.ErrnoException) => fail(error?.code === 'ENOENT' ? new Error(`commande introuvable : ${target.command}`) : error));
   child.on('exit', code => fail(new Error(`serveur MCP terminé (code ${code})`)));
-  if (kept) {
+  if (onEnded) {
     // Alive for hours, unlike a one-shot session: a server that logs must not fill its unread pipe and block, and a
     // write to one that has just died (EPIPE) must fail its requests, not raise an uncaught error in the worker.
     child.stderr.resume();
     child.stdin.on('error', () => fail(new Error('serveur MCP terminé (écriture impossible)')));
+    child.on('exit', onEnded);
+    child.on('error', onEnded);
   }
 
-  function request(method: string, params?: unknown, requestTimeoutMs = timeoutMs): Promise<any> {
+  function request(method: string, params?: unknown, requestTimeoutMs = timeoutMs, signal?: AbortSignal): Promise<any> {
     if (startupError) return Promise.reject(startupError);
+    if (signal?.aborted) return Promise.reject(signal.reason);
     const id = randomUUID();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error(`délai dépassé (${method})`)); }, requestTimeoutMs);
-      pending.set(id, { resolve: v => { clearTimeout(timer); resolve(v); }, reject: e => { clearTimeout(timer); reject(e); } });
+      const settle = () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); };
+      const onAbort = () => { settle(); pending.delete(id); reject(signal!.reason); };
+      const timer = setTimeout(() => { settle(); pending.delete(id); reject(new Error(`délai dépassé (${method})`)); }, requestTimeoutMs);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      pending.set(id, { resolve: v => { settle(); resolve(v); }, reject: e => { settle(); reject(e); } });
       try { child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'); }
-      catch (error: any) { clearTimeout(timer); pending.delete(id); reject(error); }
+      catch (error: any) { settle(); pending.delete(id); reject(error); }
     });
   }
   async function close() {
     try { child.stdin.end(); } catch { /* already gone */ }
-    await killTree(child).catch(() => {});
+    await killOnce(child);
   }
-  return { request, close, alive: () => startupError === null };
+  return { request, close, alive: () => startupError === null, pendingRequests: () => pending.size };
 }
 
 /** Reads a Streamable-HTTP SSE response body until it finds the JSON-RPC message whose `id`
@@ -213,11 +236,12 @@ function openRemoteSession(target: McpRemoteTarget, timeoutMs: number): Session 
   // matches the stdio session's own "ephemeral, closed right after use" design, just with nothing
   // to actively close on this side.
   async function close() { /* no-op */ }
-  return { request, close, alive: () => startupError === null };
+  // pendingRequests: only McpPool.discard reads it, and the pool is given stdio servers alone (mcpTools).
+  return { request, close, alive: () => startupError === null, pendingRequests: () => 0 };
 }
 
-function openSession(target: McpTarget, timeoutMs: number, kept = false): Session {
-  return isRemoteTarget(target) ? openRemoteSession(target, timeoutMs) : openStdioSession(target, timeoutMs, kept);
+function openSession(target: McpTarget, timeoutMs: number, onEnded?: () => void): Session {
+  return isRemoteTarget(target) ? openRemoteSession(target, timeoutMs) : openStdioSession(target, timeoutMs, onEnded);
 }
 
 async function handshake(session: Session): Promise<Session> {
@@ -285,7 +309,8 @@ export class McpPool {
     }
     if (current) void this.drop(key, current);
     this.known.set(key, target);
-    const session = openSession(target, timeoutMs, true);
+    // Seen to exit, it leaves the pool at once: no entry waits 10 min holding a PID the system may reuse.
+    const session = openSession(target, timeoutMs, () => void this.drop(key, entry));
     const entry: KeptSession = {
       target, session, ready: handshake(session),
       // unref: an unused session's timer never keeps the worker alive.
@@ -303,11 +328,12 @@ export class McpPool {
     await entry.session.close();
   }
 
-  /** Ends this session if it is still the target's: a call stopped or timed out, a discovery with no answer. */
+  /** After a call stopped or timed out, or a discovery with no answer: ends this session if it is still the target's
+   * and nothing else is waiting on it. Folders share a server: one's Stop must not end another's call. */
   async discard(target: McpTarget, session: Session): Promise<void> {
     const key = mcpTargetKey(target);
     const entry = this.kept.get(key);
-    if (entry?.session === session) await this.drop(key, entry);
+    if (entry?.session === session && session.pendingRequests() === 0) await this.drop(key, entry);
   }
 
   async closeWhere(predicate: (target: McpTarget) => boolean): Promise<void> {
@@ -415,15 +441,15 @@ function toAgentTool(target: McpTarget, remote: McpRemoteTool, callTimeoutMs: nu
           if (signal.aborted) { reject(signal.reason); return; }
           signal.addEventListener('abort', () => reject(signal.reason), { once: true });
         });
-        const result: any = await Promise.race([session.request('tools/call', { name: remote.name, arguments: args }, callTimeoutMs), aborted]);
+        const result: any = await Promise.race([session.request('tools/call', { name: remote.name, arguments: args }, callTimeoutMs, pool ? signal : undefined), aborted]);
         const content = result?.content;
         if (Array.isArray(content)) {
           return content.map(part => (typeof part?.text === 'string' ? part.text : JSON.stringify(part))).join('\n') || 'OK (pas de sortie)';
         }
         return typeof content === 'string' ? content : JSON.stringify(content ?? result ?? {});
       } catch (error) {
-        // A call stopped or timed out ends its process, as it does without a pool: the server must not go on working
-        // for nobody. The server's own « this call failed » leaves it running.
+        // A call stopped or timed out ends its process, as it does without a pool, unless another request shares it:
+        // the server must not go on working for nobody. The server's own « this call failed » leaves it running.
         if (pool && !(error instanceof McpAnswerError)) await pool.discard(target, session);
         throw error;
       } finally {

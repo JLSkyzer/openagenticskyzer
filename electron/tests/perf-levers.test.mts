@@ -70,6 +70,11 @@ test('perfLevers: no variable = the shipped levers (today\'s behaviour); a valid
   const badIndex = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ indexDuringTurns: 'stop', embedThreads: 0 }) });
   assert.deepEqual([badIndex.levers.indexDuringTurns, badIndex.levers.embedThreads, badIndex.rejected],
     ['run', null, ['valeur invalide : indexDuringTurns', 'valeur invalide : embedThreads']]);
+  // mcpKeepAlive (Task 14, F19): shipped off; a boolean only.
+  assert.equal(SHIPPED_LEVERS.mcpKeepAlive, false);
+  assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ mcpKeepAlive: true }) }).levers.mcpKeepAlive, true);
+  const keepAlive = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ mcpKeepAlive: 'oui' }) });
+  assert.deepEqual([keepAlive.levers.mcpKeepAlive, keepAlive.rejected], [false, ['valeur invalide : mcpKeepAlive']]);
 });
 
 test('the checkpoint levers: shipped at node-llama-cpp\'s defaults; a shorter interval needs a memory cap', () => {

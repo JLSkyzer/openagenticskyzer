@@ -28,10 +28,16 @@ const CALL_TIMEOUT_MS = 60_000;
 const MAX_ARGS_BYTES = 1024 * 1024;
 const PROTOCOL_VERSION = '2024-11-05';
 
-interface Session {
-  request(method: string, params?: unknown): Promise<any>;
+export interface Session {
+  /** `requestTimeoutMs`: this request's own limit; by default the one the session was opened with. */
+  request(method: string, params?: unknown, requestTimeoutMs?: number): Promise<any>;
   close(): Promise<void>;
+  /** False once the session can no longer answer: its process ended, or its pipe or connection broke. */
+  alive(): boolean;
 }
+
+/** The server's own JSON-RPC answer that a request failed: the process that said so is fine, and a kept one stays. */
+class McpAnswerError extends Error {}
 
 // Every stdio MCP process still running — a discovery or a call in flight — so the app can stop them when it quits: a
 // worker thread's termination does not end the processes it spawned, and a server that ignores its stdin closing (some
@@ -45,9 +51,9 @@ export async function stopAllMcpServers(): Promise<void> {
   await Promise.all(children.map(child => killTree(child).catch(() => {})));
 }
 
-/** A short-lived JSON-RPC 2.0 session over stdio — one per discovery, one per call, exactly like
- * mcp_client/adapter.py's own _discover/_invoke (never a persistent connection). */
-function openStdioSession(target: McpServerTarget, timeoutMs: number): Session {
+/** A JSON-RPC 2.0 session over stdio. Short-lived by default — one per discovery, one per call, exactly like
+ * mcp_client/adapter.py's own _discover/_invoke; `kept` is the McpPool's long-lived one. */
+function openStdioSession(target: McpServerTarget, timeoutMs: number, kept = false): Session {
   const child = spawn(target.command, target.args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, ...target.env },
@@ -72,7 +78,7 @@ function openStdioSession(target: McpServerTarget, timeoutMs: number): Session {
       const waiting = typeof message.id === 'string' && pending.get(message.id);
       if (!waiting) continue;
       pending.delete(message.id);
-      if (message.error) waiting.reject(new Error(message.error.message || 'Erreur MCP'));
+      if (message.error) waiting.reject(new McpAnswerError(message.error.message || 'Erreur MCP'));
       else waiting.resolve(message.result);
     }
   });
@@ -83,12 +89,18 @@ function openStdioSession(target: McpServerTarget, timeoutMs: number): Session {
   };
   child.on('error', (error: NodeJS.ErrnoException) => fail(error?.code === 'ENOENT' ? new Error(`commande introuvable : ${target.command}`) : error));
   child.on('exit', code => fail(new Error(`serveur MCP terminé (code ${code})`)));
+  if (kept) {
+    // Alive for hours, unlike a one-shot session: a server that logs must not fill its unread pipe and block, and a
+    // write to one that has just died (EPIPE) must fail its requests, not raise an uncaught error in the worker.
+    child.stderr.resume();
+    child.stdin.on('error', () => fail(new Error('serveur MCP terminé (écriture impossible)')));
+  }
 
-  function request(method: string, params?: unknown): Promise<any> {
+  function request(method: string, params?: unknown, requestTimeoutMs = timeoutMs): Promise<any> {
     if (startupError) return Promise.reject(startupError);
     const id = randomUUID();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error(`délai dépassé (${method})`)); }, timeoutMs);
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error(`délai dépassé (${method})`)); }, requestTimeoutMs);
       pending.set(id, { resolve: v => { clearTimeout(timer); resolve(v); }, reject: e => { clearTimeout(timer); reject(e); } });
       try { child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'); }
       catch (error: any) { clearTimeout(timer); pending.delete(id); reject(error); }
@@ -98,7 +110,7 @@ function openStdioSession(target: McpServerTarget, timeoutMs: number): Session {
     try { child.stdin.end(); } catch { /* already gone */ }
     await killTree(child).catch(() => {});
   }
-  return { request, close };
+  return { request, close, alive: () => startupError === null };
 }
 
 /** Reads a Streamable-HTTP SSE response body until it finds the JSON-RPC message whose `id`
@@ -146,7 +158,7 @@ function openRemoteSession(target: McpRemoteTarget, timeoutMs: number): Session 
   let sessionId: string | null = null;
   let startupError: Error | null = null;
 
-  async function request(method: string, params?: unknown): Promise<any> {
+  async function request(method: string, params?: unknown, requestTimeoutMs = timeoutMs): Promise<any> {
     if (startupError) throw startupError;
     const id = randomUUID();
     const headers: Record<string, string> = {
@@ -163,7 +175,7 @@ function openRemoteSession(target: McpRemoteTarget, timeoutMs: number): Session 
     // callTimeoutMs. Node's fetch keeps the body stream tied to the same AbortSignal through body
     // consumption, so aborting here still interrupts an in-progress readSseJsonRpcResponse/
     // response.json() — cleared in `finally` so it covers every exit path.
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
     const asTimeoutOrError = (error: any) =>
       error?.name === 'AbortError' ? new Error(`délai dépassé (${method})`) : error instanceof Error ? error : new Error(String(error));
     try {
@@ -201,15 +213,14 @@ function openRemoteSession(target: McpRemoteTarget, timeoutMs: number): Session 
   // matches the stdio session's own "ephemeral, closed right after use" design, just with nothing
   // to actively close on this side.
   async function close() { /* no-op */ }
-  return { request, close };
+  return { request, close, alive: () => startupError === null };
 }
 
-function openSession(target: McpTarget, timeoutMs: number): Session {
-  return isRemoteTarget(target) ? openRemoteSession(target, timeoutMs) : openStdioSession(target, timeoutMs);
+function openSession(target: McpTarget, timeoutMs: number, kept = false): Session {
+  return isRemoteTarget(target) ? openRemoteSession(target, timeoutMs) : openStdioSession(target, timeoutMs, kept);
 }
 
-async function initialize(target: McpTarget, timeoutMs: number): Promise<Session> {
-  const session = openSession(target, timeoutMs);
+async function handshake(session: Session): Promise<Session> {
   try {
     await session.request('initialize', { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'openagent', version: '1.0' } });
   } catch (error) {
@@ -217,6 +228,105 @@ async function initialize(target: McpTarget, timeoutMs: number): Promise<Session
     throw error;
   }
   return session;
+}
+
+async function initialize(target: McpTarget, timeoutMs: number): Promise<Session> {
+  return handshake(openSession(target, timeoutMs));
+}
+
+/** What makes two kept sessions one: the whole target, env included. Secrets are in it: it is never logged. A stdio
+ * server is spawned with nothing else of a project's (no cwd of its own), so an identical target is an identical process. */
+export const mcpTargetKey = (target: McpTarget): string => JSON.stringify(target);
+
+interface KeptSession {
+  target: McpTarget;
+  session: Session;
+  ready: Promise<Session>;
+  idle: NodeJS.Timeout;
+}
+
+/** One live session per target, kept between turns and calls (lever mcpKeepAlive). Its processes are also in
+ * liveChildren, so stopAllMcpServers reaches them. */
+export class McpPool {
+  private readonly idleMs: number;
+  private readonly kept = new Map<string, KeptSession>();
+  /** The targets opened and not closed by closeWhere since. */
+  private readonly known = new Map<string, McpTarget>();
+  /** Closed by closeWhere (removed, changed, no longer trusted): a turn still holding the tools must not start it again. */
+  private readonly retired = new Set<string>();
+  private closing = false;
+
+  constructor({ idleMs = 600_000 }: { idleMs?: number } = {}) {
+    this.idleMs = idleMs;
+  }
+
+  /** The live session of this exact target, opened and initialised once; a dead one is reopened. For a discovery: it
+   * follows the current configuration, so it may bring back a target closeWhere retired. */
+  async session(target: McpTarget, timeoutMs: number): Promise<Session> {
+    const key = mcpTargetKey(target);
+    this.retired.delete(key);
+    return this.live(key, target, timeoutMs);
+  }
+
+  /** The same for a tool call, from tools a discovery gave earlier: refused if the server has been retired since. */
+  async sessionForCall(target: McpTarget, timeoutMs: number): Promise<Session> {
+    const key = mcpTargetKey(target);
+    if (this.retired.has(key)) throw new Error('serveur MCP arrêté (retiré, configuration changée ou projet non approuvé)');
+    return this.live(key, target, timeoutMs);
+  }
+
+  /** Synchronous up to the map insert: concurrent callers for a target share one process, its promise. */
+  private live(key: string, target: McpTarget, timeoutMs: number): Promise<Session> {
+    if (this.closing) return Promise.reject(new Error('application en cours de fermeture'));
+    const current = this.kept.get(key);
+    if (current?.session.alive()) {
+      current.idle.refresh();
+      return current.ready;
+    }
+    if (current) void this.drop(key, current);
+    this.known.set(key, target);
+    const session = openSession(target, timeoutMs, true);
+    const entry: KeptSession = {
+      target, session, ready: handshake(session),
+      // unref: an unused session's timer never keeps the worker alive.
+      idle: setTimeout(() => void this.drop(key, entry), this.idleMs).unref(),
+    };
+    // A failed start is not kept: the next caller tries again.
+    entry.ready = entry.ready.catch(error => { void this.drop(key, entry); throw error; });
+    this.kept.set(key, entry);
+    return entry.ready;
+  }
+
+  private async drop(key: string, entry: KeptSession): Promise<void> {
+    clearTimeout(entry.idle);
+    if (this.kept.get(key) === entry) this.kept.delete(key);
+    await entry.session.close();
+  }
+
+  /** Ends this session if it is still the target's: a call stopped or timed out, a discovery with no answer. */
+  async discard(target: McpTarget, session: Session): Promise<void> {
+    const key = mcpTargetKey(target);
+    const entry = this.kept.get(key);
+    if (entry?.session === session) await this.drop(key, entry);
+  }
+
+  async closeWhere(predicate: (target: McpTarget) => boolean): Promise<void> {
+    const closing: Promise<void>[] = [];
+    for (const [key, target] of this.known) {
+      if (!predicate(target)) continue;
+      this.known.delete(key);
+      this.retired.add(key);
+      const entry = this.kept.get(key);
+      if (entry) closing.push(this.drop(key, entry));
+    }
+    await Promise.all(closing);
+  }
+
+  /** Ends every session; none opens afterwards. */
+  async closeAll(): Promise<void> {
+    this.closing = true;
+    await this.closeWhere(() => true);
+  }
 }
 
 interface McpRemoteTool {
@@ -237,10 +347,11 @@ export interface McpServerOutcome {
  * from the rest — one bad entry in the MCP config must never keep the others from loading, the
  * same isolation agent.py's own try/except-per-server already had. Works identically for stdio and
  * remote (sse/http) targets. `servers` holds one outcome per target, in `targets` order; a server's
- * `tools` are the very objects listed in `tools`. */
+ * `tools` are the very objects listed in `tools`. With `pool`, a stdio server is discovered and called on its kept
+ * session and nothing is closed here; a remote one has no process to keep and goes on as without a pool. */
 export async function mcpTools(
   targets: McpTarget[],
-  options: { discoveryTimeoutMs?: number; callTimeoutMs?: number } = {},
+  options: { discoveryTimeoutMs?: number; callTimeoutMs?: number; pool?: McpPool } = {},
 ): Promise<{ tools: AgentTool[]; errors: string[]; servers: McpServerOutcome[] }> {
   const discoveryTimeoutMs = options.discoveryTimeoutMs ?? DISCOVERY_TIMEOUT_MS;
   const callTimeoutMs = options.callTimeoutMs ?? CALL_TIMEOUT_MS;
@@ -252,26 +363,35 @@ export async function mcpTools(
     };
     const missing = isRemoteTarget(target) ? !target.url?.trim() : !target.command?.trim();
     if (missing) return failed(`${isRemoteTarget(target) ? 'URL' : 'commande'} absente`, '');
-    let session: Session;
-    try {
-      session = await initialize(target, discoveryTimeoutMs);
-    } catch (error) {
-      return failed(error instanceof Error ? error.message : String(error));
-    }
-    try {
-      const result = await session.request('tools/list', {});
-      const remote: McpRemoteTool[] = Array.isArray(result?.tools) ? result.tools : [];
-      return { target, tools: remote.filter(t => typeof t.name === 'string' && t.name).map(t => toAgentTool(target, t, callTimeoutMs)), error: null };
-    } catch (error) {
-      return failed(error instanceof Error ? error.message : String(error));
-    } finally {
-      await session.close();
+    const pool = isRemoteTarget(target) ? undefined : options.pool;
+    for (let retry = pool !== undefined; ; retry = false) {
+      let session: Session;
+      try {
+        session = pool ? await pool.session(target, discoveryTimeoutMs) : await initialize(target, discoveryTimeoutMs);
+      } catch (error) {
+        return failed(error instanceof Error ? error.message : String(error));
+      }
+      try {
+        const result = await session.request('tools/list', {}, discoveryTimeoutMs);
+        const remote: McpRemoteTool[] = Array.isArray(result?.tools) ? result.tools : [];
+        return { target, tools: remote.filter(t => typeof t.name === 'string' && t.name).map(t => toAgentTool(target, t, callTimeoutMs, pool)), error: null };
+      } catch (error) {
+        if (pool && !(error instanceof McpAnswerError)) {
+          const died = !session.alive();
+          await pool.discard(target, session);
+          // Dead before its death was seen here: one new process. One that is alive and silent is not started again.
+          if (retry && died) continue;
+        }
+        return failed(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (!pool) await session.close();
+      }
     }
   }));
   return { tools: servers.flatMap(server => server.tools ?? []), errors, servers };
 }
 
-function toAgentTool(target: McpTarget, remote: McpRemoteTool, callTimeoutMs: number): AgentTool {
+function toAgentTool(target: McpTarget, remote: McpRemoteTool, callTimeoutMs: number, pool?: McpPool): AgentTool {
   const name = `mcp_${remote.name}`;
   const parameters = remote.inputSchema && typeof remote.inputSchema === 'object'
     ? remote.inputSchema
@@ -289,20 +409,25 @@ function toAgentTool(target: McpTarget, remote: McpRemoteTool, callTimeoutMs: nu
       // validator — a bad call fails clearly with the server's own error instead of ours.
     },
     async execute(args, signal) {
-      const session = await initialize(target, callTimeoutMs);
+      const session = pool ? await pool.sessionForCall(target, callTimeoutMs) : await initialize(target, callTimeoutMs);
       try {
         const aborted = new Promise<never>((_, reject) => {
           if (signal.aborted) { reject(signal.reason); return; }
           signal.addEventListener('abort', () => reject(signal.reason), { once: true });
         });
-        const result: any = await Promise.race([session.request('tools/call', { name: remote.name, arguments: args }), aborted]);
+        const result: any = await Promise.race([session.request('tools/call', { name: remote.name, arguments: args }, callTimeoutMs), aborted]);
         const content = result?.content;
         if (Array.isArray(content)) {
           return content.map(part => (typeof part?.text === 'string' ? part.text : JSON.stringify(part))).join('\n') || 'OK (pas de sortie)';
         }
         return typeof content === 'string' ? content : JSON.stringify(content ?? result ?? {});
+      } catch (error) {
+        // A call stopped or timed out ends its process, as it does without a pool: the server must not go on working
+        // for nobody. The server's own « this call failed » leaves it running.
+        if (pool && !(error instanceof McpAnswerError)) await pool.discard(target, session);
+        throw error;
       } finally {
-        await session.close();
+        if (!pool) await session.close();
       }
     },
   };

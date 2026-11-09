@@ -81,6 +81,10 @@ export interface PerfLevers {
   /** The ONNX threads of the embeddings (Task 13, core/embeddings.mts::sessionOptions): that many intra-op threads and
    * one inter-op thread. null: onnxruntime's defaults, as today. */
   embedThreads: number | null;
+  /** Keep the stdio MCP servers alive between turns and calls (Task 14, core/mcp-client.mts::McpPool): one process per
+   * exact configuration, stopped on removal, trust withdrawal, a changed configuration, 10 min unused and shutdown.
+   * Shipped false: a process per discovery and per call, as today. */
+  mcpKeepAlive: boolean;
 }
 
 export const PERF_LEVERS_ENV = 'OPENAGENT_PERF_LEVERS';
@@ -106,6 +110,7 @@ export const SHIPPED_LEVERS: Readonly<PerfLevers> = Object.freeze({
   rereadWeighting: false,
   indexDuringTurns: 'run',
   embedThreads: null,
+  mcpKeepAlive: false,
 });
 
 /** node-llama-cpp's own checkpoint interval (3.21.1, `defaultCheckpointOptions`): below it, a memory cap is required. */
@@ -133,6 +138,7 @@ const VALID: { [K in keyof PerfLevers]: (value: unknown) => boolean } = {
   rereadWeighting: value => typeof value === 'boolean',
   indexDuringTurns: value => value === 'run' || value === 'pause',
   embedThreads: value => value === null || positiveInteger(value),
+  mcpKeepAlive: value => typeof value === 'boolean',
 };
 
 /** The levers `env` asks for: each valid key overrides its shipped value; an unknown key, a wrong type or invalid

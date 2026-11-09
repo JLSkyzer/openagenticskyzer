@@ -42,7 +42,7 @@ import { migrateDataDir } from './core/data-dir.mts';
 import { resolveHomes } from './core/data-home.cjs';
 import { initializeProject } from './core/project-analyzer.mts';
 import { McpConfigStore, readProjectMcpConfig, mergeServerConfigs, redactSecrets, expandServerPlaceholders, serverIdentity } from './core/mcp-config.mts';
-import { mcpTools, stopAllMcpServers } from './core/mcp-client.mts';
+import { mcpTools, stopAllMcpServers, McpPool, mcpTargetKey } from './core/mcp-client.mts';
 import { indexFolder } from './core/semantic-index.mts';
 import { IndexGate } from './core/index-gate.mts';
 import { setModelsDir, DEFAULT_MODELS_DIR, stopEmbeddings, embeddingsIdle } from './core/embeddings.mts';
@@ -214,6 +214,10 @@ const mcpDiscoveries = new Map();
 /** A project server's discovery belongs to that project alone — another project may run the same command, with its
  * own env; a global server is the same server in every folder. The identity is the config as a turn runs it. */
 const mcpDiscoveryKey = (folder, server) => JSON.stringify([server.scope === 'project' ? resolve(String(folder)) : null, serverIdentity(server)]);
+// The kept MCP sessions (lever mcpKeepAlive): null when it is off, a process per discovery and per call as ever.
+const mcpPool = perfLevers().mcpKeepAlive ? new McpPool() : null;
+// The folders whose turns went through the pool: what they run now is what may stay alive.
+const mcpPoolFolders = new Set();
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
 const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'model-status', 'hardware-info', 'estimate-model', 'estimate-cancel', 'cuda-pack-status', 'cuda-pack-install', 'cuda-pack-cancel', 'cuda-pack-uninstall', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-add-remote', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'project-trust', 'trust-project', 'shutdown']);
@@ -350,9 +354,27 @@ async function mcpSecretsFor(folder, projectTrust) {
   return mcpSecretValues([...await mcpServersFor(folder, projectTrust), ...asWritten]);
 }
 
+/** Ends every kept MCP session that no folder would run any more: the configuration and the trust are read now, not
+ * remembered, so a removal, a withdrawal or a changed config (in any spelling of the folder) all land here. Whatever
+ * cannot be read counts for nothing: its sessions end. A session another trusted folder still runs stays. */
+async function closeMcpSessionsNoLongerConfigured() {
+  if (!mcpPool) return;
+  const current = new Set((await mcpConfig.list().catch(() => [])).map(mcpTargetKey));
+  for (const folder of mcpPoolFolders) {
+    try {
+      for (const server of await mcpServersFor(folder, await trust.evaluate(folder))) current.add(mcpTargetKey(server));
+    } catch { /* a folder gone or unreadable keeps nothing alive */ }
+  }
+  await mcpPool.closeWhere(target => !current.has(mcpTargetKey(target)));
+}
+
 /** Built-in + MCP tools for a turn: the MCP servers are started here, and only here, to discover their tools. */
 async function nonPluginTools(folder, effective, projectTrust) {
-  const { tools: mcpDiscovered, errors: mcpErrors, servers } = await mcpTools(await mcpServersFor(folder, projectTrust));
+  const targets = await mcpServersFor(folder, projectTrust);
+  // Listed before the discovery: another folder's sweep during it must count this folder's servers.
+  if (mcpPool) mcpPoolFolders.add(folder);
+  const { tools: mcpDiscovered, errors: mcpErrors, servers } = await mcpTools(targets, mcpPool ? { pool: mcpPool } : {});
+  await closeMcpSessionsNoLongerConfigured();
   for (const { target, tools, error } of servers) {
     mcpDiscoveries.set(mcpDiscoveryKey(folder, target), tools ? { names: tools.map(tool => tool.name) } : { error });
   }
@@ -1170,6 +1192,7 @@ async function handle(message) {
         ? await trust.revoke(payload.folder)
         : await trust.decide(payload.folder, payload.decision, payload.token));
       if (payload.decision === 'revoke' || payload.decision === 'ignored') forgetSessionAllowed(payload.folder);
+      await closeMcpSessionsNoLongerConfigured();
     }
     // Every MCP op's reply goes through redactSecrets: env/header values never reach the renderer.
     if (op === 'mcp-list') result = redactSecrets(await mcpServersForDisplay(payload.folder ?? null));
@@ -1182,6 +1205,7 @@ async function handle(message) {
       // Kept while another global entry runs that same server (same identity, same key).
       const key = removed && mcpDiscoveryKey(null, removed);
       if (key && !result.some(server => mcpDiscoveryKey(null, server) === key)) mcpDiscoveries.delete(key);
+      await closeMcpSessionsNoLongerConfigured();
     }
     if (op === 'list_folders') result = await folders.list();
     if (op === 'index-status') result = indexStatus.get(resolve(String(payload.folder))) ?? { state: 'idle' };
@@ -1352,6 +1376,14 @@ async function quiet() {
   }
 }
 const age = (since, now) => `depuis ${Math.round((now - since) / 1000)} s`;
+const MCP_POOL_CLOSE_BOUND_MS = 5000;
+/** Ends the kept MCP sessions and refuses new ones. Bounded: a taskkill that never returns does not hold the quit. */
+function closeMcpPool() {
+  if (!mcpPool) return Promise.resolve();
+  let timer;
+  const bound = new Promise(done => { timer = setTimeout(done, MCP_POOL_CLOSE_BOUND_MS); });
+  return Promise.race([mcpPool.closeAll().catch(() => {}), bound]).finally(() => clearTimeout(timer));
+}
 async function shutdownSteps() {
   const started = Date.now();
   const steps = {};
@@ -1384,7 +1416,7 @@ async function shutdownSteps() {
   try {
     await Promise.all([
       // A discovery has no abort signal, and a call's MCP session only closes once it unwinds: killed here.
-      timed('servers', Promise.all([stopAllServers(), stopAllMcpServers()])),
+      timed('servers', Promise.all([stopAllServers(), stopAllMcpServers(), closeMcpPool()])),
       timed('work', settled),
     ]);
     // Then the local model and the Llama: nothing else touches them any more. Its own creation, if still running (a

@@ -701,3 +701,92 @@ test('mcp-remove forgets what the turns learned of that server: re-added, it is 
   assert.equal(again.tools, null, 'the same command, added again: not started since');
   assert.equal(again.error, null);
 });
+
+// The lever mcpKeepAlive (Task 14): a worker that honours OPENAGENT_PERF_LEVERS, as an unpackaged app does (ruling F6).
+function keepAliveOptions(home: string) {
+  const options = testWorkerOptions(home, { OPENAGENT_PERF_LEVERS: JSON.stringify({ mcpKeepAlive: true }) });
+  return { ...options, workerData: { ...options.workerData, perfLeversAllowed: true } };
+}
+const pidsIn = (file: string) => async () => {
+  try { return (await readFile(file, 'utf8')).split('\n').filter(Boolean).map(Number); } catch { return []; }
+};
+
+test('mcp-remove and trust withdrawal stop the kept server', { timeout: 60000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-kept-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  const globalFile = join(root, 'global-pids.txt');
+  const projectFile = join(root, 'project-pids.txt');
+  const globalPids = pidsIn(globalFile);
+  const projectPids = pidsIn(projectFile);
+  const globalEntry = (extra: Record<string, string> = {}) => [{
+    id: 'kept', command: process.execPath, args: [FAKE_MCP_SERVER], env: { FAKE_MCP_PID_FILE: globalFile, ...extra }, added_at: new Date().toISOString(),
+  }];
+  await writeFile(join(home, 'mcp.json'), JSON.stringify(globalEntry()));
+  await writeFile(join(project, '.mcp.json'), JSON.stringify({ mcpServers: { fake: { command: process.execPath, args: [FAKE_MCP_SERVER, 'projet'], env: { FAKE_MCP_PID_FILE: projectFile } } } }));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), keepAliveOptions(home)));
+  await approveProject(worker, project);
+  const { testModel } = await model(t, false);
+
+  // Two turns, one process per server, alive after them.
+  assert.equal((await runTurn(worker, project, testModel)).at(-1).kind, 'done');
+  assert.equal((await runTurn(worker, project, testModel)).at(-1).kind, 'done');
+  const [kept, ...moreKept] = await globalPids();
+  const [projectServer, ...moreProject] = await projectPids();
+  assert.deepEqual([moreKept, moreProject], [[], []], 'each server started once for the two turns');
+  assert.ok(isAlive(kept) && isAlive(projectServer), 'both kept between the turns');
+
+  // A changed config is a new target: the next discovery starts it and stops the old one.
+  await writeFile(join(home, 'mcp.json'), JSON.stringify(globalEntry({ CHANGED: '1' })));
+  assert.equal((await runTurn(worker, project, testModel)).at(-1).kind, 'done');
+  const [, changed, ...afterChange] = await globalPids();
+  assert.deepEqual(afterChange, []);
+  assert.ok(!isAlive(kept), 'the old configuration\'s process is gone');
+  assert.ok(isAlive(changed) && isAlive(projectServer));
+
+  await callWorker(worker, 'trust-project', { folder: project, decision: 'revoke' });
+  await until(() => !isAlive(projectServer), 'the project\'s server gone after the trust withdrawal', 5000);
+  assert.ok(isAlive(changed), 'the global server does not depend on the project\'s trust');
+
+  await callWorker(worker, 'mcp-remove', { id: 'kept' });
+  await until(() => !isAlive(changed), 'the removed server gone', 5000);
+
+  // Nothing comes back with the project no longer trusted and the server removed.
+  assert.equal((await runTurn(worker, project, testModel)).at(-1).kind, 'done');
+  assert.deepEqual([(await globalPids()).length, (await projectPids()).length], [2, 1]);
+  await stopWorker(worker, 3000);
+});
+
+test('shutdown leaves no MCP process', { timeout: 60000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-kept-quit-'));
+  removeAtEnd(t, root);
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  await Promise.all([mkdir(home), mkdir(project)]);
+  const pidFile = join(root, 'mcp-pids.txt');
+  const pids = pidsIn(pidFile);
+  // Two kept servers: the one whose echo the turn calls takes 60 s to answer, the other stays idle. A server that
+  // ignores its stdin closing, as these calls do meanwhile, is only ended by being killed.
+  await writeFile(join(home, 'mcp.json'), JSON.stringify(['a', 'b'].map(id => ({
+    id, command: process.execPath, args: [FAKE_MCP_SERVER, id], env: { FAKE_MCP_PID_FILE: pidFile, FAKE_MCP_CALL_DELAY_MS: '60000' }, added_at: new Date().toISOString(),
+  }))));
+  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), keepAliveOptions(home)));
+  await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
+
+  const { testModel } = await model(t, true);
+  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'appelle mcp_echo', testModel });
+  const { events, stop } = collectAgentEvents(worker, runId);
+  t.after(stop);
+  await until(async () => events.some(e => e.kind === 'tool-start') && (await pids()).length >= 2, 'the turn in the middle of its MCP call');
+  const started = await pids();
+  assert.equal(started.length, 2, `the call runs on the discovery's process (pids ${started.join(', ')})`);
+  assert.ok(started.every(isAlive), `both servers run before the quit (pids ${started.join(', ')})`);
+
+  const quitStart = Date.now();
+  await stopWorker(worker, 3000);
+  await until(() => started.every(pid => !isAlive(pid)), `every MCP process gone after the shutdown (pids ${started.join(', ')})`, 5000);
+  assert.ok(Date.now() - quitStart < 20000, 'the quit did not wait for the call');
+  assert.equal((await pids()).length, 2, 'and no process started during the quit');
+});

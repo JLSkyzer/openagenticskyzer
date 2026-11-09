@@ -2,6 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
+import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const FAKE_SERVER = fileURLToPath(new URL('./fixtures/fake-mcp-server.cjs', import.meta.url));
 const config = (extraEnv: Record<string, string> = {}) => ({
@@ -188,4 +191,166 @@ test('mcpTools also reports each server\'s own outcome, in config order: the too
   assert.ok(servers[1].tools!.every(tool => tools.includes(tool)), 'the very tool objects the turn gets, so a caller can tell which server a kept tool came from');
   assert.equal(servers[2].tools, null);
   assert.match(servers[2].error!, /commande absente/);
+});
+
+// The kept servers (lever mcpKeepAlive, Task 14). Each test runs the real fixture and reads the PIDs it wrote at start.
+async function pidFileIn(t: any) {
+  const dir = await mkdtemp(join(tmpdir(), 'openagent-mcp-pool-'));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5 }));
+  const file = join(dir, 'pids.txt');
+  const pids = async () => {
+    try { return (await readFile(file, 'utf8')).split('\n').filter(Boolean).map(Number); } catch { return []; }
+  };
+  return { dir, file, pids };
+}
+function isAlive(pid: number) {
+  try { process.kill(pid, 0); return true; } catch (error: any) { return error.code === 'EPERM'; }
+}
+async function until(check: () => boolean | Promise<boolean>, what: string, timeout = 5000) {
+  const start = Date.now();
+  while (!(await check())) {
+    if (Date.now() - start > timeout) throw new Error(`timed out waiting for ${what}`);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+}
+const toolNames = (tools: { name: string }[]) => tools.map(tool => tool.name).sort();
+const pooled = async (t: any, options?: { idleMs?: number }) => {
+  const { McpPool } = await import('../core/mcp-client.mts');
+  const pool = new McpPool(options);
+  t.after(() => pool.closeAll());
+  return pool;
+};
+
+test('with a pool, two discoveries start the server once', { timeout: 30000 }, async t => {
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  const { file, pids } = await pidFileIn(t);
+  const pool = await pooled(t);
+  const target = config({ FAKE_MCP_PID_FILE: file });
+  // Two at once, while the only process is still starting, then one more on the live process.
+  const both = await Promise.all([mcpTools([target], { pool }), mcpTools([target], { pool })]);
+  for (const { tools, errors } of both) {
+    assert.deepEqual(errors, []);
+    assert.deepEqual(toolNames(tools), ['mcp_boom', 'mcp_echo']);
+  }
+  const { tools } = await mcpTools([target], { pool });
+  assert.deepEqual(toolNames(tools), ['mcp_boom', 'mcp_echo']);
+  const started = await pids();
+  assert.equal(started.length, 1, `one process for the three discoveries (pids ${started.join(', ')})`);
+  assert.ok(isAlive(started[0]), 'a discovery through the pool leaves the server running');
+});
+
+test('a tool call reuses the discovery\'s process', { timeout: 30000 }, async t => {
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  const { file, pids } = await pidFileIn(t);
+  const pool = await pooled(t);
+  const never = new AbortController().signal;
+  const { tools } = await mcpTools([config({ FAKE_MCP_PID_FILE: file })], { pool });
+  assert.equal(await tools.find(tool => tool.name === 'mcp_echo')!.execute({ text: 'gardé' }, never), 'gardé');
+  // The server's own answer that a call failed says nothing about the process: it stays.
+  await assert.rejects(tools.find(tool => tool.name === 'mcp_boom')!.execute({}, never), /échec volontaire/);
+  const started = await pids();
+  assert.equal(started.length, 1, `the calls ran on the discovery's process (pids ${started.join(', ')})`);
+  assert.ok(isAlive(started[0]));
+
+  // A kept session was opened under the discovery's timeout: a call has its own, longer one.
+  const slow = await pidFileIn(t);
+  const slowDiscovered = await mcpTools([config({ FAKE_MCP_PID_FILE: slow.file, FAKE_MCP_CALL_DELAY_MS: '3500' })], { pool, discoveryTimeoutMs: 3000 });
+  assert.deepEqual(slowDiscovered.errors, []);
+  const slowEcho = slowDiscovered.tools.find(tool => tool.name === 'mcp_echo')!;
+  assert.equal(await slowEcho.execute({ text: 'lent' }, never), 'lent');
+
+  // A stopped call ends its process, as it does without a pool: the server must not go on working for nobody.
+  const stopping = new AbortController();
+  const flight = slowEcho.execute({ text: 'arrêté' }, stopping.signal);
+  stopping.abort(new Error('arrêt demandé'));
+  await assert.rejects(flight, /arrêt demandé/);
+  const [slowPid] = await slow.pids();
+  await until(() => !isAlive(slowPid), 'the process of the stopped call gone');
+});
+
+test('a crashed server is started again at the next discovery', { timeout: 30000 }, async t => {
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  const { dir, file, pids } = await pidFileIn(t);
+  const pool = await pooled(t);
+  const target = config({ FAKE_MCP_PID_FILE: file, FAKE_MCP_CALL_DELAY_MS: '30000' });
+  const { tools } = await mcpTools([target], { pool });
+  const echo = tools.find(tool => tool.name === 'mcp_echo')!;
+
+  // A call in flight on the process that dies fails at once, with the reason: it does not wait for its 60 s.
+  const flight = echo.execute({ text: 'perdu' }, new AbortController().signal);
+  const [first] = await pids();
+  process.kill(first);
+  await assert.rejects(flight, /serveur MCP terminé/);
+
+  const again = await mcpTools([target], { pool });
+  assert.deepEqual(again.errors, []);
+  assert.deepEqual(toolNames(again.tools), ['mcp_boom', 'mcp_echo']);
+  const [, second, ...others] = await pids();
+  assert.deepEqual(others, []);
+  assert.ok(isAlive(second), 'the second process is kept in turn');
+
+  // Killed just before a discovery, its exit not yet seen by this process: the discovery still gets a live server.
+  process.kill(second);
+  const third = await mcpTools([target], { pool });
+  assert.deepEqual([third.errors, toolNames(third.tools)], [[], ['mcp_boom', 'mcp_echo']]);
+  const after = await pids();
+  assert.equal(after.length, 3, `one new process (pids ${after.join(', ')})`);
+
+  // A start that failed is not remembered: the same target works once its script exists.
+  const script = join(dir, 'late-server.cjs');
+  const late = { command: process.execPath, args: [script], env: { FAKE_MCP_PID_FILE: file } };
+  const missing = await mcpTools([late], { pool });
+  assert.equal(missing.tools.length, 0);
+  assert.match(missing.errors[0], /serveur MCP terminé/);
+  await copyFile(FAKE_SERVER, script);
+  const found = await mcpTools([late], { pool });
+  assert.deepEqual([found.errors, toolNames(found.tools)], [[], ['mcp_boom', 'mcp_echo']]);
+});
+
+test('closeWhere kills the process', { timeout: 30000 }, async t => {
+  const { mcpTools } = await import('../core/mcp-client.mts');
+  const { file, pids } = await pidFileIn(t);
+  const pool = await pooled(t);
+  const never = new AbortController().signal;
+  const removed = config({ FAKE_MCP_PID_FILE: file, WHICH: 'retiré' });
+  const other = config({ FAKE_MCP_PID_FILE: file, WHICH: 'autre' });
+  const first = await mcpTools([removed], { pool });
+  const [removedPid] = await pids();
+  await mcpTools([other], { pool });
+  const [, otherPid] = await pids();
+
+  await pool.closeWhere(target => (target as typeof removed).env.WHICH === 'retiré');
+  assert.ok(!isAlive(removedPid), 'gone when closeWhere returns');
+  assert.ok(isAlive(otherPid), 'the other session is untouched');
+
+  // A turn still holding its tools never brings a closed server back: the next discovery alone decides.
+  await assert.rejects(first.tools.find(tool => tool.name === 'mcp_echo')!.execute({ text: 'x' }, never), /arrêté/);
+  assert.equal((await pids()).length, 2, 'no process started by the refused call');
+  const back = await mcpTools([removed], { pool });
+  assert.deepEqual(back.errors, []);
+  assert.equal((await pids()).length, 3, 'a discovery starts it again');
+  assert.equal(await back.tools.find(tool => tool.name === 'mcp_echo')!.execute({ text: 'revenu' }, never), 'revenu');
+
+  // A server closed while it is still starting does not wait for its initialize answer.
+  const starting = await pidFileIn(t);
+  const opening = pool.session(config({ FAKE_MCP_PID_FILE: starting.file, FAKE_MCP_INIT_DELAY_MS: '60000', WHICH: 'lent' }), 30000);
+  await until(async () => (await starting.pids()).length === 1, 'the slow server running');
+  await pool.closeWhere(target => (target as typeof removed).env.WHICH === 'lent');
+  await assert.rejects(opening, /serveur MCP terminé/);
+  assert.ok(!isAlive((await starting.pids())[0]));
+
+  // Unused for idleMs, a session closes by itself.
+  const idle = await pidFileIn(t);
+  const shortLived = await pooled(t, { idleMs: 150 });
+  await mcpTools([config({ FAKE_MCP_PID_FILE: idle.file })], { pool: shortLived });
+  const [idlePid] = await idle.pids();
+  assert.ok(isAlive(idlePid), 'alive before its idle time');
+  await until(() => !isAlive(idlePid), 'the unused session closed');
+
+  // closeAll ends everything, and nothing opens afterwards.
+  const running = await pids();
+  await pool.closeAll();
+  assert.deepEqual(running.filter(isAlive), []);
+  await assert.rejects(pool.session(other, 5000), /fermeture/);
+  assert.equal((await pids()).length, running.length, 'no process started after closeAll');
 });

@@ -128,3 +128,4 @@ import './bench-metrics.test.mts';
 import './bench.test.mts';
 import './model-capabilities.test.mts';
 import './hf-catalogue.test.mts';
+import './model-score.test.mts';

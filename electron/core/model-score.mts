@@ -13,18 +13,29 @@ export type CodeQuality = 'strong' | 'good' | 'unknown';
 // 34.3 GB of RAM, context 32768; .superpowers/bench/20261109-205459-27b-final.json, placement): the runtime put
 // 25 of 66 layers on the card, vramBytes 6 343 752 960 and ramBytes 9 125 190 560.
 //   - Memory used beyond the file: 6 343 752 960 + 9 125 190 560 − 12 768 331 360 = 2 700 612 160 bytes for 32768
-//     tokens, i.e. about 82 400 bytes per context token. This lumps the KV cache and the compute buffers together,
-//     so it is an upper-leaning figure for a model of that size, and it is not scaled to other architectures.
+//     tokens, i.e. 82 421 bytes per context token. This lumps the KV cache and the compute buffers together.
+//     That figure is measured for this one model only. ASSUMPTIONS made on top of it, to err toward a lower note:
+//     the KV cache grows with layer count and KV heads, which grow with the model, so the cost is scaled up
+//     proportionally to the file size above the 27B's size (never scaled down: a small model may have a heavy
+//     cache), and a 25 % margin is added. Neither the proportionality nor the margin has been measured.
 //   - VRAM reserve: the run left roughly 1.6 GB of the card unused; 1.5 GB is kept back for the display and the
 //     driver. The unused share is observed, the choice of 1.5 GB is a judgement.
 //   - RAM reserve: NOT measured (the run says nothing about what the system needs); 4 GB is an assumption for
 //     Windows and the other open applications.
 export const VRAM_RESERVE_BYTES = 1_500_000_000;
 export const RAM_RESERVE_BYTES = 4_000_000_000;
-export const CONTEXT_BYTES_PER_TOKEN = 82_000;
+export const MEASURED_CONTEXT_BYTES_PER_TOKEN = 82_421;
+export const MEASURED_MODEL_BYTES = 12_768_331_360;
+export const CONTEXT_COST_MARGIN = 1.25;
+
+/** Estimated memory for the context of a model file: measured on the 27B, scaled up (never down) with size, plus a margin. */
+export function contextCostBytes(fileBytes: number, contextSize: number): number {
+  const scale = Math.max(1, fileBytes / MEASURED_MODEL_BYTES);
+  return Math.ceil(contextSize * MEASURED_CONTEXT_BYTES_PER_TOKEN * scale * CONTEXT_COST_MARGIN);
+}
 
 export function fitOf(variant: ModelVariant, hardware: HardwareInfo, contextSize: number): Fit {
-  const need = variant.totalBytes + contextSize * CONTEXT_BYTES_PER_TOKEN;
+  const need = variant.totalBytes + contextCostBytes(variant.totalBytes, contextSize);
   const card = hardware.vram ? Math.max(0, hardware.vram.total - VRAM_RESERVE_BYTES) : 0;
   const ram = Math.max(0, hardware.ram.total - RAM_RESERVE_BYTES);
   if (need <= card) return 'full';

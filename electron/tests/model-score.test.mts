@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { HardwareInfo } from '../core/hardware.mts';
 import type { CatalogueModel, ModelVariant } from '../core/hf-catalogue.mts';
 import {
-  fitOf, chooseVariant, codeQualityOf, scoreModel, recommend, type Fit, type RecommendationInput,
+  fitOf, contextCostBytes, chooseVariant, codeQualityOf, scoreModel, recommend, type Fit, type RecommendationInput,
 } from '../core/model-score.mts';
 import { CODE_FAMILIES } from '../core/code-families.mts';
 
@@ -39,6 +39,16 @@ test('fit: a card holding less than a quarter of the file is slow', () => {
 test('fit: a longer context costs more', () => {
   assert.equal(fitOf(variant('q', 6), hardware(8, 32), 4096), 'full');
   assert.equal(fitOf(variant('q', 6), hardware(8, 32), 131072), 'partial');
+});
+
+test('fit: a big file at the default context is not given a fit it cannot run (the context cost grows with the model)', () => {
+  // 30 GB + a 32768-token context: a 27B-sized cost (2.7 GB) would say partial on 8 GB + 32 GB; a larger model's cache is larger.
+  assert.equal(fitOf(variant('q', 30), hardware(8, 32), 32768), 'none');
+  assert.ok(contextCostBytes(30 * GB, 32768) > contextCostBytes(12.77 * GB, 32768));
+});
+test('fit: the context cost never goes below what was measured on the 27B', () => {
+  assert.ok(contextCostBytes(12_768_331_360, 32768) >= 2_700_612_160);
+  assert.ok(contextCostBytes(2 * GB, 32768) >= 2_700_612_160);
 });
 
 test('stars: pinned values', () => {

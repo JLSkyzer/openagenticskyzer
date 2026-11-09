@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { turnFigures, compareRuns, comparability, formatComparison, resultFileName, type BenchRun } from '../bench/metrics.mts';
-import { gamesIn } from '../bench/guard.mts';
+import { gamesIn, isDevelopmentMinecraft } from '../bench/guard.mts';
 import { classifyReuse, divergenceAt, formatReuseReport } from '../bench/reuse-report.mts';
 
 const at = (ms: number) => new Date(Date.UTC(2026, 9, 25, 10, 0, 0, ms)).toISOString();
@@ -50,6 +50,15 @@ test('gamesIn: a Minecraft client counts; Unity batch and AxionEngine processes 
   assert.deepEqual(gamesIn(csv.split('\r\n').filter(l => !l.includes('javaw')).join('\r\n')), []);
   // The guard's own PowerShell rows: name, pid, window title.
   assert.deepEqual(gamesIn('"java.exe","7","Minecraft* 1.21"\n"Unity.exe","8","Minecraft batch"\n"explorer.exe","9",""'), ['java.exe']);
+  // A Minecraft from a mod's development environment is tolerated by its PID; a player's client beside it still counts.
+  const both = '"java.exe","7","Minecraft* 1.20.1"\n"javaw.exe","8","Minecraft 1.20.1"';
+  assert.deepEqual(gamesIn(both, new Set(['7'])), ['javaw.exe']);
+  assert.deepEqual(gamesIn(both, new Set(['7', '8'])), []);
+  assert.equal(isDevelopmentMinecraft('7 java.exe -cp x cpw.mods.bootstraplauncher.BootstrapLauncher --launchTarget forgeclientuserdev --version MOD_DEV'), true);
+  assert.equal(isDevelopmentMinecraft('7 java.exe -cp x GradleStart'), true);
+  assert.equal(isDevelopmentMinecraft('7 java.exe -Dfabric.development=true -cp x net.fabricmc.devlaunchinjector.Main'), true);
+  assert.equal(isDevelopmentMinecraft('8 javaw.exe -cp x cpw.mods.bootstraplauncher.BootstrapLauncher --launchTarget forgeclient --version 1.20.1-forge-47.2.0'), false);
+  assert.equal(isDevelopmentMinecraft('8 javaw.exe -cp x net.minecraft.client.main.Main --version 1.21'), false);
 });
 
 test('compareRuns: a turn missing on one side, an incomplete old file, status, quality and truncation rows, and what makes two runs not comparable', () => {

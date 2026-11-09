@@ -126,3 +126,4 @@ import './reuse.test.mts';
 import './perf-levers.test.mts';
 import './bench-metrics.test.mts';
 import './bench.test.mts';
+import './model-capabilities.test.mts';

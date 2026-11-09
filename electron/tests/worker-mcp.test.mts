@@ -595,35 +595,42 @@ test('a project server\'s remembered tools are shown for that project only, neve
   assert.deepEqual(await callWorker(worker, 'mcp-list', {}), [], 'no active folder: no project server at all');
 });
 
-test('quitting the app (main.cjs::stopWorker) stops the MCP server a turn left in the middle of a call', { timeout: 60000 }, async t => {
-  const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-quit-'));
-  removeAtEnd(t, root);
-  const home = join(root, 'home');
-  const project = join(root, 'project');
-  await Promise.all([mkdir(home), mkdir(project)]);
-  const pidFile = join(root, 'mcp-pids.txt');
-  await writeFile(join(home, 'mcp.json'), JSON.stringify([{
-    id: 'slow', command: process.execPath, args: [FAKE_MCP_SERVER],
-    env: { FAKE_MCP_PID_FILE: pidFile, FAKE_MCP_CALL_DELAY_MS: '60000' }, added_at: new Date().toISOString(),
-  }]));
-  const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), testWorkerOptions(home)));
-  await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
-  const pids = async () => {
-    try { return (await readFile(pidFile, 'utf8')).split('\n').filter(Boolean).map(Number); } catch { return []; }
-  };
+// Kept alive (shipped), the discovery's process answers the call too; lever off, one process for the discovery (closed
+// right after it) and one for the call. Either way the one answering is still running: the call takes 60 s.
+for (const [name, options, processes] of [
+  ['its kept process', (home: string) => testWorkerOptions(home), 1],
+  ['the process of that call (mcpKeepAlive off)', (home: string) => keepAliveOptions(home, false), 2],
+] as const) {
+  test(`quitting the app (main.cjs::stopWorker) stops the MCP server a turn left in the middle of a call: ${name}`, { timeout: 60000 }, async t => {
+    const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-quit-'));
+    removeAtEnd(t, root);
+    const home = join(root, 'home');
+    const project = join(root, 'project');
+    await Promise.all([mkdir(home), mkdir(project)]);
+    const pidFile = join(root, 'mcp-pids.txt');
+    await writeFile(join(home, 'mcp.json'), JSON.stringify([{
+      id: 'slow', command: process.execPath, args: [FAKE_MCP_SERVER],
+      env: { FAKE_MCP_PID_FILE: pidFile, FAKE_MCP_CALL_DELAY_MS: '60000' }, added_at: new Date().toISOString(),
+    }]));
+    const worker = terminateAtEnd(t, new Worker(fileURLToPath(new URL('../worker.mjs', import.meta.url)), options(home)));
+    await callWorker(worker, 'save-global-settings', { patch: { agent_mode: 'auto', permission_mode: 'auto' } });
+    const pids = async () => {
+      try { return (await readFile(pidFile, 'utf8')).split('\n').filter(Boolean).map(Number); } catch { return []; }
+    };
 
-  const { testModel } = await model(t, true);
-  const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'appelle mcp_echo', testModel });
-  const { events, stop } = collectAgentEvents(worker, runId);
-  t.after(stop);
-  // One process for the discovery (closed right after it), one for the call, still running: the call takes 60 s.
-  await until(async () => events.some(e => e.kind === 'tool-start') && (await pids()).length >= 2, 'the MCP call in flight');
-  const started = await pids();
-  assert.ok(started.some(isAlive), `the server answering the call runs before the quit (pids ${started.join(', ')})`);
+    const { testModel } = await model(t, true);
+    const { runId } = await callWorker(worker, 'send', { folder: project, branchId: 'main', text: 'appelle mcp_echo', testModel });
+    const { events, stop } = collectAgentEvents(worker, runId);
+    t.after(stop);
+    await until(async () => events.some(e => e.kind === 'tool-start') && (await pids()).length >= processes, 'the MCP call in flight');
+    const started = await pids();
+    assert.equal(started.length, processes, `pids ${started.join(', ')}`);
+    assert.ok(started.some(isAlive), `the server answering the call runs before the quit (pids ${started.join(', ')})`);
 
-  await stopWorker(worker, 3000);
-  await until(() => started.every(pid => !isAlive(pid)), `every MCP process gone after the quit (pids ${started.join(', ')})`, 10000);
-});
+    await stopWorker(worker, 3000);
+    await until(() => started.every(pid => !isAlive(pid)), `every MCP process gone after the quit (pids ${started.join(', ')})`, 10000);
+  });
+}
 
 test('quitting the app (main.cjs::stopWorker) during an MCP discovery stops that server too', { timeout: 60000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'openagent-worker-mcp-quit-discovery-'));
@@ -703,8 +710,8 @@ test('mcp-remove forgets what the turns learned of that server: re-added, it is 
 });
 
 // The lever mcpKeepAlive (Task 14): a worker that honours OPENAGENT_PERF_LEVERS, as an unpackaged app does (ruling F6).
-function keepAliveOptions(home: string) {
-  const options = testWorkerOptions(home, { OPENAGENT_PERF_LEVERS: JSON.stringify({ mcpKeepAlive: true }) });
+function keepAliveOptions(home: string, mcpKeepAlive = true) {
+  const options = testWorkerOptions(home, { OPENAGENT_PERF_LEVERS: JSON.stringify({ mcpKeepAlive }) });
   return { ...options, workerData: { ...options.workerData, perfLeversAllowed: true } };
 }
 const pidsIn = (file: string) => async () => {

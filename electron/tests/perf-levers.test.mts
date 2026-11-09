@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readPerfLevers, leversInEffect, SHIPPED_LEVERS, PERF_LEVERS_ENV } from '../core/perf-levers.mts';
 import { LOCAL_OUTPUT_CAP } from '../core/local-engine.mts';
 
-test('perfLevers: no variable = the shipped levers (today\'s behaviour); a valid key overrides; anything else is rejected and named', () => {
+test('perfLevers: no variable = the shipped levers; a valid key overrides; anything else is rejected and named', () => {
   assert.deepEqual(readPerfLevers({}), { levers: SHIPPED_LEVERS, rejected: [] });
   assert.equal(SHIPPED_LEVERS.outputCap, LOCAL_OUTPUT_CAP);
   assert.equal(SHIPPED_LEVERS.thoughtTokens, null);
@@ -19,21 +19,21 @@ test('perfLevers: no variable = the shipped levers (today\'s behaviour); a valid
   assert.deepEqual(leversInEffect({}, false), { levers: SHIPPED_LEVERS, notices: [] });
   assert.deepEqual(leversInEffect(env, true), { levers: { ...SHIPPED_LEVERS, outputCap: 64 }, notices: ['[levers] actifs : outputCap=64'] });
   assert.deepEqual(leversInEffect({}, true), { levers: SHIPPED_LEVERS, notices: [] });
-  // slimToolDefinitions (Task 6, F19, ruling F4): shipped off; a boolean only.
-  assert.equal(SHIPPED_LEVERS.slimToolDefinitions, false);
-  assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ slimToolDefinitions: true }) }).levers.slimToolDefinitions, true);
+  // slimToolDefinitions (Task 6, F19, ruling F4): shipped on (S2); a boolean only.
+  assert.equal(SHIPPED_LEVERS.slimToolDefinitions, true);
+  assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ slimToolDefinitions: false }) }).levers.slimToolDefinitions, false);
   const slim = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ slimToolDefinitions: 1 }) });
-  assert.deepEqual([slim.levers.slimToolDefinitions, slim.rejected], [false, ['valeur invalide : slimToolDefinitions']]);
+  assert.deepEqual([slim.levers.slimToolDefinitions, slim.rejected], [true, ['valeur invalide : slimToolDefinitions']]);
   // rereadWeighting (Task 12, F19): shipped off; a boolean only.
   assert.equal(SHIPPED_LEVERS.rereadWeighting, false);
   assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ rereadWeighting: true }) }).levers.rereadWeighting, true);
   const reread = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ rereadWeighting: 'oui' }) });
   assert.deepEqual([reread.levers.rereadWeighting, reread.rejected], [false, ['valeur invalide : rereadWeighting']]);
-  // mcpKeepAlive (Task 14, F19): shipped off; a boolean only.
-  assert.equal(SHIPPED_LEVERS.mcpKeepAlive, false);
-  assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ mcpKeepAlive: true }) }).levers.mcpKeepAlive, true);
+  // mcpKeepAlive (Task 14, F19): shipped on (S2); a boolean only.
+  assert.equal(SHIPPED_LEVERS.mcpKeepAlive, true);
+  assert.equal(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ mcpKeepAlive: false }) }).levers.mcpKeepAlive, false);
   const keepAlive = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ mcpKeepAlive: 'oui' }) });
-  assert.deepEqual([keepAlive.levers.mcpKeepAlive, keepAlive.rejected], [false, ['valeur invalide : mcpKeepAlive']]);
+  assert.deepEqual([keepAlive.levers.mcpKeepAlive, keepAlive.rejected], [true, ['valeur invalide : mcpKeepAlive']]);
 });
 
 test('a retired lever is an unknown key: the bench refuses it instead of silently running the shipped value', () => {
@@ -43,17 +43,19 @@ test('a retired lever is an unknown key: the bench refuses it instead of silentl
   }
 });
 
-test('the checkpoint memory cap: a positive integer or null', () => {
-  assert.equal(SHIPPED_LEVERS.checkpointMaxMemory, null);
+test('the checkpoint memory cap: shipped at 1.5 GiB (S2); a positive integer, or null for none', () => {
+  assert.equal(SHIPPED_LEVERS.checkpointMaxMemory, 1610612736);
   const set = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ checkpointMaxMemory: 1 << 30 }) });
   assert.deepEqual([set.levers.checkpointMaxMemory, set.rejected], [1 << 30, []]);
+  const none = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ checkpointMaxMemory: null }) });
+  assert.deepEqual([none.levers.checkpointMaxMemory, none.rejected], [null, []]);
   const wrong = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ checkpointMaxMemory: -1 }) });
-  assert.deepEqual([wrong.levers.checkpointMaxMemory, wrong.rejected], [null, ['valeur invalide : checkpointMaxMemory']]);
+  assert.deepEqual([wrong.levers.checkpointMaxMemory, wrong.rejected], [1610612736, ['valeur invalide : checkpointMaxMemory']]);
 });
 
-test('the promptCheckpoint lever (Task 3b): shipped off; a boolean only', () => {
-  assert.equal(SHIPPED_LEVERS.promptCheckpoint, false);
-  assert.deepEqual(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ promptCheckpoint: true }) }), { levers: { ...SHIPPED_LEVERS, promptCheckpoint: true }, rejected: [] });
+test('the promptCheckpoint lever (Task 3b): shipped on (S2); a boolean only', () => {
+  assert.equal(SHIPPED_LEVERS.promptCheckpoint, true);
+  assert.deepEqual(readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ promptCheckpoint: false }) }), { levers: { ...SHIPPED_LEVERS, promptCheckpoint: false }, rejected: [] });
   const wrong = readPerfLevers({ [PERF_LEVERS_ENV]: JSON.stringify({ promptCheckpoint: 'oui' }) });
-  assert.deepEqual([wrong.levers.promptCheckpoint, wrong.rejected], [false, ['valeur invalide : promptCheckpoint']]);
+  assert.deepEqual([wrong.levers.promptCheckpoint, wrong.rejected], [true, ['valeur invalide : promptCheckpoint']]);
 });

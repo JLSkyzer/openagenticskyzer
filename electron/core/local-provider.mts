@@ -51,7 +51,7 @@ export function compactSchema(schema: unknown): unknown {
 
 /** OpenAI tool schemas → node-llama-cpp's `functions` option. `undefined` (not `{}`) when there are none:
  * an empty object still turns function-calling grammar ON with nothing to call. `compact` (the slimToolDefinitions
- * lever by default, shipped off) passes every tool's parameters through compactSchema, MCP tools included. */
+ * lever by default, shipped on) passes every tool's parameters through compactSchema, MCP tools included. */
 export function toGgufFunctions(tools: readonly ToolSchema[], compact: boolean = perfLevers().slimToolDefinitions): GgufFunctions | undefined {
   if (tools.length === 0) return undefined;
   const functions: GgufFunctions = {};

@@ -27,7 +27,7 @@ export interface ReuseFigures {
    * Δoutput), both from the tokenMeter (M1: a tool call's tokens are not all in the streamed chunks), at least 0. */
   reused: number;
   checkpoints: CheckpointFigures | null;
-  /** Only with the promptCheckpoint lever on (absent otherwise, so today's figures are unchanged). */
+  /** Only when the promptCheckpoint lever ran: lever on, on a model that needs checkpoints. */
   promptCheckpoint?: PromptCheckpointFigures | null;
 }
 

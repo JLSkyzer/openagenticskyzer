@@ -1,6 +1,7 @@
-// The lever switchboard of the LLM performance lot: each optimisation is a lever whose shipped value is today's
-// behaviour, so a benchmark can measure it off and on in the same build. The levers are read from
-// OPENAGENT_PERF_LEVERS (a JSON object), once per thread.
+// The lever switchboard of the LLM performance lot: each optimisation is a lever, so a benchmark can measure it off and
+// on in the same build. A shipped value is the one the 27B measured as a gain (session S2, 2026-11-09), or, for what
+// no gain was measured on, the behaviour before the lever. The levers are read from OPENAGENT_PERF_LEVERS (a JSON
+// object), once per thread.
 //
 // A bench tool, never a user setting (ruling F6): the variable is honoured only where it is allowed — a plain Node
 // process (the bench, the tests), or a worker whose creator passed `workerData.perfLeversAllowed: true`. main.cjs
@@ -15,15 +16,18 @@ export interface PerfLevers {
   /** llama.cpp's performance tracking, its timings printed after each generation (`[perf]` marker). */
   performanceTracking: boolean;
   /** A cap, in bytes, on the memory of a hybrid model's checkpoints (Qwen 3.5/3.6 restore a reused prefix only from
-   * one; attention-only models take none); null: none (node-llama-cpp's default). */
+   * one; attention-only models take none); null: none (node-llama-cpp's default). Shipped 1.5 GiB (S2 on the 27B:
+   * about 157 Mio of checkpoints per message, the RSS up by 0.1 Gio, mesuré). */
   checkpointMaxMemory: number | null;
   /** Hybrid models: before generating, evaluate the prompt up to where the next turn will render it differently (the
    * thought the template opens, the reply) and take a checkpoint there, so the next turn restores right at its
-   * divergence (Task 3b). Shipped false: LlamaChat reads the whole prompt in one go, as today. */
+   * divergence (Task 3b). Shipped true (S2 on the 27B: its second message reads 67 tokens instead of 4143, mesuré); a
+   * model that needs no checkpoint skips it. false: LlamaChat reads the whole prompt in one go. */
   promptCheckpoint: boolean;
   /** Lighter tool definitions (Task 6): the built-in tools carry their slimmed descriptions (tool-texts-slim.mts) and the
    * local engine drops schema noise (`$schema`, `title`, `examples`, `$comment`, an empty `required`) from every tool it is
-   * sent, MCP ones included. Names and argument contracts never change. Shipped false: today's texts and schemas. */
+   * sent, MCP ones included. Names and argument contracts never change. Shipped true (S2 on the 27B: tool block 3737 →
+   * 3450 tokens, mesuré). false: the modules' own texts and schemas. */
   slimToolDefinitions: boolean;
   /** The re-placement between turns weighs the cost of emptying the cache (Task 12): a reload re-reads the whole
    * conversation, so it asks one more extra layer per REREAD_MS_PER_EXTRA_LAYER of estimated re-read. Shipped off
@@ -31,7 +35,8 @@ export interface PerfLevers {
   rereadWeighting: boolean;
   /** Keep the stdio MCP servers alive between turns and calls (Task 14, core/mcp-client.mts::McpPool): one process per
    * exact configuration, stopped on removal, trust withdrawal, a changed configuration, 10 min unused and shutdown.
-   * Shipped false: a process per discovery and per call, as today. */
+   * Shipped true (S2, a 1.5 s server: preparing 1.7 s → 0 s per later message, mesuré). false: a process per discovery
+   * and per call. */
   mcpKeepAlive: boolean;
 }
 
@@ -41,11 +46,11 @@ export const SHIPPED_LEVERS: Readonly<PerfLevers> = Object.freeze({
   outputCap: 8192,
   thoughtTokens: null,
   performanceTracking: false,
-  checkpointMaxMemory: null,
-  promptCheckpoint: false,
-  slimToolDefinitions: false,
+  checkpointMaxMemory: 1610612736,
+  promptCheckpoint: true,
+  slimToolDefinitions: true,
   rereadWeighting: false,
-  mcpKeepAlive: false,
+  mcpKeepAlive: true,
 });
 
 const positiveInteger = (value: unknown) => Number.isInteger(value) && (value as number) > 0;

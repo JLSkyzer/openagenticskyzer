@@ -434,8 +434,20 @@ test('thoughtBudget: null when neither the setting nor the lever caps; the lever
 });
 
 test('sequenceOptions passes only the checkpoints\' memory cap: their count and interval stay node-llama-cpp\'s', () => {
+  assert.deepEqual(sequenceOptions(SHIPPED_LEVERS), { checkpoints: { maxMemory: 1610612736 } });
   assert.deepEqual(sequenceOptions({ ...SHIPPED_LEVERS, checkpointMaxMemory: null }), { checkpoints: { maxMemory: null } });
-  assert.deepEqual(sequenceOptions({ ...SHIPPED_LEVERS, checkpointMaxMemory: 1 << 30 }), { checkpoints: { maxMemory: 1 << 30 } });
+});
+
+// S2 decision: the prompt checkpoint ships on, and S2 only ran it on a hybrid model. On a model that needs no checkpoint
+// (stories260K: takeCheckpoint is a no-op) the pre-evaluation would only render the prompt twice and split its reading
+// in two decodes for nothing: it is skipped, and the turn's figures say so by having no promptCheckpoint at all.
+test('the shipped prompt checkpoint leaves an attention model alone: no pre-evaluation, no promptCheckpoint figure', { timeout: 60000 }, async t => {
+  t.after(() => disposeEngine());
+  assert.equal(SHIPPED_LEVERS.promptCheckpoint, true);
+  const stats: GenerationStats[] = [];
+  await completeLocal({ modelPath, messages: [{ role: 'user', content: 'Once upon a time' }], maxTokens: 8, onStats: s => stats.push(s) });
+  assert.equal(stats[0].reuse?.checkpoints, null, 'an attention model: no checkpoints needed');
+  assert.equal('promptCheckpoint' in (stats[0].reuse ?? {}), false, JSON.stringify(stats[0].reuse));
 });
 
 // Task 3b: the prompt checkpoint. stories260K is an attention model (needsCheckpoints false), so takeCheckpoint is a

@@ -491,7 +491,7 @@ export function stablePromptLength(wrapper: ChatWrapper, tokenizer: Tokenizer, h
 }
 
 /**
- * The promptCheckpoint lever (Task 3b), before `generateResponse`: aligns the sequence with the prompt as LlamaChat
+ * The promptCheckpoint lever (Task 3b), before `generateResponse` on a model that needs checkpoints: aligns the sequence with the prompt as LlamaChat
  * would (`alignCurrentSequenceStateWithCurrentTokens`: every token but the last, no shift), evaluates it up to its
  * stable end, and takes a checkpoint there with the public `takeCheckpoint()`. LlamaChat then finds that state as its
  * prefix and reads only the rest. On a hybrid model the next turn, diverging at the stable end, restores this
@@ -818,6 +818,9 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
   const before = meter.getState();
   // What the sequence held before the call: what the new prompt may reuse (core/reuse.mts).
   const heldTokens = sequence.contextTokens;
+  // The pre-evaluation only serves a model that restores from checkpoints: on any other it would render the prompt
+  // twice and read it in two decodes, for a checkpoint node-llama-cpp does not take.
+  const checkpointing = levers.promptCheckpoint && sequence.needsCheckpoints;
   const generation = new GenerationMeter();
   const startedAt = performance.now();
   let promptCheckpoint: PromptCheckpointFigures | null = null;
@@ -834,7 +837,7 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
       signal: options.signal,
       ...generationLimits(levers, options.maxTokens, options.generation?.thoughtTokens ?? null),
     }));
-    response = !levers.promptCheckpoint ? await generate() : await promptTurns.run(async () => {
+    response = !checkpointing ? await generate() : await promptTurns.run(async () => {
       // Outside LlamaChat's lock, hence the turn lock: a stopped generation still unwinding must be done before the
       // sequence is touched, and this evaluation is tracked like one (nothing between turns may touch the engine
       // before it ends). A stop cuts the wait short and skips the decode (review I1).
@@ -853,8 +856,8 @@ export async function completeLocal(options: LocalCompletionOptions): Promise<Ch
     // The meter's own output count (M1): a tool call's tokens are not all in the streamed chunks.
     const reuse = {
       ...reuseOf({ heldTokens, afterTokens: sequence.contextTokens, evaluated: used.usedInputTokens, outputTokens: used.usedOutputTokens, checkpoints }),
-      // Only with the lever on: today's figures keep their shape.
-      ...(levers.promptCheckpoint ? { promptCheckpoint } : {}),
+      // Only when the pre-evaluation ran.
+      ...(checkpointing ? { promptCheckpoint } : {}),
     };
     // The id ties this generation's turn-log line to its `[perf]` timings in the log (the bench, M5).
     const generationId = randomUUID();

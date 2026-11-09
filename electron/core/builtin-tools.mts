@@ -13,7 +13,7 @@ import { perfLevers } from './perf-levers.mts';
 import { slimToolDefinitions } from './tool-texts-slim.mts';
 
 /** `slim`: the slimmed descriptions (tool-texts-slim.mts) instead of the modules' own; the slimToolDefinitions lever by
- * default (shipped off). */
+ * default (shipped on). */
 export async function builtInTools(folder: string, dataHome: string, ignoredPatterns: string, slim: boolean = perfLevers().slimToolDefinitions): Promise<AgentTool[]> {
   const tools = [
     ...await workspaceTools(folder, ignoredPatterns),

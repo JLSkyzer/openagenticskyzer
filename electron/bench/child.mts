@@ -86,6 +86,8 @@ export interface ChildResult {
   backend: string | null; levers: Readonly<PerfLevers> | null;
   /** `--project-files`: A's indexing, from its folder's activation to the worker's `ready` event (null: not ready). */
   indexMs?: number | null;
+  /** `--project-files`: the same project re-activated once its turns are done, to its next `ready` (null: not ready). */
+  reindexMs?: number | null;
 }
 
 const ELECTRON = fileURLToPath(new URL('..', import.meta.url));
@@ -353,6 +355,14 @@ export async function runSession(config: SessionConfig, save: (result: ChildResu
         if (end?.state === 'error') result.failures.push(`indexation de A en erreur${end.message ? ` — ${end.message}` : ''}`);
         else if (!end) result.failures.push('indexation de A non terminée');
         else console.info(`[bench] indexation de A (${config.projectFiles} fichiers) : ${result.indexMs} ms`);
+        // The second activation of an unchanged project, what the incremental update is for (Task 13).
+        const reactivatedAt = Date.now();
+        await callWorker(worker, 'activate_folder', { folder });
+        const again = () => indexEvents.find(event => event.folder === folder && event.at >= reactivatedAt && (event.state === 'ready' || event.state === 'error'));
+        while (!again() && !interrupted && Date.now() - reactivatedAt < 600_000) await new Promise(resolve => setTimeout(resolve, 50));
+        const second = again();
+        result.reindexMs = second?.state === 'ready' ? second.at - reactivatedAt : null;
+        if (!interrupted) console.info(`[bench] réindexation de A, projet inchangé : ${result.reindexMs ?? 'non terminée'} ms`);
         await save(result);
       }
     }

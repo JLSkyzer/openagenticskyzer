@@ -60,6 +60,8 @@ export interface BenchRun {
   projectFiles?: number;
   /** `--project-files`: A's indexing, from its folder's activation to the index's `ready` (wall clock); null: not ready. */
   indexMs?: number | null;
+  /** `--project-files`: the unchanged project's second activation to the index's `ready` (wall clock); null: not ready. */
+  reindexMs?: number | null;
 }
 
 type Line = Record<string, unknown>;

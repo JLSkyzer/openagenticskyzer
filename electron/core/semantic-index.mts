@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile as readFileFs, rm, stat as statFs, writeFile as writeFileFs } from 'node:fs/promises';
+import { mkdir, open as openFs, readdir, readFile as readFileFs, rm, stat as statFs, writeFile as writeFileFs } from 'node:fs/promises';
 import { join, relative, sep, extname, isAbsolute, dirname } from 'node:path';
 import { metadataDirectory, JsonStore } from './json-store.mts';
 import { chunkText, cosineSimilarity } from './semantic-chunk.mts';
@@ -19,7 +19,8 @@ export interface IndexEntry {
   vector: number[];
 }
 /** 2: vectors of the bundled quantized model (core/embeddings.mts). A version-1 index holds fp32 vectors: it is
- * never compared with a quantized query vector, and the next activation or startup pre-warm rebuilds it. */
+ * never compared with a quantized query vector, and the next activation or startup pre-warm rebuilds it. Bump it
+ * whenever chunkText or EMBEDDING_MODEL changes: an index update keeps the entries of unchanged files as they are. */
 export const INDEX_VERSION = 2;
 /** What a file was when its entries were computed: an index update reuses them while both are unchanged. */
 export interface FileStamp {
@@ -136,7 +137,9 @@ export async function indexFolder(
       const info = await statFs(absolute);
       stamp = { size: info.size, mtimeMs: info.mtimeMs };
       const kept = previous?.get(relFile);
+      previous?.delete(relFile); // the old store is released file by file, not held beside the new one
       if (kept && kept.stamp.size === stamp.size && kept.stamp.mtimeMs === stamp.mtimeMs) {
+        await (await openFs(absolute, 'r')).close(); // a file no longer readable is dropped, as a full rebuild would
         entries.push(...kept.entries);
         stamps[relFile] = stamp;
         reusedFiles++;
@@ -169,6 +172,7 @@ export async function indexFolder(
   } catch {
     // EEXIST (already there) or any write error.
   }
+  await options.gate?.wait(); // encoding the store is the longest step on the worker's thread: not during a held turn
   const store = new JsonStore({ indent: 0 });
   await store.update<IndexFile>(file, { version: INDEX_VERSION, entries: [] }, () => ({ version: INDEX_VERSION, entries, files: stamps }));
   await rm(`${file}.pre-electron.bak`, { force: true });

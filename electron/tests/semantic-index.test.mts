@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readFile, readdir, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -267,6 +267,38 @@ test('an index without file stamps is rebuilt fully', { timeout: 60000 }, async 
   const result = await indexFolder(project, home);
   assert.deepEqual([result.embeddedFiles, result.reusedFiles], [2, 0]);
   assert.deepEqual(Object.keys((await storeOf(project)).files).sort(), ['a.py', 'b.md'], 'the rebuild writes the stamps');
+});
+
+test('an index with stamps but of another format version is rebuilt fully: its vectors are never mixed with new ones', { timeout: 60000 }, async t => {
+  const { home, project } = await fixture(t);
+  await writeFile(join(project, 'a.py'), 'def sort_list(items):\n    return sorted(items)\n');
+  await writeFile(join(project, 'b.md'), '# Project\n\nA small demo project.\n');
+  const { indexFolder, storePath, INDEX_VERSION } = await import('../core/semantic-index.mts');
+  await indexFolder(project, home);
+  const stamped = await storeOf(project);
+  assert.ok(stamped.files, 'the older index does hold its stamps');
+  await writeFile(await storePath(project), JSON.stringify({ ...stamped, version: INDEX_VERSION - 1 }));
+  const result = await indexFolder(project, home);
+  assert.deepEqual([result.embeddedFiles, result.reusedFiles], [2, 0]);
+  assert.equal((await storeOf(project)).version, INDEX_VERSION);
+});
+
+test('a stamped file that becomes ignored or secret leaves nothing behind in the next update', { timeout: 60000 }, async t => {
+  const { home, project } = await fixture(t);
+  await writeFile(join(project, 'keep.py'), 'def sort_list(items):\n    return sorted(items)\n');
+  await writeFile(join(project, 'draft.md'), 'STAMPED-TEXT-IGNORED');
+  await writeFile(join(project, 'config.json'), '{"note": "STAMPED-TEXT-SECRET"}');
+  const { indexFolder, storePath } = await import('../core/semantic-index.mts');
+  const first = await indexFolder(project, home);
+  assert.equal(first.embeddedFiles, 3);
+  assert.match(await readFile(await storePath(project), 'utf8'), /STAMPED-TEXT-SECRET/, 'both texts were indexed first');
+
+  await rename(join(project, 'config.json'), join(project, 'secrets.json'));
+  const second = await indexFolder(project, home, undefined, 'draft.md');
+  assert.deepEqual([second.embeddedFiles, second.reusedFiles], [0, 1]);
+  const raw = await readFile(await storePath(project), 'utf8');
+  assert.equal(raw.includes('STAMPED-TEXT'), false, 'neither text survives in the store');
+  assert.deepEqual(Object.keys(JSON.parse(raw).files), ['keep.py']);
 });
 
 test('indexFolder waits at the gate between files and resumes', { timeout: 60000 }, async t => {

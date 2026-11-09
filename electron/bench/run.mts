@@ -320,6 +320,7 @@ async function session(name: string, config: Omit<SessionConfig, 'kind' | 'model
   });
   if (result?.levers && !applied) applied = result.levers;
   if (result && result.indexMs !== undefined) run.indexMs = result.indexMs;
+  if (result && result.reindexMs !== undefined) run.reindexMs = result.reindexMs;
   return result;
 }
 

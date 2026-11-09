@@ -20,7 +20,17 @@ for (const fixture of fixtures) {
 test('toolSupportOf: a template that never mentions tools is not a « no » by itself', () => {
   const noMention = fixtures.filter(fixture => !/tool/i.test(fixture.template));
   assert.ok(noMention.length >= 2, 'the fixtures hold templates without any tool mention');
-  for (const fixture of noMention) assert.equal(toolSupportOf(fixture.template), 'yes', fixture.id);
+  for (const fixture of noMention) assert.notEqual(toolSupportOf(fixture.template), 'no', fixture.id);
+});
+
+test('toolSupportOf: no tool mention and only the generic ||call: path → unknown (ruling T1a)', () => {
+  assert.equal(toolSupportOf("{% for message in messages %}{{ message['role'] + ': ' + message['content'] + '\\n' }}{% endfor %}"), 'unknown');
+});
+
+test('toolSupportOf: a specialised wrapper\'s own syntax is native, even when the template never mentions tools', () => {
+  const mistral = fixtures.find(fixture => fixture.id.startsWith('MaziyarPanahi/Mistral-Small-24B'));
+  assert.ok(mistral && !/tool/i.test(mistral.template));
+  assert.equal(toolSupportOf(mistral.template), 'yes');
 });
 
 test('toolSupportOf: no template at all → unknown', () => {

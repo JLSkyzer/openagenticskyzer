@@ -300,24 +300,3 @@ test('a stamped file that becomes ignored or secret leaves nothing behind in the
   assert.equal(raw.includes('STAMPED-TEXT'), false, 'neither text survives in the store');
   assert.deepEqual(Object.keys(JSON.parse(raw).files), ['keep.py']);
 });
-
-test('indexFolder waits at the gate between files and resumes', { timeout: 60000 }, async t => {
-  const { home, project } = await fixture(t);
-  for (const name of ['a.md', 'b.md', 'c.md']) await writeFile(join(project, name), `le fichier ${name}`);
-  const { indexFolder } = await import('../core/semantic-index.mts');
-  const { IndexGate } = await import('../core/index-gate.mts');
-  const gate = new IndexGate();
-  const resume = gate.pause();
-  assert.equal(gate.paused, true);
-  const progress: number[] = [];
-  const run = indexFolder(project, home, current => progress.push(current), '', { gate });
-  // Without the gate, the first progress is posted as soon as the 3 files are listed (a few milliseconds).
-  await new Promise(resolve => setTimeout(resolve, 500));
-  assert.deepEqual(progress, [], 'nothing starts while the gate is paused');
-  resume();
-  resume(); // idempotent: the count never goes below 0
-  assert.equal(gate.paused, false);
-  const result = await run;
-  assert.deepEqual(progress, [1, 2, 3]);
-  assert.equal(result.embeddedFiles, 3);
-});

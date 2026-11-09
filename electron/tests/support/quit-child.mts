@@ -5,10 +5,6 @@
 //   loaded      a turn stopped, then the quit, the model warm
 //   generating  the quit while the turn writes (a generation inside node-llama-cpp's native decode)
 //   loading     the quit while the turn loads the model
-//   boot-engine (Task 7) a worker started with engineAtBoot on a home whose local model is already active, quit as soon
-//               as it answers a first op (its boot read of the settings is then done): while the engine it started at
-//               boot is still being created. The report then holds
-//               { outcome, quitMs, exitCode, steps, engine } (engine: the state of its 'engine' event, null if none).
 // After the quit, a second worker reads the conversation back: what the stopped turn saved.
 import { Worker } from 'node:worker_threads';
 import { mkdtemp, mkdir, copyFile, readdir, readFile, rm } from 'node:fs/promises';
@@ -17,37 +13,12 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { callWorker, recordAgentEvents } from './worker-events.mts';
-import { PERF_LEVERS_ENV } from '../../core/perf-levers.mts';
 
 const { stopWorker } = createRequire(import.meta.url)('../../main.cjs');
 const WORKER = fileURLToPath(new URL('../../worker.mjs', import.meta.url));
 const STORIES = fileURLToPath(new URL('../fixtures/stories260K.gguf', import.meta.url));
 const scenario = process.argv[2] ?? 'loaded';
 const capMs = process.argv[3] === undefined ? undefined : Number(process.argv[3]);
-
-/** boot-engine: see the header. */
-async function bootEngine(env: NodeJS.ProcessEnv, model: string): Promise<void> {
-  // The library entry and the active model are saved by a first worker: the lever reads them at start (ruling F10).
-  const setup = new Worker(WORKER, { env });
-  const entry = await callWorker(setup, 'gguf-add', { path: model });
-  await callWorker(setup, 'save-global-settings', { patch: { active_local_model: entry.id } });
-  await stopWorker(setup);
-  const worker = new Worker(WORKER, { env: { ...env, [PERF_LEVERS_ENV]: JSON.stringify({ engineAtBoot: true }) }, workerData: { perfLeversAllowed: true } });
-  let exitCode: number | null = null;
-  const exited = new Promise<void>(resolve => worker.once('exit', code => { exitCode = code; resolve(); }));
-  let steps: unknown = null;
-  let engine: string | null = null;
-  worker.on('message', message => {
-    if (message?.type === 'event' && message.event === 'engine') engine = message.state;
-    if (typeof message?.id === 'string' && message.id.startsWith('shutdown-') && message.ok) steps = message.result.steps;
-  });
-  // Not a fixed delay: a quit that lands before the boot read of the settings starts no engine at all (Task 8, M2).
-  await callWorker(worker, 'global-settings');
-  const started = Date.now();
-  const outcome = await (capMs === undefined ? stopWorker(worker) : stopWorker(worker, capMs));
-  await exited;
-  process.stdout.write(`${JSON.stringify({ outcome, quitMs: Date.now() - started, exitCode, steps, engine })}\n`);
-}
 
 /** loaded, generating, loading: see the header. */
 async function quitDuringTurn(env: NodeJS.ProcessEnv, model: string, home: string, project: string): Promise<void> {
@@ -94,8 +65,7 @@ try {
   await copyFile(STORIES, model);
   const env = { ...process.env, OPENAGENT_HOME: home };
 
-  if (scenario === 'boot-engine') await bootEngine(env, model);
-  else await quitDuringTurn(env, model, home, project);
+  await quitDuringTurn(env, model, home, project);
 } finally {
   await rm(root, { recursive: true, force: true, maxRetries: 5 }).catch(() => {});
 }

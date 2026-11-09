@@ -25,11 +25,8 @@ export interface ChatMessage {
 /** A turn's figures, in ms: load, reading the request, first word of the answer, whole turn; output tokens and rate. */
 export interface TurnTiming { loadMs?: number; readMs?: number; firstTextMs?: number; totalMs: number; outputTokens?: number; tokensPerSecond?: number }
 /** The chat wrapper node-llama-cpp chose for a loaded model: its name and its segments (thought tags), as logged. */
-/** `opensThought`: the chat template opens <think> in the generation prompt (core/thought-prefill.mts).
- * `toolsAfterSystem`: it renders the tools after the system text, before the first message (core/prompt-layout.mts),
- * so the project context can follow the tool block (the contextPlacement lever).
- * `thoughtKept`: where a thought sent back is rendered where the model wrote it (the keepThought lever). */
-export interface ChatWrapperInfo { name: string; segments: unknown; opensThought: boolean; toolsAfterSystem: boolean; thoughtKept: { previousTurn: boolean; currentTurn: boolean } }
+/** `opensThought`: the chat template opens <think> in the generation prompt (core/thought-prefill.mts). */
+export interface ChatWrapperInfo { name: string; segments: unknown; opensThought: boolean }
 /** A model load as it happens: started, progress in (0, 1], ended (its time and chat wrapper). Only a real load
  * reports: a reused warm engine reports nothing. `retry`: a second native load begins, its progress starting again
  * from 0 — with fewer layers on the card (`fewer-layers`, the context did not fit) or on the processor (`cpu`). */
@@ -45,12 +42,8 @@ export type LoadRetry = 'fewer-layers' | 'cpu';
 /** One generation's figures: tokens read (the prompt, as evaluated), tokens written, and the time from the first
  * chunk to the end. Reported once, a stopped generation included. `promptMs`: from the call's start to the first chunk
  * carrying tokens (null when none came); `reuse`: what the engine did not read again (core/reuse.mts);
- * `generationId`: this generation's id, on its `[perf]` marker too (the bench aligns timings by it); `predictions`: the
- * sequence's token predictions over this call, only when it has a predictor (the inputLookup lever, Task 10). */
-export interface GenerationStats { inputTokens: number; outputTokens: number; generationMs: number; promptMs?: number | null; reuse?: ReuseFigures; generationId?: string; predictions?: TokenPredictions }
-/** node-llama-cpp's `LlamaContextSequence.tokenPredictions` over one call: drafted tokens the model confirmed
- * (`validated`) or rejected (`refuted`), and of the confirmed ones those the generation consumed (`used`) or not. */
-export interface TokenPredictions { validated: number; refuted: number; used: number; unused: number }
+ * `generationId`: this generation's id, on its `[perf]` marker too (the bench aligns timings by it). */
+export interface GenerationStats { inputTokens: number; outputTokens: number; generationMs: number; promptMs?: number | null; reuse?: ReuseFigures; generationId?: string }
 /** What getting the window may involve: a load, which `signal` stops and `onLoad` follows. */
 export interface WindowOptions { signal?: AbortSignal; onLoad?: (event: LoadEvent) => void }
 export interface ToolSchema { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }
@@ -63,9 +56,6 @@ export interface CompletionOptions {
   // the answer, `text` (the template opened <think> and no </think> came).
   onReasoning?: (piece: { text: string; moved?: true; movedBack?: true }) => void;
   onStats?: (stats: GenerationStats) => void;
-  // The project's context (instructions, memory, learnings: context.mts) apart from the system message, which then
-  // holds the base alone. Passed only to a provider that declares `rendersProjectContext` (agent.mts).
-  projectContext?: string;
 }
 /** What the agent loop and compaction need from a model: the built-in engine (local-engine.mts::localProvider). */
 export interface ModelProvider {
@@ -75,7 +65,4 @@ export interface ModelProvider {
   contextWindow(options?: WindowOptions): Promise<number>;
   /** The output cap applied when no maxTokens is passed; undefined = none. */
   outputCap(): number | undefined;
-  /** It places `projectContext` itself (the local engine). Otherwise the agent folds the context back into the system
-   * message, as before (ruling F7). */
-  rendersProjectContext?: boolean;
 }

@@ -1,7 +1,6 @@
 import { stat } from 'node:fs/promises';
 import { isAbsolute, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { perfLevers } from './perf-levers.mts';
 
 export const EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
 /** The only files a BERT encoder loads with `dtype: 'q8'` (@huggingface/transformers 4.3.0: q8 → the `_quantized` suffix). */
@@ -38,15 +37,6 @@ async function bundledFilesPresent(dir: string): Promise<boolean> {
   return true;
 }
 
-/** The ONNX session's thread options for the lever embedThreads (Task 13): `threads` intra-op threads (one operator's
- * work split across them) and a single inter-op thread, so the indexing leaves the other cores to the model's own
- * threads. null: none set, onnxruntime's defaults (today's). @huggingface/transformers 4.3.0 passes pipeline's
- * `session_options` through to onnxruntime-node's InferenceSession.create, whose names these are (onnxruntime-common
- * 1.30: intraOpNumThreads, interOpNumThreads). */
-export function sessionOptions(threads: number | null): { intraOpNumThreads?: number; interOpNumThreads?: number } {
-  return threads === null ? {} : { intraOpNumThreads: threads, interOpNumThreads: 1 };
-}
-
 /**
  * Local embeddings with the quantized all-MiniLM-L6-v2 that ships with the app (Apache-2.0, see the LICENSE and model
  * card beside it). Nothing is ever downloaded: a missing file fails with EMBEDDINGS_MISSING before the library is even
@@ -69,7 +59,7 @@ function getExtractor(): Promise<any> {
     env.localModelPath = dir.endsWith(sep) ? dir : dir + sep;
     env.useFSCache = false;
     env.useBrowserCache = false;
-    return pipeline('feature-extraction', EMBEDDING_MODEL, { device: 'cpu', dtype: 'q8', local_files_only: true, session_options: sessionOptions(perfLevers().embedThreads) });
+    return pipeline('feature-extraction', EMBEDDING_MODEL, { device: 'cpu', dtype: 'q8', local_files_only: true });
   })();
   extractorPromise = loading;
   // A failed load is not kept: the next call checks the folder again (e.g. after a repair of the installation).

@@ -29,7 +29,6 @@ import { PromptLibrary } from './core/prompts.mts';
 import { readProjectMemory } from './core/project-memory.mts';
 import { validateAttachments } from './core/attachments.mts';
 import { turnWindow } from './core/turn-window.mts';
-import { effectiveWindow } from './core/context-budget.mts';
 import { TurnClock } from './core/turn-clock.mts';
 import { activeModel, modelStatus, turnModelStatus, contextRequestOf, NO_LOCAL_MODEL, LOCAL_MODEL_MISSING } from './core/active-model.mts';
 import { closeDanglingCalls } from './core/request-context.mts';
@@ -44,7 +43,6 @@ import { initializeProject } from './core/project-analyzer.mts';
 import { McpConfigStore, readProjectMcpConfig, mergeServerConfigs, redactSecrets, expandServerPlaceholders, serverIdentity } from './core/mcp-config.mts';
 import { mcpTools, stopAllMcpServers, McpPool, mcpTargetKey } from './core/mcp-client.mts';
 import { indexFolder } from './core/semantic-index.mts';
-import { IndexGate } from './core/index-gate.mts';
 import { setModelsDir, DEFAULT_MODELS_DIR, stopEmbeddings, embeddingsIdle } from './core/embeddings.mts';
 import { loadPlugins, projectPythonPluginFiles } from './core/plugin-loader.mts';
 import { ProjectTrustService } from './core/project-trust.mts';
@@ -148,12 +146,6 @@ function postIndexEvent(folder, patch) {
   indexStatus.set(key, status);
   parentPort.postMessage({ type: 'event', event: 'index', folder: key, ...status });
 }
-// Lever indexDuringTurns (Task 13, core/perf-levers.mts): every indexing run passes this gate between two files, and
-// with 'pause' a turn or a compaction holds it from its start to its end (pauseIndexing), so the indexing's ONNX runs
-// never compete with the model's threads. Never held under the shipped 'run': the gate then never waits.
-const indexGate = new IndexGate();
-/** Holds the indexing for a turn or a compaction under the lever 'pause'; returns its resume (idempotent). */
-const pauseIndexing = () => (perfLevers().indexDuringTurns === 'pause' ? indexGate.pause() : () => {});
 /** Fire-and-forget: indexes `folder`'s codebase in the background (semantic-index.mts), streaming
  * progress through the 'index' event. One run at a time per folder — a second trigger while one is
  * already in flight (e.g. re-activating the same folder) is a harmless no-op, not a queued restart. */
@@ -166,7 +158,7 @@ async function triggerIndexing(folder) {
     // it): an ignored or secret file is never indexed, and the rebuild purges what an older index held of it. An
     // unreadable project config ends in 'error' with nothing written.
     const { ignored_patterns: ignoredPatterns } = await settings.project(folder);
-    await indexFolder(folder, dataHome, (current, total) => postIndexEvent(folder, { state: 'indexing', current, total }), ignoredPatterns, { gate: indexGate });
+    await indexFolder(folder, dataHome, (current, total) => postIndexEvent(folder, { state: 'indexing', current, total }), ignoredPatterns);
     postIndexEvent(folder, { state: 'ready', current: undefined, total: undefined, message: undefined });
   } catch (error) {
     postIndexEvent(folder, { state: 'error', current: undefined, total: undefined, message: error instanceof Error ? error.message : 'Erreur interne' });
@@ -277,7 +269,7 @@ function logModelReady(model, contextTokens, loadMs, log, load = null) {
         ...(outcome.limit === undefined ? {} : { layerLimit: outcome.limit }),
       } : {}),
       contextSize: placement?.contextSize ?? (status.loaded ? status.contextWindow : contextTokens),
-      ...(wrapper ? { wrapper: wrapper.name, segments: wrapper.segments, opensThought: wrapper.opensThought, toolsAfterSystem: wrapper.toolsAfterSystem, thoughtKept: wrapper.thoughtKept } : {}),
+      ...(wrapper ? { wrapper: wrapper.name, segments: wrapper.segments, opensThought: wrapper.opensThought } : {}),
       ...(loadMs === undefined ? {} : { loadMs }),
       ...(load?.stages ? { loadStages: load.stages } : {}),
       ...(load?.architecture ? { architecture: load.architecture } : {}),
@@ -298,8 +290,6 @@ function logModelReady(model, contextTokens, loadMs, log, load = null) {
 async function runCompaction(compactionId, folder, branchId, before, { provider, model }) {
   const post = message => parentPort.postMessage({ type: 'event', event: 'agent', runId: compactionId, ...message });
   let outcome;
-  // Lever indexDuringTurns 'pause' (Task 13): as a turn, the summary's generation holds the indexing until it ends.
-  const resumeIndexing = pauseIndexing();
   try {
     // max_tokens is a global setting only (core/settings.mts), so the global config is the whole answer here.
     const { signal } = active.get(compactionId).controller;
@@ -317,8 +307,6 @@ async function runCompaction(compactionId, folder, branchId, before, { provider,
   } catch (error) {
     const aborted = error?.name === 'AbortError';
     outcome = { kind: 'compact-failed', message: aborted ? 'Compaction interrompue.' : error instanceof Error ? error.message : 'Erreur interne' };
-  } finally {
-    resumeIndexing();
   }
   // Release the folder BEFORE announcing the end, so whoever reacts to the event finds it free.
   active.delete(compactionId);
@@ -775,23 +763,8 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     if (event.kind === 'progress') phase('loading', { ...(attempt ? { attempt } : {}), progress: Math.min(100, Math.max(0, Math.floor(event.progress * 100))) });
     if (event.kind === 'end') { clock.loadEnd(); loadFigures = { stages: event.stages, architecture: event.architecture }; }
   };
-  // Lever overlapLoad (Task 7, core/perf-levers.mts): the engine window is asked for now, so the model loads while the
-  // tools (MCP discovery included) and the instructions are prepared; it is awaited once they are, and capped by
-  // max_tokens there (known only from the project's settings). windowFor cancels the estimates and waits for them first,
-  // as on the path below, and the run's signal stops it. A failure or a stop surfaces at that await, never as an
-  // unhandled rejection (the `.catch` below only marks it handled); a turn that ends before the await leaves the load to
-  // the engine's lock, which a later load and the quit's dispose wait behind. Tracked, so the quit's report names it.
-  // « Chargement » then shows during the preparation (F31).
-  let earlyWindow = null;
-  // Lever indexDuringTurns 'pause' (Task 13): the indexing holds from here, before the early load, to the finally below,
-  // which resumes it first — a turn that fails, is stopped or whose early load rejects included.
-  const resumeIndexing = pauseIndexing();
   try {
     phase('preparing');
-    if (perfLevers().overlapLoad) {
-      earlyWindow = track(windowFor(provider, null, { signal: controller.signal, onLoad }), 'chargement du modèle');
-      earlyWindow.catch(() => {});
-    }
     const globalConfig = await settings.global().catch(() => null);
     if (globalConfig) {
       logLevel = globalConfig.turn_log;
@@ -818,9 +791,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     // Windows, how run_command's shell behaves (core/system-prompt.mts).
     const offered = offeredTools(tools, agentSettings).map(tool => tool.name);
     controller.signal.throwIfAborted();
-    // The base and the project context apart (Task 4): the local engine places the context; runAgent folds it back
-    // into the system message for any provider that does not (ruling F7).
-    const { base: instructions, projectContext } = await untilAborted(buildInstructions({ folder, home: dataHome, base: basePrompt({ tools: offered, mode: agentSettings.mode, platform: process.platform }) }), controller.signal);
+    const { instructions } = await untilAborted(buildInstructions({ folder, home: dataHome, base: basePrompt({ tools: offered, mode: agentSettings.mode, platform: process.platform }) }), controller.signal);
     const emit = event => {
       const { type: kind, ...rest } = event;
       // A generation's figures feed the clock only, and never end anything: pieces may still follow (ruling T2-m4).
@@ -830,7 +801,6 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
           event: 'generation', step, inputTokens: rest.inputTokens, outputTokens: rest.outputTokens, generationMs: rest.generationMs,
           ...(rest.promptMs === undefined ? {} : { promptMs: rest.promptMs }), ...(rest.reuse ? { reuse: rest.reuse } : {}),
           ...(rest.generationId ? { generationId: rest.generationId } : {}),
-          ...(rest.predictions ? { predictions: rest.predictions } : {}),
         });
         return;
       }
@@ -881,13 +851,11 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
       signal.addEventListener('abort', () => { pendingPermissions.delete(requestId); reject(signal.reason); }, { once: true });
       post({ kind: 'permission-request', requestId, tool: request.tool, category: toolCategory.get(request.tool), arguments: request.arguments });
     });
-    const contextTokens = earlyWindow
-      ? effectiveWindow(await earlyWindow, effective.max_tokens)
-      : await windowFor(provider, effective.max_tokens, { signal: controller.signal, onLoad });
+    const contextTokens = await windowFor(provider, effective.max_tokens, { signal: controller.signal, onLoad });
     postModelStatus(model);
     logModelReady(model, contextTokens, clock.timing().loadMs, log, loadFigures);
     const result = await runAgent({
-      provider, messages: collected, instructions, projectContext, tools, contextWindow: contextTokens,
+      provider, messages: collected, instructions, tools, contextWindow: contextTokens,
       settings: agentSettings,
       signal: controller.signal, confirm, emit,
     });
@@ -946,10 +914,7 @@ async function runSend(runId, folder, branchId, text, keep, attachments, { provi
     if (aborted) post({ kind: 'stopped', timing });
     else finish('error', { message });
   } finally {
-    resumeIndexing();
     active.delete(runId);
-    // A turn that failed before awaiting its early load (overlapLoad) stops it: nothing posts for a turn that has ended.
-    if (earlyWindow) controller.abort();
     // Between turns only, and never awaited by the turn: it is over for the page. The shutdown op waits for it.
     track(maybeReplace(model), 'réallocation entre deux tours');
   }
@@ -989,12 +954,6 @@ async function engineWithin(ms) {
     clearTimeout(timer);
   }
 }
-// Lever engineAtBoot (Task 7, core/perf-levers.mts): with a local model active, the engine starts now, through the same
-// startEngine as hardware-info (its 'engine' event included), so the first turn finds it created. Tracked like any work:
-// a quit right after the start waits for the creation instead of ending the thread inside it. Here, not with the other
-// start-up steps: startEngine's state (engineStart) is initialised only from this point of the module. Off: the engine
-// starts on the first turn or the first hardware-info, as before. The block follows `shuttingDown`'s declaration
-// (below): a quit that lands while the settings are read starts no engine.
 
 // Re-placement between turns (item 4): after a turn, one cheap VRAM read decides (core/local-engine.mts::
 // replacementDecision) whether the model, loaded on the processor or with fewer layers, now has clearly more room on
@@ -1015,13 +974,6 @@ let pendingSends = 0;
 let shuttingDown = false;
 function cancelReplacement() {
   replacement?.controller.abort();
-}
-// The lever engineAtBoot (its comment is after engineWithin). A failed start is said in the app log; the 'engine'
-// event already tells the page.
-if (perfLevers().engineAtBoot) {
-  track(settings.global().then(saved => (saved.active_local_model && !shuttingDown ? startEngine() : undefined)).catch(error => {
-    console.warn(`[moteur] démarrage au lancement du worker échoué : ${error instanceof Error ? error.message : String(error)}`);
-  }), 'démarrage du moteur');
 }
 function postReplacing(model, replacing) {
   try {

@@ -49,7 +49,6 @@ import './gguf-library.test.mts';
 import './worker-gguf.test.mts';
 import './local-provider.test.mts';
 import './tool-contracts.test.mts';
-import './prompt-layout.test.mts';
 import './local-engine.test.mts';
 import './reasoning-split.test.mts';
 import './thought-prefill.test.mts';

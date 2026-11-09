@@ -2,7 +2,6 @@ import type { ChatMessage, ModelProvider, ToolSchema } from './model-types.mts';
 import { object } from './json-store.mts';
 import { estimateRequestTokens, fitToBudget, requestMessages } from './request-context.mts';
 import { contextBudget } from './context-budget.mts';
-import { perfLevers } from './perf-levers.mts';
 
 export interface AgentTool {
   name: string; description: string; parameters: Record<string, unknown>;
@@ -17,10 +16,6 @@ export interface AgentSettings {
 export interface AgentOptions {
   // The model: the built-in engine (local-engine.mts::localProvider). The window is passed apart (contextWindow).
   provider: ModelProvider; messages: ChatMessage[]; instructions: string;
-  // The project's context (context.mts), apart from `instructions` (the base). A provider that renders it
-  // (`rendersProjectContext`) gets it as `projectContext`; any other gets it folded back into the system message.
-  // Never saved: the returned messages hold no system message.
-  projectContext?: string;
   tools: AgentTool[]; settings: AgentSettings; signal?: AbortSignal; maxSteps?: number;
   // The model's context window in tokens (core/context-budget.mts). Absent: no budget is applied.
   contextWindow?: number;
@@ -81,11 +76,7 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
   const signal = options.signal ?? new AbortController().signal;
   if (options.contextWindow !== undefined && !(Number.isInteger(options.contextWindow) && options.contextWindow > 0)) throw new Error('Fenêtre de contexte invalide');
   const budgetTokens = options.contextWindow === undefined ? undefined : contextBudget(options.contextWindow, settings.reserved_tokens ?? 0);
-  // The whole system text, as the model reads it: what the budget and the estimate count on both paths.
-  const projectContext = options.projectContext || '';
-  const systemText = [projectContext, instructions].filter(Boolean).join('\n\n');
-  const apart = Boolean(projectContext) && provider.rendersProjectContext === true;
-  const messages: ChatMessage[] = [{ role: 'system', content: apart ? instructions : systemText }, ...structuredClone(options.messages.filter(m => m.role !== 'system'))];
+  const messages: ChatMessage[] = [{ role: 'system', content: instructions }, ...structuredClone(options.messages.filter(m => m.role !== 'system'))];
   const registry = new Map<string, AgentTool>();
   for (const tool of tools) {
     if (!TOOL_NAME_PATTERN.test(tool.name) || registry.has(tool.name)) throw new Error('Nom outil invalide ou dupliqué');
@@ -104,17 +95,16 @@ export async function runAgent(options: AgentOptions): Promise<ChatMessage[]> {
     // `messages` keeps the saved shape (files beside the typed text); the request is built here (H3): earlier
     // turns condensed, the turn in progress whole with its files expanded, fitted to the budget — or
     // CONTEXT_FULL, sending nothing. reserved_tokens only sizes that budget (H1).
-    const outgoing = requestMessages(messages.slice(1), { keepThought: perfLevers().keepThought });
-    const fitted = budgetTokens === undefined ? outgoing : fitToBudget(outgoing, { system: systemText, tools: schemas, budgetTokens });
+    const outgoing = requestMessages(messages.slice(1));
+    const fitted = budgetTokens === undefined ? outgoing : fitToBudget(outgoing, { system: instructions, tools: schemas, budgetTokens });
     // M3: the output asked for must fit in the window beside the request — the model's cap (H1), lowered to
     // what the window leaves after the estimated request, never below 1. No window known, or no cap: nothing is
     // passed and the model applies its own.
     const cap = options.contextWindow === undefined ? undefined : provider.outputCap();
     const maxTokens = cap === undefined ? undefined
-      : Math.max(1, Math.min(cap, options.contextWindow! - estimateRequestTokens(systemText, schemas, fitted)));
+      : Math.max(1, Math.min(cap, options.contextWindow! - estimateRequestTokens(instructions, schemas, fitted)));
     const answer = await provider.complete({ messages: [messages[0], ...fitted], tools: schemas, signal,
       ...(maxTokens === undefined ? {} : { maxTokens }),
-      ...(apart ? { projectContext } : {}),
       onDelta: text => emit?.({ type: 'delta', text }),
       // The reasoning apart from the answer (`moved`: what was streamed as the answer was reasoning; `movedBack`:
       // the reverse), and the

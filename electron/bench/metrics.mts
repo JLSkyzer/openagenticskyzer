@@ -1,6 +1,6 @@
 // The benchmark's figures (pure): one TurnFigures per message, from that turn's own turn log lines; the results file
 // (BenchRun); and the comparison of two results files. No path ever enters a figure: a results file is shareable.
-import type { LoadStage, ModelArchitecture, TokenPredictions } from '../core/model-types.mts';
+import type { LoadStage, ModelArchitecture } from '../core/model-types.mts';
 import type { ReuseFigures } from '../core/reuse.mts';
 import type { PerfLevers } from '../core/perf-levers.mts';
 import { TRUNCATED_NOTICE } from '../core/agent.mts';
@@ -13,8 +13,6 @@ export interface GenerationFigures {
   promptMs: number | null; tokensPerSecond: number | null; reuse: ReuseFigures | null;
   /** The generation's id (its `[perf]` marker's too); absent when the line has none. */
   generationId?: string;
-  /** The token predictions of the inputLookup lever (Task 10); absent when the line has none (ruling F12). */
-  predictions?: TokenPredictions;
 }
 export interface MemorySample { rssBytes: number; gpuDedicatedBytes: number | null; gpuSharedBytes: number | null }
 export interface TurnFigures {
@@ -26,11 +24,6 @@ export interface TurnFigures {
   memory: MemorySample;
   placement: { backend: string; gpuLayers: number; totalLayers: number; contextSize: number; vramBytes: number; ramBytes: number } | null;
   perfLines: string[];
-  /** The template probe of the turn's model-ready line (Task 4): it renders the tools after the system text, so the
-   * contextPlacement lever can apply. Absent when the line has none. */
-  toolsAfterSystem?: boolean;
-  /** Where a thought sent back is rendered in place (Task 5, the keepThought lever). Absent when the line has none. */
-  thoughtKept?: { previousTurn: boolean; currentTurn: boolean };
   /** How the turn ended (its `end` line); null when the log has no end. */
   status?: 'done' | 'stopped' | 'error' | null;
 }
@@ -108,7 +101,6 @@ export function turnFigures(lines: readonly Line[], meta: { scenario: TurnFigure
       promptMs: num(line.promptMs),
       tokensPerSecond: generationMs > 0 ? outputTokens / (generationMs / 1000) : null,
       reuse: (line.reuse as ReuseFigures | undefined) ?? null,
-      ...(line.predictions && typeof line.predictions === 'object' ? { predictions: line.predictions as TokenPredictions } : {}),
     };
   });
   const toolCalls = lines.filter(line => line.event === 'tool').map(line => String(line.tool ?? ''));
@@ -124,8 +116,6 @@ export function turnFigures(lines: readonly Line[], meta: { scenario: TurnFigure
     loadMs: num(ready?.loadMs),
     loadStages: (ready?.loadStages as LoadStage[] | undefined) ?? null,
     architecture: (ready?.architecture as ModelArchitecture | undefined) ?? null,
-    ...(typeof ready?.toolsAfterSystem === 'boolean' ? { toolsAfterSystem: ready.toolsAfterSystem } : {}),
-    ...(ready?.thoughtKept && typeof ready.thoughtKept === 'object' ? { thoughtKept: ready.thoughtKept as { previousTurn: boolean; currentTurn: boolean } } : {}),
     generations, toolCalls,
     reply: { chars: text.length, truncated: text.includes(TRUNCATED_NOTICE) },
     quality,

@@ -7,11 +7,11 @@ import { promisify } from 'node:util';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readGgufFileInfo, GgufInsights, GgmlType, LlamaChat, JinjaTemplateChatWrapper, QwenChatWrapper, InputLookupTokenPredictor, type ChatModelFunctions, type ChatWrapper } from 'node-llama-cpp';
+import { readGgufFileInfo, GgufInsights, LlamaChat, JinjaTemplateChatWrapper, type ChatModelFunctions } from 'node-llama-cpp';
 import type { GgufFunctions, GgufHistoryItem } from '../core/local-provider.mts';
 import { commonPrefixLength, type PromptCheckpointFigures } from '../core/reuse.mts';
 import { SHIPPED_LEVERS } from '../core/perf-levers.mts';
-import { GenerationMeter, generationLimits, completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine, sequenceOptions, stablePromptLength, checkpointPromptEnd, chatHistoryOf, TurnLock, thoughtBudget, contextOptions, modelOptions } from '../core/local-engine.mts';
+import { GenerationMeter, generationLimits, completeLocal, disposeEngine, warmModelPath, LOCAL_OUTPUT_CAP, engineContextSize, loadedContextSize, localProvider, loadLocalModel, loadedPlacement, localModelTooBig, warmContext, nativeLoadCount, liveModelCount, loadedChatWrapper, chatWrapperLogLine, sequenceOptions, stablePromptLength, checkpointPromptEnd, chatHistoryOf, TurnLock, thoughtBudget } from '../core/local-engine.mts';
 import type { GenerationStats, LoadEvent } from '../core/model-types.mts';
 import { runtimeLlama, backendOf } from '../core/llama-runtime.mts';
 import { removeAtEnd } from './teardown.mts';
@@ -341,8 +341,8 @@ test('c. a real load reports start, rising progress ending at 1, then end with i
   assert.ok(last.wrapper.name.length > 0);
   assert.deepEqual(loadedChatWrapper(modelPath), last.wrapper);
   assert.equal(loadedChatWrapper(`${modelPath}.other`), null);
-  assert.equal(chatWrapperLogLine({ name: 'Qwen', segments: { thought: { prefix: '<think>' } }, opensThought: false, toolsAfterSystem: true, thoughtKept: { previousTurn: false, currentTurn: true } }), '[chat] wrapper Qwen · segments {"thought":{"prefix":"<think>"}} · réflexion ouverte par le modèle de conversation : non · contexte après les outils : oui · réflexion renvoyée rendue en place : non (tour précédent), oui (tour en cours)');
-  assert.equal(chatWrapperLogLine({ name: 'JinjaTemplate', segments: null, opensThought: true, toolsAfterSystem: false, thoughtKept: { previousTurn: false, currentTurn: false } }), '[chat] wrapper JinjaTemplate · segments null · réflexion ouverte par le modèle de conversation : oui · contexte après les outils : non · réflexion renvoyée rendue en place : non (tour précédent), non (tour en cours)');
+  assert.equal(chatWrapperLogLine({ name: 'Qwen', segments: { thought: { prefix: '<think>' } }, opensThought: false }), '[chat] wrapper Qwen · segments {"thought":{"prefix":"<think>"}} · réflexion ouverte par le modèle de conversation : non');
+  assert.equal(chatWrapperLogLine({ name: 'JinjaTemplate', segments: null, opensThought: true }), '[chat] wrapper JinjaTemplate · segments null · réflexion ouverte par le modèle de conversation : oui');
   assert.equal(last.wrapper.opensThought, false, 'stories260K has no think: the reply never starts as reasoning (Task 5b)');
   const again: LoadEvent[] = [];
   await localProvider(modelPath).contextWindow({ onLoad: e => again.push(e) });
@@ -433,105 +433,9 @@ test('thoughtBudget: null when neither the setting nor the lever caps; the lever
   assert.deepEqual(generationLimits({ ...SHIPPED_LEVERS, thoughtTokens: 256 }, 100, 1024), { maxTokens: 100, budgets: { thoughtTokens: 256 } });
 });
 
-test('sequenceOptions passes the checkpoint levers to getSequence as they are', () => {
-  assert.deepEqual(sequenceOptions(SHIPPED_LEVERS), { checkpoints: { max: 32, interval: 8192, maxMemory: null } });
-  assert.deepEqual(sequenceOptions({ ...SHIPPED_LEVERS, checkpointInterval: 512, checkpointMaxMemory: 1 << 30 }).checkpoints, { max: 32, interval: 512, maxMemory: 1 << 30 });
-});
-
-// Task 10: the inputLookup lever adds node-llama-cpp's InputLookupTokenPredictor; off, the options keep T3's shape.
-test('sequenceOptions adds an InputLookupTokenPredictor only with the lever', () => {
-  assert.equal('tokenPredictor' in sequenceOptions(SHIPPED_LEVERS), false);
-  const on = sequenceOptions({ ...SHIPPED_LEVERS, inputLookup: true });
-  assert.ok(on.tokenPredictor instanceof InputLookupTokenPredictor, 'an InputLookupTokenPredictor');
-  assert.deepEqual(on.checkpoints, sequenceOptions(SHIPPED_LEVERS).checkpoints, 'the checkpoints are unchanged');
-  assert.notEqual(sequenceOptions({ ...SHIPPED_LEVERS, inputLookup: true }).tokenPredictor, on.tokenPredictor, 'one predictor per sequence');
-});
-
-// Task 11: the context levers. At the shipped values nothing is passed, so loadModel and both createContext calls get
-// exactly today's options; the KV type also reaches loadModel, whose fitContext resolution sizes the KV cache with it.
-test('contextOptions maps the levers and returns {} at the shipped values', () => {
-  assert.deepEqual(contextOptions(SHIPPED_LEVERS), {});
-  assert.deepEqual(modelOptions(SHIPPED_LEVERS), {});
-  assert.deepEqual(contextOptions({ ...SHIPPED_LEVERS, batchSize: 2048 }), { batchSize: 2048 });
-  assert.deepEqual(contextOptions({ ...SHIPPED_LEVERS, threads: 6 }), { threads: 6 });
-  assert.deepEqual(contextOptions({ ...SHIPPED_LEVERS, kvCacheType: 'Q8_0' }), { experimentalKvCacheKeyType: 'Q8_0', experimentalKvCacheValueType: 'Q8_0' });
-  assert.deepEqual(modelOptions({ ...SHIPPED_LEVERS, kvCacheType: 'Q8_0' }), { experimentalDefaultContextKvCacheKeyType: 'Q8_0', experimentalDefaultContextKvCacheValueType: 'Q8_0' });
-  assert.deepEqual(modelOptions({ ...SHIPPED_LEVERS, batchSize: 2048, threads: 6 }), {}, 'loadModel takes the KV type only');
-});
-
-// node-llama-cpp marks experimentalKvCache* « may crash the process » (F22): each load runs in a child process, which
-// also reads the levers once at its start. threads 2 is within maxThreads on every backend (at least the math cores).
-// stories260K cannot hold a Q8_0 KV cache: its heads are 8 wide (64 / 8) and a q8_0 block is 32, which llama.cpp
-// refuses at context creation (« K cache type q8_0 with block size 32 does not divide n_embd_head_k=8 », 3.21.1,
-// 2026-10-27). So the Q8_0 run proves the type reaches llama.cpp's context, and that the refusal is a clean error that
-// leaves nothing loaded, not a crash; a Q8_0 context that loads is checked on the 27B (head size 256) in S2.
-test('stories260K loads and writes with batchSize 1024 and a Q8_0 KV cache', { timeout: 120000 }, async () => {
-  const levers = { batchSize: 1024, threads: 2 };
-  const out = await inChild(`
-    const lines = [];
-    const info = console.info;
-    console.info = (...args) => { lines.push(args.join(' ')); };
-    const reply = await m.completeLocal({ modelPath: ${JSON.stringify(modelPath)}, messages: [{ role: 'user', content: 'Once upon a time' }], maxTokens: 24 });
-    console.info = info;
-    const context = m.warmContext();
-    out.text = reply.content;
-    out.batchSize = context.batchSize;
-    out.kv = [context.kvCacheKeyType, context.kvCacheValueType];
-    out.idealThreads = context.idealThreads;
-    out.placement = lines.find(line => line.startsWith('[placement] backend')) ?? null;
-    await m.disposeEngine();`, { OPENAGENT_PERF_LEVERS: JSON.stringify(levers) });
-  assert.ok(out.text.length > 0, 'the toy model wrote something');
-  assert.equal(out.batchSize, 1024);
-  assert.deepEqual(out.kv, [GgmlType.F16, GgmlType.F16], 'the KV cache stays f16 without its lever');
-  assert.equal(out.idealThreads, 2);
-  assert.match(out.placement, / · lot 1024 · cache KV F16\/F16 · threads demandés 2, idéaux 2, en cours \d+ \(cœurs de calcul \d+\)$/, out.placement);
-
-  const q8 = await inChild(`
-    const lines = [];
-    for (const level of ['log', 'info', 'warn', 'error']) {
-      const original = console[level];
-      console[level] = (...args) => { lines.push(args.join(' ')); original(...args); };
-    }
-    try {
-      await m.completeLocal({ modelPath: ${JSON.stringify(modelPath)}, messages: [{ role: 'user', content: 'Once upon a time' }], maxTokens: 24 });
-      out.error = null;
-    } catch (error) { out.error = error.message; }
-    out.loaded = m.warmContext() !== null;
-    out.q8Lines = lines.filter(line => /K cache type q8_0/.test(line));
-    await m.disposeEngine();`, { OPENAGENT_PERF_LEVERS: JSON.stringify({ ...levers, kvCacheType: 'Q8_0' }) });
-  assert.ok(q8.q8Lines.length > 0, 'llama.cpp got a q8_0 K cache');
-  assert.equal(typeof q8.error, 'string', 'the refusal is an error, the child process lives on');
-  assert.equal(q8.loaded, false, 'nothing stays loaded');
-});
-
-// perfLevers() is read once per thread: each lever value gets a process of its own. Greedy decoding (LlamaChat's
-// default temperature 0): a token prediction validated by the model changes nothing in the text. Only in principle
-// over long spans: a draft is checked in a batch, whose logits may differ in the last bits from a one-token decode, so
-// on a near-tie the greedy pick can flip (seen on stories260K past ~1,400 characters on the processor, ~6,000 on
-// Vulkan, 8,192 tokens, 2026-10-27). 48 tokens (~100 characters) stay well short of that. The prompt repeats itself,
-// so the predictor finds the reply's words in it and some drafts are validated and used (5 validated, 4 used on both
-// backends, 2026-10-27): the test proves accepted drafts keep the text, not only that refuted ones are erased cleanly.
-const ECHO_PROMPT = 'One day, a little girl named Lily went to the park. She saw a big dog. One day, a little girl named Lily went to the park.';
-test('with inputLookup, a short stories260K completion keeps its greedy text, validates drafts and counts its predictions', { timeout: 200000 }, async () => {
-  const body = `
-    const stats = [];
-    const reply = await m.completeLocal({ modelPath: ${JSON.stringify(modelPath)}, messages: [{ role: 'user', content: ${JSON.stringify(ECHO_PROMPT)} }], maxTokens: 48, onStats: s => stats.push(s) });
-    out.text = reply.content;
-    out.outputTokens = stats[0].outputTokens;
-    out.predictions = stats[0].predictions ?? null;
-    out.hasKey = 'predictions' in stats[0];
-    await m.disposeEngine();`;
-  const off = await inChild(body, { OPENAGENT_PERF_LEVERS: '' });
-  const on = await inChild(body, { OPENAGENT_PERF_LEVERS: JSON.stringify({ inputLookup: true }) });
-  assert.ok(off.text.length > 0, 'the toy model wrote something');
-  assert.equal(on.text, off.text, 'the same greedy text with the predictor');
-  assert.equal(on.outputTokens, off.outputTokens);
-  assert.equal(off.hasKey, false, 'lever off: no predictions key, the stats keep their shape');
-  const p = on.predictions;
-  assert.ok(p, 'lever on: the predictions are counted');
-  assert.ok(p.validated > 0 && p.used > 0, `some drafts validated and used: ${JSON.stringify(p)}`);
-  assert.ok([p.validated, p.refuted, p.used, p.unused].every(n => Number.isInteger(n) && n >= 0), JSON.stringify(p));
-  assert.ok(p.used <= p.validated, JSON.stringify(p));
+test('sequenceOptions passes only the checkpoints\' memory cap: their count and interval stay node-llama-cpp\'s', () => {
+  assert.deepEqual(sequenceOptions({ ...SHIPPED_LEVERS, checkpointMaxMemory: null }), { checkpoints: { maxMemory: null } });
+  assert.deepEqual(sequenceOptions({ ...SHIPPED_LEVERS, checkpointMaxMemory: 1 << 30 }), { checkpoints: { maxMemory: 1 << 30 } });
 });
 
 // Task 3b: the prompt checkpoint. stories260K is an attention model (needsCheckpoints false), so takeCheckpoint is a
@@ -592,46 +496,6 @@ for (const [name, makeWrapper, functions] of MIRROR_CASES) {
       assert.equal(sequence.tokenMeter.diff(before).usedInputTokens, tokens.length - 1 - divergence);
       history = [...history, { type: 'model', response: [reply.response] }, { type: 'user', text: next }];
       previous = figures;
-    }
-  });
-}
-
-// Task 5 (keepThought): with the thoughts sent back, the lever's prompt must stay LlamaChat's to the token — a previous
-// turn's kept thought, and tool steps whose model item ends in a function call after a thought, where LlamaChat reopens
-// the thought before reading (`reopenAfterFunctionCalls`, uncovered in 3b). The toy model never calls a tool: the tool
-// steps are written by hand.
-const thought = (text: string) => ({ type: 'segment' as const, segmentType: 'thought' as const, text, ended: true as const });
-const toolStep = (result: string) => ({ type: 'functionCall' as const, name: 'get_time', params: {}, result });
-const KEPT_THOUGHT_HISTORIES: GgufHistoryItem[][] = [
-  [{ type: 'system', text: 'You are a storyteller.' }, { type: 'user', text: 'Once upon a time' }, { type: 'model', response: [thought('She thought of a cat.'), 'A cat came.'] }, { type: 'user', text: 'And then' }],
-  [{ type: 'system', text: 'You are a storyteller.' }, { type: 'user', text: 'Once upon a time' }, { type: 'model', response: [thought('What time is it?'), toolStep('noon')] }],
-  [{ type: 'system', text: 'You are a storyteller.' }, { type: 'user', text: 'Once upon a time' }, { type: 'model', response: [thought('What time is it?'), toolStep('noon'), thought('Again.'), toolStep('one')] }],
-];
-const KEPT_THOUGHT_CASES: [string, () => ChatWrapper | undefined, GgufFunctions | undefined, number[]][] = [
-  ['Llama2Chat', () => undefined, undefined, [0]],
-  ['QWEN_LIKE (openedOnStart, reopens after calls) with tools', () => new JinjaTemplateChatWrapper({ template: QWEN_LIKE_TEMPLATE }), STORY_TOOLS, [0, 1, 2]],
-  ['QwenChatWrapper keeping past thoughts, with tools', () => new QwenChatWrapper({ keepOnlyLastThought: false }), STORY_TOOLS, [0, 1, 2]],
-];
-for (const [name, makeWrapper, functions, cases] of KEPT_THOUGHT_CASES) {
-  test(`checkpointPromptEnd with kept thoughts, ${name}: LlamaChat evaluates the prompt the lever predicted and reads only the rest`, { timeout: 60000 }, async t => {
-    const model = await (await runtimeLlama()).loadModel({ modelPath });
-    const context = await model.createContext({ contextSize: 2048 });
-    t.after(async () => { await context.dispose(); await model.dispose(); });
-    const sequence = context.getSequence();
-    const wrapper = makeWrapper();
-    const chat = new LlamaChat({ contextSequence: sequence, ...(wrapper ? { chatWrapper: wrapper } : {}) });
-    for (const index of cases) {
-      const history = KEPT_THOUGHT_HISTORIES[index];
-      await sequence.clearHistory(); // each history from an empty state: the checkpoint is really taken, not skipped because an earlier case already held the prompt
-      const { tokens } = stablePromptLength(chat.chatWrapper, model.tokenizer, history, functions);
-      const divergence = commonPrefixLength(sequence.contextTokens, tokens);
-      const before = sequence.tokenMeter.getState();
-      const figures = await checkpointPromptEnd(sequence, chat.chatWrapper, history, functions);
-      assert.ok(figures && figures.index !== null, `history ${index}: checkpointed ${JSON.stringify(figures)} held ${model.detokenize(sequence.contextTokens, true).slice(-80)} prompt ${model.detokenize(tokens, true).slice(-120)}`);
-      await chat.generateResponse(chatHistoryOf(history), { maxTokens: 4, ...(functions ? { functions: functions as ChatModelFunctions } : {}) });
-      assert.deepEqual(model.detokenize(sequence.contextTokens.slice(0, tokens.length), true), model.detokenize(tokens, true), `history ${index}: the same text`);
-      assert.deepEqual(sequence.contextTokens.slice(0, tokens.length), tokens, `history ${index}: LlamaChat evaluated the prompt the lever predicted`);
-      assert.equal(sequence.tokenMeter.diff(before).usedInputTokens, tokens.length - 1 - divergence, `history ${index}: nothing pre-evaluated was read again`);
     }
   });
 }

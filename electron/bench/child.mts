@@ -53,7 +53,7 @@ export interface SessionConfig extends Common {
   /** `--touch-memory n` (Task 4): before A's message n, a line is appended to A's project memory.md (null: never). */
   touchMemoryBefore?: number | null;
   /** `--idle-before-send ms` (Task 7): the session starts as the app does when the user waits before writing. The model
-   * is made active by a first worker that then quits (the lever engineAtBoot reads it at start), the measured worker
+   * is made active by a first worker that then quits, the measured worker
    * gets no op before the first message (no hardware-info: the Matériel tab is not open), and that message is sent
    * this long after the worker's start. The backend is then read after that first turn. null: as before. */
   idleBeforeSendMs?: number | null;
@@ -270,7 +270,7 @@ export async function runSession(config: SessionConfig, save: (result: ChildResu
     await callWorker(target, 'save-global-settings', { patch: { ...config.settings, active_local_model: entry.id, local_context: config.context } });
   };
   // `--idle-before-send`: the model is made active before the measured worker starts, by a worker that creates no Llama
-  // (no hardware-info), so the measured one starts its engine itself — at boot with engineAtBoot, else on the turn.
+  // (no hardware-info), so the measured one starts its engine itself, on the turn.
   if (idleMs !== null) {
     const setup = new Worker(WORKER, { env: { ...process.env, OPENAGENT_HOME: config.home }, workerData });
     try { await activate(setup); } finally { await shutdown(setup); }

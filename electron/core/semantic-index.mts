@@ -107,16 +107,12 @@ async function previousIndex(file: string): Promise<Map<string, { stamp: FileSta
  * (core/file-filter.mts), and the rebuild purges what an older index held of it. JsonStore keeps a one-time copy of
  * the first version of any file it rewrites (`.pre-electron.bak`); for this cache that copy would keep the first index
  * ever written — secret files included for an index built before 2026-10-05 — so it is removed after each write.
- *
- * `options.gate` (core/index-gate.mts, lever indexDuringTurns): awaited at the top of each file, before its progress,
- * so a paused gate holds the indexing between two files (the file being embedded finishes first).
  */
 export async function indexFolder(
   folder: string,
   home: string,
   onProgress?: (current: number, total: number, filepath: string) => void,
   ignoredPatterns = '',
-  options: { gate?: { wait(): Promise<void> } } = {},
 ): Promise<IndexResult> {
   if (!isAbsolute(folder) || !isAbsolute(home)) throw new Error('Chemins absolus requis');
   const file = await storePath(folder);
@@ -127,7 +123,6 @@ export async function indexFolder(
   let embeddedFiles = 0;
   let reusedFiles = 0;
   for (let i = 0; i < files.length; i++) {
-    await options.gate?.wait();
     const absolute = files[i];
     const relFile = relative(folder, absolute).split(sep).join('/');
     onProgress?.(i + 1, files.length, relFile);
@@ -172,7 +167,6 @@ export async function indexFolder(
   } catch {
     // EEXIST (already there) or any write error.
   }
-  await options.gate?.wait(); // encoding the store is the longest step on the worker's thread: not during a held turn
   const store = new JsonStore({ indent: 0 });
   await store.update<IndexFile>(file, { version: INDEX_VERSION, entries: [] }, () => ({ version: INDEX_VERSION, entries, files: stamps }));
   await rm(`${file}.pre-electron.bak`, { force: true });

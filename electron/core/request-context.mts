@@ -11,7 +11,7 @@ const isAssistant = (message: ChatMessage) => message.role === 'assistant' || (m
 const textOf = (content: ChatMessage['content']) => (typeof content === 'string' ? content : '');
 
 /** Where the turn in progress starts: the last user message (-1 when there is none: everything is current). */
-export function currentTurnStart(messages: readonly ChatMessage[]): number {
+function currentTurnStart(messages: readonly ChatMessage[]): number {
   for (let index = messages.length - 1; index >= 0; index--) if (isUser(messages[index])) return index;
   return -1;
 }
@@ -47,12 +47,12 @@ function wireToolResult(message: ChatMessage): ChatMessage {
   return { role: 'tool', ...(message.tool_call_id === undefined ? {} : { tool_call_id: message.tool_call_id }), content: message.content };
 }
 
-/** An assistant message as the provider receives it: the reasoning's duration and the turn's figures, saved for the
- * screen, never leave; the reasoning itself leaves only when it is `kept` (the keepThought lever). */
-function wireAssistant(message: ChatMessage, kept = false): ChatMessage {
-  if (!((!kept && 'reasoning' in message) || 'reasoningMs' in message || 'timing' in message)) return message;
-  const { reasoning, reasoningMs: _reasoningMs, timing: _timing, ...sent } = message;
-  return kept && reasoning !== undefined ? { ...sent, reasoning } : sent;
+/** An assistant message as the provider receives it: the reasoning, its duration and the turn's figures, saved for the
+ * screen, never leave. */
+function wireAssistant(message: ChatMessage): ChatMessage {
+  if (!('reasoning' in message || 'reasoningMs' in message || 'timing' in message)) return message;
+  const { reasoning: _reasoning, reasoningMs: _reasoningMs, timing: _timing, ...sent } = message;
+  return sent;
 }
 
 /**
@@ -61,25 +61,15 @@ function wireAssistant(message: ChatMessage, kept = false): ChatMessage {
  * messages are dropped, as Python sent them); the turn in progress is sent whole, its attachments expanded,
  * unreadable call arguments replaced by `{}`, its tool results reduced to the OpenAI fields and its assistant messages
  * stripped of their reasoning and timing (in the request only: the saved transcript keeps everything).
- * `keepThought` (lever, Task 5): the reasoning goes back on the assistant messages of the turn in progress and on the
- * previous turn's last reply — the replies the next prompt renders after what the model read — never its duration.
  */
-export function requestMessages(messages: readonly ChatMessage[], options: { keepThought?: boolean } = {}): ChatMessage[] {
-  const keep = options.keepThought === true;
+export function requestMessages(messages: readonly ChatMessage[]): ChatMessage[] {
   const start = Math.max(0, currentTurnStart(messages));
   const earlier: ChatMessage[] = [];
-  let lastSource: ChatMessage | undefined;
   for (const message of messages.slice(0, start)) {
     if (isUser(message)) earlier.push({ role: 'user', content: withPlaceholders(message) });
-    else if (isAssistant(message) && textOf(message.content).trim()) {
-      earlier.push({ role: 'assistant', content: textOf(message.content) });
-      lastSource = message;
-    }
+    else if (isAssistant(message) && textOf(message.content).trim()) earlier.push({ role: 'assistant', content: textOf(message.content) });
   }
-  // The previous turn's last reply: the last message sent before the turn in progress, when it is a reply.
-  const lastReply = earlier.at(-1);
-  if (keep && lastReply?.role === 'assistant' && typeof lastSource?.reasoning === 'string' && lastSource.reasoning) lastReply.reasoning = lastSource.reasoning;
-  const current = messages.slice(start).map(message => wireAssistant(wireToolResult(withSendableArguments(toWireMessage(message as never) as unknown as ChatMessage)), keep));
+  const current = messages.slice(start).map(message => wireAssistant(wireToolResult(withSendableArguments(toWireMessage(message as never) as unknown as ChatMessage))));
   return [...earlier, ...current];
 }
 
@@ -93,13 +83,10 @@ function messageCharacters(message: ChatMessage): number {
     }
   }
   for (const call of message.tool_calls ?? []) total += characters(call.function.name) + characters(call.function.arguments);
-  // A reasoning in a request goes back to the model (the keepThought lever, F15): it costs its tokens.
-  if (typeof message.reasoning === 'string') total += characters(message.reasoning);
   return total;
 }
 
-/** Estimated tokens of a whole request: system prompt, tool schemas and messages (text, arguments, results, a resent
- * reasoning). */
+/** Estimated tokens of a whole request: system prompt, tool schemas and messages (text, arguments, results). */
 export function estimateRequestTokens(system: string, tools: readonly ToolSchema[], messages: readonly ChatMessage[]): number {
   let total = characters(system) + (tools.length ? characters(JSON.stringify(tools)) : 0);
   for (const message of messages) total += messageCharacters(message);

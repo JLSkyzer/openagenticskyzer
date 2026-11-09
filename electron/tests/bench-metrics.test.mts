@@ -59,6 +59,9 @@ test('gamesIn: a Minecraft client counts; Unity batch and AxionEngine processes 
   assert.equal(isDevelopmentMinecraft('7 java.exe -Dfabric.development=true -cp x net.fabricmc.devlaunchinjector.Main'), true);
   assert.equal(isDevelopmentMinecraft('8 javaw.exe -cp x cpw.mods.bootstraplauncher.BootstrapLauncher --launchTarget forgeclient --version 1.20.1-forge-47.2.0'), false);
   assert.equal(isDevelopmentMinecraft('8 javaw.exe -cp x net.minecraft.client.main.Main --version 1.21'), false);
+  assert.equal(isDevelopmentMinecraft('9 java.exe -Dorg.gradle.appname=gradlew -classpath D:\\AXIONENGINE\\gradle\\wrapper\\gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain runClient'), false);
+  assert.equal(isDevelopmentMinecraft('9 java.exe -cp D:\\AXIONENGINE\\x.jar org.gradle.launcher.daemon.bootstrap.GradleDaemon 8.8'), false);
+  assert.equal(isDevelopmentMinecraft('10 java.exe -cp D:\\AXIONENGINE\\x.jar com.example.AxionEngineClient'), true);
 });
 
 test('compareRuns: a turn missing on one side, an incomplete old file, status, quality and truncation rows, and what makes two runs not comparable', () => {

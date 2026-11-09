@@ -46,6 +46,8 @@ const JAVA_LIST = [
  * (`--launchTarget forgeclientuserdev`), Forge before 1.13 (GradleStart), Fabric dev, or AxionEngine. A player's client
  * has `--launchTarget forgeclient`, or none of these. */
 export function isDevelopmentMinecraft(commandLine: string): boolean {
+  // Gradle's own Java processes carry the project's path in their command line, and they are not games.
+  if (/\bGradle(WrapperMain|Daemon|WorkerMain)\b/.test(commandLine)) return false;
   return /--launchTarget\s+\w*forge\w*dev\b|\bGradleStart\b|fabric\.development=true|axionengine/i.test(commandLine);
 }
 

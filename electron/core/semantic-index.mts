@@ -106,7 +106,8 @@ async function previousIndex(file: string): Promise<Map<string, { stamp: FileSta
  * `ignoredPatterns` is the project's ignored_patterns: what the file tools' searches hide is never indexed
  * (core/file-filter.mts), and the rebuild purges what an older index held of it. JsonStore keeps a one-time copy of
  * the first version of any file it rewrites (`.pre-electron.bak`); for this cache that copy would keep the first index
- * ever written — secret files included for an index built before 2026-10-05 — so it is removed after each write.
+ * ever written — secret files included for an index built before 2026-10-05 — so none is made, and one left by an older
+ * build is removed.
  */
 export async function indexFolder(
   folder: string,
@@ -168,8 +169,8 @@ export async function indexFolder(
     // EEXIST (already there) or any write error.
   }
   const store = new JsonStore({ indent: 0 });
-  await store.update<IndexFile>(file, { version: INDEX_VERSION, entries: [] }, () => ({ version: INDEX_VERSION, entries, files: stamps }));
-  await rm(`${file}.pre-electron.bak`, { force: true });
+  await store.update<IndexFile>(file, { version: INDEX_VERSION, entries: [] }, () => ({ version: INDEX_VERSION, entries, files: stamps }), { backup: false });
+  await rm(`${file}.pre-electron.bak`, { force: true }); // what an older build left
   return { chunks: entries.length, embeddedFiles, reusedFiles };
 }
 

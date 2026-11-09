@@ -155,7 +155,7 @@ if (!scenarios.length || scenarios.some(s => !['A', 'B', 'C'].includes(s))) fail
 const messageCount = values.messages === undefined ? SCENARIO_A.length : Number(values.messages);
 if (!Number.isInteger(messageCount) || messageCount < 1 || messageCount > SCENARIO_A.length) fail(2, `--messages invalide : ${values.messages} (1 à ${SCENARIO_A.length})`);
 // `--touch-memory n` (Task 4): a line appended to A's project memory before message n (2 to the last played), as a
-// save_memory would: what the context placement lever is measured on.
+// save_memory would: how a change inside the prompt's head is measured.
 const touchMemory = values['touch-memory'] === undefined ? null : Number(values['touch-memory']);
 if (touchMemory !== null && (!scenarios.includes('A') || !Number.isInteger(touchMemory) || touchMemory < 2 || touchMemory > messageCount)) fail(2, `--touch-memory invalide : ${values['touch-memory']} (un message de A, 2 à ${messageCount})`);
 // `--idle-before-send ms` (Task 7): each session starts as the app does when the user waits that long after its start

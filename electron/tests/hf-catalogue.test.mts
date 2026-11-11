@@ -124,6 +124,21 @@ test('modelVariants refuses an identifier that is not owner/name', async () => {
   await assert.rejects(modelVariants('../etc/passwd', { baseUrl: 'http://127.0.0.1:1' }), (e: any) => e instanceof HfError && e.kind === 'bad-answer');
 });
 
+// Task 5 review I1: the regex alone accepts `.` and `..` segments; such an id never reaches a URL, token or not.
+test('modelVariants refuses a `.` or `..` segment before any request', async t => {
+  const hf = await server(t);
+  for (const id of ['owner/..', '../x', './x', 'owner/.', '../..']) {
+    await assert.rejects(modelVariants(id, { baseUrl: hf.baseUrl, token: 'hf_secret' }), (e: any) => e instanceof HfError && e.kind === 'bad-answer', id);
+  }
+  assert.equal(hf.hits.length, 0);
+});
+
+test('searchModels drops a listed id with a `.` or `..` segment, and keeps the others', async t => {
+  const hf = await server(t);
+  hf.setModels([listing({ id: 'owner/..' }), listing({ id: '../x' }), listing({ id: 'owner/good' })]);
+  assert.deepEqual((await searchModels({ baseUrl: hf.baseUrl })).map(m => m.id), ['owner/good']);
+});
+
 test('groupVariants: split files make one variant, sizes summed, three hashes, sorted by part', () => {
   const entry = (n: number, size: number, oid: string) => ({ type: 'file', oid: 'x', size: 130, path: `x-0000${n}-of-00003.gguf`, lfs: { oid, size, pointerSize: 136 } });
   const [variant, ...rest] = groupVariants([entry(3, 30, H('c')), entry(1, 10, H('a')), entry(2, 20, H('b'))]);

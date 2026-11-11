@@ -6,7 +6,7 @@
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { HfError, modelVariants, searchModels, type CatalogueModel, type CatalogueSort, type ModelVariant } from './hf-catalogue.mts';
+import { HfError, isRepoId, modelVariants, searchModels, type CatalogueModel, type CatalogueSort, type ModelVariant } from './hf-catalogue.mts';
 import { chooseVariant, codeQualityOf, fitOf, recommend, scoreModel, type Fit, type Recommendation, type RecommendationInput } from './model-score.mts';
 import { ModelDownloads, type DownloadJob, type ModelDownloadsOptions } from './model-download.mts';
 import { JsonStore } from './json-store.mts';
@@ -55,11 +55,9 @@ export function checkHfTestBaseUrl(value: unknown): string {
   return parsed.origin;
 }
 
-/** owner/name, word characters, dots and dashes, no `.` or `..` segment (the Task 2 regex alone accepts them). */
+/** A repository id the page sent: hf-catalogue's own rule (no `.` or `..` segment), at most 200 characters. */
 export function checkRepoId(repo: unknown): string {
-  if (typeof repo !== 'string' || repo.length > 200 || !/^[\w.-]+\/[\w.-]+$/.test(repo) || repo.split('/').some(s => s === '.' || s === '..')) {
-    throw new Error(REPO_REFUSED);
-  }
+  if (!isRepoId(repo) || repo.length > 200) throw new Error(REPO_REFUSED);
   return repo;
 }
 

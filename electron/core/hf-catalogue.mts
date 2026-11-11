@@ -82,14 +82,19 @@ async function readJson(response: Response, options: CallOptions): Promise<unkno
   }
 }
 
-const asNumber = (value: unknown, fallback: number): number => (typeof value === 'number' && Number.isFinite(value) ? value : fallback);
+/** owner/name: word characters, dots and dashes, and no `.` or `..` segment — such an id never reaches a URL. */
+export function isRepoId(id: unknown): id is string {
+  return typeof id === 'string' && /^[\w.-]+\/[\w.-]+$/.test(id) && !id.split('/').some(s => s === '.' || s === '..');
+}
+
+const asNumber =(value: unknown, fallback: number): number => (typeof value === 'number' && Number.isFinite(value) ? value : fallback);
 const asString = (value: unknown): string | null => (typeof value === 'string' && value.length > 0 ? value : null);
 
 function parseModel(entry: unknown): CatalogueModel | null {
   if (!entry || typeof entry !== 'object') return null;
   const e = entry as Record<string, any>;
   const id = asString(e.id);
-  if (!id || !e.gguf || typeof e.gguf !== 'object') return null;
+  if (!id || !isRepoId(id) || !e.gguf || typeof e.gguf !== 'object') return null;
   const gguf = e.gguf as Record<string, unknown>;
   const context = asNumber(gguf.context_length, 0);
   return {
@@ -168,7 +173,7 @@ function nextLink(response: Response, current: URL): URL | null {
 }
 
 export async function modelVariants(id: string, options: { baseUrl?: string; token?: string; signal?: AbortSignal } = {}): Promise<ModelVariant[]> {
-  if (!/^[\w.-]+\/[\w.-]+$/.test(id)) throw new HfError('bad-answer', 'Identifiant de dépôt invalide');
+  if (!isRepoId(id)) throw new HfError('bad-answer', 'Identifiant de dépôt invalide');
   let url: URL | null = new URL(`/api/models/${id}/tree/main`, options.baseUrl ?? HF_BASE_URL);
   url.searchParams.set('recursive', 'true');
   const entries: unknown[] = [];

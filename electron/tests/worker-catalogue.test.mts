@@ -265,6 +265,18 @@ test('worker catalogue-list: the recommendation, the items with their chosen var
   for (const v of detail.variants) assert.ok(['full', 'partial', 'slow', 'none'].includes(v.fit));
 });
 
+// Task 5 review I1: an id from Hugging Face's own listing is untrusted too.
+test('worker catalogue-list: listed ids `owner/..` and `../x` get no request; the other models still show', { timeout: 180_000 }, async t => {
+  const { hf, worker } = await setup(t);
+  hf.setModels([hfEntry('owner/..'), hfEntry('../x'), hfEntry('owner/good-GGUF')]);
+  hf.setFile('owner/good-GGUF/good-Q4.gguf', STORIES_BYTES);
+  await callWorker(worker, 'save-global-settings', { patch: { hf_token: 'hf_secret' } });
+  const view = await callWorker(worker, 'catalogue-list', {});
+  assert.deepEqual(view.items.map((item: any) => item.model.id), ['owner/good-GGUF']);
+  const trees = hf.hits.filter(hit => hit.path.includes('/tree/')).map(hit => hit.path);
+  assert.deepEqual(trees, ['/api/models/owner/good-GGUF/tree/main?recursive=true']);
+});
+
 test('worker catalogue-list offline: error offline and recommendation none/offline, never a thrown op', { timeout: 120_000 }, async t => {
   const closed = createServer();
   await new Promise<void>(resolve => closed.listen(0, '127.0.0.1', resolve));

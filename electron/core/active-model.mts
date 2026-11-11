@@ -1,5 +1,5 @@
-// The ONE place that decides which model answers: active_local_model (global config.json), resolved through the
-// .gguf library. The worker reads it itself on every send and compaction; an id sent by the page is never used.
+// The ONE place that decides which model answers: the project's choice (core/project-models.mts), else
+// active_local_model (global config.json), resolved through the .gguf library. The worker reads it itself on every send and compaction; an id sent by the page is never used.
 import type { SettingsService } from './settings.mts';
 import type { GgufEntry, GgufLibrary } from './gguf-library.mts';
 import { loadedContextSize, loadedPlacement, plannedContextSize, type ContextRequest } from './local-engine.mts';
@@ -7,14 +7,19 @@ import { MIN_LOCAL_CONTEXT } from './context-budget.mts';
 import { llamaCreated } from './llama-runtime.mts';
 import { estimateKey, hardwareKey, type EstimateCache } from './offload-estimate.mts';
 import type { Placement } from './placement.mts';
+import { ProjectModels } from './project-models.mts';
 
 export const NO_LOCAL_MODEL = 'Aucun modèle local actif : ajoute ou choisis un fichier .gguf (bouton du modèle).';
 export const LOCAL_MODEL_MISSING = 'Modèle local introuvable : il a peut-être été retiré de la bibliothèque. Choisis-en un autre.';
 
-export interface ActiveModel { id: string; name: string; path: string }
+export const PROJECT_MODEL_FALLBACK = 'Le modèle de ce projet est introuvable : modèle par défaut utilisé.';
+
+/** `fallback`: the project's chosen model is gone and the default one answered. */
+export interface ActiveModel { id: string; name: string; path: string; fallback: boolean }
 /** `placement` is omitted when unknown: the loaded truth once that model is loaded, else the cached estimate. */
 /** `replacing`: added by worker.mjs while the model is reloaded between turns to put more layers on the card. */
-export interface ModelStatus { id: string; name: string | null; missing: boolean; contextWindow: number; loaded: boolean; placement?: Placement; replacing?: boolean }
+/** `fallback` and `notice` (PROJECT_MODEL_FALLBACK): only on a turn whose project model is gone. */
+export interface ModelStatus { id: string; name: string | null; missing: boolean; contextWindow: number; loaded: boolean; placement?: Placement; replacing?: boolean; fallback?: true; notice?: string }
 
 /** The saved id ('' when none) and its library entry (null when the id is unknown or its file is gone). */
 async function lookup(settings: SettingsService, library: GgufLibrary): Promise<{ id: string; entry: GgufEntry | null }> {
@@ -24,13 +29,23 @@ async function lookup(settings: SettingsService, library: GgufLibrary): Promise<
   return { id, entry: (await library.list()).find(entry => entry.id === id) ?? null };
 }
 
-/** The active model; null when none is set. Throws LOCAL_MODEL_MISSING when one is set but its file is gone (moved,
- * deleted, or removed from the library). */
-export async function activeModel(settings: SettingsService, library: GgufLibrary): Promise<ActiveModel | null> {
+/** The model a turn in `folder` runs on: the one chosen for that project (core/project-models.mts, the user's data,
+ * never the project's .openagent/), else the global one. A project model whose file is gone gives way to the global
+ * one with `fallback: true`. Null when neither is set. Throws LOCAL_MODEL_MISSING when the model that should answer is
+ * set but its file is gone (moved, deleted, or removed from the library). */
+export async function activeModel(settings: SettingsService, library: GgufLibrary, folder?: string | null): Promise<ActiveModel | null> {
+  const chosen = folder ? await new ProjectModels(settings.home).get(folder) : null;
+  if (chosen) {
+    const entry = (await library.list()).find(candidate => candidate.id === chosen);
+    if (entry) return { id: entry.id, name: entry.name, path: entry.path, fallback: false };
+  }
   const { id, entry } = await lookup(settings, library);
-  if (!id) return null;
+  if (!id) {
+    if (chosen) throw new Error(LOCAL_MODEL_MISSING);
+    return null;
+  }
   if (!entry) throw new Error(LOCAL_MODEL_MISSING);
-  return { id, name: entry.name, path: entry.path };
+  return { id, name: entry.name, path: entry.path, fallback: Boolean(chosen) };
 }
 
 /** The engine context request the global settings ask for (« Contexte des modèles locaux »). */
@@ -78,5 +93,6 @@ export function turnModelStatus(model: ActiveModel | null): ModelStatus {
   const size = model ? loadedContextSize(model.path) : null;
   const status: ModelStatus = { id: model?.id ?? '', name: model?.name ?? null, missing: false, contextWindow: size ?? MIN_LOCAL_CONTEXT, loaded: size !== null };
   const placement = model ? loadedPlacement(model.path) : null;
-  return placement ? { ...status, placement } : status;
+  const withPlacement = placement ? { ...status, placement } : status;
+  return model?.fallback ? { ...withPlacement, fallback: true, notice: PROJECT_MODEL_FALLBACK } : withPlacement;
 }

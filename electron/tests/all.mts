@@ -131,3 +131,4 @@ import './hf-catalogue.test.mts';
 import './model-score.test.mts';
 import './model-download.test.mts';
 import './worker-catalogue.test.mts';
+import './project-models.test.mts';

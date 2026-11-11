@@ -51,6 +51,9 @@ export interface ModelStatus {
   placement?: Placement;
   /** The model is being reloaded between turns to put more layers on the card (worker.mjs::maybeReplace). */
   replacing?: boolean;
+  /** On a turn's 'model' event only: the project's model is gone and the default one answered; `notice` says so. */
+  fallback?: true;
+  notice?: string;
 }
 
 // Mirrors core/placement.mts.

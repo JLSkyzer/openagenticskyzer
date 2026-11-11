@@ -7,6 +7,7 @@ import { getModuleVersion } from 'node-llama-cpp';
 import { SettingsService } from './core/settings.mts';
 import { Conversations } from './core/conversations.mts';
 import { FoldersService } from './core/folders.mts';
+import { ProjectModels } from './core/project-models.mts';
 import { GgufLibrary } from './core/gguf-library.mts';
 import { localProvider, plannedContextSize, loadedChatWrapper, loadedOutcome, outcomeNote, replacementCheck, replaceLoaded, generationsIdle, setLayerLimits } from './core/local-engine.mts';
 import { TurnLog, pruneTurnLogs, mcpSecretValues } from './core/turn-log.mts';
@@ -117,6 +118,7 @@ const trust = new ProjectTrustService(dataHome, settings);
 const conversations = new Conversations();
 const folders = new FoldersService(dataHome);
 const ggufLibrary = new GgufLibrary(dataHome);
+const projectModels = new ProjectModels(dataHome);
 const promptLibrary = new PromptLibrary(dataHome);
 const mcpConfig = new McpConfigStore(dataHome);
 // The worker's one estimate cache and job queue (hardware and offload): handed explicitly to whatever reads them.
@@ -246,7 +248,7 @@ const mcpPool = perfLevers().mcpKeepAlive ? new McpPool() : null;
 const mcpPoolFolders = new Set();
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'model-status', 'hardware-info', 'estimate-model', 'estimate-cancel', 'cuda-pack-status', 'cuda-pack-install', 'cuda-pack-cancel', 'cuda-pack-uninstall', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-add-remote', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'project-trust', 'trust-project', 'catalogue-list', 'catalogue-variants', 'catalogue-install', 'catalogue-cancel', 'catalogue-downloads', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'model-status', 'hardware-info', 'estimate-model', 'estimate-cancel', 'cuda-pack-status', 'cuda-pack-install', 'cuda-pack-cancel', 'cuda-pack-uninstall', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-add-remote', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'project-trust', 'trust-project', 'catalogue-list', 'catalogue-variants', 'catalogue-install', 'catalogue-cancel', 'catalogue-downloads', 'project-model-get', 'project-model-set', 'shutdown']);
 
 // Anything in `active` on this folder — an agent run or a compaction — is writing its transcript.
 function runningIn(folder) {
@@ -580,7 +582,7 @@ async function exportConversation(folder, branchId, format) {
   const entries = renderEntries(messages, name => toolCategory.get(name));
   // The header names the active .gguf, read here like a turn reads it: never a provider or a model sent by the page.
   // None active, or one whose file is gone: « Aucun modèle ».
-  const model = (await activeModel(settings, ggufLibrary).catch(() => null))?.name ?? 'Aucun modèle';
+  const model = (await activeModel(settings, ggufLibrary, folder).catch(() => null))?.name ?? 'Aucun modèle';
   const provider = 'local';
   const date = new Date();
   const filename = exportFilename(format, date);
@@ -621,13 +623,14 @@ function lastAssistantSummary(messages) {
 }
 
 /**
- * The model of a send or a compaction ("réveiller" the .gguf): the active_local_model the worker reads itself
- * (core/active-model.mts), never an id or a connection sent by the page. None active: NO_LOCAL_MODEL; one whose
+ * The model of a send or a compaction ("réveiller" the .gguf): the project's model, else the active_local_model, that
+ * the worker reads itself (core/active-model.mts), never an id or a connection sent by the page. None active: NO_LOCAL_MODEL; one whose
  * file is gone: LOCAL_MODEL_MISSING — both before anything starts. The test seam answers only when no model is
  * active. The engine itself is loaded on the first request (windowFor), not here.
  */
 async function turnProvider(payload) {
-  const model = await activeModel(settings, ggufLibrary);
+  // The project's model (else the global one) is read here, at the send: a turn keeps the model it started with.
+  const model = await activeModel(settings, ggufLibrary, payload.folder);
   // The engine context comes from « Contexte des modèles locaux », read on every send: a changed setting reloads the
   // model at the next message. max_tokens is not part of it (it caps the request window only, windowFor).
   if (model) {
@@ -658,7 +661,7 @@ async function estimateModel(payload) {
     model = (await ggufLibrary.list()).find(entry => entry.id === payload.modelId);
     if (!model) throw new Error(LOCAL_MODEL_MISSING);
   } else {
-    model = await activeModel(settings, ggufLibrary);
+    model = await activeModel(settings, ggufLibrary, payload.folder);
     if (!model) throw new Error(NO_LOCAL_MODEL);
   }
   if (active.size > 0 || replacement) return estimateBusy();
@@ -1128,6 +1131,15 @@ async function handle(message) {
       result = catalogueInstalls.list();
     }
     if (op === 'catalogue-downloads') result = catalogueInstalls.list();
+    // The model of a project (core/project-models.mts): « Par défaut » (null) or a model of the library, kept in the
+    // user's data, never in the project. Read at the next send: a turn running keeps its model.
+    if (op === 'project-model-get') result = await projectModels.get(payload.folder);
+    if (op === 'project-model-set') {
+      const modelId = payload.modelId || null;
+      if (modelId !== null && !(await ggufLibrary.list()).some(entry => entry.id === modelId)) throw new Error(LOCAL_MODEL_MISSING);
+      await projectModels.set(payload.folder, modelId);
+      result = await projectModels.get(payload.folder);
+    }
     if (op === 'model-status') result = { ...await modelStatus(settings, ggufLibrary, estimateCache), ...(replacement ? { replacing: true } : {}) };
     // payload.refresh is accepted and ignored for now: every call re-reads free memory. While the engine is still
     // starting, what needs no Llama answers at once, flagged `initializing`, and an 'engine' event follows (item 3).

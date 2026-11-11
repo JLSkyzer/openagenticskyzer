@@ -401,6 +401,17 @@ export function onCatalogueDownload(listener: (job: DownloadJob) => void): () =>
   return window.openagent.onCatalogueDownloadEvent(event => listener(event.job));
 }
 
+// The model of a project: null is « Par défaut » (the global model), else a library model id. Kept in the user's data,
+// never in the project; read at the next send. A turn whose model is gone runs on the default one, and its 'model'
+// event says so (ModelStatus.fallback / notice).
+export function projectModelGet(folder: string): Promise<string | null> {
+  return request('project-model-get', { folder });
+}
+
+export function projectModelSet(folder: string, modelId: string | null): Promise<string | null> {
+  return request('project-model-set', { folder, modelId });
+}
+
 // Zone Danger: none of these delete project files, only history / sidebar entries / settings.
 export function clearHistory(folder: string): Promise<{ removed_messages: number }> {
   return request('clear-history', { folder });

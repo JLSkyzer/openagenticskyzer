@@ -37,6 +37,8 @@ import { cleanupOldFolders } from './core/cleanup.mts';
 import { ensureDataFolders, writeReadme } from './core/data-folders.mts';
 import { gitStatus } from './core/git-status.mts';
 import { testHfToken } from './core/hf-token.mts';
+import { HF_BASE_URL } from './core/hf-catalogue.mts';
+import { CatalogueService, CatalogueInstalls, ToolSupportChecker, checkHfTestBaseUrl, modelsDirOf, contextTargetOf } from './core/catalogue-service.mts';
 import { migrateDataDir } from './core/data-dir.mts';
 import { resolveHomes } from './core/data-home.cjs';
 import { initializeProject } from './core/project-analyzer.mts';
@@ -134,6 +136,38 @@ function track(promise, label) {
   void settled.then(() => work.delete(settled));
   return promise;
 }
+
+// The Hugging Face catalogue (core/catalogue-service.mts). TEST SEAM: only a test passes workerData.hfBaseUrl, a
+// loopback URL (the tests' fake Hugging Face); anything else there stops the worker at start, and
+// main.cjs never passes it (tests/test-seam.test.mts), so the packaged app always reads huggingface.co.
+const hfBaseUrl = workerData?.hfBaseUrl == null ? HF_BASE_URL : checkHfTestBaseUrl(workerData.hfBaseUrl);
+const catalogueToken = () => settings.global().then(saved => (typeof saved.hf_token === 'string' && saved.hf_token ? saved.hf_token : undefined), () => undefined);
+const CATALOGUE_ENGINE_WAIT_MS = 20000;
+const CATALOGUE_ENGINE_STARTING = 'Le moteur démarre encore : réessaie le catalogue dans un instant.';
+// The templates of the listed models are checked in a thread of their own, with a time limit (ruling T1b).
+const toolChecks = new ToolSupportChecker();
+const catalogue = new CatalogueService({
+  baseUrl: hfBaseUrl,
+  token: catalogueToken,
+  // The fit needs the card and the RAM: the Llama, waited for a bounded time (engineWithin, below).
+  hardware: async () => {
+    if (!await engineWithin(CATALOGUE_ENGINE_WAIT_MS)) throw new Error(CATALOGUE_ENGINE_STARTING);
+    return readHardware();
+  },
+  contextSize: async () => contextTargetOf(await settings.global()),
+  toolSupport: template => toolChecks.check(template),
+});
+// One owner of model-downloads.json: this worker. What was pending when the app closed resumes now (each job came from
+// a click); its progress and end reach the page as 'catalogue-download' events.
+const catalogueInstalls = new CatalogueInstalls({
+  home: dataHome,
+  library: ggufLibrary,
+  settings,
+  baseUrl: hfBaseUrl,
+  token: catalogueToken,
+  onChange: job => parentPort.postMessage({ type: 'event', event: 'catalogue-download', job }),
+});
+track(catalogueInstalls.resume().catch(error => console.warn(`[catalogue] reprise des téléchargements impossible : ${error?.message ?? error}`)), 'reprise des téléchargements de modèles');
 // index_status (semantic search): folder (resolved absolute path) -> {state, current?, total?, message?}.
 // state.index_status in the previous NiceGUI app was a single free-form string a background thread
 // updated in place; here it is a real small state machine ('idle'|'indexing'|'ready'|'error') per
@@ -212,7 +246,7 @@ const mcpPool = perfLevers().mcpKeepAlive ? new McpPool() : null;
 const mcpPoolFolders = new Set();
 // 'shutdown' is internal: main.cjs sends it directly when the app closes; it is not in main's
 // renderer-facing allow-list, so the page cannot call it.
-const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'model-status', 'hardware-info', 'estimate-model', 'estimate-cancel', 'cuda-pack-status', 'cuda-pack-install', 'cuda-pack-cancel', 'cuda-pack-uninstall', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-add-remote', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'project-trust', 'trust-project', 'shutdown']);
+const ops = new Set(['global-settings', 'project-settings', 'save-global-settings', 'save-project-settings', 'list-branches', 'messages', 'save-messages', 'fork', 'list_folders', 'activate_folder', 'settings', 'save_settings', 'send', 'stop', 'permission-decision', 'clear-history', 'remove-folder', 'reset-global-settings', 'compact', 'list-prompts', 'read-project-memory', 'export-conversation', 'gguf-list', 'gguf-add', 'gguf-remove', 'git-status', 'test-hf-token', 'model-status', 'hardware-info', 'estimate-model', 'estimate-cancel', 'cuda-pack-status', 'cuda-pack-install', 'cuda-pack-cancel', 'cuda-pack-uninstall', 'migrate-data-dir', 'init-project', 'mcp-list', 'mcp-add', 'mcp-add-remote', 'mcp-remove', 'index-status', 'knowledge-list', 'knowledge-add', 'knowledge-remove', 'plugin-list', 'project-trust', 'trust-project', 'catalogue-list', 'catalogue-variants', 'catalogue-install', 'catalogue-cancel', 'catalogue-downloads', 'shutdown']);
 
 // Anything in `active` on this folder — an agent run or a compaction — is writing its transcript.
 function runningIn(folder) {
@@ -1080,6 +1114,20 @@ async function handle(message) {
     if (op === 'gguf-list') result = await ggufLibrary.list();
     if (op === 'gguf-add') result = await ggufLibrary.add(payload.path);
     if (op === 'gguf-remove') result = await ggufLibrary.remove(payload.id);
+    // The catalogue (core/catalogue-service.mts). An install takes the files Hugging Face lists now for that variant,
+    // never a list from the page, into the models folder of this moment; it answers the queued job at once, and its
+    // progress follows as 'catalogue-download' events.
+    if (op === 'catalogue-list') result = await catalogue.list({ query: payload.query, sort: payload.sort });
+    if (op === 'catalogue-variants') result = await catalogue.variants(payload.repo);
+    if (op === 'catalogue-install') {
+      const variant = await catalogue.variant(payload.repo, payload.variantName);
+      result = await catalogueInstalls.install(payload.repo, variant, modelsDirOf(await settings.global(), dataHome), payload.activate === true);
+    }
+    if (op === 'catalogue-cancel') {
+      await catalogueInstalls.cancel(String(payload.id ?? ''));
+      result = catalogueInstalls.list();
+    }
+    if (op === 'catalogue-downloads') result = catalogueInstalls.list();
     if (op === 'model-status') result = { ...await modelStatus(settings, ggufLibrary, estimateCache), ...(replacement ? { replacing: true } : {}) };
     // payload.refresh is accepted and ignored for now: every call re-reads free memory. While the engine is still
     // starting, what needs no Llama answers at once, flagged `initializing`, and an 'engine' event follows (item 3).
@@ -1329,12 +1377,14 @@ async function quiet() {
 }
 const age = (since, now) => `depuis ${Math.round((now - since) / 1000)} s`;
 const MCP_STOP_BOUND_MS = 5000;
-/** Ends every MCP process and refuses new kept sessions (one kill per process: core/mcp-client.mts::killOnce). Bounded:
- * a taskkill that never returns does not hold the quit. */
+/** Ends every MCP process and refuses new kept sessions (one kill per process: core/mcp-client.mts::killOnce); stops the
+ * model download in progress as it is (its .part and its line stay for the next start) and the templates' check thread.
+ * Bounded: a taskkill that never returns, or a disk that holds a write, does not hold the quit. */
 function stopMcpAtQuit() {
   let timer;
   const bound = new Promise(done => { timer = setTimeout(done, MCP_STOP_BOUND_MS); });
-  return Promise.race([Promise.all([stopAllMcpServers(), mcpPool?.closeAll()]).catch(() => {}), bound]).finally(() => clearTimeout(timer));
+  const stops = [stopAllMcpServers(), mcpPool?.closeAll(), catalogueInstalls.close(), toolChecks.close()].map(stop => Promise.resolve(stop).catch(() => {}));
+  return Promise.race([Promise.all(stops), bound]).finally(() => clearTimeout(timer));
 }
 async function shutdownSteps() {
   const started = Date.now();

@@ -113,7 +113,27 @@ app.whenReady().then(async () => {
     engineEvents = await win.webContents.executeJavaScript('window.__engine');
     assert.equal(engineEvents.length, 1, 'unsubscribe stops further engine delivery');
 
-    process.stdout.write(`PASS preload onAgentEvent, onEstimateEvent, onCudaPackEvent and onEngineEvent filter and unsubscribe (Electron ${process.versions.electron})\n`);
+    // onCatalogueDownloadEvent (Hugging Face catalogue, Task 5): only the 'catalogue-download' event reaches it, and
+    // unsubscribing stops delivery.
+    await win.webContents.executeJavaScript(`
+      window.__catalogue = [];
+      window.__unsubscribeCatalogue = window.openagent.onCatalogueDownloadEvent(event => window.__catalogue.push(event));
+      true;
+    `);
+    send({ type: 'event', event: 'catalogue-download', job: { id: 'j1', state: 'downloading' } });
+    send({ type: 'event', event: 'cuda-pack', installId: 'i3', state: 'done' }); // filtered out
+    send({ type: 'response', id: 'v', ok: true, result: [] }); // filtered out
+    await new Promise(resolve => setTimeout(resolve, 100));
+    let catalogueEvents = await win.webContents.executeJavaScript('window.__catalogue');
+    assert.equal(catalogueEvents.length, 1, 'only the catalogue-download event reaches onCatalogueDownloadEvent');
+    assert.equal(catalogueEvents[0].job.id, 'j1');
+    await win.webContents.executeJavaScript('window.__unsubscribeCatalogue()');
+    send({ type: 'event', event: 'catalogue-download', job: { id: 'j1', state: 'done' } });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    catalogueEvents = await win.webContents.executeJavaScript('window.__catalogue');
+    assert.equal(catalogueEvents.length, 1, 'unsubscribe stops further catalogue-download delivery');
+
+    process.stdout.write(`PASS preload onAgentEvent, onEstimateEvent, onCudaPackEvent, onEngineEvent and onCatalogueDownloadEvent filter and unsubscribe (Electron ${process.versions.electron})\n`);
   } finally {
     win.destroy();
   }

@@ -118,6 +118,59 @@ export type CudaPackProgress = { installId: string } & (
 );
 export type CudaPackEvent = { type: 'event'; event: 'cuda-pack' } & CudaPackProgress;
 
+// The Hugging Face catalogue. Mirrors core/hf-catalogue.mts (CatalogueSort, CatalogueModel, ModelVariant),
+// core/model-score.mts (Fit, CodeQuality, ModelScore, RecommendationInput, Recommendation), core/catalogue-service.mts
+// (CatalogueView, CatalogueVariant) and core/model-download.mts (DownloadState, DownloadJob). Every text in them comes
+// from a repository: rendered as text only.
+export type CatalogueSort = 'downloads' | 'likes' | 'lastModified';
+export interface CatalogueModel {
+  id: string;
+  downloads: number;
+  likes: number;
+  gated: boolean;
+  lastModified: string;
+  architecture: string | null;
+  contextLength: number | null;
+  chatTemplate: string | null;
+  tags: string[];
+}
+export interface ModelVariant {
+  name: string;
+  files: { path: string; size: number; sha256: string | null }[];
+  totalBytes: number;
+}
+export type ModelFit = 'full' | 'partial' | 'slow' | 'none';
+export interface ModelScore {
+  stars: number;
+  fit: ModelFit;
+  tools: 'yes' | 'no' | 'unknown';
+  code: 'strong' | 'good' | 'unknown';
+  estimated: true;
+  sentence: string;
+}
+export interface RecommendationInput { model: CatalogueModel; variant: ModelVariant | null; score: ModelScore }
+export type Recommendation =
+  | { kind: 'install'; item: RecommendationInput }
+  | { kind: 'try'; item: RecommendationInput }
+  | { kind: 'none'; reason: 'no-fit' | 'offline' | 'gated-only' };
+export interface CatalogueView { recommendation: Recommendation; items: RecommendationInput[]; error: 'offline' | null }
+export interface CatalogueVariant extends ModelVariant { fit: ModelFit; hashed: boolean }
+export type DownloadState = 'queued' | 'downloading' | 'verifying' | 'done' | 'error' | 'cancelled';
+export interface DownloadJob {
+  id: string;
+  repo: string;
+  variantName: string;
+  dir: string;
+  files: ModelVariant['files'];
+  state: DownloadState;
+  receivedBytes: number;
+  totalBytes: number;
+  bytesPerSecond: number | null;
+  error: string | null;
+  finalPath: string | null;
+}
+export interface CatalogueDownloadEvent { type: 'event'; event: 'catalogue-download'; job: DownloadJob }
+
 // The end of a background offload estimate (worker.mjs, op estimate-model).
 export interface EstimateEvent {
   type: 'event';
@@ -225,6 +278,7 @@ export interface OpenAgentBridge {
   onModelEvent(callback: (status: ModelStatus & { type: 'event'; event: 'model' }) => void): () => void;
   onEstimateEvent(callback: (event: EstimateEvent) => void): () => void;
   onCudaPackEvent(callback: (event: CudaPackEvent) => void): () => void;
+  onCatalogueDownloadEvent(callback: (event: CatalogueDownloadEvent) => void): () => void;
   onEngineEvent(callback: (event: EngineEvent) => void): () => void;
   onUpdateStatus(callback: (status: UpdateStatus) => void): () => void;
 }

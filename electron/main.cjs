@@ -25,7 +25,7 @@ let startupDataHome;
 // really closes it.
 let appQuitting = false;
 const pending = new Map();
-const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','model-status','hardware-info','estimate-model','estimate-cancel','cuda-pack-status','cuda-pack-install','cuda-pack-cancel','cuda-pack-uninstall','git-status','test-hf-token','migrate-data-dir','init-project','mcp-list','mcp-add','mcp-add-remote','mcp-remove','index-status','knowledge-list','knowledge-add','knowledge-remove','plugin-list','project-trust','trust-project']);
+const allowed = new Set(['global-settings','project-settings','save-global-settings','save-project-settings','list-branches','messages','save-messages','fork','list_folders','activate_folder','settings','save_settings','send','stop','permission-decision','clear-history','remove-folder','reset-global-settings','compact','list-prompts','read-project-memory','export-conversation','gguf-list','gguf-add','gguf-remove','model-status','hardware-info','estimate-model','estimate-cancel','cuda-pack-status','cuda-pack-install','cuda-pack-cancel','cuda-pack-uninstall','git-status','test-hf-token','migrate-data-dir','init-project','mcp-list','mcp-add','mcp-add-remote','mcp-remove','index-status','knowledge-list','knowledge-add','knowledge-remove','plugin-list','project-trust','trust-project','catalogue-list','catalogue-variants','catalogue-install','catalogue-cancel','catalogue-downloads']);
 
 // Exactly the pattern core/export.mts::exportFilename generates — never a filename supplied as-is
 // by the renderer. Constrains what "open-export" (below) is allowed to open, whatever the folder.
@@ -137,8 +137,8 @@ function notifyLongRun(message) {
 }
 
 /**
- * The options main.cjs builds the worker with, packaged or not. The worker's test seams (workerData.testProviderModule
- * and workerData.cudaPackBaseUrl, see worker.mjs) are never among them, whatever the environment:
+ * The options main.cjs builds the worker with, packaged or not. The worker's test seams (workerData.testProviderModule,
+ * workerData.cudaPackBaseUrl and workerData.hfBaseUrl, see worker.mjs) are never among them, whatever the environment:
  * tests/test-seam.test.mts proves it, and that startBackend uses this function. Its data: where the bundled embedding
  * model and the CUDA pack's shipped manifest live (build.extraResources puts them under <resources>, real files outside
  * app.asar; unpackaged, the repository's own resources/), and what prepareGpuBackend decided before the worker

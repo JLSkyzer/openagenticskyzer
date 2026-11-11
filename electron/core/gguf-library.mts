@@ -48,14 +48,17 @@ export class GgufLibrary {
   private async fileOk(path: string): Promise<boolean> {
     try { return (await stat(path)).isFile(); } catch { return false; }
   }
-  /** Adds a real, already-chosen .gguf file. Re-adding the same path replaces its entry (fresh id, fresh timestamp) rather than duplicating it. */
-  async add(path: string): Promise<GgufEntry> {
-    if (!isAbsolute(path)) throw new Error('Chemin absolu requis');
+  /** Adds a real, already-chosen .gguf file. Re-adding the same path replaces its entry (fresh id, fresh timestamp) rather than duplicating it.
+   * `sizeBytes` replaces the file's own size: a split model is referenced by its first part, but weighs all of them. */
+  async add(path: string, options: { sizeBytes?: number } = {}): Promise<GgufEntry> {
+    if (typeof path !== 'string' || !isAbsolute(path)) throw new Error('Chemin absolu requis');
     if (!path.toLowerCase().endsWith('.gguf')) throw new Error('Seuls les fichiers .gguf sont acceptés');
+    const { sizeBytes } = options ?? {};
+    if (sizeBytes !== undefined && (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0)) throw new Error('Taille invalide');
     let info;
     try { info = await stat(path); } catch { throw new Error('Fichier introuvable'); }
     if (!info.isFile()) throw new Error('Fichier introuvable');
-    const entry: GgufEntry = { id: randomUUID(), name: basename(path), path, size_bytes: info.size, added_at: new Date().toISOString() };
+    const entry: GgufEntry = { id: randomUUID(), name: basename(path), path, size_bytes: sizeBytes ?? info.size, added_at: new Date().toISOString() };
     await this.store.update<unknown>(this.path(), [], current =>
       [...(Array.isArray(current) ? current.filter(isValidEntry) : []).filter(e => e.path !== path), entry],
     );

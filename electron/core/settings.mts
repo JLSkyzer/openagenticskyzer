@@ -12,6 +12,9 @@ export const globalDefaults = {
   // Which entry of the .gguf library (gguf-library.mts) is the active model, if any — empty means none is
   // selected yet, and a turn is refused (core/active-model.mts). Not a secret: just an id.
   active_local_model: '',
+  // « Dossier des modèles » (Matériel): where the catalogue downloads a model. '' is <data home>/models. Changing it moves
+  // nothing: the library keeps the absolute paths of the models already there, and a started download keeps its folder.
+  models_dir: '',
   // « Contexte des modèles locaux »: the engine context asked for, capped by the model (context-budget.mts::localContextSize).
   local_context: 32768 as number | 'max',
   // « Longueur maximale de la réflexion » (Matériel): the built-in engine's cap on thought tokens per reply. null: no
@@ -50,6 +53,7 @@ const globalRules: Record<string, Rule> = {
   theme: choice('dark', 'light'), accent_color: v => typeof v === 'string' && /^#[\da-f]{6}$/i.test(v),
   onboarding_done: bool,
   active_local_model: text(200),
+  models_dir: v => v === '' || (text(1000)(v) && isAbsolute(v as string)),
 };
 const projectRules: Record<string, Rule> = {
   agent_mode: choice('inherit', 'ask', 'auto', 'plan'), ignored_patterns: text(10000),

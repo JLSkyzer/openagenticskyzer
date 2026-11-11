@@ -108,6 +108,8 @@ test('main never passes the test seam to the worker, packaged or not, whatever t
       assert.equal(workerData.perfLeversAllowed, !isPackaged);
       // Test-only: a download source other than the app's own GitHub release is never passed by main.
       assert.equal('cudaPackBaseUrl' in workerData, false);
+      // Test-only too: the catalogue's fake Hugging Face; packaged or not, the app reads huggingface.co.
+      assert.equal('hfBaseUrl' in workerData, false);
       assert.equal(workerData.gpuBackend, 'auto', 'no choice read: auto');
       assert.equal(workerData.cudaRuntimeDir, null, 'no pack runtime put on PATH: none for the worker either');
     }

@@ -109,3 +109,11 @@ test('a corrupted library file is refused, never silently discarded (JsonStore.r
   const library = new GgufLibrary(home);
   await assert.rejects(library.list(), /JSON illisible/);
 });
+
+test('add with sizeBytes: a split model, referenced by its first part, weighs all its parts', async t => {
+  const { library, model } = await project(t);
+  assert.equal((await library.add(model, { sizeBytes: 3 * 2048 })).size_bytes, 3 * 2048);
+  assert.equal((await library.list())[0].size_bytes, 3 * 2048);
+  assert.equal((await library.add(model)).size_bytes, 2048, 'without it, the file\'s own size');
+  for (const sizeBytes of [-1, 1.5, Number.NaN]) await assert.rejects(library.add(model, { sizeBytes }), /Taille invalide/);
+});

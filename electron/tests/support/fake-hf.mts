@@ -11,7 +11,8 @@
 //   holdAfter: sends that many body bytes then goes silent with the connection open, for the first `holdTimes` requests (default 1);
 //   status:   401 or 403 on /resolve (and on the tree for that file's repository if `treeStatus` is set);
 //   redirect: 'relative' (Location: /api/resolve-cache/...), 'other-port' (a second server) or 'none' (200 at once);
-//   location: /resolve answers a 307 to exactly this Location (a loop, a refused scheme), whatever `redirect` says.
+//   location: /resolve answers a 307 to exactly this Location (a loop, a refused scheme), whatever `redirect` says;
+//   gate:     the bytes are sent only once this promise settles (a download held at a moment the test chooses).
 // failApi(status) makes /api/* answer that status until failApi(null). `hits` records every request.
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { createHash } from 'node:crypto';
@@ -29,6 +30,7 @@ export interface FakeFileOptions {
   treeStatus?: 401 | 403;
   redirect?: 'relative' | 'other-port' | 'none';
   location?: string;
+  gate?: Promise<unknown>;
 }
 
 export interface FakeHit { method: string; path: string; authorization: string | undefined; range: string | undefined; userAgent: string | undefined }
@@ -43,7 +45,11 @@ export async function startFakeHf() {
 
   const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
-  function serveBytes(req: IncomingMessage, res: ServerResponse, file: StoredFile) {
+  function serveBytes(req: IncomingMessage, res: ServerResponse, file: StoredFile, gated = true) {
+    if (gated && file.options.gate) {
+      void file.options.gate.then(() => {}, () => {}).then(() => serveBytes(req, res, file, false));
+      return;
+    }
     const total = file.bytes.length;
     let start = 0;
     let end = total - 1;

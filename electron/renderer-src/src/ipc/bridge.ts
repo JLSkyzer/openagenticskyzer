@@ -2,9 +2,13 @@ import type {
   AgentEvent,
   Attachment,
   BranchInfo,
+  CatalogueSort,
+  CatalogueVariant,
+  CatalogueView,
   ChatMessage,
   CudaPackProgress,
   CudaPackView,
+  DownloadJob,
   EstimateEvent,
   FolderListItem,
   GpuBackendChoice,
@@ -90,6 +94,8 @@ export interface GlobalSettings {
   accent_color: string;
   /** « Moteur »: applied at the next app start. */
   gpu_backend?: GpuBackendChoice;
+  /** « Dossier des modèles »: where the catalogue downloads; '' is <data home>/models. An absolute path otherwise. */
+  models_dir?: string;
   [key: string]: unknown;
 }
 
@@ -367,6 +373,34 @@ export function onCudaPackEvent(listener: (event: CudaPackProgress) => void): ()
   return window.openagent.onCudaPackEvent(({ type: _type, event: _event, ...rest }) => listener(rest as CudaPackProgress));
 }
 
+// The Hugging Face catalogue (core/catalogue-service.mts). Without network the listing answers error 'offline' (never
+// a rejection); the models already installed stay usable. An install answers its queued job at once; its progress and
+// end arrive through onCatalogueDownload. `activate`: « Installer et utiliser », the model becomes the default one when
+// it is verified (read at the next send: a turn running keeps its model).
+export function catalogueList(query?: string, sort?: CatalogueSort): Promise<CatalogueView> {
+  return request('catalogue-list', { query, sort });
+}
+
+export function catalogueVariants(repo: string): Promise<{ variants: CatalogueVariant[]; chosen: string | null }> {
+  return request('catalogue-variants', { repo });
+}
+
+export function catalogueInstall(repo: string, variantName: string, activate: boolean): Promise<DownloadJob> {
+  return request('catalogue-install', { repo, variantName, activate });
+}
+
+export function catalogueCancel(id: string): Promise<DownloadJob[]> {
+  return request('catalogue-cancel', { id });
+}
+
+export function catalogueDownloads(): Promise<DownloadJob[]> {
+  return request('catalogue-downloads');
+}
+
+export function onCatalogueDownload(listener: (job: DownloadJob) => void): () => void {
+  return window.openagent.onCatalogueDownloadEvent(event => listener(event.job));
+}
+
 // Zone Danger: none of these delete project files, only history / sidebar entries / settings.
 export function clearHistory(folder: string): Promise<{ removed_messages: number }> {
   return request('clear-history', { folder });
@@ -392,11 +426,18 @@ export type {
   AgentEvent,
   Attachment,
   BranchInfo,
+  CatalogueDownloadEvent,
+  CatalogueModel,
+  CatalogueSort,
+  CatalogueVariant,
+  CatalogueView,
   ChatMessage,
   CudaPackEvent,
   CudaPackProgress,
   CudaPackState,
   CudaPackView,
+  DownloadJob,
+  DownloadState,
   EstimateEvent,
   FolderListItem,
   GpuBackendChoice,
@@ -408,10 +449,15 @@ export type {
   IndexEvent,
   IndexState,
   LoadAttempt,
+  ModelFit,
+  ModelScore,
   ModelStatus,
+  ModelVariant,
   Placement,
   ProjectSettings,
   PromptEntry,
+  Recommendation,
+  RecommendationInput,
   TurnPhaseName,
   TurnTiming,
   UpdateStatus,

@@ -41,7 +41,7 @@ export class HfError extends Error {
 interface CallOptions { baseUrl?: string; token?: string; signal?: AbortSignal }
 
 /** The token goes only to huggingface.co (or, in tests, to the host of the injected base URL). */
-function mayCarryToken(url: URL, baseUrl: string): boolean {
+export function mayCarryToken(url: URL, baseUrl: string): boolean {
   if (url.hostname === 'huggingface.co') return true;
   if (baseUrl === HF_BASE_URL) return false;
   try { return url.host === new URL(baseUrl).host; } catch { return false; }

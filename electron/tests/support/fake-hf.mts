@@ -8,8 +8,10 @@
 //   sha256:   overrides the listed oid (to serve bytes that do not match it);
 //   ranges:   false ignores the Range header and never says Accept-Ranges (default true);
 //   cutAfter: closes the connection after that many body bytes, for the first `cutTimes` requests (default 1);
+//   holdAfter: sends that many body bytes then goes silent with the connection open, for the first `holdTimes` requests (default 1);
 //   status:   401 or 403 on /resolve (and on the tree for that file's repository if `treeStatus` is set);
-//   redirect: 'relative' (Location: /api/resolve-cache/...), 'other-port' (a second server) or 'none' (200 at once).
+//   redirect: 'relative' (Location: /api/resolve-cache/...), 'other-port' (a second server) or 'none' (200 at once);
+//   location: /resolve answers a 307 to exactly this Location (a loop, a refused scheme), whatever `redirect` says.
 // failApi(status) makes /api/* answer that status until failApi(null). `hits` records every request.
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { createHash } from 'node:crypto';
@@ -21,14 +23,17 @@ export interface FakeFileOptions {
   ranges?: boolean;
   cutAfter?: number;
   cutTimes?: number;
+  holdAfter?: number;
+  holdTimes?: number;
   status?: 401 | 403;
   treeStatus?: 401 | 403;
   redirect?: 'relative' | 'other-port' | 'none';
+  location?: string;
 }
 
 export interface FakeHit { method: string; path: string; authorization: string | undefined; range: string | undefined; userAgent: string | undefined }
 
-interface StoredFile { bytes: Uint8Array; options: FakeFileOptions; cuts: number }
+interface StoredFile { bytes: Uint8Array; options: FakeFileOptions; cuts: number; holds: number }
 
 export async function startFakeHf() {
   const files = new Map<string, StoredFile>(); // key: "owner/name/path"
@@ -58,7 +63,13 @@ export async function startFakeHf() {
     const cutTimes = file.options.cutTimes ?? 1;
     if (file.options.cutAfter !== undefined && file.cuts < cutTimes) {
       file.cuts++;
-      res.write(body.subarray(0, file.options.cutAfter), () => req.socket.destroy());
+      // The delay lets the client read those bytes: an immediate destroy can reset the socket with them still unread.
+      res.write(body.subarray(0, file.options.cutAfter), () => setTimeout(() => req.socket.destroy(), 50));
+      return;
+    }
+    if (file.options.holdAfter !== undefined && file.holds < (file.options.holdTimes ?? 1)) {
+      file.holds++;
+      res.write(body.subarray(0, file.options.holdAfter));
       return;
     }
     res.end(body);
@@ -133,6 +144,7 @@ export async function startFakeHf() {
       const file = find(`${repo}/${name}`);
       if (!file) { res.writeHead(404); res.end(); return; }
       if (file.options.status) { res.writeHead(file.options.status); res.end(); return; }
+      if (file.options.location) { res.writeHead(307, { location: file.options.location }); res.end(); return; }
       const mode = file.options.redirect ?? 'relative';
       if (mode === 'none') { serveBytes(req, res, file); return; }
       const key = `${repo}/${name}`;
@@ -154,7 +166,7 @@ export async function startFakeHf() {
     otherUrl,
     hits,
     setModels(list: unknown[]) { models = list; },
-    setFile(path: string, bytes: Uint8Array, options: FakeFileOptions = {}) { files.set(path, { bytes, options, cuts: 0 }); },
+    setFile(path: string, bytes: Uint8Array, options: FakeFileOptions = {}) { files.set(path, { bytes, options, cuts: 0, holds: 0 }); },
     failApi(status: number | null) { apiStatus = status; },
     async close() {
       main.closeAllConnections();
